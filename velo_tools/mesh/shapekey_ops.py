@@ -1,7 +1,8 @@
-"""形态键聚合扫描与批量操作。
+"""Shape key aggregation scanning and batch operations.
 
-PropertyGroup `VELO_ShapeKeyAggItem` 与 rename 回调定义在 properties.py
-(为了与既有属性集中管理), 这里负责: 扫描刷新, 自动监听 (depsgraph), 批量改名。
+PropertyGroup `VELO_ShapeKeyAggItem` and the rename callback are defined in
+properties.py (to centralize management with existing properties); this module
+handles: scan/refresh, auto-listening (depsgraph), batch renaming.
 """
 
 import re
@@ -13,10 +14,10 @@ from .operators import is_real_mesh
 
 
 # ---------------------------------------------------------------------------
-# 公共: 扫描 / 签名 / 写入列表
+# Shared: scan / signature / write list
 # ---------------------------------------------------------------------------
 
-# 形如 "Deform 12 ", "Deform12 ", "Deform 3", "deform  7 _" 等前缀
+# Prefixes like "Deform 12 ", "Deform12 ", "Deform 3", "deform  7 _", etc.
 _DEFORM_PREFIX_RE = re.compile(r"^\s*[Dd]eform\s*\d+\s*", re.UNICODE)
 
 
@@ -27,8 +28,8 @@ def _strip_deform_prefix(name: str) -> str:
 
 
 def _scan_collection(coll):
-    """扫描集合, 返回 (order_list, count_dict, first_value_dict)。
-    order_list 按首次遇到的顺序, 已跳过 Basis 与 .placeholder。
+    """Scan the collection, returning (order_list, count_dict, first_value_dict).
+    order_list follows first-encountered order, having skipped Basis and .placeholder.
     """
     agg = {}
     order = []
@@ -51,7 +52,7 @@ def _scan_collection(coll):
 
 
 def _signature(order, count):
-    """轻量签名: (name, count) 元组。仅在名字增删或 count 改变时触发刷新。"""
+    """Lightweight signature: tuple of (name, count). Triggers a refresh only when names are added/removed or count changes."""
     return tuple((n, count[n]) for n in order)
 
 
@@ -70,15 +71,15 @@ def _populate(settings, order, count, first_value):
 
 
 def refresh_shapekey_list(context, force=False):
-    """供外部 (operator / 回调 / handler) 调用的统一刷新入口。
-    返回 True 表示真的重建了列表。
+    """Unified refresh entry point called by external code (operator / callback / handler).
+    Returns True if the list was actually rebuilt.
     """
     s = getattr(context.scene, "velo_tools", None)
     if s is None:
         return False
     coll = s.target_collection
     if coll is None:
-        # 集合被清空 -> 也清空列表
+        # Collection was cleared -> clear the list too
         if len(s.shapekey_items):
             props_mod._suspend_shapekey_update = True
             try:
@@ -97,12 +98,12 @@ def refresh_shapekey_list(context, force=False):
     return True
 
 
-# 模块级单槽签名缓存 (仅服务于自动刷新; 手动 force=True 总是重建)
+# Module-level single-slot signature cache (serves auto-refresh only; manual force=True always rebuilds)
 _LAST_SIG = [None]
 
 
 # ---------------------------------------------------------------------------
-# Operator: 手动刷新 (保留, 兼容旧 UI)
+# Operator: manual refresh (kept for backward compatibility with old UI)
 # ---------------------------------------------------------------------------
 
 class VELO_OT_refresh_shapekey_list(bpy.types.Operator):
@@ -126,7 +127,7 @@ class VELO_OT_refresh_shapekey_list(bpy.types.Operator):
 
 
 # ---------------------------------------------------------------------------
-# Operator: 自动重命名 -> "Deform N <basename>"
+# Operator: auto-rename -> "Deform N <basename>"
 # ---------------------------------------------------------------------------
 
 class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
@@ -150,7 +151,7 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
             self.report({'WARNING'}, "请先选择集合并刷新形态键")
             return {'CANCELLED'}
 
-        # 当前列表顺序 = 首次遇到顺序; 这里以此顺序编号
+        # Current list order = first-encountered order; numbering follows this order
         items = list(s.shapekey_items)
         plan = []  # [(old_name, final_name), ...]
         used_finals = set()
@@ -160,9 +161,9 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
                 continue
             base = _strip_deform_prefix(old)
             if not base:
-                base = old  # 整个名字就是 Deform 前缀的极端情况, 退回原名
+                base = old  # Edge case where the whole name is a Deform prefix; fall back to original name
             final = f"Deform {idx} {base}"
-            # 防止极端: 同 base 出现两次又同序号 -> 已不可能 (idx 唯一)
+            # Guard against the edge case: same base appearing twice with the same index -> impossible (idx is unique)
             used_finals.add(final)
             if final != old:
                 plan.append((old, final))
@@ -173,10 +174,10 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
 
         meshes = [o for o in coll.all_objects if is_real_mesh(o) and o.data.shape_keys]
 
-        # 两遍重命名, 避开中途名字冲突 (新名可能等于另一个现存形态键的名字)
+        # Two-pass rename to avoid mid-way name collisions (a new name may equal another existing shape key's name)
         # Pass 1: old -> __velo_tmp_<i>__
         tmp_names = []  # [(mesh -> kb_ref, tmp_name, final_name)]
-        # 我们用 mesh+old_name 定位, 改成 tmp 后记录 tmp -> final
+        # We locate by mesh+old_name, then after renaming to tmp record tmp -> final
         rename_map = {}  # mesh_id -> list of (tmp, final)
         for i, (old, final) in enumerate(plan):
             tmp = f"__velo_tmp_sk_{i}__"
@@ -200,7 +201,7 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
                 kb.name = final
                 renamed += 1
 
-        # 强制刷新列表 (顺序按新名字首次出现, 即 Deform 1, 2, ...)
+        # Force-refresh the list (order follows first appearance of new names, i.e. Deform 1, 2, ...)
         refresh_shapekey_list(context, force=True)
 
         self.report({'INFO'}, f"自动重命名完成: 处理 {len(plan)} 种, 共改 {renamed} 个形态键")
@@ -208,17 +209,17 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
 
 
 # ---------------------------------------------------------------------------
-# depsgraph handler: 自动监听形态键增删/原生面板改名
+# depsgraph handler: auto-listen for shape key add/remove / native-panel renames
 # ---------------------------------------------------------------------------
 
 _LAST_COLL_NAME = [None]
 
 
 def _depsgraph_handler(scene, _depsgraph):
-    """轻量自动刷新:
-    - 仅当 target_collection 存在时工作
-    - 通过 (name, count) 签名比对, 无变化不重建
-    - 涵盖: 原生面板新增/删除/改名形态键, 网格被加入/移出集合
+    """Lightweight auto-refresh:
+    - Works only when target_collection exists
+    - Compares (name, count) signatures; no rebuild if nothing changed
+    - Covers: native-panel add/delete/rename of shape keys, meshes added to/removed from the collection
     """
     s = getattr(scene, "velo_tools", None)
     if s is None:
@@ -230,7 +231,7 @@ def _depsgraph_handler(scene, _depsgraph):
             _LAST_SIG[0] = None
         return
 
-    # 集合切换 -> 强制重建
+    # Collection switched -> force rebuild
     if coll.name != _LAST_COLL_NAME[0]:
         _LAST_COLL_NAME[0] = coll.name
         order, count, first_value = _scan_collection(coll)
@@ -238,7 +239,7 @@ def _depsgraph_handler(scene, _depsgraph):
         _LAST_SIG[0] = _signature(order, count)
         return
 
-    # 同集合 -> 签名比对
+    # Same collection -> compare signatures
     order, count, first_value = _scan_collection(coll)
     sig = _signature(order, count)
     if sig == _LAST_SIG[0]:

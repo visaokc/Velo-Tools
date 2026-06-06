@@ -1,11 +1,14 @@
-"""V0.1.6: vendored EFMI 导出算子 monkey-patch。
+"""V0.1.6: monkey-patch for the vendored EFMI export operator.
 
-设计目标：用户点击各自插件原本的「导出 Mod」按钮时，自动完成 MMD 源物体
-的预处理（改名 + 删特殊 + 删空 VG），但**不修改源数据**。
+Design goal: when the user clicks each plugin's own "Export Mod" button, the
+MMD source object is automatically preprocessed (rename + remove special +
+remove empty VG), but the source data itself is **not modified**.
 
-实现：仅当 MMD 源物体本来就在当前导出适配器选中的 `component_collection`
-范围内时，才克隆该物体（独立 mesh datablock）并临时替代源参与导出；finally
-把源重新 link 回原集合，删除克隆物体与克隆 mesh。
+Implementation: only when the MMD source object is already within the
+`component_collection` selected by the current export adapter do we clone it
+(an independent mesh datablock) and temporarily substitute the clone into the
+export; in finally we re-link the source back into its original collections and
+delete the clone object and clone mesh.
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ _COMPONENT_PATTERN = re.compile(r'.*component[_ -]*(\d+).*', re.IGNORECASE)
 
 
 def _find_class(class_name: str):
-    """在 sys.modules 中找出 bpy.types.Operator 子类。"""
+    """Find a bpy.types.Operator subclass in sys.modules."""
     for mod in list(sys.modules.values()):
         if mod is None:
             continue
@@ -41,7 +44,7 @@ def _find_class(class_name: str):
 
 
 def _get_collections_holding(obj):
-    """返回所有直接包含 obj 的 bpy.data.collections，外加 scene collections。"""
+    """Return all bpy.data.collections directly containing obj, plus scene collections."""
     cols = []
     for c in bpy.data.collections:
         try:
@@ -214,7 +217,7 @@ def _validate_merged_export_preconditions(context, settings_attr: str):
 
 
 def _get_export_state(context, settings_attr: str):
-    """构造 swap 状态：返回 None 表示无需处理。"""
+    """Build the swap state: returning None means no processing is needed."""
     ef = getattr(context.scene, "velo_endfield", None)
     if ef is None:
         return None
@@ -247,13 +250,13 @@ def _get_export_state(context, settings_attr: str):
         if not export_cols:
             return None
 
-    # 克隆物体 + 独立 mesh
+    # Clone object + independent mesh
     clone = obj.copy()
     clone.data = obj.data.copy()
     clone.name = f"{obj.name}__velo_export"
     clone.data.name = f"{obj.data.name}__velo_export"
 
-    # 把克隆 link 到与源相同的所有集合（保持父子组织一致）
+    # Link the clone into all the same collections as the source (keep the parent/child organization consistent)
     linked_to = []
     for c in export_cols:
         try:
@@ -263,7 +266,7 @@ def _get_export_state(context, settings_attr: str):
         except Exception:
             traceback.print_exc()
 
-    # 把源从所有集合 unlink（让导出器看不到源，只看到克隆）
+    # Unlink the source from all collections (so the exporter sees only the clone, not the source)
     unlinked_from = []
     for c in export_cols:
         try:
@@ -273,7 +276,7 @@ def _get_export_state(context, settings_attr: str):
         except Exception:
             traceback.print_exc()
 
-    # 在克隆上跑预处理
+    # Run preprocessing on the clone
     try:
         _pe.apply_mmd_pre_export(clone, profile)
     except Exception:
@@ -292,14 +295,14 @@ def _restore_export_state(state):
         return
     obj = state["orig"]
     clone = state["clone"]
-    # 把源 re-link 回原集合
+    # Re-link the source back into its original collections
     for c in state["unlinked_from"]:
         try:
             if obj.name not in c.objects:
                 c.objects.link(obj)
         except Exception:
             traceback.print_exc()
-    # 解除克隆链接 + 删除克隆 + 克隆 mesh
+    # Unlink the clone + delete the clone + clone mesh
     for c in state["linked_to"]:
         try:
             if clone.name in c.objects:
@@ -355,8 +358,8 @@ def _make_patched_execute(orig_execute, settings_attr: str):
 
 
 def install_export_hook():
-    # 目标从游戏注册表推导（单一真相源），每个游戏一条：导出算子类名 + 其 settings 属性。
-    # 幂等：已 patch 的算子类跳过。各 game 驱动注册描述符后调用本函数即可接入。
+    # Targets are derived from the game registry (single source of truth), one per game: export operator class name + its settings attr.
+    # Idempotent: already-patched operator classes are skipped. Each game can hook in by calling this function after its driver registers the descriptor.
     try:
         from ...games import registry as _registry
         targets = [(d.export_op_class, d.settings_attr, d.adapter_key) for d in _registry.all_descriptors()]

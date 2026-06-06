@@ -1,6 +1,6 @@
-﻿"""共享网格工具函数。
+﻿"""Shared mesh utility functions.
 
-通用映射算子已迁移到 general_mapping 模块；此文件只保留被其他模块复用的纯函数。
+The general mapping operators have been moved to the general_mapping module; this file only keeps pure functions reused by other modules.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def unregister():
 
 
 # ============================================================
-# 行级辅助算子
+# Row-level helper operators
 # ============================================================
 
 class VELO_OT_focus_mapping(bpy.types.Operator):
@@ -153,7 +153,7 @@ class VELO_OT_undo_last_rename(bpy.types.Operator):
             self.report({'INFO'}, "无可撤销的改名")
             return {'CANCELLED'}
         last = s.rename_history[-1]
-        # 找对应映射行
+        # Find the corresponding mapping row
         target_item = None
         for it in s.mappings:
             if it.source_index == last.source_index:
@@ -162,7 +162,7 @@ class VELO_OT_undo_last_rename(bpy.types.Operator):
         if target_item is None:
             s.rename_history.remove(len(s.rename_history) - 1)
             return {'CANCELLED'}
-        # 触发改名（不再写入历史，避免循环）
+        # Trigger the rename (no longer write to history, to avoid loops)
         _props._suspend_history = True
         try:
             target_item.target_name = last.old_name
@@ -186,7 +186,7 @@ class VELO_OT_clear_mappings(bpy.types.Operator):
         s.rename_history.clear()
         s.source_baselines.clear()
         s.baseline_object_name = ""
-        # 同步到内置 Text（与 MMD 区一致）
+        # Sync to the built-in Text (consistent with the MMD section)
         try:
             _general_autosync_to_text(s)
         except Exception:
@@ -251,20 +251,20 @@ class VELO_OT_apply_candidate(bpy.types.Operator):
             return {'CANCELLED'}
         c = it.candidates[self.candidate_index]
         if c.target_name and c.target_name != it.target_name:
-            it.target_name = c.target_name  # 触发 update
+            it.target_name = c.target_name  # trigger update
         return {'FINISHED'}
 
 
 # ============================================================
-# 可逆切换：ORIGINAL ↔ RENAMED（基于持久化的 per-object 映射表）
+# Reversible toggle: ORIGINAL <-> RENAMED (based on the persisted per-object mapping table)
 # ============================================================
 
 def _apply_rename_dir(base, armature, direction: str):
-    """按 base 上的持久化映射切换命名方向。
+    """Switch the naming direction according to the persisted mapping on base.
 
-    direction='TO_RENAMED'：把 src_orig 改为 current
-    direction='TO_ORIGINAL'：把 current 改回 src_orig
-    返回 renamed 数量。映射表本身**不删除**。
+    direction='TO_RENAMED': rename src_orig to current
+    direction='TO_ORIGINAL': rename current back to src_orig
+    Returns the renamed count. The mapping table itself is **not deleted**.
     """
     data = _props.load_per_object_map(base)
     if not data:
@@ -289,7 +289,7 @@ def _apply_rename_dir(base, armature, direction: str):
             bone = armature.data.bones.get(from_name)
             if bone:
                 bone.name = to_name
-    # 更新状态标记
+    # Update the state marker
     new_state = 'RENAMED' if direction == 'TO_RENAMED' else 'ORIGINAL'
     data["state"] = new_state
     _props.save_per_object_map(base, data)
@@ -314,7 +314,7 @@ class VELO_OT_toggle_naming_this_object(bpy.types.Operator):
             return {'CANCELLED'}
         direction = 'TO_ORIGINAL' if state == 'RENAMED' else 'TO_RENAMED'
         n = _apply_rename_dir(base, s.armature_object, direction)
-        # 重建 UI 显示
+        # Rebuild the UI display
         _props._on_base_object_update(s, context)
         new_state = _props.get_per_object_state(base) or "?"
         self.report({'INFO'}, f"已切换 {n} 个顶点组 → 状态: {new_state}")
@@ -380,7 +380,7 @@ class VELO_OT_clear_per_object_map(bpy.types.Operator):
 
 
 # ============================================================
-# 通用顶点组改名 Tab 的映射表导入 / 导出（V0.1.2）
+# Mapping table import / export for the general vertex-group rename Tab (V0.1.2)
 # ============================================================
 
 GENERAL_INTERNAL_TEXT_NAME = "velo_general_mapping.txt"
@@ -490,7 +490,7 @@ def _general_apply_text_meta(s, tb):
 
 
 def _ensure_general_text(s):
-    """确保 s.active_general_text 有效；若没有则按当前 base_object 名字创建并绑定。"""
+    """Ensure s.active_general_text is valid; if not, create and bind one named after the current base_object."""
     tb = s.active_general_text
     if tb is not None:
         return tb
@@ -514,7 +514,7 @@ def _ensure_general_text(s):
 
 
 def _general_autosync_to_text(s):
-    """匹配 / 行操作后自动同步到当前映射表 Text；若未绑定则自动创建。"""
+    """After a match / row operation, auto-sync to the current mapping table Text; if not bound, create one automatically."""
     try:
         tb = _ensure_general_text(s)
         if tb is None:
@@ -531,7 +531,7 @@ def _general_parse_text(raw: str):
         line = ln.split('#', 1)[0].strip()
         if not line:
             continue
-        if line.startswith('@'):  # 跳过 @mod / @component / @profile 等 header行
+        if line.startswith('@'):  # skip @mod / @component / @profile and other header lines
             continue
         if '\t' in line:
             parts = line.split('\t', 1)
@@ -546,7 +546,7 @@ def _general_parse_text(raw: str):
 
 
 def _load_general_text_into_mappings(s, raw: str):
-    """切换映射表 Text 时调用：用 Text 内容覆盖 mappings。"""
+    """Called when switching the mapping table Text: overwrite mappings with the Text content."""
     pairs = _general_parse_text(raw)
     from . import properties as _props
     prev = _props._suspend_updates
@@ -636,9 +636,9 @@ class VELO_OT_match_row_remove(bpy.types.Operator):
 
 
 class VELO_OT_match_to_table_lite(bpy.types.Operator):
-    """与 MMD 区 vg_match_to_mmd_table 一致的轻量匹配算子：
-    KDTree 重心最近邻，只写入 mappings 的 target_name；全程抑制 update 回调，
-    不会触发改名、不计候选、不计重心、不增未匹配表。"""
+    """Lightweight match operator consistent with the MMD section's vg_match_to_mmd_table:
+    KDTree centroid nearest-neighbor, only writes mappings' target_name; suppresses update callbacks throughout,
+    does not trigger renames, does not compute candidates, does not compute centroids, does not grow the unmatched table."""
     bl_idname = "velo.match_to_table_lite"
     bl_label = "按位置匹配 → 写入本表"
     bl_description = "与 MMD 区完全一致的 KDTree 重心匹配；仅写表，不会改名须点“将源物体改名为统一编号”才会改名"
@@ -648,7 +648,7 @@ class VELO_OT_match_to_table_lite(bpy.types.Operator):
 
     def execute(self, context):
         from mathutils.kdtree import KDTree
-        from . import operators as _ops_self  # 复用 vgroup_centroid_local
+        from . import operators as _ops_self  # reuse vgroup_centroid_local
         from .core.mapping.operators import _compute_centroids_world
 
         s = context.scene.velo_tools
@@ -667,7 +667,7 @@ class VELO_OT_match_to_table_lite(bpy.types.Operator):
             self.report({'ERROR'}, f"目标物体 {target.name} 没有可用的有权重顶点组")
             return {'CANCELLED'}
 
-        # V0.1.6 修复：同时计算局部重心供 overlay 快照（不受 VG 名变动影响）
+        # V0.1.6 fix: also compute local centroids for the overlay snapshot (unaffected by VG name changes)
         src_local = compute_all_centroids_local(base)
         tgt_local = compute_all_centroids_local(target)
 
@@ -730,7 +730,7 @@ class VELO_OT_match_to_table_lite(bpy.types.Operator):
                     row.target_vg_index = tgt_gi
                     row.matched = True
                     row.distance = float(dist)
-                # V0.1.6 修复：同步写入 overlay 快照（局部重心）
+                # V0.1.6 fix: also write the overlay snapshot (local centroid)
                 bc = src_local.get(vg.index)
                 if bc is not None:
                     row.base_centroid_local = bc
@@ -767,7 +767,7 @@ class VELO_OT_match_stage_from_source(bpy.types.Operator):
             self.report({'ERROR'}, "未指定源物体")
             return {'CANCELLED'}
         existing = {(it.original_name or "") for it in s.mappings}
-        # 收集有权重的 VG 名（排除特殊命名）
+        # Collect names of weighted VGs (excluding special names)
         used = set()
         for v in obj.data.vertices:
             for g in v.groups:
@@ -946,14 +946,14 @@ class VELO_OT_match_table_import(bpy.types.Operator):
 
 
 # ============================================================
-# V0.1.6 任务 4: 通用顶点组匹配 — 4 按钮（源/目标 各 apply/revert）
+# V0.1.6 Task 4: general vertex-group matching - 4 buttons (apply/revert for each of source/target)
 # ============================================================
 
 def _build_general_ordered_pairs(s):
-    """按 s.mappings 顺序返回四个有序列表：
+    """Return four ordered lists in s.mappings order:
     src_o2t: [(original_name, target_name)]
     src_t2o: [(target_name, original_name)]
-    tgt_t2o: [(target_name, original_name)] （首次出现去重）
+    tgt_t2o: [(target_name, original_name)] (dedup on first occurrence)
     tgt_o2t: [(original_name, target_name)]
     """
     src_o2t, src_t2o, tgt_o2t = [], [], []
@@ -1039,7 +1039,7 @@ def _detach_general_source_row(s, row):
 
 
 def _sync_general_source_from_table(s, *, save_backup: bool = False):
-    """若源物体当前处于统一编号态，则从原始快照重放当前映射表，并把数字组排到最前。"""
+    """If the source object is currently in the unified-numbering state, replay the current mapping table from the original snapshot and move numeric groups to the front."""
     from .core.mapping import algorithms as _algo
 
     obj = s.base_object
@@ -1079,7 +1079,7 @@ def _sync_general_source_from_table(s, *, save_backup: bool = False):
 
 
 def _sync_general_source_row_incremental(s, row, new_root: str):
-    """统一编号态下，只重排受影响 unified 家族的实际源 VG / 骨骼名。"""
+    """In the unified-numbering state, only reorder the actual source VG / bone names of the affected unified family."""
     from .core.mapping import algorithms as _algo
 
     obj = s.base_object
@@ -1149,7 +1149,7 @@ def _sync_general_source_row_incremental(s, row, new_root: str):
     if not new_root and detached_name:
         final_name = detached_name
 
-    # 插回正确的数字序列位置：数字族整体排前，非数字保持现有顺序追加。
+    # Reinsert at the correct numeric-sequence position: the numeric family goes entirely to the front, non-numeric ones are appended keeping their existing order.
     _algo.reorder_numeric_vertex_groups_first(obj)
     try:
         _props._refresh_available_base_vgs(s)
@@ -1283,7 +1283,7 @@ class VELO_OT_general_target_to_unified(bpy.types.Operator):
         if _algo.restore_vg_snapshot(obj):
             self.report({'INFO'}, f"目标→统一编号: 已用快照无损还原 (目标={obj.name})")
             return {'FINISHED'}
-        # 反向：源名 → 目标名（首次出现去重）
+        # Reverse: source name -> target name (dedup on first occurrence)
         seen = set()
         ordered = []
         for it in s.mappings:
@@ -1303,12 +1303,12 @@ class VELO_OT_general_target_to_unified(bpy.types.Operator):
 
 
 # ============================================================
-# 任务4: 通用区"映射表" Text 选择器（template_ID 风格，无独立槽位）
+# Task 4: general-section "mapping table" Text selector (template_ID style, no separate slot)
 # ============================================================
 
 
 class VELO_OT_general_text_new(bpy.types.Operator):
-    """新建一个空映射表 Text 并绑定到当前源物体；当前 mappings 会被清空。"""
+    """Create a new empty mapping table Text and bind it to the current source object; the current mappings will be cleared."""
     bl_idname = "velo.general_text_new"
     bl_label = "新建映射表"
     bl_options = {'REGISTER', 'UNDO'}
@@ -1319,7 +1319,7 @@ class VELO_OT_general_text_new(bpy.types.Operator):
         s = context.scene.velo_tools
         base = s.base_object
         default = f"velo_general_{base.name}.txt" if base is not None else "velo_general_new.txt"
-        # 若重名则递增
+        # Increment if the name collides
         i = 1
         candidate = default
         while bpy.data.texts.get(candidate) is not None:
@@ -1344,7 +1344,7 @@ class VELO_OT_general_text_new(bpy.types.Operator):
             s.active_general_text = tb
         finally:
             _props._suspend_updates = prev
-        # 写绑定到 base
+        # Write the binding to base
         base = s.base_object
         if base is not None:
             try:

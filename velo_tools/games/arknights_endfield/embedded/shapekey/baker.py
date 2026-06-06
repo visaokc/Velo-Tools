@@ -1,20 +1,22 @@
 """Bake per-Deform-slot position deltas + freq_indices (v0.2 / TheHerta3).
 
-输出文件（全部落在 mod 的 Meshes/ 下）
+Output files (all written under the mod's Meshes/)
 -----------------------------------
 Component<cid>_Position_S<slot>_delta.buf      stride=12, packed float3 deltas
-Component<cid>_Position_S<slot>_map.buf        stride=4,  int32 map (-1 表示该顶点无 delta)
+Component<cid>_Position_S<slot>_map.buf        stride=4,  int32 map (-1 means the vertex has no delta)
 Component<cid>_Position_freq_indices.buf       stride=4,  vcount*MAX_SLOTS uint32
 
-注意 `Component<cid>_Position_0.buf` 不在这里生成 —— 我们让 ini 直接复用 EFMI
-已经写出的 `Component<cid>_VB0.buf` 作为 pristine 副本（同字节，无需重复拷贝）。
+Note: `Component<cid>_Position_0.buf` is not generated here -- we let the ini
+directly reuse the `Component<cid>_VB0.buf` already written by EFMI as the
+pristine copy (same bytes, no need to copy again).
 
-VB0 顶点数对齐
+VB0 vertex-count alignment
 --------------
-EFMI 把每个 loop corner 转成一条 VB0 记录再去重，于是
-`len(VB0) >= len(mesh.vertices)`。正式导出必须使用 EFMI 导出阶段保留的
-VertexId 映射，把 VB0 行严格映射回 Blender mesh 顶点；POSITION0 坐标反查
-只保留为 legacy diagnostic，不再用于 shape-key bake 输出。
+EFMI converts each loop corner into a VB0 record and then dedups, so
+`len(VB0) >= len(mesh.vertices)`. The real export must use the VertexId mapping
+retained during the EFMI export stage to strictly map VB0 rows back to Blender
+mesh vertices; the POSITION0 coordinate reverse-lookup is kept only as a legacy
+diagnostic and is no longer used for shape-key bake output.
 """
 import os
 
@@ -35,7 +37,7 @@ MAX_SLOTS = 128
 SPLIT_MAX_SLOTS = 24
 NO_FREQ_INDEX = 255
 
-_QUANT_SCALE = 1e5  # 位置匹配量化：1e-5 ≈ 10 µm
+_QUANT_SCALE = 1e5  # position-match quantization: 1e-5 ≈ 10 µm
 
 
 # ---------------------------------------------------------------- helpers
@@ -49,7 +51,7 @@ def _read_coords(key_block, vertex_count):
 
 
 def _extract_vb0_positions(vb0_buffer):
-    """从 EFMI NumpyBuffer 拿 VB0 的 POSITION0 属性，返回 (M,3) float32 或 None。"""
+    """Get VB0's POSITION0 attribute from the EFMI NumpyBuffer; return (M,3) float32 or None."""
     if vb0_buffer is None or not NUMPY_OK:
         return None
     layout = getattr(vb0_buffer, "layout", None)
@@ -220,49 +222,50 @@ def build_export_slot_map(deform_keys, max_slots):
 def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
                      vb0_buffer=None, mirror_mesh=False, merge_buffers=True,
                      slot_map=None, vb0_vertex_ids=None):
-    """把所有 Deform shape key 烘成 VB0 顺序的 delta + map (+ 可选合并).
+    """Bake all Deform shape keys into VB0-ordered delta + map (+ optional merge).
 
-    merge_buffers=True (v0.2.2 新增,默认)
+    merge_buffers=True (added in v0.2.2, default)
     -------------------------------------
-    把同一 component 的所有 slot 的 (delta, map) 合并成两份文件：
-        Component<cid>_Position_deltas.buf   stride=12, 全部 slot 活动 delta 顺序拼接
-        Component<cid>_Position_lookup.buf   stride=4,  vcount*MAX_SLOTS 个 int32
-                                              -1 表示 (vertex, slot) 无形变,
-                                              否则是合并 deltas 中的偏移
-    优势：每个 component 只有 2 份额外 buf，而不是 2N+1 份。
-    没有信息损失：channel = slot 是确定的,所以不需要 freq_indices 文件。
+    Merge all slots' (delta, map) of the same component into two files:
+        Component<cid>_Position_deltas.buf   stride=12, all slots' active deltas concatenated in order
+        Component<cid>_Position_lookup.buf   stride=4,  vcount*MAX_SLOTS int32 entries
+                                              -1 means (vertex, slot) has no deformation,
+                                              otherwise it is the offset into the merged deltas
+    Advantage: each component has only 2 extra bufs instead of 2N+1.
+    No information loss: channel = slot is deterministic, so no freq_indices file is needed.
 
     merge_buffers=False
     -------------------
-    保持 v0.2.1 行为：每个 slot 写 2 份 + 每个 component 1 份 freq_indices。
+    Keep v0.2.1 behavior: write 2 files per slot + 1 freq_indices per component.
 
-    mirror_mesh 处理（v0.2.1，与是否合并无关）
+    mirror_mesh handling (v0.2.1, independent of whether merging is used)
     --------------------------------------------
-    EFMI 在导入 / 导出阶段都有 Mirror Mesh 选项，开启时游戏空间和
-    Blender 空间是 X 镜像。我们对 mesh basis / target 都先 X 取反，
-    其余流程不变 → delta 朝向匹配游戏侧 VB0。
+    EFMI has a Mirror Mesh option at both import and export stages; when enabled,
+    game space and Blender space are X-mirrored. We negate X on both the mesh
+    basis and target first, and the rest of the flow is unchanged -> delta
+    orientation matches the game-side VB0.
 
     Returns
     -------
-    list of dict，每个 slot 一个：
+    list of dict, one per slot:
         {
             "slot": int (original Blender Deform number),
             "shader_slot": int (dense export slot),
-            "channel_idx": int (dense export slot, 即 IniParams[100+ch].x),
+            "channel_idx": int (dense export slot, i.e. IniParams[100+ch].x),
             "name": str,
             "active_count": int,
-            "vertex_count": int (VB0 顶点数, 用于 dispatch),
+            "vertex_count": int (VB0 vertex count, used for dispatch),
             "component_id": int,
             "merge_buffers": bool,
-            # merge=False 模式才有：
+            # only present in merge=False mode:
             "delta_filename": str,
             "map_filename": str,
         }
-    并在 meshes_path 写出（按模式不同）：
-        merge=True ：
+    and write under meshes_path (varies by mode):
+        merge=True:
             Component<cid>_Position_deltas.buf
             Component<cid>_Position_lookup.buf
-        merge=False：
+        merge=False:
             Component<cid>_Position_S<slot>_delta.buf  ×N
             Component<cid>_Position_S<slot>_map.buf    ×N
             Component<cid>_Position_freq_indices.buf
@@ -280,11 +283,11 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
     if slot_map is None:
         slot_map = build_export_slot_map(deform_keys, capacity)
 
-    # ---- 0. 建立 VB0 → mesh vertex 映射 ----
+    # ---- 0. Build the VB0 -> mesh vertex mapping ----
     n = len(merged_obj.data.vertices)
     base = _read_coords(sk_data.key_blocks["Basis"], n)
     if mirror_mesh:
-        # ★ 与 EFMI 的 converter_mirror_vector 一致：data[:, 0] *= -1
+        # ★ consistent with EFMI's converter_mirror_vector: data[:, 0] *= -1
         base = base.copy()
         base[:, 0] *= -1.0
         print(f"[ShapeKey] component {component_id}: mirror_mesh=True, basis X inverted before VB0 match.")
@@ -302,10 +305,10 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
     os.makedirs(meshes_path, exist_ok=True)
 
     # ==============================================================
-    # 分支 A：合并模式（merge_buffers=True）
+    # Branch A: merge mode (merge_buffers=True)
     # ==============================================================
     if merge_buffers:
-        # 收集所有 slot 的 delta + mask，最后一次性拼接成两个文件
+        # Collect every slot's delta + mask, then concatenate into two files at the end
         per_slot = []                                            # [(deform_slot, shader_slot, name, mask, packed_delta)]
         for d in deform_keys:
             slot = int(d["slot"])
@@ -327,8 +330,8 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
             packed_delta = vb0_delta[mask].astype(np.float32)
             per_slot.append((slot, shader_slot, d["name"], mask, packed_delta))
 
-        # 拼接 deltas + 构造 lookup
-        # lookup[v*MAX_SLOTS + s] = -1 (无) 或 在合并 deltas 里的偏移
+        # Concatenate deltas + build the lookup
+        # lookup[v*MAX_SLOTS + s] = -1 (none) or the offset into the merged deltas
         lookup = np.full(m_count * MAX_SLOTS, -1, dtype=np.int32)
         all_deltas = []
         running_offset = 0
@@ -376,14 +379,15 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
         return results
 
     # ==============================================================
-    # 分支 B：分文件模式（merge_buffers=False，v0.2.1 行为）
+    # Branch B: split-file mode (merge_buffers=False, v0.2.1 behavior)
     #
-    # 注意：split-mode HLSL (shapekey_blend.hlsl) 用 StructuredBuffer 数组占用
-    # t51..t(50+MAX_SLOTS) 寄存器，DX11 SM5.0 SRV 上限是 t127，所以这条路径
-    # 的实际上限是 24 个槽位。Deform 编号本身不再作为槽号；只有实际导出的
-    # 唯一形态键数量超过 24 时才会失败。
+    # Note: split-mode HLSL (shapekey_blend.hlsl) uses a StructuredBuffer array
+    # occupying registers t51..t(50+MAX_SLOTS); the DX11 SM5.0 SRV limit is t127,
+    # so the practical limit of this path is 24 slots. The Deform number itself is
+    # no longer used as the slot index; it only fails when the number of unique
+    # exported shape keys actually exceeds 24.
     # ==============================================================
-    # 为整个 component 预分配 freq_indices
+    # Preallocate freq_indices for the whole component
     freq_indices = np.full(m_count * SPLIT_MAX_SLOTS, NO_FREQ_INDEX, dtype=np.uint32)
     results = []
     for d in deform_keys:
@@ -395,13 +399,13 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
                 f"{shader_slot}, outside split capacity {SPLIT_MAX_SLOTS}."
             )
 
-        # HLSL 端的 StructuredBuffer array 从 0 起；Deform 编号已被压缩到连续槽位。
+        # The HLSL-side StructuredBuffer array starts at 0; Deform numbers have been compacted into contiguous slots.
 
         target = _read_coords(d["key_block"], n)
         if mirror_mesh:
             target = target.copy()
             target[:, 0] *= -1.0
-        mesh_delta = target - base                               # (N, 3) 针对 mesh vertex（已是游戏空间）
+        mesh_delta = target - base                               # (N, 3) per mesh vertex (already in game space)
         vb0_delta = np.zeros((m_count, 3), dtype=np.float32)
         valid = vb0_to_mesh >= 0
         vb0_delta[valid] = mesh_delta[vb0_to_mesh[valid]]
@@ -420,7 +424,7 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
         with open(os.path.join(meshes_path, map_filename), "wb") as f:
             f.write(index_map.tobytes())
 
-        # 填 freq_indices：channel_idx == shader_slot
+        # Fill freq_indices: channel_idx == shader_slot
         channel_idx = shader_slot
         active_idx = np.where(mask)[0]
         if len(active_idx):

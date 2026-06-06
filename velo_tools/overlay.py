@@ -1,4 +1,4 @@
-"""MMD 映射可视化 overlay。"""
+"""MMD mapping visualization overlay."""
 
 import blf
 import bpy
@@ -68,9 +68,10 @@ def _mmd_obj_cache_key(obj, *, allow_live=False):
     context_object = getattr(bpy.context, "object", None)
     context_mode = getattr(bpy.context, "mode", "")
     if allow_live and context_object is obj and context_mode in {'PAINT_WEIGHT', 'EDIT_MESH'}:
-        # 进入权重/编辑模式后，挂起 target live 重心刷新，避免 draw handler
-        # 在鼠标移动时反复全量扫描大网格而卡死；退出这些模式后 key 自然变化，
-        # 会触发一次新的重心计算。
+        # After entering weight/edit mode, suspend the live target centroid refresh
+        # to avoid the draw handler repeatedly full-scanning a large mesh on mouse
+        # move and hanging; once these modes are exited the key changes naturally,
+        # triggering a fresh centroid computation.
         return key + (f'{context_mode}_SUSPENDED',)
     return key
 
@@ -230,7 +231,7 @@ def _draw_mmd_3d():
     ef = getattr(ctx.scene, "velo_endfield", None)
     if ef is None or not getattr(ef, "show_overlay", False):
         return
-    # V0.1.6: 表为空时不画任何内容（避免源顶点组 / 未匹配点 / 标签残留）
+    # V0.1.6: draw nothing when the table is empty (avoids leftover source vertex groups / unmatched points / labels)
     profile = ef.mmd_profile
     if profile is None or len(profile.rows) == 0:
         return
@@ -279,7 +280,7 @@ def _draw_mmd_3d():
         shader.uniform_float("color", color)
         batch.draw(shader)
 
-    GOOD = (0.3, 0.7, 1.0, 0.95)   # MMD 用蓝色系区分
+    GOOD = (0.3, 0.7, 1.0, 0.95)   # MMD uses a blue palette to distinguish
     BAD = (1.0, 0.45, 0.85, 0.95)
     GOOD_FADE = (0.18, 0.42, 0.6, 0.6)
     BAD_FADE = (0.6, 0.27, 0.51, 0.6)
@@ -291,13 +292,13 @@ def _draw_mmd_3d():
     _draw('POINTS', good_pts_t, GOOD_FADE, 10.0)
     _draw('POINTS', bad_pts_t, BAD_FADE, 10.0)
 
-    # 未匹配的目标 VG（红色大点）
+    # Unmatched target VGs (large red points)
     _draw('POINTS', unmatched_pts, UNMATCHED_T, 14.0)
 
-    # V0.1.6: 未匹配的源 VG（橙色大点），缺省总是显示，避免用户找不到漏匹配的源骨
+    # V0.1.6: unmatched source VGs (large orange points), always shown by default so users don't miss unmatched source bones
     _draw('POINTS', unmatched_src_pts, UNMATCHED_S, 14.0)
 
-    # V0.1.6: hover 高亮——外层白色光环 + 内核原状态色
+    # V0.1.6: hover highlight -- outer white halo + inner core in the original status color
     try:
         from .games.arknights_endfield.mmd_pick import get_state as _ps
         st = _ps()
@@ -311,8 +312,8 @@ def _draw_mmd_3d():
             }
             inner_col = color_map.get(hov.get('status', 'unmatched'),
                                       (1.0, 1.0, 1.0, 1.0))
-            # 先画外层白色光环（大点），再画内核色点覆盖中心，
-            # 可视效果：中心色块 + 四周一圈白环。
+            # Draw the outer white halo first (large point), then the inner color point over the center,
+            # visual effect: a center color block surrounded by a white ring.
             _draw('POINTS', [(w.x, w.y, w.z)], (1.0, 1.0, 1.0, 0.95), 24.0)
             _draw('POINTS', [(w.x, w.y, w.z)], inner_col, 14.0)
     except Exception:
@@ -328,7 +329,7 @@ def _draw_mmd_2d():
     ef = getattr(ctx.scene, "velo_endfield", None)
     if ef is None or not getattr(ef, "show_overlay", False):
         return
-    # V0.1.6: 表为空时不画标签（避免数字编号残留）
+    # V0.1.6: draw no labels when the table is empty (avoids leftover numeric indices)
     profile = ef.mmd_profile
     if profile is None or len(profile.rows) == 0:
         return
@@ -365,7 +366,7 @@ def _draw_mmd_2d():
             blf.position(font_id, co2d.x + 10, co2d.y - 14, 0)
             blf.draw(font_id, name)
 
-    # V0.1.5: 未匹配的源 VG 标签（橙色），用于显示「有权重但表里没行/无目标」的源骨
+    # V0.1.5: unmatched source VG labels (orange), used to show source bones that "have weight but have no row in the table / no target"
     for sw, name in _mmd_iter_unmatched_sources(ef):
         co2d = location_3d_to_region_2d(region, rv3d, sw)
         if not co2d:
@@ -374,7 +375,7 @@ def _draw_mmd_2d():
         blf.position(font_id, co2d.x + 10, co2d.y - 14, 0)
         blf.draw(font_id, name)
 
-    # V0.1.6: 拖拽中：从拖起点（源端点）画到鼠标
+    # V0.1.6: while dragging: draw from the drag origin (source endpoint) to the mouse
     try:
         from .games.arknights_endfield.mmd_pick import get_state as _get_state
         state = _get_state()

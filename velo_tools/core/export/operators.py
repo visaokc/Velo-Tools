@@ -1,4 +1,4 @@
-"""导出预处理 + 转交适配器导出 的算子（V0.1.5）。"""
+"""Operators for export preprocessing + handing off to the adapter export (V0.1.5)."""
 from __future__ import annotations
 
 import bpy
@@ -48,7 +48,7 @@ class VELO_OT_mmd_pre_export(bpy.types.Operator):
             rename_to_unified=self.rename_to_unified,
         )
         try:
-            from .. import overlay as _ov  # 这里位于 core/export/，需要回到 velo_tools 包
+            from .. import overlay as _ov  # this file lives in core/export/, so go back up to the velo_tools package
         except Exception:
             _ov = None
         try:
@@ -88,7 +88,7 @@ class VELO_OT_invoke_game_export(bpy.types.Operator):
                 return {'CANCELLED'}
             preexport.apply_mmd_pre_export(obj, s.mmd_profile)
 
-        # 当前游戏唯一开关：从 velo_tools.active_game 经游戏注册表推导适配器 key
+        # single active-game switch: derive the adapter key from velo_tools.active_game via the game registry
         from ...games import registry as _registry
         desc = _registry.get_active_descriptor(context.scene)
         adapter_key = desc.adapter_key if desc is not None else "EFMI"

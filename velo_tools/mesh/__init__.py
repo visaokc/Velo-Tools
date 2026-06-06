@@ -1,7 +1,7 @@
-"""Velo Tools - 网格工具子模块
+"""Velo Tools - mesh tools submodule
 
-来自 v0.3.0 mesh_ops.py / mesh_ui.py / shapekey_ops.py 的整体迁移，
-按用户要求保持业务逻辑不变，只迁移文件位置。
+Wholesale migration from v0.3.0 mesh_ops.py / mesh_ui.py / shapekey_ops.py;
+per user request, business logic is unchanged, only the file location was moved.
 """
 
 from . import operators

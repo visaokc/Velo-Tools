@@ -296,13 +296,14 @@ def _patched_build_data_buffers(self, merged_object, component_id=-1):
                 f"[ShapeKey] Missing {vb0_key} in exporter buffers; cannot validate "
                 "VB0->mesh VertexId mapping for shape-key bake."
             )
-        # 透传 EFMI 导出的 mirror_mesh 设置；用户实际上几乎总会勾选镜像
-        # 导入 + 镜像导出，否则 baker 算出的 delta 在 X 方向会反掉。
+        # Pass through EFMI's mirror_mesh export setting; users almost always
+        # enable mirror import + mirror export, otherwise the delta baker
+        # computes is flipped on the X axis.
         mirror_mesh = False
         cfg = getattr(self, "cfg", None)
         if cfg is not None:
             mirror_mesh = bool(getattr(cfg, "mirror_mesh", False))
-        # 读取 N 面板里的"合并 buf"开关；缺失时按默认 True 处理
+        # Read the "merge buf" toggle from the N panel; default to True if absent.
         merge_buffers = True
         s2 = getattr(bpy.context.scene, "shapekey_settings", None)
         if s2 is not None:

@@ -63,7 +63,7 @@ _KIND_PRIORITY = {"outline": 0, "material": 1, "prepass": 2, "record": 3, "other
 
 # A 2-RT draw binding at most this many PS textures is NOT a material (a material
 # samples its full texture set, ~9-19 here) — it is a geometry-only special pass,
-# e.g. the dodge/attack afterimage ("残影") pass that draws the whole character
+# e.g. the dodge/attack afterimage (canying) pass that draws the whole character
 # with 0-2 textures. Route it to other(204), not material(202). Verified on real
 # component-filtered extractions: catches exactly the afterimage passes and leaves
 # real materials at 202.
@@ -455,7 +455,7 @@ class CrossIBPassRegistry:
             return "record"
         if rt == 2:
             # 2-RT material (samples textures) vs 2-RT geometry-only special pass
-            # (afterimage/残影, binds ~0-2 textures) — split by PS texture count.
+            # (afterimage/canying, binds ~0-2 textures) — split by PS texture count.
             if record.tex_count <= _OTHER_PASS_MAX_TEX:
                 return "other"
             return "material"
@@ -530,7 +530,7 @@ class CrossIBPassRegistry:
         return self._kind_of(record) in ("record", "prepass")
 
     def _is_afterimage(self, record: PassRecord) -> bool:
-        # the geometry-only other(204) special pass (afterimage/残影).
+        # the geometry-only other(204) special pass (afterimage/canying).
         return self._kind_of(record) == "other"
 
     def _is_provider_material(self, record: PassRecord) -> bool:

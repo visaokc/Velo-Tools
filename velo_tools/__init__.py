@@ -8,7 +8,7 @@ bl_info = {
     "category": "Object",
 }
 
-# v0.3.0 重构骨架（PLAN_v0.4_rebuild.md R1/R2/R3 阶段）
+# v0.3.0 refactored skeleton (PLAN_v0.4_rebuild.md R1/R2/R3 phases)
 from . import properties
 from . import operators
 from . import ui

@@ -1,15 +1,15 @@
-"""三段映射 - 用户算子（V0.1.1 重构）。
+"""Three-stage mapping - user operators (V0.1.1 refactor).
 
-| bl_idname                       | 作用                                              |
+| bl_idname                       | purpose                                           |
 |---------------------------------|---------------------------------------------------|
-| velo.vg_apply_unified           | 把 mmd_source_object 的 VG 改名为统一编号           |
-| velo.vg_stage_unified           | 把 mmd_source_object 上有权重 + 非特殊的 VG 补到表 |
-| velo.vg_revert_to_mmd           | 把 mmd_source_object 上的 unified 名还原回 MMD     |
-| velo.vg_match_to_mmd_table      | mmd_source_object → mmd_target_object 位置匹配      |
-| velo.vg_table_import / export   | 文本 .txt 互转                                    |
-| velo.vg_row_add / vg_row_remove | UIList 行 +/- 按钮                                |
-| velo.vg_row_pick_source         | UIList 中点 mmd_name 弹「源 VG 选择」面板            |
-| velo.vg_table_to_text / from_text | 与 .blend 内置 Text 双向同步                      |
+| velo.vg_apply_unified           | rename mmd_source_object's VGs to unified ids      |
+| velo.vg_stage_unified           | append weighted + non-special VGs from mmd_source_object to the table |
+| velo.vg_revert_to_mmd           | revert unified names on mmd_source_object back to MMD |
+| velo.vg_match_to_mmd_table      | mmd_source_object → mmd_target_object position match |
+| velo.vg_table_import / export   | convert to/from .txt text                         |
+| velo.vg_row_add / vg_row_remove | UIList row +/- buttons                            |
+| velo.vg_row_pick_source         | clicking mmd_name in UIList opens the "source VG picker" panel |
+| velo.vg_table_to_text / from_text | two-way sync with the .blend built-in Text       |
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ MMD_TEXT_META_KEY = "velo_mmd_overlay_meta"
 
 
 # ============================================================
-# 共用辅助
+# Shared helpers
 # ============================================================
 
 def _get_settings(context):
@@ -59,7 +59,7 @@ def _mmd_target(context):
 
 
 def _ensure_mmd_text(settings):
-    """确保 settings.active_mmd_text 有效；若没有则按当前源物体名创建并绑定。"""
+    """Ensure settings.active_mmd_text is valid; if missing, create and bind one named after the current source object."""
     tb = settings.active_mmd_text
     if tb is not None:
         return tb
@@ -162,8 +162,8 @@ def apply_mmd_text_meta(settings, tb):
 
 
 def _autosync_to_text(settings):
-    """每次写表后自动同步到当前映射表 Text；若未绑定则自动创建。
-    顺序必须是先 from_string 再 set active，避免 update 回调读取空 Text 清空 profile.rows。"""
+    """After every table write, auto-sync to the current mapping table Text; if unbound, create one automatically.
+    The order must be from_string first then set active, to avoid the update callback reading an empty Text and clearing profile.rows."""
     try:
         text = _tio.serialize_mapping(settings)
         tb = settings.active_mmd_text
@@ -172,9 +172,9 @@ def _autosync_to_text(settings):
             base_part = (src.name if src is not None else "default")
             name = f"velo_mmd_{base_part}.txt"
             tb = bpy.data.texts.get(name) or bpy.data.texts.new(name)
-            tb.from_string(text)            # 先写入内容
+            tb.from_string(text)            # write content first
             _write_mmd_text_meta(tb, settings)
-            settings.active_mmd_text = tb   # 后 set active；回调 parse 出一致的 rows
+            settings.active_mmd_text = tb   # set active afterwards; callback parses out consistent rows
             if src is not None:
                 try:
                     src["velo_mmd_text"] = tb.name
@@ -185,7 +185,7 @@ def _autosync_to_text(settings):
             _write_mmd_text_meta(tb, settings)
     except Exception:
         pass
-    # 顺便刷新 prop_search 候选 + 让 overlay 缓存失效
+    # also refresh prop_search candidates + invalidate the overlay cache
     try:
         from ...games.arknights_endfield.props import _refresh_available_src_vgs
         _refresh_available_src_vgs(settings)
@@ -253,7 +253,7 @@ def _detach_mmd_source_row(settings, row):
 
 
 def _sync_mmd_source_from_table(settings, *, save_backup: bool = False):
-    """若 MMD 源当前处于统一编号态，则从原始快照重放当前表，并把数字组排到最前。"""
+    """If the MMD source is currently in the unified-id state, replay the current table from the original snapshot and move numeric groups to the front."""
     obj = getattr(settings, "mmd_source_object", None)
     profile = getattr(settings, "mmd_profile", None)
     if obj is None or obj.type != 'MESH' or profile is None:
@@ -326,7 +326,7 @@ def _restore_mmd_source_to_original(settings):
 
 
 def _sync_mmd_source_row_incremental(settings, row, new_root: str):
-    """统一编号态下，只重排受影响 unified 家族的实际源 VG / 骨骼名。"""
+    """In the unified-id state, re-arrange only the actual source VG / bone names of the affected unified family."""
     obj = getattr(settings, "mmd_source_object", None)
     if obj is None or obj.type != 'MESH':
         return "", 0
@@ -406,7 +406,7 @@ def _sync_mmd_source_row_incremental(settings, row, new_root: str):
 
 
 # ============================================================
-# A. 实际改名（MMD → unified）
+# A. Actual rename (MMD → unified)
 # ============================================================
 
 class VELO_OT_vg_apply_unified(bpy.types.Operator):
@@ -434,7 +434,7 @@ class VELO_OT_vg_apply_unified(bpy.types.Operator):
 
 
 # ============================================================
-# B. 仅记录映射（不改名）
+# B. Record mapping only (no rename)
 # ============================================================
 
 class VELO_OT_vg_stage_unified(bpy.types.Operator):
@@ -480,7 +480,7 @@ class VELO_OT_vg_stage_unified(bpy.types.Operator):
 
         pruned = 0
         if self.prune_invalid:
-            # 逆序删除 mmd_name 不在源物体可用 VG 中的行
+            # remove, in reverse order, rows whose mmd_name is not among the source object's usable VGs
             for i in range(len(profile.rows) - 1, -1, -1):
                 r = profile.rows[i]
                 if r.mmd_name and r.mmd_name not in usable_names:
@@ -493,7 +493,7 @@ class VELO_OT_vg_stage_unified(bpy.types.Operator):
 
 
 # ============================================================
-# C. 还原（unified → MMD 原名）
+# C. Revert (unified → original MMD name)
 # ============================================================
 
 class VELO_OT_vg_revert_to_mmd(bpy.types.Operator):
@@ -520,7 +520,7 @@ class VELO_OT_vg_revert_to_mmd(bpy.types.Operator):
 
 
 # ============================================================
-# C2. 目标物体改名（unified <-> MMD）— V0.1.6 任务 3
+# C2. Target object rename (unified <-> MMD) — V0.1.6 task 3
 # ============================================================
 
 class VELO_OT_vg_target_to_mmd(bpy.types.Operator):
@@ -538,7 +538,7 @@ class VELO_OT_vg_target_to_mmd(bpy.types.Operator):
         if obj is None:
             self.report({'ERROR'}, "请先在面板顶部指定『目标 Component』")
             return {'CANCELLED'}
-        # 按 profile 顺序取首次出现的 (unified -> first_mmd)
+        # in profile order, take the first occurrence of (unified -> first_mmd)
         seen = set()
         ordered = []
         for row in settings.mmd_profile.rows:
@@ -551,9 +551,9 @@ class VELO_OT_vg_target_to_mmd(bpy.types.Operator):
         if not ordered:
             self.report({'ERROR'}, "MMD 映射表为空")
             return {'CANCELLED'}
-        # 保存快照 + 不合并改名
+        # save snapshot + rename without merging
         r = _algo.rename_no_merge_with_suffix(obj, ordered, save_backup=True)
-        # 按首次出现的 mmd_name 顺序重排
+        # reorder by the first-occurrence order of mmd_name
         desired = [m for _u, m in ordered]
         _algo.reorder_vertex_groups_by_order(obj, desired)
         self.report({'INFO'}, f"目标→MMD 名: 改名 {r['renamed']} (目标={obj.name})")
@@ -575,11 +575,11 @@ class VELO_OT_vg_target_to_unified(bpy.types.Operator):
         if obj is None:
             self.report({'ERROR'}, "请先在面板顶部指定『目标 Component』")
             return {'CANCELLED'}
-        # 优先用快照还原（无损）
+        # prefer lossless restore from snapshot
         if _algo.restore_vg_snapshot(obj):
             self.report({'INFO'}, f"目标→统一编号: 已用快照无损还原 (目标={obj.name})")
             return {'FINISHED'}
-        # 无快照时：按 (mmd 首次出现 -> unified) 改名
+        # when no snapshot: rename by (first occurrence of mmd -> unified)
         seen = set()
         ordered = []
         for row in settings.mmd_profile.rows:
@@ -598,7 +598,7 @@ class VELO_OT_vg_target_to_unified(bpy.types.Operator):
 
 
 # ============================================================
-# D. 文本 import / export（外部文件）
+# D. Text import / export (external file)
 # ============================================================
 
 class VELO_OT_vg_table_import(bpy.types.Operator, ImportHelper):
@@ -665,15 +665,15 @@ class VELO_OT_vg_table_export(bpy.types.Operator, ExportHelper):
 
 
 # ============================================================
-# E. 位置匹配 → 写入 MMD 映射表（kdtree 加速）
+# E. Position match → write to MMD mapping table (kdtree-accelerated)
 # ============================================================
 
 def _compute_centroids_world(obj, only_indices=None):
-    """单遍扫描，返回 {vg_index: world_pos Vector}。
+    """Single-pass scan, returns {vg_index: world_pos Vector}.
 
-    - 跳过特殊命名 + 无权重的 VG
-    - 若提供 only_indices（set/iterable），则只累加这些 vg index（性能优化：
-      源侧通常只关心已存在于 profile.rows 里的 mmd_name 对应的 vg）
+    - skip specially-named + zero-weight VGs
+    - if only_indices (set/iterable) is provided, accumulate only these vg indices (perf optimization:
+      the source side usually only cares about the vgs corresponding to mmd_names already in profile.rows)
     """
     from mathutils import Vector
     out = {}
@@ -692,7 +692,7 @@ def _compute_centroids_world(obj, only_indices=None):
 
     sums = {}
     weights = {}
-    sums_get = sums.get  # 局部变量缓存属性查找
+    sums_get = sums.get  # local variable caches the attribute lookup
     for v in me.vertices:
         co = v.co
         cox, coy, coz = co.x, co.y, co.z
@@ -756,7 +756,7 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
 
         profile = settings.mmd_profile
 
-        # 1) 单遍预计算两边的重心（源侧可选只算 profile 里出现过的 mmd_name）
+        # 1) single-pass precompute the centroids on both sides (source side optionally computes only mmd_names that appear in profile)
         only_src_indices = None
         if self.only_existing_rows and len(profile.rows) > 0:
             wanted_names = {r.mmd_name for r in profile.rows if r.mmd_name}
@@ -764,7 +764,7 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
                 vg.index for vg in base.vertex_groups if vg.name in wanted_names
             }
             if not only_src_indices:
-                # 表里所有 mmd_name 在源物体都不存在，回退到全量
+                # none of the table's mmd_names exist on the source object, fall back to full scan
                 only_src_indices = None
 
         src_centroids = _compute_centroids_world(base, only_indices=only_src_indices)
@@ -776,27 +776,27 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
             self.report({'ERROR'}, f"目标物体 {target.name} 没有可用的有权重顶点组")
             return {'CANCELLED'}
 
-        # V0.1.6 修复：同时计算局部重心供 overlay 快照（不受 VG 名变动影响）
+        # V0.1.6 fix: also compute local centroids for the overlay snapshot (unaffected by VG name changes)
         from ...operators import compute_all_centroids_local
         src_local = compute_all_centroids_local(base, only_indices=only_src_indices)
         tgt_local = compute_all_centroids_local(target)
 
-        # 2) 用 KDTree 索引 target 重心
+        # 2) index the target centroids with a KDTree
         tgt_items = list(tgt_centroids.items())   # [(vg_idx, world), ...]
         kd = KDTree(len(tgt_items))
         for i, (_gi, w) in enumerate(tgt_items):
             kd.insert(w, i)
         kd.balance()
 
-        # 3) 源物体 vg index -> name
+        # 3) source object vg index -> name
         src_name_by_idx = {vg.index: vg.name for vg in base.vertex_groups}
         tgt_name_by_idx = {vg.index: vg.name for vg in target.vertex_groups}
 
         existing = {r.mmd_name: r for r in profile.rows}
 
-        # V0.1.4: 按 base.vertex_groups 出现顺序遍历，新增行的追加顺序
-        # 与「从源物体补行」一致；之前用 src_centroids.items() 顺序由网格
-        # 顶点遍历副作用决定，导致用户两条流程出来的表行序对不上。
+        # V0.1.4: iterate in base.vertex_groups appearance order so the append order of new rows
+        # matches "append rows from source object"; previously src_centroids.items() order was decided
+        # by the side effect of mesh vertex iteration, causing the table row order from the two user flows to mismatch.
         added = updated = skipped = 0
         from ...games.arknights_endfield import props as _mmd_props
         prev_row_suspend = _mmd_props._suspend_mmd_row_update
@@ -837,7 +837,7 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
                     if row.unified_name != best_name:
                         row.unified_name = best_name
                         updated += 1
-                # V0.1.6 修复：同步写入 overlay 快照（局部重心）
+                # V0.1.6 fix: also write the overlay snapshot (local centroids)
                 mc = src_local.get(src_gi)
                 if mc is not None:
                     row.mmd_centroid_local = mc
@@ -858,7 +858,7 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
 
 
 # ============================================================
-# F. UIList 行 +/- 与源 VG 选择弹窗
+# F. UIList row +/- and source VG picker popup
 # ============================================================
 
 class VELO_OT_mmd_row_add(bpy.types.Operator):
@@ -875,7 +875,7 @@ class VELO_OT_mmd_row_add(bpy.types.Operator):
         profile = settings.mmd_profile
         row = profile.rows.add()
         row.enabled = True
-        # 移到指定位置之后
+        # move to after the specified position
         new_idx = len(profile.rows) - 1
         if 0 <= self.after_index < new_idx:
             profile.rows.move(new_idx, self.after_index + 1)
@@ -931,7 +931,7 @@ class VELO_OT_mmd_table_clear(bpy.types.Operator):
 
 
 def _enum_source_vgs(self, context):
-    """弹窗下拉项：源物体里所有「有权重 + 非特殊」的 VG 名。"""
+    """Popup dropdown items: all "weighted + non-special" VG names in the source object."""
     items = []
     obj = _mmd_source(context)
     if obj is None:
@@ -981,7 +981,7 @@ class VELO_OT_mmd_row_pick_source(bpy.types.Operator):
 
 
 # ============================================================
-# G. 与 .blend 内置 Text 的双向同步
+# G. Two-way sync with the .blend built-in Text
 # ============================================================
 
 class VELO_OT_vg_table_to_text(bpy.types.Operator):
@@ -1035,14 +1035,14 @@ class VELO_OT_vg_table_from_text(bpy.types.Operator):
 
 
 # ============================================================
-# 任务4: MMD 区"映射表"槽位 CRUD（替代旧"表名"单字段）
+# Task 4: MMD section "mapping table" slot CRUD (replaces the old single "table name" field)
 # ============================================================
 
 import json as _json_mmd
 
 
 class VELO_OT_mmd_text_new(bpy.types.Operator):
-    """新建一个空 MMD 映射表 Text 并绑定到当前源物体；当前 profile.rows 会被清空。"""
+    """Create a new empty MMD mapping table Text and bind it to the current source object; the current profile.rows will be cleared."""
     bl_idname = "velo.mmd_text_new"
     bl_label = "新建映射表"
     bl_options = {'REGISTER', 'UNDO'}

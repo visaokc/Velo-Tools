@@ -1,1 +1,1 @@
-"""WWMI driver 层的 embedded 扩展包（在处理器之上挂载新功能，不改 _wwmi_core 核心）。"""
+"""Embedded extension package for the WWMI driver layer (mounts new features on top of the processor without modifying the _wwmi_core core)."""

@@ -1,29 +1,30 @@
-"""Generate INI sections to inject for ShapeKey export (v0.2 / TheHerta3 架构).
+"""Generate INI sections to inject for ShapeKey export (v0.2 / TheHerta3 architecture).
 
-与 v0.1 的根本差异
+Fundamental difference from v0.1
 -------------------
-v0.1 用 `_VB0_Original + copy_desc + bind_flags` 手工造 UAV，这条路在终末地
-实测反复炸模。v0.2 切换到 TheHerta3 经生产验证的三段式：
+v0.1 hand-built a UAV with `_VB0_Original + copy_desc + bind_flags`; in Endfield
+this path repeatedly blew up the mesh in practice. v0.2 switches to TheHerta3's
+production-proven three-stage form:
 
-    [Resource_Component<cid>_Position_0]        <- pristine，复用 Meshes/VB0.buf
+    [Resource_Component<cid>_Position_0]        <- pristine, reuses Meshes/VB0.buf
     cs-u5 = copy Resource_Component<cid>_Position_0
     Resource_Component<cid>_VB0 = ref cs-u5
 
-编译 shader 时用 struct{float3 position; uint normal;} 保住 normal 位模式。
+When compiling the shader, use struct{float3 position; uint normal;} to keep the normal bit pattern.
 
-资源命名对照表
+Resource naming reference table
 ---------------
-    Resource_Component<cid>_Position_0              (stride=16, 文件=Component<cid>_VB0.buf)
+    Resource_Component<cid>_Position_0              (stride=16, file=Component<cid>_VB0.buf)
     Resource_Component<cid>_Position_S<slot>_delta  (stride=12)
     Resource_Component<cid>_Position_S<slot>_map    (stride=4, format=R32_SINT)
     Resource_Component<cid>_Position_FreqIndices    (stride=4)
-    [CustomShader_ShapeKeyAnim_C<cid>]              (一个 component 一个)
+    [CustomShader_ShapeKeyAnim_C<cid>]              (one per component)
 
-IniParams 索引
+IniParams index
 ---------------
-每个形态键 name 占用一个 freq 通道：
-    第 0 个 name -> x100 = $Freq_<name0>    (IniParams[100].x)
-    第 1 个 name -> x101 = $Freq_<name1>
+Each shape key name occupies one freq channel:
+    name #0 -> x100 = $Freq_<name0>    (IniParams[100].x)
+    name #1 -> x101 = $Freq_<name1>
     ...
 Export-slot note: Blender Deform numbers are source ids. The baker maps them
 to exported shader slots, then channel_idx == shader_slot drives x100+channel.
@@ -305,10 +306,11 @@ def render_merged_hlsl(template_text, active_slots):
 # ---------------------------------------------------------------- resources
 
 def build_resource_sections(bake_results):
-    """按 (component_id, slot) 有序产出 Resource 节。
+    """Emit Resource sections ordered by (component_id, slot).
 
-    每个 component 的第一个 result 决定该 component 用合并模式还是分文件模式
-    （baker 保证同一 component 的所有 result 一致）。
+    The first result of each component decides whether that component uses
+    merged mode or per-file mode (the baker guarantees all results of the same
+    component are consistent).
     """
     out = []
     seen_components = set()
@@ -320,7 +322,7 @@ def build_resource_sections(bake_results):
         results = sorted(by_component[cid], key=lambda x: x["slot"])
         merged = bool(results[0].get("merge_buffers", False))
 
-        # Position_0 (pristine) — 两种模式都需要，复用 EFMI 已写出的 VB0.buf
+        # Position_0 (pristine) — needed by both modes, reuses the VB0.buf already written by EFMI
         out.append(f"[Resource_Component{cid}_Position_0]")
         out.append("type = Buffer")
         out.append("stride = 16")
@@ -365,7 +367,7 @@ def build_resource_sections(bake_results):
 # ---------------------------------------------------------------- compute shader block
 
 def build_compute_shaders(bake_results, components_meta):
-    """每个 component 输出一个 CustomShader 块。两种模式分别使用不同的 hlsl 文件。"""
+    """Output one CustomShader block per component. The two modes each use a different hlsl file."""
     out = []
     by_component = {}
     for r in bake_results:
@@ -417,10 +419,11 @@ def build_compute_shaders(bake_results, components_meta):
 # ---------------------------------------------------------------- constants
 
 def build_constants_lines(bake_results):
-    """追加进 [Constants]：声明每个形态键 name 的全局 $Shape_ 变量。
+    """Append to [Constants]: declare the global $Shape_ variable for each shape key name.
 
-    使用 'global persist' 以保证用户调节的强度在下次启动游戏 / 重加 mod 后
-    仍然保留。非持久化变量会在重加时被 3DMigoto 重置为初始值。
+    Use 'global persist' so the user-tuned intensity is retained after the next
+    game launch / mod reload. Non-persistent variables are reset to their initial
+    value by 3DMigoto on reload.
     """
     if not bake_results:
         return []
@@ -447,9 +450,9 @@ def build_constants_lines(bake_results):
 # ---------------------------------------------------------------- present
 
 def build_present_lines(bake_results):
-    """追加进 [Present]：
-        1. xN = $Shape_<name>   把权重塞进 IniParams[100+N].x
-        2. post run = CustomShader_ShapeKeyAnim_C<cid>  分发 compute
+    """Append to [Present]:
+        1. xN = $Shape_<name>   push the weight into IniParams[100+N].x
+        2. post run = CustomShader_ShapeKeyAnim_C<cid>  dispatch compute
     """
     if not bake_results:
         return []
@@ -457,7 +460,7 @@ def build_present_lines(bake_results):
     _validate_channel_assignments(bake_results)
     out = ["", "; --- ShapeKey: push weights into IniParams ---"]
 
-    # 收集 (channel_idx -> (name, slot))，去重后按 channel_idx 排序输出
+    # Collect (channel_idx -> (name, slot)), deduplicate, then output sorted by channel_idx
     channel_to_meta = {}
     for r in bake_results:
         ch = int(r["channel_idx"])

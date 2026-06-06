@@ -1,4 +1,4 @@
-"""Velo 网格工具 UI (合并入 Velo Tools 主面板, 通过顶部 tab 切换)。"""
+"""Velo mesh tools UI (merged into the Velo Tools main panel, switched via the top tab)."""
 
 import bpy
 
@@ -106,7 +106,7 @@ def _is_mesh_tab(context):
 
 
 class VELO_PT_mesh_sculpt(bpy.types.Panel):
-    """多物体雕刻 — 来自 VTEF toolbox 的合并/还原雕刻工作流。"""
+    """Multi-object sculpt — merge/restore sculpt workflow from the VTEF toolbox."""
     bl_label = "多物体雕刻"
     bl_idname = "VELO_PT_mesh_sculpt"
     bl_space_type = 'VIEW_3D'
@@ -175,7 +175,7 @@ class VELO_PT_mesh_actions(bpy.types.Panel):
         sub2.operator("velo.merge_by_texture",
                       icon='AUTOMERGE_ON', text="按贴图合并")
 
-        # —— 实用工具（来自 VTEF toolbox） ——
+        # —— Utilities (from the VTEF toolbox) ——
         layout.separator()
         util = layout.column(align=True)
         util.scale_y = 1.05

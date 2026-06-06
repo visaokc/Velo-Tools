@@ -1,10 +1,11 @@
-"""MMD 源物体导出预处理。
+"""MMD source object pre-export processing.
 
-调用方应是「导出适配器」（efmi/wwmi）在调用游戏自带导出操作前执行的最后一步。
-默认对源物体执行：
-  1. 按 profile 把 MMD 顶点组改名为 unified（与「实际改名」算子同语义）。
-  2. 删除特殊命名顶点组（mmd_edge_scale / mmd_vertex_order / UV_* 等）。
-  3. 删除完全无权重的顶点组。
+The caller should be the "export adapter" (efmi/wwmi), running this as the last step
+before invoking the game's built-in export operator.
+By default, performs the following on the source object:
+  1. Rename MMD vertex groups to unified per the profile (same semantics as the "actual rename" operator).
+  2. Remove specially named vertex groups (mmd_edge_scale / mmd_vertex_order / UV_* etc.).
+  3. Remove vertex groups with no weight at all.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ def _vg_has_any_weight(obj, vg_index: int) -> bool:
 
 
 def _collect_empty_vg_names(obj) -> list:
-    """O(Verts) 单遍找出无任何权重的 VG 名。"""
+    """Single O(Verts) pass to find names of VGs with no weight at all."""
     if obj is None or obj.data is None:
         return []
     have = set()
@@ -42,10 +43,10 @@ def apply_mmd_pre_export(
     drop_empty: bool = True,
     rename_to_unified: bool = True,
 ) -> dict:
-    """对 obj（MMD 源物体）执行导出前预处理。
+    """Run pre-export processing on obj (the MMD source object).
 
-    返回统计 {renamed, merged, dropped_special, dropped_empty, missing}。
-    幂等：多次调用结果稳定（已是 unified 名的不会再被改）。
+    Returns stats {renamed, merged, dropped_special, dropped_empty, missing}.
+    Idempotent: repeated calls give stable results (names already unified are not changed again).
     """
     report = {
         "renamed": 0,

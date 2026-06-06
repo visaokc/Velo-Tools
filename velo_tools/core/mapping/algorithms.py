@@ -1,12 +1,12 @@
-"""三段映射核心算法（R3 阶段）。
+"""Three-stage mapping core algorithms (R3 phase).
 
-PLAN §2.2 分四个阶段：
-- 阶段 A：MOD 导入时自动构建 UnifiedVGTable（已在 R2 importer 完成）
-- 阶段 B：用户编辑 MMD → unified 映射（本模块的 5 个算子覆盖）
-- 阶段 C：用户分尸 + 标注归属（手工 + 集合命名约定）
-- 阶段 D：导出时 MMD → unified → native 三段翻译（R4 在 exporter 调用本模块）
+PLAN §2.2 splits into four phases:
+- Phase A: auto-build UnifiedVGTable on MOD import (already done in R2 importer)
+- Phase B: user edits MMD -> unified mapping (covered by this module's 5 operators)
+- Phase C: user splits + annotates ownership (manual + collection naming convention)
+- Phase D: on export, MMD -> unified -> native three-stage translation (R4 calls this module from the exporter)
 
-本文件只放算法，不直接处理 UI；算子写在 operators.py。
+This file holds algorithms only and does not handle UI directly; operators live in operators.py.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def strip_dup_suffix(name: str) -> str:
 
 
 # ============================================================
-# 字典构建
+# Dictionary building
 # ============================================================
 
 def build_mmd_to_unified(profile) -> dict:
@@ -42,7 +42,7 @@ def build_mmd_to_unified(profile) -> dict:
 
 
 def build_unified_to_mmd(profile) -> dict:
-    """反向：{unified_name: mmd_name}（同一 unified 对应多个 mmd 时只保留第一个）"""
+    """Reverse: {unified_name: mmd_name} (when one unified maps to multiple mmd, keep only the first)."""
     out = {}
     if profile is None:
         return out
@@ -54,8 +54,8 @@ def build_unified_to_mmd(profile) -> dict:
 
 
 def build_ordered_mmd_pairs(profile):
-    """返回按 profile.rows 顺序的 [(mmd_name, unified_root)] 列表，供
-    rename_no_merge_with_suffix / rename_armature_bones_with_suffix 使用。"""
+    """Return a [(mmd_name, unified_root)] list in profile.rows order, for use by
+    rename_no_merge_with_suffix / rename_armature_bones_with_suffix."""
     out = []
     if profile is None:
         return out
@@ -79,11 +79,11 @@ def build_unified_to_native(component_map) -> dict:
 
 
 # ============================================================
-# 顶点组重命名 + 同名合并
+# Vertex group rename + same-name merge
 # ============================================================
 
 def _collect_weights(obj, vg_index: int) -> dict:
-    """返回 {vertex_index: weight} （仅 weight > 0）。"""
+    """Return {vertex_index: weight} (only weight > 0)."""
     result = {}
     if obj is None or obj.type != 'MESH' or vg_index < 0:
         return result
@@ -96,10 +96,11 @@ def _collect_weights(obj, vg_index: int) -> dict:
 
 
 def _collect_all_weights(obj) -> dict:
-    """单遍扫描整个网格，返回 {vg_index: {vertex_index: weight}}。
+    """Single-pass scan over the whole mesh, returning {vg_index: {vertex_index: weight}}.
 
-    旧 _collect_weights 在每个 vg 上重新遍历整网格，rename_vertex_groups_with_merge
-    复杂度是 O(VG * Verts)；此函数 O(Verts) 一次扫完，是 V0.1.4 卡顿的根因修复。
+    The old _collect_weights re-traversed the whole mesh for each vg, making
+    rename_vertex_groups_with_merge O(VG * Verts); this function scans once in O(Verts),
+    the root-cause fix for the V0.1.4 stall.
     """
     out = {}
     if obj is None or obj.type != 'MESH' or obj.data is None:
@@ -123,7 +124,7 @@ _NUMERIC_FAMILY_RE = re.compile(r"^(\d+)(?:\.(\d{3}))?$")
 
 
 def _numeric_sort_key(name: str):
-    """让纯数字按数值排序，非数字按字典序后置。"""
+    """Sort pure-numeric names by numeric value; non-numeric names sort lexically and after them."""
     if name is None:
         return (1, "")
     if _NUMERIC_RE.match(name):
@@ -135,8 +136,8 @@ def _numeric_sort_key(name: str):
 
 
 def _numeric_family_sort_key(name: str):
-    """让数字族（如 5 / 5.001 / 12 / 12.001）整体按数值排前。
-    非数字名保持后置，由 reorder_vertex_groups_by_order 保持原顺序追加。"""
+    """Sort numeric families (e.g. 5 / 5.001 / 12 / 12.001) to the front by numeric value.
+    Non-numeric names stay after, appended in original order by reorder_vertex_groups_by_order."""
     if name is None:
         return (1, 0, 0, "")
     m = _NUMERIC_FAMILY_RE.match(name)
@@ -148,11 +149,11 @@ def _numeric_family_sort_key(name: str):
 
 
 def allocate_unique_no_merge_name(desired_root: str, existing_names, *, current_name: str = "") -> str:
-    """为不合并改名分配唯一名字。
+    """Allocate a unique name for no-merge renaming.
 
-    - 映射表里始终存 root（如 36）
-    - 实际对象上若 root 已存在，则分配 36.001 / 36.002 ...
-    - 若 current_name 本身就属于该 root 家族，则优先保留 current_name，避免无意义抖动
+    - The mapping table always stores the root (e.g. 36)
+    - If the root already exists on the actual object, allocate 36.001 / 36.002 ...
+    - If current_name already belongs to that root family, prefer keeping current_name to avoid pointless churn
     """
     root = (desired_root or "").strip()
     if not root:
@@ -223,11 +224,12 @@ def _family_spec_candidates(spec):
 
 
 def rename_synced_vg_bone_family_no_merge(obj, arm_obj, row_specs, desired_root: str, *, extra_taken_names=()):
-    """对同一家族的 VG/骨骼做共享临时名的联动改名。
+    """Linked rename of VG/bones in the same family via shared temporary names.
 
-    先把每一行的 VG 改到该行独占的临时名，再把同一行骨骼改到相同临时名，
-    最后把骨骼改到最终名并让 Blender 自动把同名 VG 一起带到最终名，避免
-    骨骼临时名阶段误劫持其它已重分配好的 VG。
+    First rename each row's VG to that row's exclusive temp name, then rename the same row's bone
+    to the same temp name; finally rename the bone to its final name and let Blender carry the
+    same-named VG along to the final name too, avoiding the bone-temp-name stage from
+    accidentally hijacking other already-reassigned VGs.
     """
     if obj is None or obj.type != 'MESH' or obj.data is None or not row_specs:
         return [], 0
@@ -334,7 +336,7 @@ def rename_synced_vg_bone_family_no_merge(obj, arm_obj, row_specs, desired_root:
 
 
 def rename_vg_family_no_merge(obj, row_specs, desired_root: str, *, extra_taken_names=()):
-    """仅对同一 unified root 家族的一组 VG 做两阶段改名，不重放整表。"""
+    """Two-stage rename of a group of VGs in the same unified-root family only; does not replay the whole table."""
     if obj is None or obj.type != 'MESH' or obj.data is None or not row_specs:
         return []
 
@@ -406,7 +408,7 @@ def rename_vg_family_no_merge(obj, row_specs, desired_root: str, *, extra_taken_
 
 
 def rename_bone_family_no_merge(arm_obj, row_specs, final_names):
-    """骨骼版两阶段家族改名；final_names 由 VG 家族分配结果直接复用。"""
+    """Bone version of two-stage family rename; final_names reuses the VG family allocation result directly."""
     if arm_obj is None or arm_obj.type != 'ARMATURE' or not row_specs or not final_names:
         return 0
 
@@ -463,7 +465,7 @@ def rename_bone_family_no_merge(arm_obj, row_specs, final_names):
 
 
 def rename_single_vg_no_merge(obj, current_name: str, desired_root: str, *, fallback_names=(), extra_taken_names=()):
-    """只改一个顶点组名，不重放整表；返回 {renamed, old_name, final_name}。"""
+    """Rename a single vertex group only, without replaying the whole table; returns {renamed, old_name, final_name}."""
     report = {"renamed": 0, "old_name": "", "final_name": ""}
     if obj is None or obj.type != 'MESH' or obj.data is None:
         return report
@@ -498,7 +500,7 @@ def rename_single_vg_no_merge(obj, current_name: str, desired_root: str, *, fall
 
 
 def rename_single_bone_no_merge(arm_obj, current_name: str, desired_final_name: str, *, fallback_names=()):
-    """只改一个骨骼名；调用方应保证 desired_final_name 已唯一。"""
+    """Rename a single bone only; the caller must ensure desired_final_name is already unique."""
     if arm_obj is None or arm_obj.type != 'ARMATURE' or not desired_final_name:
         return 0
     candidates = []
@@ -521,10 +523,10 @@ def rename_single_bone_no_merge(arm_obj, current_name: str, desired_final_name: 
 
 
 # ============================================================
-# 完整 VG 快照（V0.1.6 lossless roundtrip 修复）
+# Full VG snapshot (V0.1.6 lossless roundtrip fix)
 # ============================================================
 def _serialize_snapshot(obj) -> str:
-    """把 obj 当前所有 VG 的 (顺序 + 每顶点权重) 序列化为 JSON 字符串。"""
+    """Serialize all of obj's current VGs (order + per-vertex weights) into a JSON string."""
     import json as _json
     if obj is None or obj.type != 'MESH' or obj.data is None:
         return ""
@@ -541,12 +543,12 @@ def _serialize_snapshot(obj) -> str:
 
 
 def save_vg_snapshot(obj, key: str = _VG_SNAPSHOT_KEY) -> bool:
-    """快照保存到 obj[key]。已有快照 → 不覆盖（保留最早的真实快照）。"""
+    """Save the snapshot to obj[key]. If a snapshot already exists -> do not overwrite (keep the earliest real snapshot)."""
     if obj is None:
         return False
     try:
         if obj.get(key):
-            return False  # 已存在快照，不覆盖
+            return False  # snapshot already exists, do not overwrite
         snap = _serialize_snapshot(obj)
         if not snap:
             return False
@@ -557,7 +559,7 @@ def save_vg_snapshot(obj, key: str = _VG_SNAPSHOT_KEY) -> bool:
 
 
 def restore_vg_snapshot(obj, key: str = _VG_SNAPSHOT_KEY) -> bool:
-    """从 obj[key] 完整还原 VG 名+顺序+权重，并清掉 key。失败返回 False。"""
+    """Fully restore VG names + order + weights from obj[key], and clear the key. Return False on failure."""
     import json as _json
     if obj is None or obj.type != 'MESH' or obj.data is None:
         return False
@@ -572,7 +574,7 @@ def restore_vg_snapshot(obj, key: str = _VG_SNAPSHOT_KEY) -> bool:
     weights = snap.get("weights") or {}
     if not order:
         return False
-    # 删除全部现有 VG
+    # delete all existing VGs
     for vg in list(obj.vertex_groups):
         try:
             obj.vertex_groups.remove(vg)
@@ -583,7 +585,7 @@ def restore_vg_snapshot(obj, key: str = _VG_SNAPSHOT_KEY) -> bool:
         wlist = weights.get(name) or []
         if not wlist:
             continue
-        # 按权重值分桶批量写入
+        # bucket by weight value and write in batches
         buckets = defaultdict(list)
         for vi, w in wlist:
             ww = float(w)
@@ -605,7 +607,7 @@ def restore_vg_snapshot(obj, key: str = _VG_SNAPSHOT_KEY) -> bool:
 
 
 def reorder_numeric_vertex_groups_first(obj):
-    """把所有数字族顶点组按数值排到最前；其他 VG 保持当前顺序追加在后。"""
+    """Sort all numeric-family vertex groups to the front by numeric value; other VGs keep current order and are appended after."""
     if obj is None or obj.type != 'MESH' or obj.data is None:
         return
     current = [vg.name for vg in obj.vertex_groups]
@@ -616,8 +618,8 @@ def reorder_numeric_vertex_groups_first(obj):
 
 
 def reapply_no_merge_with_suffix_from_snapshot(obj, ordered_pairs, *, save_backup: bool = False) -> dict:
-    """若对象已存在原始快照，则先临时还原到原始状态，再按当前映射重放一次不合并改名。
-    还原时会保留最早的快照，确保后续仍可无损恢复原名/原顺序。"""
+    """If the object already has an original snapshot, temporarily restore to the original state first, then replay a no-merge rename once per the current mapping.
+    The restore keeps the earliest snapshot, ensuring the original names/order can still be losslessly recovered afterwards."""
     raw_snapshot = None
     try:
         raw_snapshot = obj.get(_VG_SNAPSHOT_KEY) if obj is not None else None
@@ -635,7 +637,7 @@ def reapply_no_merge_with_suffix_from_snapshot(obj, ordered_pairs, *, save_backu
 
 
 def reapply_armature_bones_with_suffix_from_snapshot(arm_obj, ordered_pairs, *, save_backup: bool = False) -> int:
-    """骨骼版的 snapshot-aware 重放。"""
+    """Bone version of the snapshot-aware replay."""
     raw_snapshot = None
     try:
         raw_snapshot = arm_obj.get(_BONE_SNAPSHOT_KEY) if arm_obj is not None else None
@@ -656,11 +658,11 @@ def reapply_armature_bones_with_suffix_from_snapshot(arm_obj, ordered_pairs, *, 
 
 
 # ============================================================
-# 骨骼名同步改名（V0.1.6 任务 2）
+# Synchronized bone-name rename (V0.1.6 task 2)
 # ============================================================
 def rename_armature_bones(arm_obj, name_map: dict) -> int:
-    """按 name_map 对骨架物体的骨骼改名，返回成功改名数。
-    要求 arm_obj 为 ARMATURE；自动避开同名冲突（已存在则跳过）。"""
+    """Rename the armature object's bones per name_map, returning the number successfully renamed.
+    Requires arm_obj to be ARMATURE; automatically avoids same-name collisions (skip if already exists)."""
     if arm_obj is None or arm_obj.type != 'ARMATURE' or not name_map:
         return 0
     arm = arm_obj.data
@@ -685,7 +687,7 @@ def rename_armature_bones(arm_obj, name_map: dict) -> int:
 
 
 # ============================================================
-# 骨架快照（V0.1.6 任务 2 修订：lossless 还原骨骼名）
+# Armature snapshot (V0.1.6 task 2 revision: lossless restore of bone names)
 # ============================================================
 def save_armature_bone_snapshot(arm_obj, key: str = _BONE_SNAPSHOT_KEY) -> bool:
     import json as _json
@@ -702,7 +704,7 @@ def save_armature_bone_snapshot(arm_obj, key: str = _BONE_SNAPSHOT_KEY) -> bool:
 
 
 def restore_armature_bone_snapshot(arm_obj, key: str = _BONE_SNAPSHOT_KEY) -> bool:
-    """按快照顺序还原骨骼名。两阶段（先全部改成临时名，再回写）防冲突。"""
+    """Restore bone names in snapshot order. Two-stage (first rename all to temp names, then write back) to avoid collisions."""
     import json as _json
     if arm_obj is None or arm_obj.type != 'ARMATURE':
         return False
@@ -716,19 +718,19 @@ def restore_armature_bone_snapshot(arm_obj, key: str = _BONE_SNAPSHOT_KEY) -> bo
     target_names = snap.get("names") or []
     bones = list(arm_obj.data.bones)
     if not target_names or len(target_names) != len(bones):
-        # 数量不一致也尝试按当前顺序映射前 N 个
+        # if counts differ, still try to map the first N in current order
         n = min(len(target_names), len(bones))
         if n == 0:
             return False
         bones = bones[:n]
         target_names = target_names[:n]
-    # 阶段 1：临时名
+    # stage 1: temp names
     for i, b in enumerate(bones):
         try:
             b.name = f"__velo_bone_tmp_{i}"
         except Exception:
             pass
-    # 阶段 2：回写真名
+    # stage 2: write back real names
     for b, name in zip(bones, target_names):
         try:
             b.name = name
@@ -742,23 +744,23 @@ def restore_armature_bone_snapshot(arm_obj, key: str = _BONE_SNAPSHOT_KEY) -> bo
 
 
 # ============================================================
-# 不合并 + 顺序后缀改名（V0.1.6 修订核心：源 → unified 不再合并）
+# No-merge + ordered-suffix rename (V0.1.6 revision core: source -> unified no longer merges)
 # ============================================================
 def rename_no_merge_with_suffix(obj, ordered_pairs, *, save_backup: bool = True) -> dict:
-    """按 ordered_pairs 顺序重命名 VG，不合并；冲突时按出现次序 .001/.002 加后缀。
+    """Rename VGs in ordered_pairs order, no merge; on collision add .001/.002 suffixes by order of appearance.
 
     Parameters:
-        obj: MESH 物体
-        ordered_pairs: List[Tuple[old_name, unified_root]]，按映射表顺序提供
-        save_backup: 是否保存完整 VG 快照供还原
+        obj: MESH object
+        ordered_pairs: List[Tuple[old_name, unified_root]], provided in mapping-table order
+        save_backup: whether to save a full VG snapshot for restoration
 
     Returns dict: {"renamed": int, "missing": [old], "final_names": [str]}
-    流程：
-      1) （可选）保存完整 VG 快照
-      2) 计算每个 (old, root) 对应的最终名（root 第 N 次出现 → root.NNN, N>=1）
-      3) 阶段 1：把命中的 VG 改成临时名 "__velo_vg_tmp_<i>"
-      4) 阶段 2：临时名 → 最终名
-      5) 删除并按 (final_names + 未触碰原顺序) 重建（保留权重，不合并）
+    Flow:
+      1) (optional) save a full VG snapshot
+      2) compute the final name for each (old, root) (Nth occurrence of root -> root.NNN, N>=1)
+      3) stage 1: rename matched VGs to temp names "__velo_vg_tmp_<i>"
+      4) stage 2: temp name -> final name
+      5) delete and rebuild in (final_names + untouched original order) (preserve weights, no merge)
     """
     report = {"renamed": 0, "missing": [], "final_names": []}
     if obj is None or obj.type != 'MESH' or obj.data is None:
@@ -767,7 +769,7 @@ def rename_no_merge_with_suffix(obj, ordered_pairs, *, save_backup: bool = True)
     if save_backup:
         save_vg_snapshot(obj)
 
-    # 收集 vg 名 → 索引
+    # collect vg name -> index
     name_to_idx = {vg.name: vg.index for vg in obj.vertex_groups}
     counts = defaultdict(int)
     plan = []  # [(old, final)]
@@ -776,7 +778,7 @@ def rename_no_merge_with_suffix(obj, ordered_pairs, *, save_backup: bool = True)
             continue
         idx = name_to_idx.get(old)
         if idx is None:
-            # 尝试 strip 后缀再找
+            # try stripping the suffix and look up again
             idx = name_to_idx.get(strip_dup_suffix(old))
             if idx is None:
                 report["missing"].append(old)
@@ -789,25 +791,25 @@ def rename_no_merge_with_suffix(obj, ordered_pairs, *, save_backup: bool = True)
     if not plan:
         return report
 
-    # 单遍收集所有 VG 权重 + 原顺序
+    # single-pass collection of all VG weights + original order
     weights_by_vg = _collect_all_weights(obj)
     idx_to_name = {vg.index: vg.name for vg in obj.vertex_groups}
     weights_by_name = {idx_to_name[i]: w for i, w in weights_by_vg.items() if i in idx_to_name}
     original_order = [vg.name for vg in obj.vertex_groups]
 
-    # 计算 final 顺序
+    # compute final order
     renamed_set_old = {old for old, _ in plan}
     untouched = [n for n in original_order if n not in renamed_set_old]
     final_order = [final for _, final in plan] + untouched
 
-    # 重命名权重表 key
+    # rename the weight-table keys
     new_weights_by_name = {}
     for old, final in plan:
         new_weights_by_name[final] = weights_by_name.get(old, {})
     for n in untouched:
         new_weights_by_name[n] = weights_by_name.get(n, {})
 
-    # 删除全部 VG 并按 final_order 重建
+    # delete all VGs and rebuild in final_order
     for vg in list(obj.vertex_groups):
         try:
             obj.vertex_groups.remove(vg)
@@ -836,8 +838,8 @@ def rename_no_merge_with_suffix(obj, ordered_pairs, *, save_backup: bool = True)
 
 
 def rename_armature_bones_with_suffix(arm_obj, ordered_pairs) -> int:
-    """与 rename_no_merge_with_suffix 配套：骨骼按相同次序加 .NNN 后缀。
-    两阶段防冲突。"""
+    """Companion to rename_no_merge_with_suffix: bones get .NNN suffixes in the same order.
+    Two-stage to avoid collisions."""
     if arm_obj is None or arm_obj.type != 'ARMATURE' or not ordered_pairs:
         return 0
     arm = arm_obj.data
@@ -856,13 +858,13 @@ def rename_armature_bones_with_suffix(arm_obj, ordered_pairs) -> int:
         plan.append((b, final))
     if not plan:
         return 0
-    # 阶段 1：临时名
+    # stage 1: temp names
     for i, (b, _f) in enumerate(plan):
         try:
             b.name = f"__velo_bone_tmp_{i}"
         except Exception:
             pass
-    # 阶段 2：最终名
+    # stage 2: final names
     n = 0
     for b, final in plan:
         try:
@@ -874,8 +876,8 @@ def rename_armature_bones_with_suffix(arm_obj, ordered_pairs) -> int:
 
 
 def reorder_vertex_groups_by_order(obj, desired_order):
-    """把 obj 的 VG 排成 desired_order 列出的顺序；不在 desired_order 中的保留原顺序追加在后。
-    通过删除 + 重建实现（保留权重）。"""
+    """Arrange obj's VGs into the order listed in desired_order; those not in desired_order keep their original order and are appended after.
+    Implemented by delete + rebuild (preserving weights)."""
     if obj is None or obj.type != 'MESH' or not desired_order:
         return
     weights_by_vg = _collect_all_weights(obj)
@@ -941,17 +943,17 @@ def rename_and_reorder(
     save_backup: bool = False,
     restore_backup: bool = False,
 ) -> dict:
-    """单遍重命名 + 合并 + 重排（V0.1.4 性能/排序/还原一体化）。
+    """Single-pass rename + merge + reorder (V0.1.4 performance/sorting/restore unified).
 
     Parameters:
-        name_map: {old_name: new_name}（命中 strip(.NNN) 后名也算）。
-        sort_renamed_numerically: True 时改名后的项按数字排序放最前。
-        untouched_to_end: True 时未被改名的 VG 保留原顺序放在末尾。
-        save_backup: True 时把改名前的 VG 名顺序写到 obj["velo_vg_order_backup"]。
-        restore_backup: True 时优先按 obj["velo_vg_order_backup"] 的顺序回写
-            （已知名先按 backup 顺序，未知名按当前顺序追加），并清掉 backup。
+        name_map: {old_name: new_name} (matching the strip(.NNN) name also counts).
+        sort_renamed_numerically: when True, renamed items are sorted numerically to the front.
+        untouched_to_end: when True, VGs not renamed keep their original order and go at the end.
+        save_backup: when True, write the pre-rename VG name order to obj["velo_vg_order_backup"].
+        restore_backup: when True, prefer writing back in obj["velo_vg_order_backup"] order
+            (known names first in backup order, unknown names appended in current order), and clear the backup.
 
-    返回: {"renamed": int, "merged": int, "skipped": int, "missing": [old_name]}
+    Returns: {"renamed": int, "merged": int, "skipped": int, "missing": [old_name]}
     """
     report = {"renamed": 0, "merged": 0, "skipped": 0, "missing": []}
     if obj is None or obj.type != 'MESH':
@@ -959,10 +961,10 @@ def rename_and_reorder(
 
     name_map = name_map or {}
 
-    # V0.1.6 lossless 还原：优先用完整快照
+    # V0.1.6 lossless restore: prefer the full snapshot
     if restore_backup:
         if restore_vg_snapshot(obj):
-            # 顺手清掉旧的纯顺序备份（如果有）
+            # also clear the old order-only backup (if any)
             try:
                 if _VG_ORDER_BACKUP_KEY in obj.keys():
                     del obj[_VG_ORDER_BACKUP_KEY]
@@ -971,27 +973,27 @@ def rename_and_reorder(
             report["renamed"] = len(obj.vertex_groups)
             return report
 
-    # V0.1.6 lossless 备份：保存改名前完整快照（仅在 save_backup 时）
+    # V0.1.6 lossless backup: save the full pre-rename snapshot (only when save_backup)
     if save_backup:
         save_vg_snapshot(obj)
 
-    # 1) 单遍收集所有 VG 的 (vi -> w)
+    # 1) single-pass collection of each VG's (vi -> w)
     weights_by_vg = _collect_all_weights(obj)
 
-    # 2) 当前 VG 顺序快照
+    # 2) snapshot of the current VG order
     original_order = [vg.name for vg in obj.vertex_groups]
     idx_by_name = {vg.name: vg.index for vg in obj.vertex_groups}
 
-    # 3) 备份原顺序（仅在 save_backup 时）
+    # 3) back up the original order (only when save_backup)
     if save_backup:
         try:
             obj[_VG_ORDER_BACKUP_KEY] = list(original_order)
         except Exception:
             pass
 
-    # 4) 决定每个 VG 的新名 + 是否被改名
+    # 4) decide each VG's new name + whether it was renamed
     renamed_pairs = []  # [(old_name, new_name)]
-    untouched = []     # [name]（未被 name_map 命中）
+    untouched = []     # [name] (not matched by name_map)
     matched_keys = set()
     for old in original_order:
         new = name_map.get(old)
@@ -1003,13 +1005,13 @@ def rename_and_reorder(
             renamed_pairs.append((old, new))
             matched_keys.add(old)
 
-    # missing：name_map 里 key 没出现在对象中
+    # missing: keys in name_map that do not appear in the object
     keys_in_obj = set(original_order) | {strip_dup_suffix(n) for n in original_order}
     for k in name_map.keys():
         if k not in keys_in_obj:
             report["missing"].append(k)
 
-    # 5) 合并：new_name -> 累加权重；记录每个 new_name 来自的 source 数
+    # 5) merge: new_name -> accumulated weights; record the number of sources for each new_name
     merged_weights = defaultdict(lambda: defaultdict(float))
     sources_count = defaultdict(int)
     for old, new in renamed_pairs:
@@ -1025,8 +1027,8 @@ def rename_and_reorder(
     renamed_target_names = {new for _old, new in renamed_pairs}
     colliding_untouched = set()
 
-    # 6) untouched 的权重保留：若原本就存在同名目标组，则一起并入 merged_weights，
-    # 避免留下 Blender 自动补的 .001 重名族。
+    # 6) preserve untouched weights: if a same-named target group already exists, merge it into merged_weights too,
+    # to avoid leaving behind the .001 duplicate family Blender auto-adds.
     untouched_weights = {}
     for name in untouched:
         gi = idx_by_name.get(name)
@@ -1043,7 +1045,7 @@ def rename_and_reorder(
     if colliding_untouched:
         untouched = [name for name in untouched if name not in colliding_untouched]
 
-    # 7) 计算最终顺序
+    # 7) compute the final order
     renamed_names_unique = []
     seen = set()
     for _old, new in renamed_pairs:
@@ -1052,19 +1054,19 @@ def rename_and_reorder(
             seen.add(new)
 
     if restore_backup:
-        # 优先按 backup 顺序还原
+        # prefer restoring in backup order
         backup = []
         try:
             backup = list(obj.get(_VG_ORDER_BACKUP_KEY) or [])
         except Exception:
             backup = []
-        # backup 里出现的名字（在当前对象「改名后名集合」中存在的）按 backup 顺序
+        # names appearing in backup (and present in the object's current "post-rename name set") follow backup order
         all_after = set(renamed_names_unique) | set(untouched)
         ordered = [n for n in backup if n in all_after]
-        # 不在 backup 里的按 (renamed_unique ++ untouched) 顺序追加
+        # names not in backup are appended in (renamed_unique ++ untouched) order
         rest = [n for n in renamed_names_unique + untouched if n not in set(ordered)]
         final_order = ordered + rest
-        # 用完即清，避免后续无关改名误用
+        # clear once used, to avoid misuse by later unrelated renames
         try:
             if _VG_ORDER_BACKUP_KEY in obj.keys():
                 del obj[_VG_ORDER_BACKUP_KEY]
@@ -1078,7 +1080,7 @@ def rename_and_reorder(
         if untouched_to_end:
             final_order = renamed_part + untouched
         else:
-            # 保持原顺序（renamed 项落在原 old 名出现位置；untouched 原位置）
+            # keep original order (renamed items land at their old name's position; untouched stay in place)
             slots = []
             seen2 = set()
             renamed_map_old_to_new = {old: new for old, new in renamed_pairs}
@@ -1094,7 +1096,7 @@ def rename_and_reorder(
                         seen2.add(old)
             final_order = slots
 
-    # 8) 删除全部原 VG，按 final_order 重建并写权重
+    # 8) delete all original VGs, rebuild in final_order and write weights
     for vg in list(obj.vertex_groups):
         try:
             obj.vertex_groups.remove(vg)
@@ -1107,7 +1109,7 @@ def rename_and_reorder(
             wmap = untouched_weights[name]
         else:
             wmap = merged_weights.get(name, {})
-        # 同权重批量加（按权重值分桶，减少 .add 调用次数）
+        # batch-add same weights (bucket by weight value to reduce .add call count)
         if not wmap:
             continue
         buckets = defaultdict(list)
@@ -1119,7 +1121,7 @@ def rename_and_reorder(
         for ww, vis in buckets.items():
             new_vg.add(vis, ww, 'REPLACE')
 
-    # 9) 统计
+    # 9) statistics
     for new, count in sources_count.items():
         if count > 1:
             report["merged"] += 1
@@ -1131,11 +1133,11 @@ def rename_and_reorder(
 
 
 def rename_vertex_groups_with_merge(obj, name_map: dict, *, allow_passthrough: bool = True) -> dict:
-    """按 name_map={old_name: new_name} 改名当前对象的顶点组（V0.1.4 起 delegate 到 rename_and_reorder）。
+    """Rename the current object's vertex groups per name_map={old_name: new_name} (since V0.1.4, delegates to rename_and_reorder).
 
-    - 同一 new_name 下多个 old_name -> 权重相加，clamp 到 [0,1]
-    - old_name 命中 strip(.NNN) 后的同名也会被处理
-    - allow_passthrough=True 时，未在 name_map 里的顶点组保持原样
+    - multiple old_name under the same new_name -> weights summed, clamped to [0,1]
+    - old_name matching the same name after strip(.NNN) is also handled
+    - when allow_passthrough=True, vertex groups not in name_map are left as-is
     """
     if obj is None or obj.type != 'MESH' or not name_map:
         return {"renamed": 0, "merged": 0, "skipped": 0, "missing": []}
@@ -1149,22 +1151,22 @@ def rename_vertex_groups_with_merge(obj, name_map: dict, *, allow_passthrough: b
 
 
 # ============================================================
-# 三段映射（导出阶段使用，R4 接入 exporter）
+# Three-stage mapping (used at export, R4 hooks into the exporter)
 # ============================================================
 
 def build_three_stage_map(profile, component_map) -> dict:
-    """合成 {source_name: native_name}。
+    """Compose {source_name: native_name}.
 
-    source_name 既可能是 MMD 名也可能已经是 unified 名（PLAN §2.2 阶段 D step2）。
+    source_name may be either an MMD name or already a unified name (PLAN §2.2 phase D step2).
     """
     mmd_to_unified = build_mmd_to_unified(profile)
     unified_to_native = build_unified_to_native(component_map)
 
     out = {}
-    # 已是 unified 的源 -> native
+    # sources already unified -> native
     for u, n in unified_to_native.items():
         out[u] = n
-    # MMD 源 -> unified -> native
+    # MMD source -> unified -> native
     for m, u in mmd_to_unified.items():
         n = unified_to_native.get(u)
         if n:
@@ -1173,6 +1175,6 @@ def build_three_stage_map(profile, component_map) -> dict:
 
 
 def apply_three_stage_rename(obj, profile, component_map) -> dict:
-    """导出端调用：把对象顶点组按三段映射改名为 native 名。"""
+    """Called on the export side: rename the object's vertex groups to native names per the three-stage mapping."""
     name_map = build_three_stage_map(profile, component_map)
     return rename_vertex_groups_with_merge(obj, name_map, allow_passthrough=True)

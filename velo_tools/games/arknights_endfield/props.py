@@ -25,7 +25,7 @@ def _collection_is_descendant_or_same(root, collection):
 
 
 def _active_export_collection(settings):
-    # 按 velo_tools.active_game 经游戏注册表取当前游戏的部件根集合（终末地→VTEF_settings，鸣潮→VTWW_settings）
+    # Resolve the current game's component root collection via the game registry per velo_tools.active_game (Endfield -> VTEF_settings, Wuthering Waves -> VTWW_settings)
     scene = getattr(bpy.context, "scene", None)
     if scene is None:
         return None
@@ -67,7 +67,7 @@ def _on_mmd_overlay_update(self, context):
             gm.show_overlay = False
         except Exception:
             pass
-    # V0.1.6: 启动端点拾取/拖拽 modal
+    # V0.1.6: start the endpoint pick/drag modal
     try:
         from . import mmd_pick as _mp
         _mp.start_modal_if_needed()
@@ -79,10 +79,11 @@ def _on_mmd_overlay_update(self, context):
 
 
 def _refresh_available_src_vgs(settings):
-    """重建 settings.available_src_vgs（按 mmd_source_object 的可用顶点组排序）。
+    """Rebuild settings.available_src_vgs (sorted by mmd_source_object's usable vertex groups).
 
-    给 prop_search 用：键入即过滤；与 EnumProperty items callback 不同，
-    它以 PropertyGroup 的 name 字段为搜索域，名称由 Python 端持有强引用，不会乱码。
+    Used by prop_search: filters as you type. Unlike an EnumProperty items callback,
+    it searches against the PropertyGroup's name field, whose names are kept alive by a
+    strong reference on the Python side and won't get garbled.
     """
     coll = settings.available_src_vgs
     coll.clear()
@@ -115,7 +116,7 @@ def _refresh_available_src_vgs(settings):
 
 
 def _on_active_mmd_text_update(self, context):
-    """切换 MMD 映射表 Text 时：将 Text 内容载入 profile.rows。"""
+    """When switching the MMD mapping table Text: load the Text content into profile.rows."""
     global _suspend_mmd_row_update
     prev = _suspend_mmd_row_update
     tb = self.active_mmd_text
@@ -170,7 +171,7 @@ def _on_mmd_row_unified_update(self, context):
 
 
 def _on_mmd_source_update(self, context):
-    """切源物体时刷新自动补全候选 + 让 overlay 缓存失效；同时按对象绑定切换映射表 Text。"""
+    """On source object change: refresh autocomplete candidates + invalidate the overlay cache; also switch the mapping table Text per the object binding."""
     try:
         _refresh_available_src_vgs(self)
     except Exception:
@@ -223,8 +224,8 @@ def _on_mmd_target_update(self, context):
 
 
 class VELO_EF_VGName(bpy.types.PropertyGroup):
-    """单纯持有一个 name 字段，给 prop_search 当候选项。"""
-    pass  # 自动有 name: StringProperty
+    """Simply holds a name field to serve as a candidate item for prop_search."""
+    pass  # automatically has name: StringProperty
 
 
 class VELO_EF_MMDRow(bpy.types.PropertyGroup):
@@ -232,9 +233,9 @@ class VELO_EF_MMDRow(bpy.types.PropertyGroup):
     unified_name: StringProperty(name="Unified", default="", update=_on_mmd_row_unified_update)
     current_source_name: StringProperty(name="CurrentSource", default="")
     enabled: BoolProperty(name="Enabled", default=True)
-    # V0.1.6 修复：overlay 快照重心（局部坐标）。
-    # 仅记录「匹配下发生时」的 VG 重心，overlay 只读这里，
-    # 不再跟随顶点组 / 骨骼的实际名变动。
+    # V0.1.6 fix: overlay snapshot centroid (local coordinates).
+    # Only records the VG centroid captured "at match time"; the overlay reads only this
+    # and no longer follows the actual name changes of vertex groups / bones.
     mmd_centroid_local: FloatVectorProperty(size=3, default=(0.0, 0.0, 0.0))
     unified_centroid_local: FloatVectorProperty(size=3, default=(0.0, 0.0, 0.0))
     has_mmd_centroid: BoolProperty(default=False)
@@ -249,7 +250,7 @@ class VELO_EF_MMDProfile(bpy.types.PropertyGroup):
 
 class VELO_EF_Settings(bpy.types.PropertyGroup):
     mmd_profile: PointerProperty(type=VELO_EF_MMDProfile)
-    # 任务4：当前映射表 Text（template_ID 选择器）
+    # Task 4: current mapping table Text (template_ID selector)
     active_mmd_text: PointerProperty(
         name="映射表",
         type=bpy.types.Text,
@@ -282,9 +283,9 @@ class VELO_EF_Settings(bpy.types.PropertyGroup):
         description="开启或关闭 MMD 映射可视化校对；开启时会自动关闭通用映射可视化以避免两套端点叠加",
         update=lambda self, context: _on_mmd_overlay_update(self, context),
     )
-    # prop_search 候选集合（运行时重建，不参与持久化）
+    # prop_search candidate collection (rebuilt at runtime, not persisted)
     available_src_vgs: CollectionProperty(type=VELO_EF_VGName)
-    # 1.0.8: 旧的 export_adapter 下拉已移除，导出目标统一由 velo_tools.active_game 决定
+    # 1.0.8: the old export_adapter dropdown has been removed; the export target is now decided uniformly by velo_tools.active_game
 
 
 _classes = (VELO_EF_VGName, VELO_EF_MMDRow, VELO_EF_MMDProfile, VELO_EF_Settings)

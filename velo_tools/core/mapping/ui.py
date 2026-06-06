@@ -1,4 +1,4 @@
-"""MMD ↔ 统一编号 映射 UI（V0.1.1）。"""
+"""MMD <-> unified-name mapping UI (V0.1.1)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ class VELO_EF_UL_mmd_rows(bpy.types.UIList):
         row = layout.row(align=True)
         if not item.unified_name:
             row.alert = True
-        # 左：mmd_name 改用 prop_search，可输入即过滤源物体顶点组（Blender 原生 6 项+滚轮）
+        # Left: mmd_name uses prop_search so typing filters the source object's vertex groups (Blender native 6-item list + scroll wheel)
         if ef is not None and len(ef.available_src_vgs) > 0:
             row.prop_search(
                 item, "mmd_name",
@@ -25,7 +25,7 @@ class VELO_EF_UL_mmd_rows(bpy.types.UIList):
         arrow.alignment = 'CENTER'
         arrow.label(text="→")
         row.prop(item, "unified_name", text="")
-        # 右：行 +/-
+        # Right: per-row +/-
         op_add = row.operator("velo.vg_row_add", text="", icon='ADD')
         op_add.after_index = index
         op_del = row.operator("velo.vg_row_remove", text="", icon='REMOVE')
@@ -57,14 +57,14 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
             layout.label(text="未初始化映射数据", icon='ERROR')
             return
 
-        # 顶部：MMD 专用源/目标物体
+        # Top: MMD-specific source/target objects
         box_obj = layout.box()
         box_obj.label(text="MMD 工作物体（与下方 顶点组改名 Tab 完全隔离）", icon='OBJECT_DATA')
         box_obj.prop(ef, "mmd_source_object", text="MMD 源")
         box_obj.prop(ef, "mmd_target_object", text="目标 Component")
         box_obj.prop(ef, "mmd_armature_object", text="MMD 骨架")
 
-        # 1.0.8: 导出适配器统一由「游戏」tab 的 active_game 决定，这里只读提示当前游戏
+        # 1.0.8: the export adapter is decided solely by active_game on the "Game" tab; here we only show a read-only hint of the current game
         try:
             from ...games import registry as _registry
             desc = _registry.get_active_descriptor(context.scene)
@@ -80,7 +80,7 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
             icon='INFO',
         )
 
-        # 任务4：映射表选择器（template_ID 与 Blender 文本数据块选择器一致）
+        # Task 4: mapping-table selector (template_ID, same as Blender's text datablock selector)
         box_p = layout.box()
         box_p.label(text="映射表", icon='TEXT')
         box_p.template_ID(ef, "active_mmd_text", new="velo.mmd_text_new")
@@ -92,7 +92,7 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
             rows=8,
         )
 
-        # 行操作
+        # Row operations
         row = layout.row(align=True)
         row.operator("velo.vg_row_add", icon='ADD', text="新增空行").after_index = -1
         row.operator("velo.vg_row_remove", icon='REMOVE', text="删除当前行").index = -1
@@ -111,7 +111,7 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
         r2.operator("velo.vg_revert_to_mmd", icon='LOOP_BACK')
         r2.operator("velo.vg_target_to_unified", icon='LOOP_BACK')
 
-        # 内置 Text 双向同步
+        # Built-in Text two-way sync
         layout.separator()
         box_t = layout.box()
         box_t.label(text=".blend 内置文本同步（可在 Text Editor 中打开 velo_mmd_mapping.txt 编辑）", icon='TEXT')
@@ -119,12 +119,12 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
         rt.operator("velo.vg_table_to_text", icon='EXPORT')
         rt.operator("velo.vg_table_from_text", icon='IMPORT')
 
-        # 外部文件 import/export
+        # External file import/export
         row = layout.row(align=True)
         row.operator("velo.vg_table_import", icon='FILE_FOLDER')
         row.operator("velo.vg_table_export", icon='FILE_TICK')
 
-        # 提示
+        # Hints
         box = layout.box()
         box.scale_y = 0.8
         box.label(text="工作流", icon='INFO')
@@ -135,7 +135,7 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
 
 
 class VELO_EF_PT_mmd_overlay(bpy.types.Panel):
-    """MMD 映射结果可视化（作为 MMD 映射面板的子面板）。"""
+    """Visualize MMD mapping results (a sub-panel of the MMD mapping panel)."""
     bl_label = "MMD 映射 - 可视化校对（重心连线）"
     bl_idname = "VELO_EF_PT_mmd_overlay"
     bl_space_type = 'VIEW_3D'

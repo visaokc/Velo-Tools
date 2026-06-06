@@ -1,10 +1,10 @@
-"""三段映射核心（R3 阶段实现）。
+"""Three-stage mapping core (R3-phase implementation).
 
-文件分布：
-- algorithms.py : MMD/unified/native 三段映射算法 + 重命名+权重合并
-- text_io.py    : 映射文本格式 parse / serialize
-- operators.py  : 5 个面向用户的算子（PLAN §2.3）
-- ui.py         : 极简 UI（终末地 Tab 下子面板）
+File layout:
+- algorithms.py : MMD/unified/native three-stage mapping algorithms + rename + weight merge
+- text_io.py    : mapping text format parse / serialize
+- operators.py  : 5 user-facing operators (PLAN section 2.3)
+- ui.py         : minimal UI (sub-panel under the Endfield tab)
 """
 
 from . import operators as _ops

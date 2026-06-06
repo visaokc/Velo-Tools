@@ -1,11 +1,12 @@
-﻿"""CrossIB / ShapeKey 嵌入注册（V0.1.6）。
+﻿"""CrossIB / ShapeKey embedded registration (V0.1.6).
 
-V0.1.6 起：删除 V0.1.5 占位，转发 register/unregister 到 embedded.crossib
-与 embedded.shapekey。两个模块各自处理：注册类 + 挂 Scene PointerProperty +
-monkey-patch（CrossIB 修改 IniMaker；ShapeKey 修改 VTEF_PT_SidePanelAdvancedExport）。
+Since V0.1.6: removed the V0.1.5 placeholder, forwards register/unregister to
+embedded.crossib and embedded.shapekey. Each module handles on its own: registering
+classes + attaching a Scene PointerProperty + monkey-patch (CrossIB modifies IniMaker;
+ShapeKey modifies VTEF_PT_SidePanelAdvancedExport).
 
-调用顺序约束：必须在 vendored EFMI `_al.register()` 之后调用，否则找不到
-VTEF_PT_INI_TOGGLES / VTEF_PT_SidePanelAdvancedExport。
+Call-order constraint: must be called after vendored EFMI `_al.register()`, otherwise
+VTEF_PT_INI_TOGGLES / VTEF_PT_SidePanelAdvancedExport cannot be found.
 """
 import traceback
 

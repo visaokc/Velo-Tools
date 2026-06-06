@@ -1,25 +1,27 @@
-"""Velo Tools 多游戏注册表（单一真相源）。
+"""Velo Tools multi-game registry (single source of truth).
 
-`scene.velo_tools.active_game`（游戏 tab 顶部下拉）是「当前游戏」的唯一开关。
-各 game 驱动在自身 register() 时注册一条 GameDescriptor，共享工具（导出适配器、
-导出 hook、按材质分离等）统一查本表，加新游戏只需新增一条描述符，不必逐个改工具。
+`scene.velo_tools.active_game` (the dropdown at the top of the game tab) is the sole
+switch for the "current game". Each game driver registers one GameDescriptor in its own
+register(); shared tools (export adapters, export hook, separate-by-material, etc.) all
+query this table. Adding a new game only requires adding one descriptor, not editing
+each tool individually.
 
-本模块是纯数据层：不 import bpy，也不 import 任何 game 模块，避免循环导入。
-共享层用惰性 import 在函数内取本模块。
+This module is a pure data layer: it does not import bpy nor any game module, to avoid
+circular imports. The shared layer uses lazy imports inside functions to fetch this module.
 """
 from __future__ import annotations
 
 
 class GameDescriptor:
-    """描述一个游戏的导出接线信息。
+    """Export wiring information describing one game.
 
-    settings_attr  : 该游戏在 Scene 上的设置 PointerProperty 名（如 'VTEF_settings'）
-    adapter_key    : core/export/adapters.py 的适配器键（'EFMI' / 'WWMI'）
-    export_op      : 导出算子 bl_idname（如 'vtef.export_mod'）
-    export_op_class: 导出算子类名，给 hook 用 _find_class 定位（如 'VTEF_Export'）
-    header_label   : 单容器面板 VELO_PT_game 折叠头显示文本（如 '鸣潮 WWMI'）；由各 game 驱动 register() 时挂上。
-    draw_body      : 可选 callable(container_panel, context)，在 VELO_PT_game 容器内绘制本游戏根面板主体
-                     （驱动层用 Shim 代理 vendored 根面板 draw）。由各 game 驱动 register() 时挂上。
+    settings_attr  : name of this game's settings PointerProperty on the Scene (e.g. 'VTEF_settings')
+    adapter_key    : adapter key in core/export/adapters.py ('EFMI' / 'WWMI')
+    export_op      : export operator bl_idname (e.g. 'vtef.export_mod')
+    export_op_class: export operator class name, used by the hook's _find_class to locate it (e.g. 'VTEF_Export')
+    header_label   : display text for the VELO_PT_game single-container panel's collapse header (e.g. '鸣潮 WWMI'); attached by each game driver in register().
+    draw_body      : optional callable(container_panel, context) that draws this game's root panel body inside the VELO_PT_game container
+                     (the driver layer uses a Shim to proxy the vendored root panel draw). Attached by each game driver in register().
     """
 
     def __init__(
@@ -39,7 +41,7 @@ class GameDescriptor:
         self.adapter_key = adapter_key
         self.export_op = export_op
         self.export_op_class = export_op_class
-        # 单容器面板（VELO_PT_game）用：折叠头文本 + 主体绘制回调，由各 game 驱动 register() 时挂上。
+        # For the single-container panel (VELO_PT_game): collapse-header text + body draw callback, attached by each game driver in register().
         self.header_label = None
         self.draw_body = None
 
@@ -54,7 +56,7 @@ class GameDescriptor:
         return f"<GameDescriptor {self.game_value} settings={self.settings_attr}>"
 
 
-# game_value -> GameDescriptor（_ORDER 保留注册顺序，给 all_descriptors 用）
+# game_value -> GameDescriptor (_ORDER preserves registration order, used by all_descriptors)
 _REGISTRY = {}
 _ORDER = []
 
@@ -82,7 +84,7 @@ def all_descriptors():
 
 
 def get_active_descriptor(scene):
-    """按 scene.velo_tools.active_game 取当前游戏描述符；缺省/未知回退到 ENDFIELD。"""
+    """Get the current game descriptor by scene.velo_tools.active_game; fall back to ENDFIELD if missing/unknown."""
     s = getattr(scene, "velo_tools", None)
     game_value = getattr(s, "active_game", _DEFAULT_GAME) if s is not None else _DEFAULT_GAME
     return _REGISTRY.get(game_value) or _REGISTRY.get(_DEFAULT_GAME)

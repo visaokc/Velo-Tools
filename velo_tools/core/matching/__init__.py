@@ -1,4 +1,4 @@
-"""顶点组名称匹配核心算法（v0.3.0 已验证，保留在 velo_tools/operators.py 中）。
+"""Core algorithm for vertex group name matching (verified in v0.3.0, kept in velo_tools/operators.py).
 
-R1 阶段不做物理迁移，避免破坏现有匹配 UI 引用；R3 阶段如有必要再统一搬到这里。
+No physical migration in the R1 phase, to avoid breaking existing matching UI references; if necessary, consolidate it here in the R3 phase.
 """

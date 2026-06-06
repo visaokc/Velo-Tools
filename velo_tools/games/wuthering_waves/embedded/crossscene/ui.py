@@ -1,11 +1,12 @@
-"""跨场景合并 UI —— 「基底 + 各 IB(带角色) + 输出 → 合并」面板 + 算子。
+"""Cross-scene merge UI -- the "base + each IB (with role) + output -> merge" panel + operators.
 
-合并算子调 producer ``xscene_merge.build_cross_scene_merge`` 产出可编辑合并文件夹 +
-``CrossSceneRouting.json``；之后用户用现有导入算子导入该文件夹、编辑一份网格、
-点常规「导出 Mod」即由 ``patch.py`` 的 hook 自动折叠合并出通吃多场景的 mod。
+The merge operator calls the producer ``xscene_merge.build_cross_scene_merge`` to produce an
+editable merged folder + ``CrossSceneRouting.json``; afterwards the user imports that folder with
+the existing import operator, edits one mesh, and clicks the regular "Export Mod" -- the hook in
+``patch.py`` then automatically folds and merges out a mod that works across all scenes.
 
-角色只有两种：``Fold``（折入基底）与 ``Editable``（独立可编辑，作为新 component）。
-注册由本模块 register()/unregister() 负责（新增类 + Scene 属性），不走 _wwmi_core 的 auto_load。
+There are only two roles: ``Fold`` (fold into base) and ``Editable`` (independently editable, as a new component).
+Registration is handled by this module's register()/unregister() (new classes + Scene properties), not via _wwmi_core's auto_load.
 """
 import traceback
 from pathlib import Path
@@ -91,7 +92,7 @@ class VTWW_OT_xscene_merge(bpy.types.Operator):
             traceback.print_exc()
             self.report({'ERROR'}, "合并失败：%s（详见系统控制台）" % exc)
             return {'CANCELLED'}
-        # 防呆提示：producer 检出"疑似独立形态却没设 Editable"的 IB → 逐条 WARNING。
+        # Sanity hints: producer detected IBs that "look like an independent form but were not set to Editable" -> emit one WARNING each.
         for w in rep.get("warnings", []):
             self.report({'WARNING'}, w)
         self.report({'INFO'}, "合并完成 → %s | components=%d splits=%d fold=%d editable=%d" % (
@@ -111,7 +112,7 @@ class VELO_PT_xscene(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        # 仅在「游戏」tab 且当前游戏切到鸣潮(WWMI)时显示——跨场景折叠是 WWMI 专属功能。
+        # Only shown when on the "Game" tab and the active game is switched to Wuthering Waves (WWMI) -- cross-scene folding is a WWMI-exclusive feature.
         vt = getattr(context.scene, "velo_tools", None)
         return (vt is not None
                 and getattr(vt, "active_tab", "") == 'GAME'

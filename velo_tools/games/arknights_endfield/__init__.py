@@ -18,8 +18,9 @@ from .. import _a2_panels as _a2
 
 _TAB_VALUE = "GAME"
 
-# 终末地（EFMI）游戏描述符：注册到多游戏注册表，供导出适配器 / 导出 hook /
-# 按材质分离等共享工具按 active_game 查询。
+# Arknights: Endfield (EFMI) game descriptor: registered into the multi-game registry,
+# queried by active_game for shared tools such as the export adapter / export hook /
+# split-by-material.
 _DESCRIPTOR = _registry.GameDescriptor(
     key="ENDFIELD",
     game_value="ENDFIELD",
@@ -99,7 +100,7 @@ def _patch_single_panel(cls, root_cls):
     cls.bl_category = "Velo Tools"
 
     if cls is root_cls:
-        # 结构性 patch（须在注册前）；poll/draw 的 A2 门控改由 register() 末尾的 _a2.gate() 处理。
+        # Structural patch (must run before registration); A2 gating of poll/draw is handled by _a2.gate() at the end of register().
         cls.bl_label = _zh("终末地 EFMI")
         cls.bl_parent_id = "VELO_PT_main"
         cls.bl_options = set(getattr(cls, "bl_options", set())) | {"DEFAULT_CLOSED"}
@@ -535,7 +536,7 @@ def register():
     _patch_velo_settings()
     _al.register()
     bpy.types.Scene.VTEF_settings = bpy.props.PointerProperty(type=_vsettings.VTEF_Settings)
-    # 单容器（VELO_PT_game）用：折叠头文本 + 主体绘制（经 Shim 代理 vendored 根面板 draw）。
+    # For the single container (VELO_PT_game): collapse-header text + body draw (proxies the vendored root panel draw via a Shim).
     from ._efmi_core.addon import ui as _vui_desc
     _DESCRIPTOR.header_label = _zh("终末地 EFMI")
     _DESCRIPTOR.draw_body = _a2.make_draw_body(_vui_desc.VTEF_PT_SIDEBAR)
@@ -561,8 +562,8 @@ def register():
     except Exception:
         import traceback
         traceback.print_exc()
-    # 问题 A 修复（A1 单容器）：隐藏 vendored 根面板 + 把其子面板重挂到 VELO_PT_game 并按 active_game
-    # 门控。须在所有 EFMI 子面板（vtef 主面板、bridge、embedded/crossib/shapekey、ini_toggles）注册完之后调用。
+    # Issue A fix (A1 single container): hide the vendored root panel + re-parent its subpanels onto VELO_PT_game and gate
+    # them by active_game. Must be called after all EFMI subpanels (vtef main panel, bridge, embedded/crossib/shapekey, ini_toggles) are registered.
     try:
         from ._efmi_core.addon import ui as _vui
         _a2.gate("VTEF_PT_SIDEBAR", "ENDFIELD", _vui.VTEF_PT_SIDEBAR)

@@ -1,11 +1,12 @@
-"""将「导出自定义形状键」开关注入到 vendored EFMI 的「高级」面板中，
-位于 `fill_missing_mesh_data` 与 `allow_export_without_lods` 之间。
+"""Inject the "export custom shape keys" toggle into vendored EFMI's "Advanced"
+panel, positioned between `fill_missing_mesh_data` and `allow_export_without_lods`.
 
-通过 monkey-patch `VTEF_PT_SidePanelAdvancedExport.draw`：包装器手动重建
-面板内容并在正确位置插入我们的行；unregister 时还原原始 draw。
+Done by monkey-patching `VTEF_PT_SidePanelAdvancedExport.draw`: the wrapper
+manually rebuilds the panel content and inserts our rows at the right position;
+the original draw is restored on unregister.
 
-面板内还有一个实时反馈区，显示在当前部件集合内识别到的 Deform 形状键
-数量与命名冲突。
+The panel also has a live feedback area showing the count of Deform shape keys
+detected in the current component collection along with any naming conflicts.
 """
 import bpy
 import sys
@@ -300,7 +301,7 @@ def _draw_shapekey_row(layout, context):
     sub.separator()
     sub.prop(settings, "merge_buffers")
 
-    # ----------- 检测器盒（可折叠，参考 CrossIB 子特性） -----------
+    # ----------- detector box (collapsible, modeled on the CrossIB sub-feature) -----------
     cfg = getattr(context.scene, "VTEF_settings", None)
     coll = getattr(cfg, "component_collection", None) if cfg is not None else None
 
@@ -348,9 +349,10 @@ def _draw_shapekey_row(layout, context):
             st = _props.find_group_state(settings, it.deform_num)
             if st is None or st.expanded:
                 visible_count += 1
-    # V0.1.6: 自动展开/收缩仅在 6~15 行范围内生效；超出 15 行时不再继续自动展开，
-    # 由 template_list 自带滚动/滚轮浏览剩余内容。maxrows 仍保留较大值，保证用户
-    # 可以手动拖拽分隔条放大显示窗口。
+    # V0.1.6: auto expand/shrink only applies within the 6~15 row range; beyond
+    # 15 rows it no longer keeps auto-expanding -- the remaining content is
+    # browsed via template_list's built-in scroll/wheel. maxrows stays at a
+    # larger value so the user can still drag the divider to enlarge the view.
     AUTO_MIN = 6
     AUTO_MAX = 15
     n_rows = min(AUTO_MAX, max(AUTO_MIN, visible_count))
@@ -415,12 +417,12 @@ def _make_patched_draw(orig_draw):
         cfg = context.scene.VTEF_settings
         layout = self.layout
 
-        # 复刻 vendored EFMI 高级面板原始 draw 逻辑，并在
-        # `fill_missing_mesh_data` 与 `allow_export_without_lods` 之间插入我们的行。
+        # Replicate vendored EFMI's advanced panel original draw logic, and
+        # insert our rows between `fill_missing_mesh_data` and `allow_export_without_lods`.
         if not cfg.partial_export:
             layout.row().prop(cfg, 'add_missing_vertex_groups')
             layout.row().prop(cfg, 'fill_missing_mesh_data')
-            # ─── 注入开始 ───
+            # ─── injection start ───
             try:
                 _draw_shapekey_row(layout, context)
             except Exception:
@@ -428,7 +430,7 @@ def _make_patched_draw(orig_draw):
                 row.alert = True
                 row.label(text="ShapeKey UI 渲染异常（详见控制台）", icon='ERROR')
                 traceback.print_exc()
-            # ─── 注入结束 ───
+            # ─── injection end ───
             layout.row().prop(cfg, 'allow_export_without_lods')
             if cfg.mod_skeleton_type == 'MERGED':
                 layout.row().prop(cfg, 'skeleton_scale')

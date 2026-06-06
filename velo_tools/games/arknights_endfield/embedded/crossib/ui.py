@@ -1,8 +1,8 @@
-"""CrossIB UI 面板 + 算子（V0.1.6 适配 vendored EFMI / 中文化）。
+"""CrossIB UI panel + operators (V0.1.6, adapted to vendored EFMI / Chinese-localized UI).
 
-挂载点：vendored EFMI 的侧栏 `VTEF_PT_SIDEBAR` 之下，与 INI 开关面板平级。
-分类：`Velo Tools Endfield`（与 vendored EFMI 一致）。
-依赖：`scene.VTEF_settings`（vendored EFMI）+ `scene.crossib_settings`。
+Mount point: under vendored EFMI's sidebar `VTEF_PT_SIDEBAR`, sibling to the INI toggle panel.
+Category: `Velo Tools Endfield` (matching vendored EFMI).
+Depends on: `scene.VTEF_settings` (vendored EFMI) + `scene.crossib_settings`.
 """
 import bpy
 
@@ -43,15 +43,17 @@ class CROSSIB_PT_Panel(bpy.types.Panel):
 
         layout.label(text="左侧（源）借用右侧（目标）的渲染管线", icon='INFO')
 
-        # CrossIB sidecars（CrossIB.json + ShaderOverride.ini）：存在时导出直接消费、
-        # 免扫描帧转储。旧版提取或未勾选生成时这两份文件不齐，提供一个按钮弹文件夹
-        # 选择器指定帧转储自动补齐（取代旧的常驻帧转储路径框）。
+        # CrossIB sidecars (CrossIB.json + ShaderOverride.ini): when present, export consumes
+        # them directly and skips frame-dump scanning. Old extractions or runs without the
+        # generate option checked leave these two files incomplete; a button pops a folder
+        # picker to specify a frame dump and auto-complete them (replaces the old persistent
+        # frame-dump path field).
         from .sidecar import sidecars_present
         cfg = getattr(context.scene, "VTEF_settings", None)
         source = getattr(cfg, "object_source_folder", "") if cfg else ""
         if source and sidecars_present(source):
             layout.label(text="已检测到 CrossIB.json（导出将直接消费）", icon='CHECKMARK')
-            # 已有也显示按钮：每喂一份新场景帧转储就把它的 shader 累积并入。
+            # Show the button even when present: each new scene frame dump fed in accumulates its shaders.
             layout.operator("crossib.generate_sidecars", text="合并新场景 dump（累积）", icon='FILE_FOLDER')
         else:
             layout.label(text="未找到 CrossIB.json（旧提取或未勾选生成）", icon='ERROR')
@@ -106,10 +108,12 @@ class CROSSIB_OT_RemoveMapping(bpy.types.Operator):
 
 
 class CROSSIB_OT_GenerateSidecars(bpy.types.Operator):
-    """弹文件夹选择器，指定一份帧转储，为当前对象源生成 / 累积合并
-    CrossIB.json + ShaderOverride.ini。已有 CrossIB.json 时默认把新场景的
-    shader 并入（不覆盖）——一个角色多次喂不同场景（普通/闪避/攻击/技能）的
-    帧转储，shader 集逐渐长全。勾「覆盖重建」则按当前分类器从头重算。"""
+    """Pop a folder picker to specify one frame dump and generate / accumulate-merge
+    CrossIB.json + ShaderOverride.ini for the current object source. When CrossIB.json
+    already exists, new-scene shaders are merged in by default (no overwrite) -- feeding
+    a character's frame dumps from multiple scenes (normal/dodge/attack/skill) gradually
+    completes the shader set. Checking "overwrite rebuild" recomputes from scratch with
+    the current classifier."""
     bl_idname = "crossib.generate_sidecars"
     bl_label = "生成 / 合并（累积）CrossIB.json"
     bl_options = {'REGISTER'}
@@ -148,6 +152,6 @@ class CROSSIB_OT_GenerateSidecars(bpy.types.Operator):
                 s.frame_dump_folder = self.directory
             self.report({'INFO'}, msg)
             return {'FINISHED'}
-        # 安全拒绝（新 dump 不含本角色等）：不改已有 json，给 WARNING 而非崩。
+        # Safe refusal (e.g. new dump doesn't contain this character): leave existing json untouched, emit WARNING instead of crashing.
         self.report({'WARNING'}, msg)
         return {'CANCELLED'}

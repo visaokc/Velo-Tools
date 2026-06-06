@@ -1,10 +1,10 @@
-"""命名空间合并 N 个独立 per-IB WWMI mod → 一个 mod + 贴图按 hash 去重 + 自检。
+"""Namespace-merge N independent per-IB WWMI mods -> one mod + textures deduped by hash + self-check.
 
-port 自已游戏验证的独立原型 ``merge_inis.py``（in-process，无 subprocess）：
-每条 IB k 的非贴图段 ``[X]→[X_ibK]``、``$v→$v_ibK``、``Resource*/CommandList*→*_ibK``
-（保留 ``\\WWMIv1\\`` 框架引用）、``Meshes/→Meshes/ibK_``（扁平）；贴图段塌缩成每唯一 hash
-一条全局 ``[Resource_Texture_<hash>]``/``[TextureOverride_Texture_<hash>]``（gate=各 IB
-``$object_detected`` 求或）；``[Constants]``/``[Present]`` 各并一段。返回自检 report。
+Ported from the standalone, game-verified prototype ``merge_inis.py`` (in-process, no subprocess):
+for each IB k, non-texture sections become ``[X]->[X_ibK]``, ``$v->$v_ibK``, ``Resource*/CommandList*->*_ibK``
+(the ``\\WWMIv1\\`` framework references are preserved), ``Meshes/->Meshes/ibK_`` (flattened); texture sections
+collapse into one global ``[Resource_Texture_<hash>]``/``[TextureOverride_Texture_<hash>]`` per unique hash
+(gate = OR over each IB's ``$object_detected``); ``[Constants]``/``[Present]`` each merged into one section. Returns a self-check report.
 """
 import os
 import re
@@ -39,15 +39,15 @@ def _parse_sections(text):
 
 
 def assemble(out, mods):
-    """mods: 有序的 per-IB mod 文件夹列表（每个含 mod.ini + Meshes/ + Textures/）。
-    写出合并 mod 到 out，返回 report dict。"""
+    """mods: ordered list of per-IB mod folders (each contains mod.ini + Meshes/ + Textures/).
+    Writes the merged mod to out, returns a report dict."""
     if os.path.exists(out):
         shutil.rmtree(out)
     os.makedirs(os.path.join(out, "Meshes"), exist_ok=True)
     os.makedirs(os.path.join(out, "Textures"), exist_ok=True)
 
     constants, present, others = [], [], []
-    tex = {}                # hash -> 源 .dds 绝对路径（去重）
+    tex = {}                # hash -> source .dds absolute path (deduped)
     tex_hash_per_mod = []
 
     for k, mod in enumerate(mods):
@@ -114,7 +114,7 @@ def assemble(out, mods):
             f.write(f"[TextureOverride_Texture_{hv}]\nhash = {hv}\nmatch_priority = 0\n")
             f.write(f"if {gate}\n    this = Resource_Texture_{hv}\nendif\n\n")
 
-    # ---- 自检 ----
+    # ---- self-check ----
     text = open(os.path.join(out, "mod.ini"), encoding="utf-8").read()
     sections_set = set(re.findall(r'^\[([^\]]+)\]', text, re.M))
     refs = set(re.findall(r'(?:ref|run\s*=|this\s*=)\s+(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)', text))

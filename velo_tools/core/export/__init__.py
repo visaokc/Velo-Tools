@@ -1,11 +1,12 @@
-"""导出预处理 + 适配器层（V0.1.6）。
+"""Export preprocessing + adapter layer (V0.1.6).
 
-V0.1.6 起：
-- 不再注册独立的「MOD 导出」面板，改为：用户在 vendored EFMI 面板点击
-  「导出 Mod」时由 hook 自动触发非破坏性预处理后转交原导出器。
-- 1.0.8：导出目标统一由「游戏」tab 的 velo_tools.active_game 决定（经 games/registry），
-  不再有独立的 export_adapter 下拉。
-- WWMI 适配器同样通过 hook 包装 vtww.export_mod 的 execute（Velo 内置 fork）。
+Since V0.1.6:
+- No longer registers a standalone "MOD 导出" panel. Instead, when the user clicks
+  "导出 Mod" in the vendored EFMI panel, the hook automatically triggers
+  non-destructive preprocessing and then hands off to the original exporter.
+- 1.0.8: the export target is now uniformly decided by velo_tools.active_game of the
+  "游戏" tab (via games/registry); there is no longer a standalone export_adapter dropdown.
+- The WWMI adapter likewise wraps the execute of vtww.export_mod via the hook (Velo built-in fork).
 """
 from . import preexport  # noqa: F401
 from . import adapters   # noqa: F401
@@ -15,8 +16,8 @@ from . import hook       # noqa: F401
 
 def register():
     operators.register()
-    # hook 的安装放在 games.arknights_endfield.register() 末尾，
-    # 因为依赖 vendored EFMI 已经完成 _al.register() 后才能找到 VTEF_Export 类。
+    # The hook installation is placed at the end of games.arknights_endfield.register(),
+    # because it depends on the vendored EFMI having finished _al.register() before the VTEF_Export class can be found.
 
 
 def unregister():

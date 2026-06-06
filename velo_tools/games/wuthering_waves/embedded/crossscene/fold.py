@@ -1,21 +1,21 @@
-"""跨场景折叠 consumer（M2 核心）——把"可折"dungeon IB 折进 base buffer，绝不改 ``_wwmi_core``。
+"""Cross-scene fold consumer (M2 core) -- folds a "foldable" dungeon IB into the base buffer, never touching ``_wwmi_core``.
 
-从已游戏验证的独立原型 ``xscene_fold_prep.py`` 移植 + 由 ``CrossSceneRouting.json`` 的 ``fold`` 段驱动通用化。
-三个硬模块：
-  1. ``reproject_morph``  —— dungeon 形态键按 dun2body 重投影到 base 顶点序（每形态键每 vid 恰一次，
-     防 ShapeKeyLoader.hlsl 的 InterlockedAdd 过累加 → 粘连/眼球冲出）。
-  2. ``apply_blend_remap`` —— 按 producer 投票好的 VG 表重标 base 某 component 的 blend 索引 → 独立 buffer。
-  3. ``emit_fold_sections`` —— Host 重定向段（dungeon IB 的 draw 绑 base buffer 区间）+ morph CS 段移植。
+Ported from the game-verified standalone prototype ``xscene_fold_prep.py`` + generalized, driven by the ``fold`` section of ``CrossSceneRouting.json``.
+Three hard modules:
+  1. ``reproject_morph``  -- reproject dungeon shapekeys onto the base vertex order via dun2body (exactly once per shapekey per vid,
+     to prevent over-accumulation by ShapeKeyLoader.hlsl's InterlockedAdd -> sticking / eyeballs bursting out).
+  2. ``apply_blend_remap`` -- relabel the blend indices of some base component via the VG table voted by the producer -> standalone buffer.
+  3. ``emit_fold_sections`` -- Host redirect section (the dungeon IB's draw bound to a base buffer range) + morph CS section transplant.
 
-折叠件按 ``tag``（= IB 的 vb0 hash，唯一）命名段/buffer（``FoldHost_<tag>_C{n}`` / ``ShapeKey*_<tag>.buf``），
-故同一 mod 里多个折叠件不撞名。**无形态键的折叠件**（如衣服，其导出 host 无 ShapeKeyOffset.buf）自动
-跳过 morph 重投影 + morph CS 段移植，只发几何重定向段（+ 必要的 blend remap）——即纯几何折叠。
+Fold pieces name their sections/buffers by ``tag`` (= the IB's vb0 hash, unique) (``FoldHost_<tag>_C{n}`` / ``ShapeKey*_<tag>.buf``),
+so multiple fold pieces in the same mod do not collide. **Fold pieces without shapekeys** (e.g. clothing, whose exported host has no ShapeKeyOffset.buf) automatically
+skip morph reprojection + morph CS section transplant, emitting only geometry redirect sections (+ the necessary blend remap) -- i.e. pure geometry fold.
 
-阶段策略（plan「先复现后扩展」）：
-  * M2（破洞、未编辑）：morph 的 body↔dungeon 对应按**导出层位置匹配**重建 —— 与外部同算法同数据 → 逐字节 == 绿 mod。
-  * M3（已编辑）：改用 **VertexId + producer 对应**（不依赖位置）做编辑稳健；blend remap 因为按 VG 表施加、本就编辑稳健。
+Phase strategy (plan "reproduce first, then extend"):
+  * M2 (holes, unedited): the morph body<->dungeon correspondence is rebuilt by **export-layer position matching** -- same algorithm and data as the external one -> byte-for-byte == green mod.
+  * M3 (edited): switch to **VertexId + producer correspondence** (position-independent) for edit robustness; blend remap is already edit-robust since it's applied via the VG table.
 
-本模块的 buffer/ini 函数是纯 numpy / 字符串，不依赖 bpy；编排（导出各 IB、调用本模块、合并）在 orchestrator 里。
+This module's buffer/ini functions are pure numpy / strings, with no bpy dependency; orchestration (exporting each IB, calling this module, merging) lives in the orchestrator.
 """
 import re
 from collections import defaultdict
@@ -36,10 +36,10 @@ def _rd(path, dt):
     return np.frombuffer(Path(path).read_bytes(), dtype=dt)
 
 
-# ----------------------------------------------------------------- ini 解析
+# ----------------------------------------------------------------- ini parsing
 
 def parse_draws(text):
-    """{component_id: [(index_count, first_index), ...]}（一个 component 可能有多画，如 C5 = c5-face + 小熊）。"""
+    """{component_id: [(index_count, first_index), ...]} (one component may have multiple draws, e.g. C5 = c5-face + the little bear)."""
     d = {}
     for m in re.finditer(r'\[TextureOverrideComponent(\d+)\][^\[]*', text):
         d[int(m.group(1))] = [(int(c), int(o)) for c, o in re.findall(r'drawindexed = (\d+), (\d+)', m.group(0))]
@@ -47,7 +47,7 @@ def parse_draws(text):
 
 
 def parse_match(text):
-    """{component_id: (match_first_index, match_index_count)}。"""
+    """{component_id: (match_first_index, match_index_count)}."""
     d = {}
     for m in re.finditer(r'\[TextureOverrideComponent(\d+)\][^\[]*', text):
         fi = re.search(r'match_first_index = (\d+)', m.group(0))
@@ -57,27 +57,27 @@ def parse_match(text):
     return d
 
 
-# ------------------------------------------------- 1) morph dun2body 重投影
+# ------------------------------------------------- 1) morph dun2body reprojection
 
 def reproject_morph(body_meshes, face_meshes, body_segs, seg_comp, face_draws, tag, ref_meshes=None):
-    """把 dungeon IB 的形态键重投影到 base(body) 顶点序，写 ShapeKey{Offset,VertexId,VertexOffset}_<tag>.buf。
+    """Reproject the dungeon IB's shapekeys onto the base(body) vertex order, writing ShapeKey{Offset,VertexId,VertexOffset}_<tag>.buf.
 
-    body-centric：对每个 body seg 顶点找最近的 dungeon 顶点（**组件限定**：body C2↔face C0 等，
-    防止面部顶点投到共址的别的 component 上），反向得 ``dungeon_vert -> [body verts]``；再对每形态键、
-    每 dungeon 形态键条目，发它名下的 body 顶点 —— 保证**每形态键每 body vid 恰一次**。
+    body-centric: for each body seg vertex find the nearest dungeon vertex (**component-scoped**: body C2<->face C0 etc.,
+    to prevent face vertices projecting onto a co-located different component), invert to get ``dungeon_vert -> [body verts]``; then for each shapekey,
+    each dungeon shapekey entry, emit the body vertices under it -- guaranteeing **exactly once per shapekey per body vid**.
 
-    参数：
-      body_segs:  {body_comp: (index_count, first_index)}  body 各对应 component 的画段（c5-face 取第一画）。
-      seg_comp:   [(body_comp, face_comp), ...]            body component ← dungeon face component 配对。
-      face_draws: {face_comp: (index_count, first_index)}  dungeon face 各 component 的画段。
-    返回 batch_counts（每 batch 的重投影条目数，供 ini 常量用）。
+    Args:
+      body_segs:  {body_comp: (index_count, first_index)}  the draw segment of each corresponding body component (c5-face takes the first draw).
+      seg_comp:   [(body_comp, face_comp), ...]            body component <- dungeon face component pairing.
+      face_draws: {face_comp: (index_count, first_index)}  the draw segment of each dungeon face component.
+    Returns batch_counts (the number of reprojected entries per batch, for ini constants).
 
-    M2：用导出层位置匹配（与外部 xscene_fold_prep 同算法/同数据 → 逐字节一致）。
+    M2: use export-layer position matching (same algorithm/data as the external xscene_fold_prep -> byte-for-byte identical).
     """
     body_meshes, face_meshes = Path(body_meshes), Path(face_meshes)
-    # ref_meshes = 未编辑 body 参照（编辑派生 hole=False 时传入）：dun2body 的位置匹配必须用未编辑几何
-    # 去对 dungeon face，否则编辑后的 body 与 dungeon 对不上。morph 引用的 body 行号在同拓扑下编辑前后
-    # 不变，故按 ref 算出的 morph 直接写进（适用于）实际导出的 body_meshes。hole=True/未编辑时 ref==body。
+    # ref_meshes = unedited body reference (passed in when edit-derived hole=False): dun2body's position matching must use unedited geometry
+    # to match the dungeon face, otherwise the edited body won't align with the dungeon. The body row numbers referenced by morph are
+    # unchanged before/after editing under the same topology, so the morph computed from ref is written directly into (applies to) the actually exported body_meshes. When hole=True/unedited, ref==body.
     ref = Path(ref_meshes) if ref_meshes else body_meshes
     body_pos = _rd(ref / "Position.buf", np.float32).reshape(-1, 3)
     face_pos = _rd(face_meshes / "Position.buf", np.float32).reshape(-1, 3)
@@ -131,7 +131,7 @@ def reproject_morph(body_meshes, face_meshes, body_segs, seg_comp, face_draws, t
         batch_counts.append(cum)
         bstart += int(bo[127])
 
-    # 不变量自检：任一形态键内 body vid 不得重复（= InterlockedAdd 不过累加）
+    # invariant self-check: within any shapekey, body vid must not repeat (= InterlockedAdd does not over-accumulate)
     _bs = 0
     for b in range(nbatch):
         for s in range(127):
@@ -148,13 +148,13 @@ def reproject_morph(body_meshes, face_meshes, body_segs, seg_comp, face_draws, t
     return batch_counts
 
 
-# ------------------------------------------------- 2) blend VG remap 施加
+# ------------------------------------------------- 2) blend VG remap application
 
 def apply_blend_remap(body_meshes, vg_remap_table, body_seg, tag):
-    """按 producer 投票好的 VG 表，重标 body 某 component(body_seg 画段)顶点的 blend 索引 → ``Blend_<tag>.buf``。
+    """Per the VG table voted by the producer, relabel the blend indices of the vertices of some body component (the body_seg draw segment) -> ``Blend_<tag>.buf``.
 
-    blend = R8_UINT stride16（8 idx + 8 wt）。只重标"该 component 顶点 + 该槽权重>0 + 该 VG 在表里"的槽；
-    表外的 VG 槽保持原值（外部脚本同样不动这些槽，已验证两边逐字节一致）。返回输出文件名。
+    blend = R8_UINT stride16 (8 idx + 8 wt). Only relabel slots that are "a vertex of this component + this slot's weight>0 + this VG is in the table";
+    VG slots not in the table keep their original value (the external script likewise leaves these slots untouched, byte-for-byte identical on both sides, verified). Returns the output filename.
     """
     body_meshes = Path(body_meshes)
     blend = _rd(body_meshes / "Blend.buf", np.uint8).reshape(-1, 16).copy()
@@ -173,18 +173,18 @@ def apply_blend_remap(body_meshes, vg_remap_table, body_seg, tag):
     return fn
 
 
-# ------------------------------------------------- 3) ini 段：Host 重定向 + morph CS 移植
+# ------------------------------------------------- 3) ini sections: Host redirect + morph CS transplant
 
 def _section(text, header):
-    """抽出 ``[header]`` 段（含头、到下一 ``[`` 前）。无则 None。"""
+    """Extract the ``[header]`` section (including the header, up to the next ``[``). None if absent."""
     m = re.search(r'(^\[' + re.escape(header) + r'\][^\[]*)', text, re.M)
     return m.group(1) if m else None
 
 
 def _build_morph_sections(face_text, tag):
-    """把 dungeon face 的 morph CS 段移植成 ``_<tag>``：数据 buffer 改名 + 重指向 ``_<tag>.buf``、
-    自定义顶点偏移/数量换成 ``_<tag>`` 全局；RW 暂存(CBRW/CustomShapeKeyValuesRW)沿用 body 共享、不复制。
-    hash/checksum/dispatch/cs 等参数从 face 的 mod.ini 解析（本就是 stock 导出写进去的）。"""
+    """Transplant the dungeon face's morph CS sections into ``_<tag>``: rename data buffers + repoint to ``_<tag>.buf``,
+    swap the custom vertex offset/count to the ``_<tag>`` globals; RW scratch (CBRW/CustomShapeKeyValuesRW) reuses the body's shared one, not copied.
+    Parameters such as hash/checksum/dispatch/cs are parsed from the face's mod.ini (which the stock export already wrote in)."""
     R = tag
     mh = re.search(r'\[TextureOverrideShapeKeyOffsets\]\s*\nhash = (\w+)', face_text).group(1)
     sh = re.search(r'\[TextureOverrideShapeKeyScale\]\s*\nhash = (\w+)', face_text).group(1)
@@ -235,11 +235,11 @@ def _build_morph_sections(face_text, tag):
 
 
 def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match, batch_counts, tag, has_morph=True):
-    """注入折叠所需 ini 段，返回修改后的 body_text：
-      1) 常量：每 batch 的 $shapekey_vertex_offset/count_batch{N}_<tag>（插在 body 最后一个 batch 常量后）——仅 has_morph；
-      2) FoldHost：每个 dungeon component 的 draw 绑到对应 base component 的 buffer 区间（VG 不齐者走 _remap CommandList）；
-      3) _remap CommandList（拷 body 的 CommandListOverrideSharedResources、只换 vb4）+ ResourceBlendBuffer_<tag>；
-      4) morph CS 段移植（_build_morph_sections）——仅 has_morph（无形态键折叠件如衣服跳过）。
+    """Inject the ini sections needed for folding, return the modified body_text:
+      1) constants: per-batch $shapekey_vertex_offset/count_batch{N}_<tag> (inserted after the body's last batch constant) -- only when has_morph;
+      2) FoldHost: each dungeon component's draw bound to the buffer range of the corresponding base component (those with mismatched VG go through the _remap CommandList);
+      3) _remap CommandList (copy the body's CommandListOverrideSharedResources, only swap vb4) + ResourceBlendBuffer_<tag>;
+      4) morph CS section transplant (_build_morph_sections) -- only when has_morph (skipped for fold pieces without shapekeys such as clothing).
     """
     fh = fold_entry["ib_hash"]
     comp_map = {int(k): v for k, v in fold_entry["fold"]["comp_map"].items()}
@@ -282,11 +282,11 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
 
 
 def apply_fold(work, fold_entry, tag, morph_ref=None):
-    """对一条可折 IB：在已 stock 导出的 ``work/body`` 与 ``work/<tag>`` 上，重投影 morph（若有）+ 施加 blend remap
-    + 注入 ini 段，**就地改 work/body**（geometry 折叠、morph 重投影、VG remap 全合进 base buffer mod）。
+    """For one foldable IB: on the already stock-exported ``work/body`` and ``work/<tag>``, reproject morph (if any) + apply blend remap
+    + inject ini sections, **modifying work/body in place** (geometry fold, morph reprojection, VG remap all merged into the base buffer mod).
 
-    ``tag`` = 该 IB 的 vb0 hash（唯一），用于段/buffer 命名 + 定位导出 host 目录 ``work/<tag>``。
-    无形态键的折叠件（衣服：其导出 host 无 ShapeKeyOffset.buf）只折几何 + 必要的 blend remap，跳过 morph。"""
+    ``tag`` = the IB's vb0 hash (unique), used for section/buffer naming + locating the exported host directory ``work/<tag>``.
+    Fold pieces without shapekeys (clothing: their exported host has no ShapeKeyOffset.buf) only fold geometry + the necessary blend remap, skipping morph."""
     work = Path(work)
     body, face = work / "body", work / tag
     body_text = (body / "mod.ini").read_text(encoding="utf-8")

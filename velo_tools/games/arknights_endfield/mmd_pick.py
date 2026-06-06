@@ -1,4 +1,4 @@
-"""MMD 映射 - 端点拾取/拖拽交互。"""
+"""MMD mapping - endpoint pick/drag interaction."""
 from __future__ import annotations
 
 import bpy
@@ -7,7 +7,7 @@ from bpy_extras.view3d_utils import location_3d_to_region_2d
 
 
 # ============================================================
-# 公共状态（overlay.py 直接读取）
+# Shared state (read directly by overlay.py)
 # ============================================================
 _pick_state = {
     'active': False,
@@ -133,7 +133,7 @@ def _safe_collect(ef):
     tgt_c = _ov._mmd_centroids_cached(tgt, allow_live=True)
     src_c = _ov._mmd_centroids_cached(src, allow_live=True)
 
-    # 未匹配的目标顶点组
+    # Unmatched target vertex groups
     for vg in tgt.vertex_groups:
         if is_special_vg_name(vg.name):
             continue
@@ -147,7 +147,7 @@ def _safe_collect(ef):
             'row_idx': -1, 'status': 'unmatched', 'matched': False,
         })
 
-    # 未匹配的源顶点组
+    # Unmatched source vertex groups
     rows_by_mmd = {}
     for i, r in enumerate(profile.rows):
         logical_name = (r.mmd_name or "").strip()
@@ -243,7 +243,7 @@ def _get_brush(context):
 
 
 def _save_brush_state(context):
-    """保存笔刷 + unified_paint_settings 的上下文。"""
+    """Save the brush + unified_paint_settings context."""
     ts = context.tool_settings
     ups = getattr(ts, "unified_paint_settings", None)
     b = _get_brush(context)
@@ -274,7 +274,7 @@ def _save_brush_state(context):
 
 
 def _apply_zero_subtract_brush(context):
-    """同时写 brush 和 unified_paint_settings，以防被 unified 覆盖。"""
+    """Write both brush and unified_paint_settings to avoid being overridden by unified."""
     ts = context.tool_settings
     ups = getattr(ts, "unified_paint_settings", None)
     b = _get_brush(context)
@@ -415,7 +415,7 @@ class VELO_OT_mmd_pick_modal(bpy.types.Operator):
             self._exit(context)
             return {'CANCELLED'}
 
-        # 自动还原笔刷：用户手动退出权重模式时
+        # Auto-restore brush: when the user manually exits weight paint mode
         if VELO_OT_mmd_pick_modal._weight_session and context.mode != 'PAINT_WEIGHT':
             try:
                 _restore_brush_state(context, VELO_OT_mmd_pick_modal._brush_stash)
@@ -552,7 +552,7 @@ def start_modal_if_needed():
     try:
         if getattr(bpy.app, "background", False):
             return
-        # 必须在 VIEW_3D 上下文调用 INVOKE，否则 modal_handler_add 失败。
+        # INVOKE must be called in a VIEW_3D context, otherwise modal_handler_add fails.
         win = bpy.context.window
         if win is None or win.screen is None:
             return

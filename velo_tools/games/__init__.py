@@ -1,11 +1,11 @@
-"""Velo Tools - 多游戏分区根
+"""Velo Tools - multi-game partition root
 
-每个游戏子模块需要暴露：
-    register()     -> 注册自身所有 bpy 类
-    unregister()   -> 反注册
-    enabled()      -> bool, 是否在当前 UI 暴露
+Each game submodule must expose:
+    register()     -> register all its own bpy classes
+    unregister()   -> unregister
+    enabled()      -> bool, whether to expose it in the current UI
 
-顶层 __init__.py 会按 enabled() 决定是否调用 register()。
+The top-level __init__.py decides whether to call register() based on enabled().
 """
 
 from . import arknights_endfield

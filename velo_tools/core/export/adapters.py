@@ -1,15 +1,15 @@
-"""导出适配器（efmi / wwmi）。
+"""Export adapters (efmi / wwmi).
 
-每个适配器对外提供：
-    available() -> bool : 目标导出插件是否可用
-    invoke_export(context) : 调起目标插件的导出流程
+Each adapter exposes:
+    available() -> bool : whether the target export add-on is available
+    invoke_export(context) : trigger the target add-on's export flow
 """
 from __future__ import annotations
 
 import bpy
 
 
-# ---------------- 通用 ----------------
+# ---------------- common ----------------
 
 def _has_operator(idname: str) -> bool:
     try:
@@ -17,8 +17,8 @@ def _has_operator(idname: str) -> bool:
         op = bpy.ops
         for p in path:
             op = getattr(op, p)
-        # 触发一次 _get_idname 即可
-        return op.poll() is not None  # poll 可能 raise
+        # triggering _get_idname once is enough
+        return op.poll() is not None  # poll may raise
     except Exception:
         return False
 
@@ -26,7 +26,7 @@ def _has_operator(idname: str) -> bool:
 # ---------------- EFMI ----------------
 
 def efmi_available() -> bool:
-    # 终末地适配在 Velo Tools 内已 vendor，使用 scene.VTEF_settings 与 vtef.export_mod
+    # The Endfield adapter is vendored inside Velo Tools; use scene.VTEF_settings and vtef.export_mod
     return hasattr(bpy.types.Scene, "VTEF_settings")
 
 
@@ -43,7 +43,7 @@ def efmi_invoke_export(context) -> dict:
 # ---------------- WWMI ----------------
 
 def wwmi_available() -> bool:
-    # 鸣潮 WWMI 已在 Velo Tools 内 vendor + fork，使用 scene.VTWW_settings 与 vtww.export_mod
+    # Wuthering Waves WWMI is vendored + forked inside Velo Tools; use scene.VTWW_settings and vtww.export_mod
     return hasattr(bpy.types.Scene, "VTWW_settings")
 
 

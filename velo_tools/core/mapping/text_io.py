@@ -1,9 +1,9 @@
-"""映射文本格式 I/O（PLAN §2.1）。
+"""Mapping text format I/O (PLAN §2.1).
 
-格式示例：
+Format example:
     @mod 陈千语v3
     @component 0
-    5  20      # native -> unified (注释从 # 起)
+    5  20      # native -> unified (comments start at #)
     @component 4
     36 20
     @profile 默认映射
@@ -16,7 +16,7 @@ from typing import List, Tuple
 
 
 def parse_mapping_text(text: str) -> dict:
-    """返回:
+    """Returns:
     {
         "mod_name": str,
         "components": list[(component_id:int, [(native:str, unified:str), ...])],
@@ -29,7 +29,7 @@ def parse_mapping_text(text: str) -> dict:
     profile_name = "默认映射"
     rows = []  # list[(mmd, unified)]
 
-    cur_mode = 'profile'  # 默认即 profile 模式，允许无 header 的纯 <a> <b> 表互通
+    cur_mode = 'profile'  # default to profile mode, allowing header-less plain <a> <b> tables to interop
     cur_cid = -1
     cur_pairs = []
 
@@ -81,7 +81,7 @@ def parse_mapping_text(text: str) -> dict:
 
 
 def serialize_mapping(settings) -> str:
-    """从 VELO_EF_Settings 序列化为文本（V0.1.1 简化版只导出 profile.rows）。"""
+    """Serialize from VELO_EF_Settings to text (V0.1.1 simplified version only exports profile.rows)."""
     lines: List[str] = []
     mod_name = getattr(settings, "mod_name", "") or ""
     if mod_name:
@@ -95,7 +95,7 @@ def serialize_mapping(settings) -> str:
                     lines.append(f"{p.native_name} {p.unified_name}")
     profile = getattr(settings, "mmd_profile", None)
     if profile is not None and len(profile.rows) > 0:
-        # 不再写 @profile 头，保证与通用区的纯 <name> <name> 格式互通
+        # no longer write the @profile header, to stay interoperable with the general area's plain <name> <name> format
         for r in profile.rows:
             if r.mmd_name and r.unified_name:
                 lines.append(f"{r.mmd_name}\t{r.unified_name}")
@@ -103,7 +103,7 @@ def serialize_mapping(settings) -> str:
 
 
 def load_into_settings(settings, parsed: dict) -> dict:
-    """把 parse_mapping_text 的结果写回 VELO_EF_Settings（V0.1.1 简化版只处理 profile）。"""
+    """Write the parse_mapping_text result back into VELO_EF_Settings (V0.1.1 simplified version only handles profile)."""
     report = {"components": 0, "pairs": 0, "rows": 0}
     if hasattr(settings, "mod_name") and parsed.get("mod_name"):
         try:

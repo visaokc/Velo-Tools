@@ -1,10 +1,10 @@
-"""网格相关操作: 生成同名材质球 / 按贴图合并 / 按材质拆分 (含形态键清理)。
+"""Mesh-related operations: generate same-named materials / merge by texture / split by material (with shape-key cleanup).
 
-设计原则:
-- 不改动顶点组匹配相关代码 (operators.py)
-- 只在选中物体上工作; 没有选中物体一律拒绝执行
-- 拆分后的清理仅删除 *未使用* 的材质槽和 *零位移* 的形态键, 避免误伤
-- 跳过名字含 ".placeholder" 的 MMD 驱动占位网格
+Design principles:
+- Do not touch vertex-group matching code (operators.py)
+- Only work on selected objects; refuse to run when nothing is selected
+- After splitting, cleanup only removes *unused* material slots and *zero-displacement* shape keys, to avoid collateral damage
+- Skip MMD driver placeholder meshes whose names contain ".placeholder"
 """
 
 import re
@@ -15,7 +15,7 @@ from bpy.app.handlers import persistent
 
 
 # ---------------------------------------------------------------------------
-# 公共
+# Shared
 # ---------------------------------------------------------------------------
 
 _EPS = 1e-6
@@ -30,7 +30,7 @@ _ROUTE_AUTO_REFRESHING = [False]
 
 
 def is_real_mesh(obj):
-    """是否真正可操作的网格 (排除 MMD .placeholder 驱动占位)。"""
+    """Whether this is a genuinely operable mesh (excludes MMD .placeholder driver stand-ins)."""
     if obj is None or obj.type != 'MESH':
         return False
     name = obj.name or ""
@@ -280,7 +280,7 @@ def _route_item_key(item):
 
 
 def get_export_component_settings(scene):
-    """当前游戏（velo_tools.active_game）的导出设置对象；经游戏注册表解析。"""
+    """Export settings object for the current game (velo_tools.active_game); resolved via the game registry."""
     try:
         from ..games import registry as _registry
         desc = _registry.get_active_descriptor(scene)
@@ -292,7 +292,7 @@ def get_export_component_settings(scene):
 
 
 def get_active_game_display(scene):
-    """当前游戏显示名（游戏中性文案用）；回退「终末地」。"""
+    """Display name of the current game (for game-neutral copy); falls back to 终末地."""
     try:
         from ..games import registry as _registry
         desc = _registry.get_active_descriptor(scene)
@@ -1105,7 +1105,7 @@ def _clear_crossib_collection_mappings(scene, removed_collections):
 
 
 def _image_keys_of_material(mat):
-    """收集材质里 IMAGE_TEXTURE 节点的图像名集合 (用作分组键)。"""
+    """Collect the set of image names from IMAGE_TEXTURE nodes in the material (used as a grouping key)."""
     keys = set()
     if mat is None or not mat.use_nodes or mat.node_tree is None:
         return keys
@@ -1116,7 +1116,7 @@ def _image_keys_of_material(mat):
 
 
 def _image_keys_of_object(obj):
-    """对象使用的所有材质里, 出现过的图像名 (frozenset, 用作合并分组键)。"""
+    """Image names appearing across all materials used by the object (frozenset, used as a merge grouping key)."""
     keys = set()
     for slot in obj.material_slots:
         keys |= _image_keys_of_material(slot.material)
@@ -1197,7 +1197,7 @@ def _merge_meshes_by_texture_groups(context, meshes, root):
 
 
 # ---------------------------------------------------------------------------
-# 1) 为选中物体添加 Component 前缀
+# 1) Add Component prefix to selected objects
 # ---------------------------------------------------------------------------
 
 class VELO_OT_add_component_prefix(bpy.types.Operator):
@@ -1239,7 +1239,7 @@ class VELO_OT_add_component_prefix(bpy.types.Operator):
 
 
 # ---------------------------------------------------------------------------
-# 2) 选中物体生成同名材质球
+# 2) Generate same-named materials for selected objects
 # ---------------------------------------------------------------------------
 
 class VELO_OT_gen_material_for_selected(bpy.types.Operator):
@@ -1262,10 +1262,10 @@ class VELO_OT_gen_material_for_selected(bpy.types.Operator):
             return {'CANCELLED'}
 
         def _claim_name(collection, target_block, name):
-            """让所选物体的数据块独占目标名字。
-            如果已有同名数据块占着这个名字，先把它强制改名腾位（让位者带
-            `__velo_displaced__` 前缀，避免 Blender 自动追加 `.001`）。
-            返回是否成功设置（target_block.name == name）。"""
+            """Make the selected object's data-block exclusively own the target name.
+            If another data-block already holds this name, force-rename it out of the way first
+            (the displaced one gets a `__velo_displaced__` prefix, to avoid Blender auto-appending `.001`).
+            Returns whether the name was set successfully (target_block.name == name)."""
             existing = collection.get(name)
             if existing is target_block:
                 return True
@@ -1288,17 +1288,17 @@ class VELO_OT_gen_material_for_selected(bpy.types.Operator):
         processed = 0
         for obj in meshes:
             obj_name = obj.name
-            # 单用户化 mesh，确保改名只影响当前物体
+            # Make the mesh single-user, so renaming only affects the current object
             if obj.data.users > 1:
                 obj.data = obj.data.copy()
             _claim_name(bpy.data.meshes, obj.data, obj_name)
             mats = obj.data.materials
             if len(mats) == 0:
-                # 优先复用同名材质球；没有再新建
+                # Prefer reusing a same-named material; create a new one only if none exists
                 mat = bpy.data.materials.get(obj_name)
                 if mat is None:
                     mat = bpy.data.materials.new(name=obj_name)
-                    # new() 在重名时会追加 .001，所以再抢一次名字
+                    # new() appends .001 on a name clash, so claim the name again
                     _claim_name(bpy.data.materials, mat, obj_name)
                 mats.append(mat)
             else:
@@ -1314,7 +1314,7 @@ class VELO_OT_gen_material_for_selected(bpy.types.Operator):
 
 
 # ---------------------------------------------------------------------------
-# 3) 选中物体按贴图合并
+# 3) Merge selected objects by texture
 # ---------------------------------------------------------------------------
 
 class VELO_OT_merge_by_texture(bpy.types.Operator):
@@ -1344,7 +1344,7 @@ class VELO_OT_merge_by_texture(bpy.types.Operator):
         for obj in meshes:
             key = _image_keys_of_object(obj)
             if not key:
-                # 没有任何图像 -> 跳过, 避免把无贴图物体一锅端
+                # No images at all -> skip, to avoid lumping in untextured objects
                 skipped += 1
                 continue
             groups.setdefault(key, []).append(obj)
@@ -1357,7 +1357,7 @@ class VELO_OT_merge_by_texture(bpy.types.Operator):
                 continue
             group_pointers = [_safe_object_pointer(obj) for obj in group]
             group_meshes = [getattr(obj, "data", None) for obj in group]
-            # 选中本组并设置 active
+            # Select this group and set the active object
             bpy.ops.object.select_all(action='DESELECT')
             for o in group:
                 o.select_set(True)
@@ -1385,7 +1385,7 @@ class VELO_OT_merge_by_texture(bpy.types.Operator):
 
 
 # ---------------------------------------------------------------------------
-# 4) 按材质拆分网格 (拆分后单材质 + 清理零位移形态键)
+# 4) Split mesh by material (single material after split + clean zero-displacement shape keys)
 # ---------------------------------------------------------------------------
 
 def _used_material_indices(obj):
@@ -1402,7 +1402,7 @@ def _used_material_indices(obj):
 
 
 def _trim_to_used_material(obj):
-    """删除未使用的材质槽 (直接 API, 不走 ops, 避免撤销栈/上下文切换)。"""
+    """Remove unused material slots (direct API, not ops, to avoid the undo stack / context switches)."""
     if obj.type != 'MESH':
         return 0
     used = _used_material_indices(obj)
@@ -1421,11 +1421,12 @@ def _trim_to_used_material(obj):
 
 
 def _clean_unused_shape_keys(obj, threshold=_EPS):
-    """删除所有 *最大位移 ≤ threshold* 的形态键 (Basis 不动)。
+    """Remove all shape keys whose *maximum displacement ≤ threshold* (Basis is left untouched).
 
-    threshold 单位为物体局部坐标 (米)。骨骼烘焙到形态键常残留 1e-4 量级的微位移,
-    Blender 自带的"清理形态键"只删严格为 0 的, 这里允许放宽阈值兜底清理。
-    使用 numpy + foreach_get 批量计算, 直接调用 obj.shape_key_remove (无 ops 开销)。
+    threshold is in the object's local coordinates (meters). Baking bones into shape keys often leaves
+    residual micro-displacements on the order of 1e-4; Blender's built-in "Clean Keyframes" only removes
+    strictly-zero ones, so here we allow a relaxed threshold as a fallback cleanup.
+    Uses numpy + foreach_get for batch computation, calling obj.shape_key_remove directly (no ops overhead).
     """
     if obj.type != 'MESH':
         return 0
@@ -1443,7 +1444,7 @@ def _clean_unused_shape_keys(obj, threshold=_EPS):
         co = np.empty(n * 3, dtype=np.float32)
         kb.data.foreach_get("co", co)
         diff = co - base_co
-        # 每个顶点 (dx,dy,dz) 的平方距离, 取最大值
+        # Squared distance (dx,dy,dz) per vertex, take the maximum
         d2 = (diff * diff).reshape(-1, 3).sum(axis=1).max()
         if d2 <= eps2:
             to_remove.append(kb)
@@ -1456,10 +1457,10 @@ def _clean_unused_shape_keys(obj, threshold=_EPS):
 
 
 def _rename_to_sole_material(obj):
-    """若对象只剩一个材质槽, 则把物体名 / mesh 名 / 材质名统一为该材质名。
+    """If the object has only one material slot left, unify the object name / mesh name / material name to that material's name.
 
-    返回 True 表示进行了改名。与"选中物体生成同名材质球"按钮的同步规则一致,
-    只是这里以 *材质名* 为基准 (拆分后每个子物体唯一对应一种材质)。
+    Returns True if a rename happened. Consistent with the sync rule of the "选中物体生成同名材质球" button,
+    except this one keys off the *material name* (after splitting, each sub-object uniquely corresponds to one material).
     """
     if obj.type != 'MESH':
         return False
@@ -1471,7 +1472,7 @@ def _rename_to_sole_material(obj):
         return False
     base = _with_export_temp_suffix(obj, mat.name)
     _claim_object_name(obj, base)
-    # mesh 数据若被多对象共享则单用户化, 再改名
+    # If the mesh data is shared by multiple objects, make it single-user, then rename
     if obj.data is not None:
         if obj.data.users > 1:
             obj.data = obj.data.copy()

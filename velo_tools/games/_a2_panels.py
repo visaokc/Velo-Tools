@@ -1,20 +1,20 @@
-"""问题 A 修复 + 单折叠头（挂载式，不改 _xxx_core / _efmi_core 任何一行）。
+"""Problem A fix + single fold header (mounted/patch style, without touching a single line of _xxx_core / _efmi_core).
 
-历程：1.0.8/1.0.9/1.1.1 三轮（tag_redraw / 移下拉 / 0 延迟 timer 重注册根面板）都没修好，
-1.1.2 用 A2（两个游戏根面板 poll 只判 GAME tab、恒实例化、切 active_game 只切内容）在真实
-Blender 4.4 GUI 修好了「切下拉游戏面板不出现」，但 A2 会在 GAME tab 同时露出「终末地 EFMI」
-「鸣潮 WWMI」两个折叠头（未选中的为空），用户不接受。
+History: 1.0.8/1.0.9/1.1.1 three rounds (tag_redraw / moving the dropdown / 0-delay timer re-registering the root panel) all failed,
+1.1.2 used A2 (the two game root panels' poll only checks the GAME tab, always instantiate, switching active_game only switches content) and fixed
+"switching the dropdown game panel doesn't appear" in the real Blender 4.4 GUI, but A2 would expose both the "终末地 EFMI"
+and "鸣潮 WWMI" fold headers under the GAME tab simultaneously (the unselected one empty), which the user does not accept.
 
-1.1.3 = **单容器（A1）**：Velo 自有一个常驻容器面板 `VELO_PT_game`（poll 只判 active_tab=='GAME'，
-故恒实例化）。它的折叠头按 active_game 显示当前游戏名；它的主体经本模块的 Shim 代理调用 vendored
-根面板（VTEF_PT_SIDEBAR / VTWW_PT_SIDEBAR）的 `draw`（连同 `draw_menu_*`），从而原样复用上游绘制
-逻辑、零核心改动、不重复维护。各游戏的子面板（vtef/vtww 主面板、bridge、CrossIB、ShapeKey、
-ini_toggles 等）的 `bl_parent_id` 由根面板重挂到 `VELO_PT_game`，并按 active_game 门控 poll；
-vendored 根面板自身 poll 改为恒 False（只借其类对象给 Shim 用，绝不作为面板显示），于是 GAME tab
-内**只出现一个折叠头 = 当前游戏**，切 active_game 只换容器内容（容器恒实例化 → 子面板随 plain
-redraw 增减，复刻已验证可用的 tool_mode 机制，不依赖任何惰性实例化时机）。
+1.1.3 = **single container (A1)**: Velo owns a resident container panel `VELO_PT_game` (poll only checks active_tab=='GAME',
+so it always instantiates). Its fold header shows the current game name by active_game; its body, via this module's Shim proxy, calls the vendored
+root panels' (VTEF_PT_SIDEBAR / VTWW_PT_SIDEBAR) `draw` (along with `draw_menu_*`), thereby reusing the upstream draw
+logic as-is, with zero core changes and no duplicated maintenance. Each game's sub-panels (vtef/vtww main panel, bridge, CrossIB, ShapeKey,
+ini_toggles, etc.) have their `bl_parent_id` re-parented from the root panel to `VELO_PT_game`, and gate poll by active_game;
+the vendored root panels' own poll is changed to always False (only lending their class objects to the Shim, never displayed as panels), so the GAME tab
+only shows **one fold header = the current game**, and switching active_game only swaps the container content (the container always instantiates -> sub-panels are added/removed via plain
+redraw, replicating the verified-working tool_mode mechanism, not relying on any lazy-instantiation timing).
 
-gate()/ungate() 幂等（`_velo_a2` 标记防 disable/enable 重复包裹）且按 root_idname 存原值可复原。
+gate()/ungate() are idempotent (the `_velo_a2` marker prevents disable/enable double-wrapping) and store original values per root_idname for restoration.
 """
 import bpy
 
@@ -31,8 +31,8 @@ def _scene(context):
 
 
 class Shim:
-    """在 Velo 容器面板里执行 vendored 根面板的 draw：`.layout` 用容器的，
-    其余属性/方法（draw_menu_* 等）委托给根类对象，并以本 Shim 作为 self 调用。"""
+    """Run the vendored root panel's draw inside the Velo container panel: `.layout` uses the container's,
+    other attributes/methods (draw_menu_*, etc.) are delegated to the root class object and invoked with this Shim as self."""
 
     def __init__(self, layout, root_cls):
         object.__setattr__(self, "layout", layout)
@@ -46,7 +46,7 @@ class Shim:
 
 
 def make_draw_body(root_cls):
-    """生成容器主体绘制函数：经 Shim 调 vendored 根面板 draw（保持上游逻辑，不复制代码）。"""
+    """Generate the container body draw function: calls the vendored root panel draw via the Shim (keeping upstream logic, not copying code)."""
     def _draw_body(container, context):
         root_cls.draw(Shim(container.layout, root_cls), context)
     return _draw_body
@@ -94,13 +94,13 @@ def _rooted_at(c, root_idname, panels):
 
 
 def gate(root_idname, game_value, root_cls):
-    """隐藏 vendored 根面板（poll→False）、把其子面板重挂到 VELO_PT_game 并按 active_game 门控。
+    """Hide the vendored root panel (poll->False), re-parent its sub-panels to VELO_PT_game and gate them by active_game.
 
-    必须在该游戏 register() 末尾调用（此时它的所有子面板都已注册），否则晚注册的子面板会漏掉。幂等。
+    Must be called at the end of that game's register() (when all its sub-panels are registered), otherwise late-registered sub-panels are missed. Idempotent.
     """
     entry = _STORE.setdefault(root_idname, {"root": None, "subs": []})
 
-    # 计算「parent 链根于本根面板」的全部子面板（在重挂之前，用原始 parent 链判定）
+    # Compute all sub-panels whose parent chain is rooted at this root panel (before re-parenting, judged via the original parent chain)
     panels = _panel_map()
     descendants = []
     for bid, c in panels.items():
@@ -109,14 +109,14 @@ def gate(root_idname, game_value, root_cls):
         if _rooted_at(c, root_idname, panels):
             descendants.append((bid, c))
 
-    # 隐藏根面板（只借类对象给 Shim 用，不作为面板显示）
+    # Hide the root panel (only lend the class object to the Shim, not displayed as a panel)
     cur_poll = getattr(root_cls, "poll", None)
     cur_fn = getattr(cur_poll, "__func__", None)
     if not (cur_fn is not None and getattr(cur_fn, "_velo_a2", False)):
         entry["root"] = (root_cls, root_cls.__dict__.get("poll", _MISSING))
         root_cls.poll = classmethod(_hidden_poll)
 
-    # 子面板：直接子面板 bl_parent_id 重挂到容器；所有子面板 poll 加 active_game 门控
+    # Sub-panels: direct sub-panels' bl_parent_id re-parented to the container; all sub-panels' poll gets active_game gating
     for bid, c in descendants:
         rec = {}
         if getattr(c, "bl_parent_id", "") == root_idname:
