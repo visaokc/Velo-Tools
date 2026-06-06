@@ -20,13 +20,20 @@ Requires Blender 3.6+ (developed and tested on 4.4).
 3. Enable **Velo-Tools**.
 4. Press `N` in the 3D Viewport and open the **Velo Tools** tab.
 
+## Updating
+
+Velo Tools updates itself from its GitHub Releases. Open Edit → Preferences →
+Add-ons → **Velo-Tools** and use the update panel (检查更新 / *Check for update*):
+it offers to download and install the latest stable release, then asks you to
+restart Blender. Tick **接收预发布版本** to also receive pre-releases.
+
 ## Build from source
 
 The add-on package lives in `velo_tools/`. To produce an installable zip:
 
 ```powershell
 ./pack.ps1                 # package the committed HEAD tree -> dist/velo_tools-<version>.zip
-./pack.ps1 -Ref v1.2.7     # package a specific tag/commit
+./pack.ps1 -Ref v1.3.0     # package a specific tag/commit
 ```
 
 For local development, link the source straight into Blender instead of repacking:
