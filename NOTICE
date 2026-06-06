@@ -28,8 +28,11 @@ Blender Addon Updater
   Author  : CGCookie (Patrick W. Crawford and contributors)
   License : GPL
   Upstream: https://github.com/CGCookie/blender-addon-updater
-  Location: bundled within the vendored cores (addon_updater.py / addon_updater_ops.py);
-            currently neutralized inside Velo Tools.
+  Location: velo_tools/updater/ (host-level copy, active; updates the whole add-on);
+            also bundled within the vendored per-game cores where it stays neutralized.
+  Changes : host copy retargeted to visaokc/Velo-Tools, downloads the pack.ps1 release
+            asset, releases-only (no branches), pre-releases filtered with an opt-in
+            preference, settings UI localized to Chinese. See docs/adr/0002.
 
 Jinja2
   Author  : Pallets

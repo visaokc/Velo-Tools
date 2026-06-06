@@ -9,6 +9,7 @@ bl_info = {
 }
 
 # v0.3.0 refactored skeleton (PLAN_v0.4_rebuild.md R1/R2/R3 phases)
+from . import updater
 from . import properties
 from . import operators
 from . import ui
@@ -23,7 +24,7 @@ from .core import export as _core_export
 # core.mapping's UI sub-panel attaches under VELO_EF_PT_root, which is registered by
 # games.arknights_endfield, so it must be registered after games (the unregister order
 # is reversed automatically).
-_modules = (properties, operators, ui, overlay, general_mapping, mesh, weights, games, _core_mapping, _core_export)
+_modules = (updater, properties, operators, ui, overlay, general_mapping, mesh, weights, games, _core_mapping, _core_export)
 
 
 def register():
