@@ -1,0 +1,238 @@
+import time
+
+from pathlib import Path
+from textwrap import dedent
+
+from ..addon.exceptions import ConfigError
+
+from ..migoto_io.blender_interface.utility import *
+from ..migoto_io.blender_interface.collections import *
+from ..migoto_io.blender_interface.objects import *
+
+from ..migoto_io.migoto_model.migoto_mesh import GeometryMatcherConfig, GeometryMatcherMethod
+
+from ..migoto_io.object_extractor.raw_object.raw_object_extractor import DrawCallFilter, RawObjectFilter
+from ..migoto_io.object_extractor.migoto_object.migoto_object import MigotoObject, MigotoComponent, DuplicateDataError
+from ..migoto_io.object_extractor.migoto_object.migoto_object_builder import MigotoObject, MigotoObjectFilter
+from ..migoto_io.object_extractor.migoto_object.textures_descriptor import TextureFilter
+from ..migoto_io.object_extractor.object_extractor import ObjectExtractor
+from ..migoto_io.object_extractor.lod_matcher import LODMatcher, ObjectLowSimilarityError, ComponentLowSimilarityError
+
+from ..blender_import.blender_import import import_object
+from ... import vgmap_extractor as velo_vgmap_extractor
+
+
+def _parse_component_filter(spec: str):
+    text = (spec or "").strip()
+    if not text:
+        return None
+    result = set()
+    for part in text.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-", 1)
+            start_i, end_i = int(start), int(end)
+            if start_i > end_i:
+                start_i, end_i = end_i, start_i
+            result.update(range(start_i, end_i + 1))
+        else:
+            result.add(int(part))
+    return result
+
+
+def _filter_components_contiguously(migoto_object: MigotoObject, component_filter: set[int] | None) -> None:
+    if component_filter is None:
+        return
+    migoto_object.components = [
+        component for component_id, component in enumerate(migoto_object.components)
+        if component_id in component_filter
+    ]
+    migoto_object.build_metadata()
+
+
+def _write_vertex_group_sidecars(migoto_objects: list[MigotoObject], output_path: Path) -> None:
+    for migoto_object in migoto_objects:
+        velo_vgmap_extractor.write_sidecar(migoto_object, output_path)
+
+
+def _write_crossib_sidecars(migoto_objects: list[MigotoObject], output_path: Path, dump_path: Path) -> None:
+    from ...embedded.crossib import sidecar as crossib_sidecar
+    for migoto_object in migoto_objects:
+        obj_folder = output_path / migoto_object.id
+        try:
+            crossib_sidecar.write_sidecars(obj_folder, dump_path)
+        except Exception as exc:
+            print(f"[CrossIB] sidecar generation failed for {migoto_object.id}: {exc}")
+
+
+def match_lods(
+    cfg,
+    full_object: MigotoObject,
+    lod_candidate_objects: list[MigotoObject],
+ ) -> tuple[MigotoObject, dict[MigotoComponent, tuple[MigotoComponent, dict[int, int] | None]]]:
+    error_threshold = cfg.geo_matcher_voxel_error_threshold if cfg.geo_matcher_method == 'VOXEL' else cfg.geo_matcher_error_threshold
+    lod_matcher = LODMatcher(
+        component_min_vertex_count=cfg.skip_component_below_vertex_count if cfg.skip_component_below_vertex_count_enabled else 0,
+        component_hash_blacklist=cfg.skip_component_hashes if cfg.skip_component_hashes_enabled else "",
+        object_similarity_threshold=error_threshold,
+        component_similarity_threshold=error_threshold,
+        skip_components_below_similarity_threshold=cfg.skip_lods_below_error_threshold,
+        geo_matcher_main_config=GeometryMatcherConfig(
+            method=GeometryMatcherMethod(cfg.geo_matcher_method),
+            sensitivity=cfg.geo_matcher_sensivity,
+            voxel_size=cfg.geo_matcher_voxel_size,
+            samples_count=cfg.geo_matcher_sample_size,
+        ),
+        geo_matcher_prefilter_config=GeometryMatcherConfig(
+            method=GeometryMatcherMethod(cfg.geo_matcher_method),
+            sensitivity=cfg.geo_matcher_sensivity,
+            voxel_size=cfg.geo_matcher_prefilter_voxel_size,
+            samples_count=cfg.geo_matcher_prefilter_sample_size,
+        ),
+        geo_matcher_prefilter_candidates_count=cfg.geo_matcher_prefilter_candidates_count,
+        vg_matcher_candidates_count=cfg.vg_matcher_candidates_count,
+    )
+
+    lod_object, matched_components = lod_matcher.find_matching_lods(full_object, lod_candidate_objects)
+
+    return lod_object, matched_components
+
+
+def import_lods(
+    context,
+    cfg,
+    full_object: MigotoObject,
+    lod_object: MigotoObject,
+    matched_components: dict[MigotoComponent, tuple[MigotoComponent, dict[int, int] | None]],
+):
+
+    for full_component in full_object.components:
+        (lod_component, vg_map) = matched_components.get(full_component, (None, None))
+        if lod_component is None:
+            lod_component = full_component
+        try:
+            full_component.import_lod_metadata(lod_object.id, lod_component, vg_map, cfg.allow_lod_overwrite)
+        except DuplicateDataError as e:
+            raise ConfigError('allow_lod_overwrite', dedent(f"""
+                {e}
+                To forcefully overwrite it, retry LoD import with "Allow LoD Data Overwrite" enabled
+            """))
+
+    object_source_folder = resolve_path(cfg.object_source_folder)
+    full_object.export_metadata(object_source_folder)
+
+    # Import lod mesh for debug
+    if cfg.import_matched_lod_objects:
+
+        lod_level = max([lod_id for lod_id, lod in enumerate(full_object.metadata.components[0].lods)]) + 1
+        collection_name = f"{full_object.id} LOD{lod_level}: {lod_object.id}"
+
+        print("Non-matched components:")
+        for lod_component in lod_object.components:
+            if lod_component.metadata.mesh_name.startswith("Skipped"):
+                print(lod_component.metadata.mesh_name)
+
+        print(f"Importing object {lod_object.id} to Blender...")
+        import_object(context, cfg, collection_name, lod_object)
+
+
+def extract_frame_data(context, cfg, extract_lods=False):
+    if not extract_lods:
+        dump_path = resolve_path(cfg.frame_dump_folder)
+    else:
+        dump_path = resolve_path(cfg.lod_frame_dump_folder)
+
+    if not dump_path.is_dir():
+        raise ConfigError('frame_dump_folder', 'Specified dump folder does not exist!')
+    if not Path(dump_path / 'log.txt').is_file():
+        raise ConfigError('frame_dump_folder', 'Specified dump folder is missing log.txt file!')
+
+    start_time = time.time()
+
+    object_extractor = ObjectExtractor(
+        verbose_logging=cfg.verbose_logging,
+    )
+
+    frame_model = object_extractor.build_frame_model(dump_path)
+
+    migoto_objects = object_extractor.extract_objects(
+        model=frame_model,
+        draw_call_filter=DrawCallFilter(
+            component_hash_blacklist=cfg.skip_draw_resource_hashes if cfg.skip_draw_resource_hashes_enabled else "",
+        ),
+        raw_object_filter=RawObjectFilter(
+            min_component_count=cfg.skip_object_min_component_count if cfg.skip_object_min_component_count_enabled else 0,
+            min_texture_count=cfg.skip_object_min_texture_count if cfg.skip_object_min_texture_count_enabled else 0,
+            lookup_resource_hashes=cfg.skip_object_resource_hashes if cfg.skip_object_resource_hashes_enabled else "",
+        ),
+        migoto_object_filter=MigotoObjectFilter(
+            ignore_errors=cfg.tolerate_extraction_errors,
+            skip_static_objects=cfg.skip_static_objects,
+        ),
+    )
+
+    if not extract_lods:
+        component_filter = _parse_component_filter(getattr(cfg, "extract_components_filter", "") or "")
+        if component_filter is not None:
+            for migoto_object in migoto_objects:
+                _filter_components_contiguously(migoto_object, component_filter)
+
+    if not extract_lods:
+
+        texture_filter = TextureFilter(
+            exclude_extensions=["jpg", "buf"] if cfg.skip_jpg_textures else ["buf"],
+            exclude_hashes=[],
+            min_file_size=cfg.skip_small_textures_size * 1024 if cfg.skip_small_textures else 0,
+        )
+
+        output_path = resolve_path(cfg.extract_output_folder)
+
+        object_extractor.export_objects(migoto_objects, texture_filter, output_path)
+
+        if getattr(cfg, "generate_vertex_group_map", True):
+            _write_vertex_group_sidecars(migoto_objects, output_path)
+
+        if getattr(cfg, "generate_crossib_json", True):
+            _write_crossib_sidecars(migoto_objects, output_path, dump_path)
+
+        if cfg.import_extracted_objects:
+            for migoto_object in migoto_objects:
+                import_object(context, cfg, migoto_object.id, migoto_object, extended_mesh_name=True)
+
+    else:
+
+        object_source_folder = resolve_path(cfg.object_source_folder)
+
+        full_object = MigotoObject.from_exported_files(object_source_folder)
+
+        try:
+            lod_object, matched_components = match_lods(cfg, full_object, migoto_objects)
+        except (
+            ObjectLowSimilarityError,
+            ComponentLowSimilarityError,
+        ) as e:
+            error_threshold = cfg.geo_matcher_voxel_error_threshold if cfg.geo_matcher_method == 'VOXEL' else cfg.geo_matcher_error_threshold
+            raise ConfigError('geo_matcher_error_threshold', dedent(f"""
+                {e}
+                It is below configured {error_threshold:.2f}% Geometry Matcher Error Threshold.
+                If it's not too far off, try to lower threshold. Otherwise either dump is missing some data or search engine fails to handle it.
+            """))
+
+        import_lods(context, cfg, full_object, lod_object, matched_components)
+
+        lower_poly_lod_count = sum(1 for k, v in matched_components.items() if k.metadata.ib_hash != v[0].metadata.ib_hash)
+
+        bpy.context.window_manager.popup_menu(
+            lambda self, context: self.layout.label(
+                text=(
+                    f"Successfully imported LOD data for {len(matched_components)} components to Metadata.json"
+                    f" (where {len(matched_components) - lower_poly_lod_count} components seem to use full mesh as LOD)."
+                )
+            ),
+            title="LOD Import Complete",
+            icon="INFO"
+        )
+
+    print(f"Execution time: %s seconds" % (time.time() - start_time))

@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+import sys
+
+from . import auto_load
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent / 'libs'))
+
+
+bl_info = {
+    "name": "EFMI Tools",
+    "version": (0, 4, 3),
+    "efmi_version": (1, 2, 3),
+    "blender": (3, 6, 0),
+    "author": "SpectrumQT, LeoTorreZ, SinsOfSeven, SilentNightSound, DarkStarSword",
+    "location": "View3D > Sidebar > Tool Tab",
+    "description": "Arknights: Endfield modding toolkit",
+    "category": "Object",
+    "tracker_url": "https://github.com/SpectrumQT/EFMI-Tools",
+}
+auto_load.init()
+
+import bpy
+from .addon import settings
+
+
+def trigger_mod_export():
+    if bpy.context.scene.VTEF_settings.export_on_reload:
+        print('Triggered export on addon reload...')
+        bpy.ops.vtef.export_mod()
+
+
+def override_skeleton_type():
+    cfg = bpy.context.scene.VTEF_settings
+    cfg.import_skeleton_type = 'COMPONENT'
+    
+
+def register():
+    auto_load.register()
+
+    bpy.types.Scene.VTEF_settings = bpy.props.PointerProperty(type=settings.VTEF_Settings)
+    
+    # prefs = bpy.context.preferences.addons[__package__].preferences
+    bpy.app.timers.register(trigger_mod_export, first_interval=0.1)
+    bpy.app.timers.register(override_skeleton_type, first_interval=0.1)
+
+
+def unregister():
+    auto_load.unregister()
+
+    del bpy.types.Scene.VTEF_settings
+
+    if bpy.app.timers.is_registered(trigger_mod_export):
+        bpy.app.timers.unregister(trigger_mod_export)
+
+    if bpy.app.timers.is_registered(override_skeleton_type):
+        bpy.app.timers.unregister(override_skeleton_type)

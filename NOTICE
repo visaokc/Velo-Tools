@@ -1,0 +1,42 @@
+Velo Tools — third-party attributions and licenses
+===================================================
+
+Velo Tools is distributed under the GNU General Public License v3.0 or later
+(see LICENSE). It bundles and/or adapts the following components. Each retains its
+original copyright and license; the combined work is GPL-3.0-or-later.
+
+EFMI-Tools (Arknights: Endfield Model Importer)
+  Authors : SpectrumQT, LeoTorreZ, SinsOfSeven, SilentNightSound, DarkStarSword
+  License : GPL-3.0
+  Upstream: https://github.com/SpectrumQT/EFMI-Tools
+  Location: velo_tools/games/arknights_endfield/_efmi_core/
+  Changes : namespace fork (EFMI/WWMI_* -> VTEF_*) so Velo Tools can coexist with the
+            standalone add-on; nested-package auto_load adaptation; panel re-parenting;
+            updater neutralized. Velo extensions (CrossIB, ShapeKey export) are mounted
+            via the driver layer and do not modify the vendored core.
+
+WWMI-Tools (Wuthering Waves Model Importer)
+  Authors : SpectrumQT, LeoTorreZ, SinsOfSeven, SilentNightSound, DarkStarSword
+  License : GPL-3.0
+  Upstream: https://github.com/SpectrumQT/WWMI-Tools
+  Location: velo_tools/games/wuthering_waves/_wwmi_core/
+  Changes : namespace fork (WWMI_TOOLS_* -> VTWW_*) for coexistence; nested auto_load
+            adaptation; panel re-parenting; updater neutralized; COLOR1 -> TEXCOORD1 fix.
+            The cross-scene multi-IB merge is mounted via the driver layer.
+
+Blender Addon Updater
+  Author  : CGCookie (Patrick W. Crawford and contributors)
+  License : GPL
+  Upstream: https://github.com/CGCookie/blender-addon-updater
+  Location: bundled within the vendored cores (addon_updater.py / addon_updater_ops.py);
+            currently neutralized inside Velo Tools.
+
+Jinja2
+  Author  : Pallets
+  License : BSD-3-Clause
+  Location: velo_tools/games/*/_*_core/libs/jinja2/
+
+MarkupSafe
+  Author  : Pallets
+  License : BSD-3-Clause
+  Location: velo_tools/games/*/_*_core/libs/markupsafe/

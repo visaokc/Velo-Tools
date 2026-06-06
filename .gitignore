@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build output (release zips built on demand; GitHub Releases is the version store)
+dist/
+
+# Large local-only assets (never published)
+Blend/
+_archive/
+
+# Markdown docs: only the root README.md is published (per project decision).
+# All other .md stay local — internal CONTEXT/DEV_LOG/FIX, nested per-game READMEs, ADRs.
+*.md
+!/README.md
+
+# Internal design docs and unreferenced doc images kept local
+docs/
+png/
+
+# Dev-only tooling kept local; only the dev junction helper is published
+tools/*
+!tools/dev_link.ps1
+verify_install.py
+tests/
+
+# Misc local outputs
+*.log
+*.result.json
