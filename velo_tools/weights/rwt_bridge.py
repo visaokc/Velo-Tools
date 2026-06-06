@@ -21,7 +21,6 @@ def _candidate_roots():
     here = Path(__file__).resolve()
     for parent in here.parents:
         yield parent / "robust_weight_transfer"
-    yield Path("d:/MOD/Blender插件制作/robust_weight_transfer")
 
 
 def _add_path(path):
