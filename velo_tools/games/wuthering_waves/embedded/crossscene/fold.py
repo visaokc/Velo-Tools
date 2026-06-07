@@ -181,15 +181,47 @@ def _section(text, header):
     return m.group(1) if m else None
 
 
-def _merge_block(body_text, bc):
-    """MERGED only: return the skeleton-build block ``if $merge_status_id_<bc> != 2 ... endif`` from the
-    body's ``[TextureOverrideComponent<bc>]`` (sets that base component's vg_offset/vg_count and runs
-    CommandListMergeSkeleton). Verbatim incl. indentation; ``''`` when absent (COMPONENT body has none)."""
-    sec = _section(body_text, "TextureOverrideComponent%d" % bc)
-    if not sec:
+def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic):
+    """MERGED FoldHost = the native body ``[TextureOverrideComponent<bc>]`` override replicated verbatim,
+    so it inherits everything that component needs to draw correctly: the ``if $merge_status_id != 2``
+    skeleton-build block, the ``if ResourceMergedSkeleton !== null`` draw block, and -- crucially for
+    components whose VG ids reach >=256 (C4/C5 of this character) -- the per-component BlendRemap override
+    refs (``ResourceBlendBufferOverride/MergedSkeletonOverride/ExtraMergedSkeletonOverride = ref
+    Resource{Remapped...}Component<bc>``) that route the draw through the remapped blend+skeleton. <256
+    components carry no such refs in the native override, so they are naturally omitted.
+
+    Only the section header, hash, and match window are swapped (so the dungeon draw triggers it), and the
+    draws are trimmed to the base component's PRIMARY range -- any ``.001`` sub-draw (e.g. the bear C5.001)
+    is drawn by its own IB, not the fold. Indentation (incl. the merge block's tabs) is preserved verbatim.
+    The per-component remapped buffers are filled every frame by InitializeBlendRemaps + RemapMergedSkeleton
+    (from [Present], gated by $object_detected, which this section sets), so they are populated in pure-
+    dungeon scenes too."""
+    native = _section(body_text, "TextureOverrideComponent%d" % bc)
+    if not native:
         return ""
-    m = re.search(r'\n([ \t]*if \$merge_status_id_%d != 2\b.*?\n[ \t]*endif)' % bc, sec, re.S)
-    return m.group(1) if m else ""
+    out, seen_draw, header_done = [], False, False
+    for ln in native.rstrip("\n").split("\n"):
+        s = ln.strip()
+        if not header_done and s.startswith("[TextureOverrideComponent"):
+            out.append("[TextureOverride_FoldHost_%s_C%d]" % (tag, fc))
+            header_done = True
+        elif s.startswith("hash ="):
+            out.append("hash = %s" % fh)
+        elif s.startswith("match_first_index ="):
+            out.append("match_first_index = %d" % mfi)
+        elif s.startswith("match_index_count ="):
+            out.append("match_index_count = %d" % mic)
+        elif s.startswith("drawindexed"):
+            if not seen_draw:
+                out.append(ln)            # keep the primary draw verbatim
+                seen_draw = True
+            # drop subsequent draws (e.g. the .001 sub-component, drawn by its own IB)
+        elif s.startswith("; Draw "):
+            if not seen_draw:
+                out.append(ln)            # keep only the primary draw's comment
+        else:
+            out.append(ln)
+    return "\n".join(out) + "\n"
 
 
 def _build_morph_sections(face_text, tag):
@@ -257,7 +289,13 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
     """
     fh = fold_entry["ib_hash"]
     comp_map = {int(k): v for k, v in fold_entry["fold"]["comp_map"].items()}
-    vg_remap = fold_entry["fold"].get("vg_remap", {})
+    # MERGED body carries the merged-skeleton machinery; COMPONENT body has none.
+    is_merged = "ResourceMergedSkeleton" in body_text
+    # The producer vg_remap (8-bit Blend relabel) is a COMPONENT-mode mechanism: in MERGED the FoldHost
+    # replicates the native component override, which handles >=256 via the runtime per-component
+    # RemappedBlend; the global merged skeleton makes the base blend self-consistent. So vg_remap (and its
+    # _c{N}remap CommandList / Blend_c{N}remap.buf) is NOT consumed in MERGED.
+    vg_remap = {} if is_merged else fold_entry["fold"].get("vg_remap", {})
     remap_cmd = {int(k): ("CommandListOverrideSharedResources_c%dremap" % int(k), "c%dremap" % int(k))
                  for k in vg_remap}
 
@@ -272,35 +310,26 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             a = anchors[-1]
             body_text = body_text[:a.end()] + consts + body_text[a.end():]
 
-    # MERGED body carries the merged-skeleton machinery; COMPONENT body has none -> keep the old FoldHost.
-    is_merged = "ResourceMergedSkeleton" in body_text
     out = ["\n; ==== fold %s (%s) into base buffer ranges ====\n" % (tag, fh)]
     for fc in sorted(comp_map):
         bc = comp_map[fc]
         mfi, mic = face_match[fc]
-        cnt, offd = body_draws[bc][0]
-        ovr = remap_cmd[bc][0] if bc in remap_cmd else "CommandListOverrideSharedResources"
         if is_merged:
-            # A pure-dungeon scene never draws the base components, so $object_detected_ib0 stays unset and
-            # UpdateMergedSkeleton never runs -> the body skeleton starves. Build the base component's
-            # skeleton slice here (from the live cb4 of the dungeon draw), then draw under the same
-            # `ResourceMergedSkeleton !== null` guard the native components use.
-            skel = _merge_block(body_text, bc)
-            out.append("[TextureOverride_FoldHost_%s_C%d]\nhash = %s\n"
-                       "match_first_index = %d\nmatch_index_count = %d\n$object_detected = 1\n"
-                       "if $mod_enabled\n%s\n    if ResourceMergedSkeleton !== null\n"
-                       "        handling = skip\n        run = CommandListTriggerResourceOverrides\n"
-                       "        run = %s\n        drawindexed = %d, %d, 0\n"
-                       "        run = CommandListCleanupSharedResources\n    endif\nendif\n"
-                       % (tag, fc, fh, mfi, mic, skel, ovr, cnt, offd))
+            # Replicate the native body component override (incl. the >=256 RemappedBlend override refs),
+            # swapping only header/hash/match + trimming to the primary draw. This both feeds the body
+            # skeleton in pure-dungeon scenes ($object_detected) and routes >=256 components through the
+            # remapped blend/skeleton -- which the old hand-built FoldHost failed to do (C4/C5 mis-weighted).
+            out.append(_build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic))
         else:
+            cnt, offd = body_draws[bc][0]
+            ovr = remap_cmd[bc][0] if bc in remap_cmd else "CommandListOverrideSharedResources"
             out.append("[TextureOverride_FoldHost_%s_C%d]\nhash = %s\n"
                        "match_first_index = %d\nmatch_index_count = %d\n$object_detected = 1\n"
                        "if $mod_enabled\n    handling = skip\n    run = CommandListTriggerResourceOverrides\n"
                        "    run = %s\n    drawindexed = %d, %d, 0\n    run = CommandListCleanupSharedResources\nendif\n"
                        % (tag, fc, fh, mfi, mic, ovr, cnt, offd))
     base_cmd = _section(body_text, "CommandListOverrideSharedResources")
-    for bc, (cmdname, btag) in remap_cmd.items():
+    for bc, (cmdname, btag) in remap_cmd.items():  # empty in MERGED (vg_remap dropped above)
         blk = base_cmd.replace("[CommandListOverrideSharedResources]", "[%s]" % cmdname, 1)
         blk = re.sub(r'vb4 = \w+', "vb4 = ResourceBlendBuffer_%s" % btag, blk)
         out.append("\n" + blk.rstrip() + "\n")
@@ -321,9 +350,12 @@ def apply_fold(work, fold_entry, tag, morph_ref=None):
     body, face = work / "body", work / tag
     body_text = (body / "mod.ini").read_text(encoding="utf-8")
     face_text = (face / "mod.ini").read_text(encoding="utf-8")
+    # MERGED replicates the native component override (handles >=256 via runtime RemappedBlend); the
+    # COMPONENT-mode producer vg_remap (8-bit Blend relabel) is neither needed nor consumed there.
+    is_merged = "ResourceMergedSkeleton" in body_text
     bd, fd, fm = parse_draws(body_text), parse_draws(face_text), parse_match(face_text)
     comp_map = {int(k): v for k, v in fold_entry["fold"]["comp_map"].items()}
-    vg_remap = fold_entry["fold"].get("vg_remap", {})
+    vg_remap = {} if is_merged else fold_entry["fold"].get("vg_remap", {})
     has_morph = (face / "Meshes" / "ShapeKeyOffset.buf").exists()
     if has_morph:
         body_segs = {bc: bd[bc][0] for bc in comp_map.values()}
