@@ -49,6 +49,15 @@ def assemble(out, mods):
     constants, present, others = [], [], []
     tex = {}                # hash -> source .dds absolute path (deduped)
     tex_hash_per_mod = []
+    # MERGED skeleton: every IB emits an identical [TextureOverrideMarkBoneDataCB] (hash = shared cb4,
+    # filter_index = 3381.7777) -- a pure global registration of the bone-data CB. Per-IB duplicates would
+    # be N overrides on the same hash; collapse them into ONE shared override (the per-IB skeleton fill stays
+    # per-IB via CommandListUpdateMergedSkeleton_ibK in [Present]). COMPONENT mods have no such section, so
+    # this path is inert there.
+    _MARK_BONE = 'TextureOverrideMarkBoneDataCB'
+    mark_bone_body = None
+    mark_bone_count = 0
+    mark_bone_mismatch = False
 
     for k, mod in enumerate(mods):
         sections = _parse_sections(open(os.path.join(mod, "mod.ini"), encoding="utf-8").read())
@@ -83,6 +92,17 @@ def assemble(out, mods):
 
         for h, b in sections:
             if _RE_RESTEX.match(h) or _RE_OVRTEX.match(h):
+                continue
+            if h == _MARK_BONE:
+                # IB-agnostic (hash + filter_index only): keep ONE shared copy, never namespace per-IB.
+                body = [l for l in b]
+                mark_bone_count += 1
+                norm = [l.strip() for l in body if l.strip()]
+                if mark_bone_body is None:
+                    mark_bone_body = body
+                    others.append((h, body))  # emit once, un-namespaced -> single override on the cb4 hash
+                elif norm != [l.strip() for l in mark_bone_body if l.strip()]:
+                    mark_bone_mismatch = True  # IBs disagree on cb4/filter_index -> NOT one character
                 continue
             nb = [_ns_line(l, k) for l in b]
             if h == 'Constants':
@@ -123,6 +143,10 @@ def assemble(out, mods):
                if not os.path.exists(os.path.join(out, m.group(1).strip()))]
     all_in = set().union(*tex_hash_per_mod) if tex_hash_per_mod else set()
     global_hashes = set(re.findall(r'\[TextureOverride_Texture_([0-9a-f]+)\]', text))
+    # MERGED self-check: after collapse there must be EXACTLY one MarkBoneDataCB (or zero for COMPONENT),
+    # and every IB must have agreed on its body (same cb4 / filter_index).
+    mark_bone_emitted = len(re.findall(r'^\[' + _MARK_BONE + r'(?:_ib\d+)?\]', text, re.M))
+    skeleton_ok = (not mark_bone_mismatch) and mark_bone_emitted <= 1
     report = {
         "out": out, "sections": len(sections_set), "refs": len(refs),
         "dangling": dangling, "missing": missing,
@@ -131,6 +155,8 @@ def assemble(out, mods):
         "textures_files": len(os.listdir(os.path.join(out, "Textures"))),
         "meshes_files": len(os.listdir(os.path.join(out, "Meshes"))),
         "ini_size": len(text), "gate": gate,
-        "sound": not dangling and not missing and (all_in == global_hashes),
+        "mark_bone_collapsed_from": mark_bone_count, "mark_bone_emitted": mark_bone_emitted,
+        "mark_bone_mismatch": mark_bone_mismatch, "skeleton_ok": skeleton_ok,
+        "sound": not dangling and not missing and (all_in == global_hashes) and skeleton_ok,
     }
     return report
