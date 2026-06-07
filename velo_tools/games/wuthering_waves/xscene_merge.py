@@ -471,6 +471,33 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         })
         next_idx += len(local_names)
 
+    # 3.6) Extend the merged Metadata.json with the editable IBs' component entries so that MERGED import
+    #      resolves Components 8..N. blender_import reads extracted_object.components[id].vg_map by component
+    #      number; the base Metadata only carries 0..7, so without this a MERGED import raises IndexError on 8+.
+    #      Each editable component is appended with its OWN vg_map as-is: the editable face ships per-component
+    #      at export, so its VG numbering need not be re-anchored to the base unified namespace (cross-IB
+    #      alignment is a deferred v2). COMPONENT import ignores Metadata.components, so this is purely additive.
+    if editable_ib_records:
+        meta_path = out / "Metadata.json"
+        if meta_path.exists():
+            merged_meta = json.loads(meta_path.read_text())
+            comps = merged_meta.get("components") or []
+            extra = {}
+            for eib in (editable_ibs or []):
+                em = Path(eib["folder"]) / "Metadata.json"
+                src_comps = (json.loads(em.read_text()).get("components") or []) if em.exists() else []
+                rec = next((r for r in editable_ib_records if r["ib_hash"] == eib["hash"]), None)
+                if rec is None:
+                    continue
+                for li, mi in zip(rec["local_components"], rec["merged_components"]):
+                    if li < len(src_comps):
+                        extra[mi] = src_comps[li]
+            for mi in sorted(extra):
+                if mi >= len(comps):
+                    comps.append(extra[mi])
+            merged_meta["components"] = comps
+            meta_path.write_text(json.dumps(merged_meta, indent=4, ensure_ascii=False))
+
     # 3.7) For each foldable dungeon IB, build the fold correspondence on the post-split merged components (base side reads out's c5-face, which no longer contains the bear).
     base_pos_c, _all, _off, _cur = {}, [], {}, 0
     for cid, name in enumerate(base_comps):
