@@ -509,24 +509,41 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     # 3.6) Extend the merged Metadata.json with the editable IBs' component entries so that MERGED import
     #      resolves Components 8..N. blender_import reads extracted_object.components[id].vg_map by component
     #      number; the base Metadata only carries 0..7, so without this a MERGED import raises IndexError on 8+.
-    #      Each editable component is appended with its OWN vg_map as-is: the editable face ships per-component
-    #      at export, so its VG numbering need not be re-anchored to the base unified namespace (cross-IB
-    #      alignment is a deferred v2). COMPONENT import ignores Metadata.components, so this is purely additive.
+    #      Each editable IB is RE-BASED into its own non-overlapping VG range AFTER the body: its vg_offset/vg_map
+    #      are shifted by the running unified size, so in the imported unified mesh its VGs read as a distinct
+    #      range (e.g. for this asset form2 starts at 355 = max(base vg_map)+1) instead of colliding with the
+    #      body's 0.. numbering. dedup against the body is impossible (different scene/pose -> bone matrices
+    #      differ), so we append rather than dedup. The editable export later subtracts vg_base_offset to
+    #      recover the IB's own 0-based numbering.
+    #      COMPONENT import ignores Metadata.components, so this stays additive for COMPONENT.
     if editable_ib_records:
         meta_path = out / "Metadata.json"
         if meta_path.exists():
             merged_meta = json.loads(meta_path.read_text())
             comps = merged_meta.get("components") or []
+            # Offset = the base's highest GLOBAL vg id + 1, auto-computed (never hardcoded). Use the max
+            # vg_map VALUE (the real bone id), NOT the cumulative vg_offset+vg_count slot total: the latter
+            # over-counts because dedup'd components (e.g. C6/C7) reuse lower ids and leave empty trailing slots.
+            def _max_vg(cs):
+                vs = [int(v) for c in cs for v in (c.get("vg_map") or {}).values()]
+                return max(vs) if vs else -1
+
+            running = _max_vg(comps) + 1
             extra = {}
             for eib in (editable_ibs or []):
                 em = Path(eib["folder"]) / "Metadata.json"
                 src_comps = (json.loads(em.read_text()).get("components") or []) if em.exists() else []
                 rec = next((r for r in editable_ib_records if r["ib_hash"] == eib["hash"]), None)
-                if rec is None:
+                if rec is None or not src_comps:
                     continue
+                rec["vg_base_offset"] = running  # export subtracts this to recover the IB's own 0-based VG
                 for li, mi in zip(rec["local_components"], rec["merged_components"]):
                     if li < len(src_comps):
-                        extra[mi] = src_comps[li]
+                        c = dict(src_comps[li])
+                        c["vg_offset"] = int(c.get("vg_offset", 0)) + running
+                        c["vg_map"] = {k: int(v) + running for k, v in (c.get("vg_map") or {}).items()}
+                        extra[mi] = c
+                running += _max_vg(src_comps) + 1
             for mi in sorted(extra):
                 if mi >= len(comps):
                     comps.append(extra[mi])
