@@ -181,6 +181,17 @@ def _section(text, header):
     return m.group(1) if m else None
 
 
+def _merge_block(body_text, bc):
+    """MERGED only: return the skeleton-build block ``if $merge_status_id_<bc> != 2 ... endif`` from the
+    body's ``[TextureOverrideComponent<bc>]`` (sets that base component's vg_offset/vg_count and runs
+    CommandListMergeSkeleton). Verbatim incl. indentation; ``''`` when absent (COMPONENT body has none)."""
+    sec = _section(body_text, "TextureOverrideComponent%d" % bc)
+    if not sec:
+        return ""
+    m = re.search(r'\n([ \t]*if \$merge_status_id_%d != 2\b.*?\n[ \t]*endif)' % bc, sec, re.S)
+    return m.group(1) if m else ""
+
+
 def _build_morph_sections(face_text, tag):
     """Transplant the dungeon face's morph CS sections into ``_<tag>``: rename data buffers + repoint to ``_<tag>.buf``,
     swap the custom vertex offset/count to the ``_<tag>`` globals; RW scratch (CBRW/CustomShapeKeyValuesRW) reuses the body's shared one, not copied.
@@ -261,17 +272,33 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             a = anchors[-1]
             body_text = body_text[:a.end()] + consts + body_text[a.end():]
 
+    # MERGED body carries the merged-skeleton machinery; COMPONENT body has none -> keep the old FoldHost.
+    is_merged = "ResourceMergedSkeleton" in body_text
     out = ["\n; ==== fold %s (%s) into base buffer ranges ====\n" % (tag, fh)]
     for fc in sorted(comp_map):
         bc = comp_map[fc]
         mfi, mic = face_match[fc]
         cnt, offd = body_draws[bc][0]
         ovr = remap_cmd[bc][0] if bc in remap_cmd else "CommandListOverrideSharedResources"
-        out.append("[TextureOverride_FoldHost_%s_C%d]\nhash = %s\n"
-                   "match_first_index = %d\nmatch_index_count = %d\n$object_detected = 1\n"
-                   "if $mod_enabled\n    handling = skip\n    run = CommandListTriggerResourceOverrides\n"
-                   "    run = %s\n    drawindexed = %d, %d, 0\n    run = CommandListCleanupSharedResources\nendif\n"
-                   % (tag, fc, fh, mfi, mic, ovr, cnt, offd))
+        if is_merged:
+            # A pure-dungeon scene never draws the base components, so $object_detected_ib0 stays unset and
+            # UpdateMergedSkeleton never runs -> the body skeleton starves. Build the base component's
+            # skeleton slice here (from the live cb4 of the dungeon draw), then draw under the same
+            # `ResourceMergedSkeleton !== null` guard the native components use.
+            skel = _merge_block(body_text, bc)
+            out.append("[TextureOverride_FoldHost_%s_C%d]\nhash = %s\n"
+                       "match_first_index = %d\nmatch_index_count = %d\n$object_detected = 1\n"
+                       "if $mod_enabled\n%s\n    if ResourceMergedSkeleton !== null\n"
+                       "        handling = skip\n        run = CommandListTriggerResourceOverrides\n"
+                       "        run = %s\n        drawindexed = %d, %d, 0\n"
+                       "        run = CommandListCleanupSharedResources\n    endif\nendif\n"
+                       % (tag, fc, fh, mfi, mic, skel, ovr, cnt, offd))
+        else:
+            out.append("[TextureOverride_FoldHost_%s_C%d]\nhash = %s\n"
+                       "match_first_index = %d\nmatch_index_count = %d\n$object_detected = 1\n"
+                       "if $mod_enabled\n    handling = skip\n    run = CommandListTriggerResourceOverrides\n"
+                       "    run = %s\n    drawindexed = %d, %d, 0\n    run = CommandListCleanupSharedResources\nendif\n"
+                       % (tag, fc, fh, mfi, mic, ovr, cnt, offd))
     base_cmd = _section(body_text, "CommandListOverrideSharedResources")
     for bc, (cmdname, btag) in remap_cmd.items():
         blk = base_cmd.replace("[CommandListOverrideSharedResources]", "[%s]" % cmdname, 1)
