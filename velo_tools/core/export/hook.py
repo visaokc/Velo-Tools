@@ -318,11 +318,16 @@ def _restore_export_state(state):
         traceback.print_exc()
 
 
-def _make_patched_execute(orig_execute, settings_attr: str):
+def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = ""):
     def patched(self, context):
         state = None
         mesh_state = None
-        validation_error = _validate_merged_export_preconditions(context, settings_attr)
+        # The VertexGroupMap.json merged-export precondition is EFMI-specific: EFMI's Merged mode
+        # back-translates unified VGs to per-component ids via VertexGroupMap.json. WWMI's native
+        # Merged export reads vg_map straight from Metadata.json and needs no VertexGroupMap.json,
+        # so skip this gate for WWMI (otherwise WWMI Merged export is blocked outright).
+        validation_error = (None if adapter_key == "WWMI"
+                            else _validate_merged_export_preconditions(context, settings_attr))
         if validation_error:
             print(f"[velo.export-hook] {validation_error}")
             try:
@@ -373,7 +378,7 @@ def install_export_hook():
         if id(cls) in _PATCHED:
             continue
         _PATCHED[id(cls)] = (cls, cls.execute, class_name)
-        cls.execute = _make_patched_execute(cls.execute, settings_attr)
+        cls.execute = _make_patched_execute(cls.execute, settings_attr, key)
         print(f"[velo.export-hook] patched {class_name} (cfg={settings_attr})")
 
 
