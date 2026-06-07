@@ -68,6 +68,27 @@ def _export_col(cfg, col, modout, name, src):
     bpy.ops.vtww.export_mod()
 
 
+def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_count):
+    """Body export must see ONLY the body components [0, keep_count). The producer appends the editable
+    form2 components (8-11) to Metadata.json for MERGED *import*; if the body export saw them it would emit
+    spurious empty Component 8+ sections (COMPONENT) or inflate the unified skeleton vg_count sum
+    (MERGED, object_merger.py). Trim Metadata to the body components for the export, restore afterwards.
+    The full Metadata (incl. 8-11) is only needed at import time, which has already happened."""
+    meta_p = Path(merged_folder) / "Metadata.json"
+    meta_full = meta_p.read_text(encoding="utf-8") if meta_p.is_file() else None
+    try:
+        if meta_full is not None:
+            m = json.loads(meta_full)
+            comps = m.get("components") or []
+            if len(comps) > keep_count:
+                m["components"] = comps[:keep_count]
+                meta_p.write_text(json.dumps(m, indent=4, ensure_ascii=False), encoding="utf-8")
+        _export_col(cfg, body_col, str(work / "sc"), "om_sc", str(merged_folder))
+    finally:
+        if meta_full is not None:
+            meta_p.write_text(meta_full, encoding="utf-8")
+
+
 def _copy_body(work: Path):
     """body = showcase shared buffer mod: copy the base export (work/sc) verbatim into work/body.
     Each foldable IB then has ``fold.apply_fold`` append a FoldHost (+ morph) section to work/body/mod.ini in place."""
@@ -118,7 +139,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             body_export_col = body_col
         else:
             body_export_col = base_collection
-        _export_col(cfg, body_export_col, str(work / "sc"), "om_sc", str(merged_folder))
+        _export_body_with_trimmed_metadata(
+            cfg, body_export_col, work, merged_folder, routing["base"]["component_count"])
 
         # body = showcase shared buffer mod (base export copied verbatim into body); all foldable IBs fold into it.
         mods = [str(_copy_body(work))]
