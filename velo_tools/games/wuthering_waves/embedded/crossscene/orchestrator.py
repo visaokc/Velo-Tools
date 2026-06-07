@@ -191,6 +191,17 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 cp.name = f"Component {li}"
                 eib_col.objects.link(cp)
                 temp_objs.append(cp)
+            # MERGED: the editable IB was imported with UNIFIED VG names (vg_base_offset + its own 0-based
+            # numbering). Its export runs against the IB's own 0-based source, where object_merger fills VG
+            # gaps by name and then drops VGs whose collection index >= the source's total_vg_count; unified
+            # names (e.g. 355+) gap-fill to high indices and get dropped (the whole skeleton is lost, Blend
+            # collapses to bone 0). Re-base the temp objects' VG names to the IB's own numbering first.
+            base_off = int(rec.get("vg_base_offset") or 0)
+            if cfg.mod_skeleton_type == 'MERGED' and base_off:
+                for cp in temp_objs:
+                    for vg in cp.vertex_groups:
+                        if vg.name.lstrip("-").isdigit():
+                            vg.name = str(int(vg.name) - base_off)
             eib_src = str(merged_folder / rec["source_folder"])
             _export_col(cfg, eib_col, str(work / tag), "om_" + tag, eib_src)
             mods.append(str(work / tag))
