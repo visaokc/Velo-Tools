@@ -389,6 +389,40 @@ def build_fold_correspondence(out_dir, base_comps, base_pos_c, base_pos_g, base_
     }
 
 
+def _validate_same_character(base, dungeon_specs, editable_ibs):
+    """Foolproof: every merged IB must belong to the SAME character = share the base's skeleton constant
+    buffer (cb4_hash) and carry vertex-group maps. Refuse to merge a foreign IB (different cb4), which would
+    corrupt the unified skeleton. Each IB's own VG total is also bounded to the 512-bone merged-skeleton limit
+    (every IB keeps its own skeleton under the per-sub-mod design, so the bound is per-IB, not the grand sum).
+    Raises RuntimeError with a user-facing (Chinese) message on any violation."""
+    def _meta(folder):
+        p = Path(folder) / "Metadata.json"
+        return json.loads(p.read_text()) if p.is_file() else {}
+
+    base_meta = _meta(base)
+    base_cb4 = base_meta.get("cb4_hash", "")
+    if not base_cb4:
+        raise RuntimeError("基底 Metadata.json 缺少 cb4_hash，无法校验跨场景合并的同源性。")
+
+    checks = [("基底", str(base), base_meta)]
+    for spec in list(dungeon_specs) + list(editable_ibs or []):
+        checks.append((spec.get("hash", "?"), spec["folder"], _meta(spec["folder"])))
+
+    for tag, _folder, m in checks:
+        comps = m.get("components") or []
+        cb4 = m.get("cb4_hash", "")
+        if cb4 != base_cb4:
+            raise RuntimeError(
+                "IB %s 的骨架 cb4=%r 与基底 cb4=%r 不一致——疑似把不属于同一角色的 IB 合并进来，已阻止合并。"
+                % (tag, cb4, base_cb4))
+        if not comps or any(not c.get("vg_map") for c in comps):
+            raise RuntimeError("IB %s 的 Metadata 缺少 vg_map，无法合并为统一骨架（请重新提取）。" % tag)
+        ib_vg_total = sum(int(c.get("vg_count", 0)) for c in comps)
+        if ib_vg_total > 512:
+            raise RuntimeError(
+                "IB %s 的统一 VG 总数 %d 超过 WWMI merged skeleton 上限 512。" % (tag, ib_vg_total))
+
+
 def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs=None):
     """Main entry: write out the merged extract folder + scene_ibs/ + CrossSceneRouting.json + deduplicated textures.
     editable_ibs: list of independently editable extra IBs [{hash, folder, role}] (e.g. form2 face 4e4dc18e) --
@@ -396,6 +430,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     Returns a report dict."""
     base = Path(base_folder)
     out = Path(out_folder)
+    _validate_same_character(base, dungeon_specs, editable_ibs)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
