@@ -181,7 +181,29 @@ def _section(text, header):
     return m.group(1) if m else None
 
 
-def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic):
+def _merge_offset_shift(remap_table):
+    """For a NON-identity fold's vg_remap (base-component-local VG -> dungeon-IB-local VG), return
+    ``(shift, count)`` so the MERGED FoldHost merges the dungeon cb4 at ``base_vg_offset + shift`` for
+    ``count`` bones, landing them where the base component's surviving geometry reads them.
+
+    Requires a UNIFORM shift: the split removed a contiguous LEADING block of bones (e.g. the bear is the
+    first 11 VGs of C5), so base-local key ``k`` -> dungeon-local ``k - shift`` and dungeon locals are
+    ``0..count-1`` contiguous. A non-uniform / permuted remap (the split block was not a contiguous lead)
+    needs a general per-bone skeleton remap, which is NOT implemented -> hard error (foolproof)."""
+    items = sorted((int(k), int(v)) for k, v in remap_table.items())
+    keys = [k for k, _ in items]
+    vals = [v for _, v in items]
+    n = len(items)
+    shift = keys[0] - vals[0]
+    if vals != list(range(n)) or any(k - v != shift for k, v in items):
+        raise RuntimeError(
+            "Cross-scene MERGED fold: non-uniform vg_remap (%d entries, base %d..%d -> dungeon %d..%d). The "
+            "split is not a contiguous leading-bone block; a general per-bone skeleton remap is required but "
+            "not implemented." % (n, keys[0], keys[-1], vals[0], vals[-1]))
+    return shift, n
+
+
+def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_count_override=None):
     """MERGED FoldHost = the native body ``[TextureOverrideComponent<bc>]`` override replicated verbatim,
     so it inherits everything that component needs to draw correctly: the ``if $merge_status_id != 2``
     skeleton-build block, the ``if ResourceMergedSkeleton !== null`` draw block, and -- crucially for
@@ -195,7 +217,13 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic):
     is drawn by its own IB, not the fold. Indentation (incl. the merge block's tabs) is preserved verbatim.
     The per-component remapped buffers are filled every frame by InitializeBlendRemaps + RemapMergedSkeleton
     (from [Present], gated by $object_detected, which this section sets), so they are populated in pure-
-    dungeon scenes too."""
+    dungeon scenes too.
+
+    ``vg_shift``/``vg_count_override`` (non-identity folds only): the dungeon model lacks the split-out
+    sub-component (e.g. the bear), so its bones are numbered ``vg_shift`` lower and there are
+    ``vg_count_override`` of them. The merge block's ``$\\WWMIv1\\vg_offset``/``vg_count`` are rewritten so
+    the dungeon cb4 lands at ``base_offset + vg_shift`` (where the base surviving geometry reads), not at the
+    bear-inclusive base offset. Identity folds pass ``vg_shift=0`` (no rewrite, byte-identical)."""
     native = _section(body_text, "TextureOverrideComponent%d" % bc)
     if not native:
         return ""
@@ -211,6 +239,12 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic):
             out.append("match_first_index = %d" % mfi)
         elif s.startswith("match_index_count ="):
             out.append("match_index_count = %d" % mic)
+        elif vg_shift and s.startswith("$\\WWMIv1\\vg_offset ="):
+            indent = ln[:len(ln) - len(ln.lstrip())]
+            out.append("%s$\\WWMIv1\\vg_offset = %d" % (indent, int(s.split("=", 1)[1]) + vg_shift))
+        elif vg_count_override is not None and s.startswith("$\\WWMIv1\\vg_count ="):
+            indent = ln[:len(ln) - len(ln.lstrip())]
+            out.append("%s$\\WWMIv1\\vg_count = %d" % (indent, vg_count_override))
         elif s.startswith("drawindexed"):
             if not seen_draw:
                 out.append(ln)            # keep the primary draw verbatim
@@ -291,13 +325,14 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
     comp_map = {int(k): v for k, v in fold_entry["fold"]["comp_map"].items()}
     # MERGED body carries the merged-skeleton machinery; COMPONENT body has none.
     is_merged = "ResourceMergedSkeleton" in body_text
-    # The producer vg_remap (8-bit Blend relabel) is a COMPONENT-mode mechanism: in MERGED the FoldHost
-    # replicates the native component override, which handles >=256 via the runtime per-component
-    # RemappedBlend; the global merged skeleton makes the base blend self-consistent. So vg_remap (and its
-    # _c{N}remap CommandList / Blend_c{N}remap.buf) is NOT consumed in MERGED.
-    vg_remap = {} if is_merged else fold_entry["fold"].get("vg_remap", {})
-    remap_cmd = {int(k): ("CommandListOverrideSharedResources_c%dremap" % int(k), "c%dremap" % int(k))
-                 for k in vg_remap}
+    vg_remap_all = fold_entry["fold"].get("vg_remap", {})
+    # The producer vg_remap maps base-component-local VG -> dungeon-IB-local VG. In COMPONENT it drives an
+    # 8-bit Blend relabel (_c{N}remap CommandList + Blend_c{N}remap.buf). In MERGED that relabel is neither
+    # needed nor correct; instead the same remap is folded into the FoldHost's merge vg_offset (see
+    # _merge_offset_shift) so the dungeon cb4 lands where the base surviving geometry reads. So the _c{N}remap
+    # machinery is COMPONENT-only.
+    remap_cmd = {} if is_merged else {int(k): ("CommandListOverrideSharedResources_c%dremap" % int(k), "c%dremap" % int(k))
+                                      for k in vg_remap_all}
 
     if has_morph and batch_counts:
         consts, off = "", 0
@@ -318,8 +353,12 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             # Replicate the native body component override (incl. the >=256 RemappedBlend override refs),
             # swapping only header/hash/match + trimming to the primary draw. This both feeds the body
             # skeleton in pure-dungeon scenes ($object_detected) and routes >=256 components through the
-            # remapped blend/skeleton -- which the old hand-built FoldHost failed to do (C4/C5 mis-weighted).
-            out.append(_build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic))
+            # remapped blend/skeleton -- which the old hand-built FoldHost failed to do (C4 mis-weighted).
+            # Non-identity fold (e.g. C5, whose bear C5.001 was split off): shift the merge vg_offset by the
+            # dungeon's missing-leading-bone count so its cb4 lands where the base surviving geometry reads.
+            rt = vg_remap_all.get(str(bc))
+            vg_shift, vg_count_override = _merge_offset_shift(rt) if rt else (0, None)
+            out.append(_build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift, vg_count_override))
         else:
             cnt, offd = body_draws[bc][0]
             ovr = remap_cmd[bc][0] if bc in remap_cmd else "CommandListOverrideSharedResources"
