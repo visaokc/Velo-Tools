@@ -191,8 +191,11 @@ def _build_morph_sections(face_text, tag):
     chk = re.findall(r'shapekey_checksum_batch\d+ = (\d+)', face_text)
     orig = re.findall(r'shapekey_vertex_offset_original_batch\d+ = (\d+)', face_text)
     disp = re.findall(r'shapekey_dispatch_size_y_original_batch\d+ = (\d+)', face_text)
-    csL = re.search(r'if cs == ([\d.]+)\s*\n\s*handling = skip\s*\n\s*run = CommandListSetupShapeKeysBatch', face_text).group(1)
-    csM = re.search(r'if cs == ([\d.]+)\s*\n\s*handling = skip\s*\n\s*run = CommandListMultiplyShapeKeys', face_text).group(1)
+    # COMPONENT face callback: 'if cs == <v>'; MERGED face: 'if cs == <v> && ResourceMergedSkeleton !== null'.
+    # Capture the WHOLE condition (not just the value) so the transplanted callback keeps the MERGED skeleton
+    # guard; for COMPONENT this is identical to the old behavior (group == 'cs == <v>').
+    csL = re.search(r'if (cs ==[^\n]*?)\s*\n\s*handling = skip\s*\n\s*run = CommandListSetupShapeKeysBatch', face_text).group(1).strip()
+    csM = re.search(r'if (cs ==[^\n]*?)\s*\n\s*handling = skip\s*\n\s*run = CommandListMultiplyShapeKeys', face_text).group(1).strip()
     nb = len(chk)
     s = ["\n; ==== %s morph (%s) re-projected onto base vertex order ====\n" % (R, mh)]
     s.append("[TextureOverrideShapeKeyOffsets_%s]\nhash = %s\nmatch_priority = 0\n"
@@ -217,13 +220,13 @@ def _build_morph_sections(face_text, tag):
              "cs-u6 = ResourceShapeKeyCBRW\nrun = CommandList\\WWMIv1\\LoadShapeKeysBatch\n\n" % (R, R))
     s.append(load)
     s.append("[TextureOverrideShapeKeyLoaderCallback_%s]\nhash = %s\nmatch_priority = 0\n"
-             "if $mod_enabled\n    if cs == %s\n        handling = skip\n"
+             "if $mod_enabled\n    if %s\n        handling = skip\n"
              "        run = CommandListSetupShapeKeysBatch_%s\n        run = CommandListLoadShapeKeysBatch_%s\n"
              "    endif\nendif\n\n" % (R, mh, csL, R, R))
     s.append("[CommandListMultiplyShapeKeys_%s]\n$\\WWMIv1\\custom_vertex_count = $mesh_vertex_count\n"
              "run = CustomShader\\WWMIv1\\ShapeKeyMultiplier\n\n" % R)
     s.append("[TextureOverrideShapeKeyMultiplierCallback_%s]\nhash = %s\nmatch_priority = 0\n"
-             "if $mod_enabled\n    if cs == %s\n        handling = skip\n"
+             "if $mod_enabled\n    if %s\n        handling = skip\n"
              "        run = CommandListMultiplyShapeKeys_%s\n    endif\nendif\n\n" % (R, mh, csM, R))
     s.append("[ResourceShapeKeyOffsetBuffer_%s]\ntype = Buffer\nformat = DXGI_FORMAT_R32G32B32A32_UINT\n"
              "stride = 16\nfilename = Meshes/ShapeKeyOffset_%s.buf\n\n" % (R, R))
