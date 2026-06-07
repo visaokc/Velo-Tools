@@ -102,3 +102,107 @@ def remove():
         except Exception:
             traceback.print_exc()
     _PATCHED.clear()
+
+
+# --- Cross-scene MERGED import fix: _wwmi_core component-index regex bug ---
+#
+# The stock _wwmi_core MERGED importer maps each Component*.fmt to its Metadata
+# component with the regex r'.*component[ -_]*([0-9]+).*'. Its class [ -_] is an ASCII
+# RANGE (0x20-0x5F) that INCLUDES digits, so the greedy [ -_]* eats all but the LAST
+# digit: 'Component 10' -> '0', 'Component 11' -> '1', 'Component 5.001' -> '1'.
+# Single-digit components (0-9) are unaffected. In a cross-scene MERGED merge the body
+# fills components 0-7 and the editable form2 adds 8-11, so C10/C11 (and the split bear
+# 'Component 5.001') pick the WRONG component's vg_map and lose their unified VG numbers.
+# We must not edit _wwmi_core, so only for a cross-scene MERGED import we temporarily
+# swap the blender_import module's `re` for a shim that corrects that one pattern (full
+# number; 'Component 5.001' -> parent component 5) and delegates everything else. Stock
+# single-IB imports never take this branch, so their behavior is byte-for-byte unchanged.
+import re as _re
+
+_IMPORT_PATCHED = {}
+_BUGGY_COMPONENT_RE = r'.*component[ -_]*([0-9]+).*'
+# [ _-] is a literal class (space / underscore / dash), NOT a range, so digits are never
+# eaten; ([0-9]+) captures the full first integer ('component 5.001' -> parent '5').
+_CORRECT_COMPONENT_RE = _re.compile(r'component[ _-]*([0-9]+)')
+
+
+class _ComponentPattern:
+    """Drop-in for the buggy component-number regex used by the MERGED importer."""
+
+    def findall(self, s):
+        m = _CORRECT_COMPONENT_RE.search(s)
+        return [m.group(1)] if m else []
+
+
+class _ReShim:
+    """Wraps the real ``re`` module: returns the corrected pattern for the one buggy
+    component regex, delegates every other attribute (incl. other compile calls)."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def compile(self, pattern, *args, **kwargs):
+        if pattern == _BUGGY_COMPONENT_RE:
+            return _ComponentPattern()
+        return self._real.compile(pattern, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _find_vtww_import():
+    """Locate the velo vendored ``VTWW_Import`` operator class. The 'VTWW_' prefix is
+    velo-only (a standalone WWMI-Tools uses 'WWMI_'), so we never patch the user's
+    separate install."""
+    for mod in list(sys.modules.values()):
+        if mod is None:
+            continue
+        cls = getattr(mod, "VTWW_Import", None)
+        if isinstance(cls, type) and hasattr(cls, "execute"):
+            return cls
+    return None
+
+
+def _is_xscene_merged_import(context):
+    cfg = getattr(context.scene, "VTWW_settings", None)
+    if cfg is None or getattr(cfg, "import_skeleton_type", "") != "MERGED":
+        return False
+    src = getattr(cfg, "object_source_folder", "")
+    if not src:
+        return False
+    return (Path(bpy.path.abspath(src)) / "CrossSceneRouting.json").is_file()
+
+
+def _make_patched_import(orig_execute):
+    def patched(self, context):
+        if not _is_xscene_merged_import(context):
+            return orig_execute(self, context)  # stock import: zero impact
+        from ..._wwmi_core.blender_import import blender_import as _bi
+        real_re = _bi.re
+        _bi.re = _ReShim(real_re)
+        try:
+            return orig_execute(self, context)
+        finally:
+            _bi.re = real_re
+    return patched
+
+
+def install_import():
+    cls = _find_vtww_import()
+    if cls is None:
+        print("[velo.xscene-hook] VTWW_Import not found, skip import-fix install")
+        return
+    if id(cls) in _IMPORT_PATCHED:
+        return
+    _IMPORT_PATCHED[id(cls)] = (cls, cls.execute)
+    cls.execute = _make_patched_import(cls.execute)
+    print("[velo.xscene-hook] patched VTWW_Import.execute (MERGED component-index regex fix)")
+
+
+def remove_import():
+    for _cid, (cls, orig) in list(_IMPORT_PATCHED.items()):
+        try:
+            cls.execute = orig
+        except Exception:
+            traceback.print_exc()
+    _IMPORT_PATCHED.clear()

@@ -207,6 +207,7 @@ def register():
     try:
         from .embedded.crossscene import patch as _xspatch
         _xspatch.install()
+        _xspatch.install_import()
     except Exception:
         import traceback
         traceback.print_exc()
@@ -243,6 +244,7 @@ def unregister():
         pass
     try:
         from .embedded.crossscene import patch as _xspatch
+        _xspatch.remove_import()
         _xspatch.remove()
     except Exception:
         pass
