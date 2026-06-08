@@ -4,6 +4,8 @@ import sys
 
 import bpy
 
+from .updater import notify
+
 
 def _version_text():
     package = sys.modules.get(__package__ or "velo_tools")
@@ -31,6 +33,8 @@ class VELO_PT_main(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        # Top-of-panel "update available" banner (host-level auto-updater notice).
+        notify.draw_update_banner(self, context)
         s = context.scene.velo_tools
         col = layout.column(align=True)
         col.label(text="Mod 制作辅助工具集", icon='TOOL_SETTINGS')

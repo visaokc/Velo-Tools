@@ -14,6 +14,7 @@ AddonPreferences are registered explicitly here.
 import bpy
 
 from . import addon_updater_ops
+from . import notify
 
 
 class VELO_AddonUpdaterPreferences(bpy.types.AddonPreferences):
@@ -24,6 +25,15 @@ class VELO_AddonUpdaterPreferences(bpy.types.AddonPreferences):
     # via updater.addon == "velo_tools".
     bl_idname = "velo_tools"
 
+    # Host-level "show the update banner at the top of the Velo Tools N-panel"
+    # toggle. Self-driving: when on, the panel runs its own throttled check and
+    # draws the banner, independent of auto_check_update (see updater/notify.py).
+    auto_update_notify: bpy.props.BoolProperty(
+        name="自动接收更新通知",
+        description=("启用后，打开 Velo Tools 面板时会按下方间隔自动检查更新，"
+                     "检测到新版本就在面板顶部弹出提示横幅"),
+        default=True,
+    )  # type: ignore
     auto_check_update: bpy.props.BoolProperty(
         name="自动检查更新",
         description="启用后，按下方间隔在后台自动检查更新",
@@ -50,6 +60,7 @@ class VELO_AddonUpdaterPreferences(bpy.types.AddonPreferences):
 
     def draw(self, context):
         layout = self.layout
+        layout.prop(self, "auto_update_notify")
         layout.prop(self, "receive_prereleases")
         # Kick off a throttled background check when the prefs are opened, then
         # draw the full updater UI (check button, interval, restore backup...).
@@ -62,9 +73,20 @@ def register():
         bpy.utils.register_class(cls)
     bpy.utils.register_class(VELO_AddonUpdaterPreferences)
     addon_updater_ops.register()
+    # The host shows updates via the in-panel top banner (updater/notify.py),
+    # so disable the self-popping modal that background_update_callback would
+    # otherwise arm. addon_updater_ops.register() sets show_popups=True, so this
+    # override must run after it.
+    if not getattr(addon_updater_ops.updater, "invalid_updater", False):
+        addon_updater_ops.updater.show_popups = False
+    for cls in notify.classes:
+        bpy.utils.register_class(cls)
 
 
 def unregister():
+    for cls in reversed(notify.classes):
+        bpy.utils.unregister_class(cls)
+    notify.reset_state()
     addon_updater_ops.unregister()
     bpy.utils.unregister_class(VELO_AddonUpdaterPreferences)
     for cls in reversed(addon_updater_ops.classes):
