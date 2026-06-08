@@ -76,6 +76,22 @@ except Exception as e:
 # to avoid clashes in operator registration.
 updater.addon = "velo_tools"
 
+# The CGCookie engine derives its install/backup/data paths from
+# os.path.dirname(__file__), assuming addon_updater.py sits at the addon root.
+# This host copy is vendored one level deeper, under velo_tools/updater/, so the
+# engine's __init__ computes _addon_root as ".../velo_tools/updater" instead of
+# ".../velo_tools". Left uncorrected, an update merges the new release into
+# velo_tools/updater/ -- the real addon (velo_tools/__init__.py) is never
+# touched (the installed version never changes on restart) and the merge wipes
+# the updater's own *.py and nests a stray copy. Re-base every path onto the
+# true addon root: this file is velo_tools/updater/addon_updater_ops.py, so the
+# addon root is its parent's parent.
+if not getattr(updater, "invalid_updater", False):
+    _velo_addon_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    updater._addon_root = _velo_addon_root
+    updater._addon_package = "velo_tools"
+    updater._updater_path = os.path.join(_velo_addon_root, "velo_tools_updater")
+
 
 # -----------------------------------------------------------------------------
 # Blender version utils
