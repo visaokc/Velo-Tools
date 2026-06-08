@@ -63,6 +63,7 @@ _TOOL_MODE_ITEMS = [
 
 # Original reference snapshots used for restoration (restored on unregister).
 _orig_tool_mode_annotation = None
+_orig_mod_skeleton_type_annotation = None
 _orig_updater_register = None
 _orig_pref_draw = None
 _orig_pref_auto_check = None
@@ -158,6 +159,30 @@ def _patch_tool_mode():
     )
 
 
+def _patch_mod_skeleton_type():
+    """Add a 3rd export option `Per-Component (from Merged)` to mod_skeleton_type by re-defining its
+    EnumProperty annotation (driver-layer, same technique as _patch_tool_mode; restored on unregister;
+    `_wwmi_core` source untouched). The velo `embedded/per_from_merged.py` export hook interprets this
+    value: it translates unified vertex-group names back to per-component local numbering (+ stray-weight
+    validation), then runs a stock COMPONENT export. The original 2 items keep their exact labels/descs."""
+    global _orig_mod_skeleton_type_annotation
+    _orig_mod_skeleton_type_annotation = _wsettings.VTWW_Settings.__annotations__.get("mod_skeleton_type", _MISSING)
+    _wsettings.VTWW_Settings.__annotations__["mod_skeleton_type"] = bpy.props.EnumProperty(
+        name="Skeleton",
+        description="Select the same skeleton type that was used for import! Defines logic of exported mod.ini.",
+        items=[
+            ('MERGED', 'Merged', 'Mesh with this skeleton should have unified list of Vertex Groups'),
+            ('COMPONENT', 'Per-Component', 'Mesh with this skeleton should have its Vertex Groups split into per-component lists.'),
+            ('COMPONENT_FROM_MERGED', 'Per-Component (from Merged)',
+             'Edit with a Merged (unified) skeleton, export a Per-Component mod: unified vertex-group '
+             'numbers are auto-translated back to each component local numbering. Avoids the Merged '
+             'runtime pause when several of the same object are on screen. Weights painted onto a bone '
+             "outside the vertex group's own component will block export with an error."),
+        ],
+        default=0,
+    )
+
+
 def _neutralize_updater():
     """Neutralize the upstream addon_updater: the auto_load module loop calls addon_updater_ops.register();
     nulling it out means no GitHub updater is wired up and no reload popup appears; also make Preferences
@@ -185,6 +210,7 @@ def register():
     _al.init()
     _neutralize_updater()
     _patch_tool_mode()
+    _patch_mod_skeleton_type()
     _strip_unwanted_vendor_panels()
     _patch_panels_for_velo_tools()
     _al.register()
@@ -208,6 +234,15 @@ def register():
         from .embedded.crossscene import patch as _xspatch
         _xspatch.install()
         _xspatch.install_import()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    # Per-Component (from Merged) export hook: when mod_skeleton_type == COMPONENT_FROM_MERGED, remap
+    # unified VG names -> per-component local + validate, then run a stock COMPONENT export. Installed
+    # after the cross-scene patch so it wraps it (outermost); a no-op for the other two modes.
+    try:
+        from .embedded import per_from_merged as _pfm
+        _pfm.install()
     except Exception:
         import traceback
         traceback.print_exc()
@@ -240,6 +275,12 @@ def unregister():
     try:
         from . import _shader_texture_usage as _stu
         _stu.uninstall_patches()
+    except Exception:
+        pass
+    # Remove the Per-Component (from Merged) hook first (LIFO: it was installed last / outermost).
+    try:
+        from .embedded import per_from_merged as _pfm
+        _pfm.remove()
     except Exception:
         pass
     try:
@@ -288,6 +329,12 @@ def unregister():
     if _orig_tool_mode_annotation is not _MISSING and _orig_tool_mode_annotation is not None:
         _wsettings.WWMI_Settings.__annotations__["tool_mode"] = _orig_tool_mode_annotation
     _orig_tool_mode_annotation = None
+
+    # Restore the mod_skeleton_type annotation.
+    global _orig_mod_skeleton_type_annotation
+    if _orig_mod_skeleton_type_annotation is not _MISSING and _orig_mod_skeleton_type_annotation is not None:
+        _wsettings.VTWW_Settings.__annotations__["mod_skeleton_type"] = _orig_mod_skeleton_type_annotation
+    _orig_mod_skeleton_type_annotation = None
 
     # Restore updater / Preferences.
     global _orig_updater_register, _orig_pref_draw, _orig_pref_auto_check
