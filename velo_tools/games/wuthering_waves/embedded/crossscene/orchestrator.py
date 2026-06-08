@@ -123,6 +123,13 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
 
     saved = (cfg.object_source_folder, getattr(cfg, "component_collection", None),
              cfg.mod_output_folder, cfg.mod_name)
+    # Sub-IBs (own_ibs / foldable_ibs) are RE-imported below; they must be imported in the EXPORT
+    # skeleton mode, not the user's original import mode. Normally import==export so this is a no-op,
+    # but the "Per-Component (from Merged)" path imports MERGED yet exports COMPONENT -- without this
+    # the re-imported sub-IBs keep unified VG names and a COMPONENT export drops them (skeleton
+    # collapse). Aligning sub-IB import to the export mode is generic (no asset-specific logic).
+    saved_import_type = cfg.import_skeleton_type
+    cfg.import_skeleton_type = cfg.mod_skeleton_type
     temp_cols = []
     try:
         # 1) body: (punch-hole) all meshes of the base (including extra IB components, each punched separately); the body export takes only the showcase group
@@ -222,6 +229,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         return report
     finally:
         cfg.object_source_folder, cfg.mod_output_folder, cfg.mod_name = saved[0], saved[2], saved[3]
+        cfg.import_skeleton_type = saved_import_type
         if saved[1] is not None:
             cfg.component_collection = saved[1]
         for col in temp_cols:

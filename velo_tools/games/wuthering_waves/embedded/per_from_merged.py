@@ -158,23 +158,32 @@ def _make_patched(orig_execute):
 
         tmp_col = bpy.data.collections.new("vpfm_export")
         context.scene.collection.children.link(tmp_col)
-        tmp_objs, saved_col, saved_mode = [], cfg.component_collection, cfg.mod_skeleton_type
+        tmp_objs, renamed = [], []   # renamed: [(orig_obj, orig_name)] to restore in finally
+        saved_col, saved_mode = cfg.component_collection, cfg.mod_skeleton_type
         try:
             for o in base_col.objects:
                 if o.type != 'MESH':
                     continue
+                orig_name = o.name
                 cp = o.copy()
                 cp.data = o.data.copy()
+                # Give the copy the ORIGINAL Component name (Blender would otherwise suffix it '.001',
+                # which breaks the cross-scene orchestrator's exact-name component routing -- the body
+                # export's editable exclusion and the editable copy both look up "Component N" by exact
+                # name). Free the name by temporarily renaming the original; restored in finally.
+                o.name = orig_name + "__vpfm_orig"
+                cp.name = orig_name
+                renamed.append((o, orig_name))
                 tmp_col.objects.link(cp)
                 tmp_objs.append(cp)
-                cid = _component_id(o.name)
+                cid = _component_id(orig_name)
                 if cid is not None and vg_maps.get(cid):
                     stray = _remap_object(cp, vg_maps[cid])
                     if stray:
                         self.report({'ERROR'},
                                     "导出失败：物体 `%s` (Component %s) 的顶点组 %s 权重越界——它们对应的统一骨不在"
                                     "该部件的 vg_map 内（COMPONENT 运行期无法表达跨部件权重）。请把这些权重转回本部件"
-                                    "的骨，或刷零后再导出。" % (o.name, cid, stray))
+                                    "的骨，或刷零后再导出。" % (orig_name, cid, stray))
                         return {'CANCELLED'}
             cfg.component_collection = tmp_col
             cfg.mod_skeleton_type = 'COMPONENT'
@@ -182,7 +191,7 @@ def _make_patched(orig_execute):
         finally:
             cfg.component_collection = saved_col
             cfg.mod_skeleton_type = saved_mode
-            for cp in tmp_objs:
+            for cp in tmp_objs:   # remove copies first (frees the clean Component names)
                 mesh = cp.data
                 try:
                     bpy.data.objects.remove(cp, do_unlink=True)
@@ -190,6 +199,11 @@ def _make_patched(orig_execute):
                     pass
                 try:
                     bpy.data.meshes.remove(mesh)
+                except Exception:
+                    pass
+            for o, name in renamed:   # then restore the originals' names
+                try:
+                    o.name = name
                 except Exception:
                     pass
             try:
