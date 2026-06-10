@@ -414,6 +414,7 @@ def _vote_morph_id_map(out_dir, base_comps, ib_dir, fold_entry):
     Returns (id_map {dungeon_id: base_id} voted keys only, selfcheck)."""
     votes = defaultdict(lambda: defaultdict(int))
     fits = defaultdict(list)
+    qual = defaultdict(set)  # per dungeon key: ALL base candidates whose residual qualifies
     keys_seen = set()
     ambiguous = 0
     ib_names = _comp_names(Path(ib_dir))
@@ -447,9 +448,11 @@ def _vote_morph_id_map(out_dir, base_comps, ib_dir, fold_entry):
             if resid[best] >= _MORPH_RESID_MAX:
                 continue
             # Near-duplicate base keys can fit comparably well; picking the best is data-safe
-            # (their deltas coincide on the folded vertices), so ambiguity is only tracked.
+            # (their deltas coincide on the folded vertices), so ambiguity is only tracked --
+            # the modal-offset tie-break below settles the EDIT semantics.
             if len(order) > 1 and float(resid[int(order[1])]) < _MORPH_RESID_MAX:
                 ambiguous += 1
+            qual[d].update(base_ids[int(i)] for i in np.flatnonzero(resid < _MORPH_RESID_MAX))
             votes[d][base_ids[best]] += int(sig.sum())
             fits[d].append(float(f[best]))
     id_map, scales = {}, []
@@ -459,11 +462,31 @@ def _vote_morph_id_map(out_dir, base_comps, ib_dir, fold_entry):
             conflicts += 1
         id_map[d] = max(v, key=v.get)
         scales.append(float(np.median(fits[d])))
+    # Modal-offset tie-break: twin base keys (identical deltas on the folded vertices, e.g.
+    # body-combo expressions whose face share equals a pure-face key) make the residual winner
+    # arbitrary -- byte-equal output, but the EDITED key the dungeon follows would be the twin
+    # instead of the structurally corresponding one. The dominant id offset across all winners
+    # is the structural truth (the scene pipeline renumbers after dropping leading base-only
+    # keys); when the offset-matching candidate also qualifies, prefer it.
+    tie_broken = 0
+    if id_map:
+        offset_hist = defaultdict(int)
+        for d, b in id_map.items():
+            offset_hist[b - d] += 1
+        modal_offset = max(offset_hist, key=offset_hist.get)
+        for d in sorted(id_map):
+            cand = d + modal_offset
+            if cand != id_map[d] and cand in qual[d]:
+                id_map[d] = cand
+                tie_broken += 1
+    else:
+        modal_offset = None
     chk = {
         "keys_seen": len(keys_seen), "voted": len(id_map),
         "unvoted": len(keys_seen) - len(id_map),
         "unvoted_ids": sorted(keys_seen - set(id_map)),
         "ambiguous": ambiguous, "cross_component_conflicts": conflicts,
+        "modal_offset": modal_offset, "tie_broken_to_modal": tie_broken,
         "identity": all(k == v for k, v in id_map.items()) if id_map else None,
         "scale": (round(float(np.median(scales)), 6) if scales else None),
     }
