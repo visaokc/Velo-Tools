@@ -17,9 +17,12 @@
 #      per-component draws into shared [CommandListDrawComponent{c}] lists and
 #      emits the per-draw LOD sections.
 #
-# Round scope: MERGED skeleton mode only (COMPONENT-mode support would be a
-# trivial future addition: its Blend.buf is already component-local). Note:
-# a LodExportError raised here surfaces through export_mod's try/except as a
+# Supported modes: MERGED (16-bit merged-id truth composed through the
+# own-component inverse) and COMPONENT (Blend.buf is already component-local
+# 8-bit — the matcher vg_map applies directly, no inverse). Per-Component
+# (from Merged) flips mod_skeleton_type to COMPONENT during its inner stock
+# export and therefore takes the COMPONENT path automatically. Note: a
+# LodExportError raised here surfaces through export_mod's try/except as a
 # ConfigError tagged 'use_custom_template' — the field hint is cosmetic, the
 # message text is preserved verbatim.
 
@@ -40,7 +43,10 @@ _INSTALLED = False
 _ORIG_BUILD_MOD_INI = None
 _ORIG_BUILD_FROM_TEMPLATE = None
 
-_TEMPLATE_PATH = Path(__file__).parent / 'templates' / 'merged_lod.ini.j2'
+_TEMPLATE_PATHS = {
+    'MERGED': Path(__file__).parent / 'templates' / 'merged_lod.ini.j2',
+    'COMPONENT': Path(__file__).parent / 'templates' / 'per_component_lod.ini.j2',
+}
 
 
 class LodExportError(Exception):
@@ -86,7 +92,7 @@ def remove():
 
 def _load_velo_template(cfg) -> str:
     """Loads the velo fork template, mirroring get_default_template's note stripping."""
-    with open(_TEMPLATE_PATH, 'r', encoding='utf-8') as f:
+    with open(_TEMPLATE_PATHS[cfg.mod_skeleton_type], 'r', encoding='utf-8') as f:
         raw_data = f.read()
     if cfg.comment_ini:
         return raw_data
@@ -130,10 +136,11 @@ def _prepare_lod_export(exporter):
                   'components[].lods; re-run Extract LOD Data. LOD export skipped.')
         return
 
-    if cfg.mod_skeleton_type != 'MERGED':
-        print('[LOD] LOD data found, but LOD export currently supports the MERGED skeleton '
-              'mode only — skipped.')
+    if cfg.mod_skeleton_type not in _TEMPLATE_PATHS:
+        print(f'[LOD] LOD data found, but skeleton mode {cfg.mod_skeleton_type} is not '
+              f'supported — skipped.')
         return
+    is_merged = cfg.mod_skeleton_type == 'MERGED'
 
     blend = exporter.buffers.get('Blend')
     index_buffer = exporter.buffers.get('Index')
@@ -147,12 +154,17 @@ def _prepare_lod_export(exporter):
     for stale in exporter.meshes_path.glob('VeloLod*.buf'):
         stale.unlink()
 
-    # True merged ids: 16-bit truth when the merged object exceeds 256 VGs.
-    vg16 = exporter.buffers.get('BlendRemapVertexVG')
-    if vg16 is not None:
-        ids_name = vg16.layout.get_element(AbstractSemantic(Semantic.Blendindices, 1)).get_name()
-        true_vg_ids = vg16.get_field(ids_name)
+    if is_merged:
+        # True merged ids: 16-bit truth when the merged object exceeds 256 VGs.
+        vg16 = exporter.buffers.get('BlendRemapVertexVG')
+        if vg16 is not None:
+            ids_name = vg16.layout.get_element(AbstractSemantic(Semantic.Blendindices, 1)).get_name()
+            true_vg_ids = vg16.get_field(ids_name)
+        else:
+            ids_name = blend.layout.get_element(AbstractSemantic(Semantic.Blendindices, 0)).get_name()
+            true_vg_ids = blend.get_field(ids_name)
     else:
+        # COMPONENT: Blend.buf ids are already component-local 8-bit truth.
         ids_name = blend.layout.get_element(AbstractSemantic(Semantic.Blendindices, 0)).get_name()
         true_vg_ids = blend.get_field(ids_name)
 
@@ -178,13 +190,21 @@ def _prepare_lod_export(exporter):
         for lod_index, (lod_object_name, entries) in enumerate(ordered_groups):
             level = lod_index + 1
 
-            component_maps = {
-                component_id: _remap.compose_full_to_lod_local(
-                    full_components_meta[component_id], entry)
-                for component_id, entry in entries.items()
-                if component_id < len(merged_components)
-                and len(merged_components[component_id].objects) > 0
-            }
+            component_maps = {}
+            for component_id, entry in entries.items():
+                if (component_id >= len(merged_components)
+                        or len(merged_components[component_id].objects) == 0):
+                    continue
+                if is_merged:
+                    component_maps[component_id] = _remap.compose_full_to_lod_local(
+                        full_components_meta[component_id], entry)
+                else:
+                    # COMPONENT mode: matcher vg_map applies to the local ids
+                    # directly (None = identity skeleton, pass ids through).
+                    entry_map = _remap._to_int_map(entry.get('vg_map'))
+                    component_maps[component_id] = (
+                        entry_map if entry_map is not None
+                        else {i: i for i in range(256)})
 
             lod_ids = _remap.remap_blend_component_local(
                 true_vg_ids, weights, component_of_vertex, component_maps)
