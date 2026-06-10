@@ -136,11 +136,18 @@ def normalize_usage(raw: dict, source: str, warnings: List[str],
                         if not isinstance(tex_hash, str):
                             tex_hash = None
                         elif texture_info is not None and record.get('format'):
-                            texture_info.setdefault(tex_hash, {
+                            info = texture_info.setdefault(tex_hash, {
                                 'format': record.get('format') or '',
                                 'width': record.get('width') or 0,
                                 'height': record.get('height') or 0,
                             })
+                            # Harvested residency-level hashes of this texture
+                            # (merged from extra dumps): extra latch keys.
+                            for variant in record.get('variants') or []:
+                                if isinstance(variant, str):
+                                    info.setdefault('variants', [])
+                                    if variant not in info['variants']:
+                                        info['variants'].append(variant)
                         _ingest_slot(pair_out, int(slot_found.group(1)), tex_hash)
                 continue
             # old flat: "vs=..-ps=.." -> {slot -> hash string}
@@ -311,20 +318,33 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     if h is not None:
                         slot_content.setdefault((comp_id, slot), set()).add(h)
     alias: Dict[str, str] = {}
+    # Harvested residency variants (the "variants" record key) are aliases by
+    # declaration: the merge step only records them after a same-slot, same-
+    # format, different-size sighting in another dump.
+    for canon, info in texture_info.items():
+        for variant in info.get('variants', ()):
+            alias.setdefault(variant, canon)
     for (comp_id, slot), hashes in sorted(slot_content.items()):
-        if len(hashes) != 2:
-            continue
-        a, b = sorted(hashes)
-        ia, ib = texture_info.get(a), texture_info.get(b)
-        if not ia or not ib or not ia.get('format'):
-            continue
-        if ia.get('format') != ib.get('format') or ia.get('width') == ib.get('width'):
-            continue
-        kept = [h for h in (a, b) if h in mod_hashes]
-        if len(kept) != 1:
-            continue
-        other = b if kept[0] == a else a
-        alias.setdefault(other, kept[0])
+        # Multi-level groups: n hashes at one (component, slot) sharing a
+        # format with pairwise-distinct sizes, of which the author kept
+        # exactly ONE - the streaming mip ladder of one texture.
+        by_format: Dict[str, List[str]] = {}
+        for h in sorted(hashes):
+            info = texture_info.get(h)
+            if info and info.get('format'):
+                by_format.setdefault(info['format'], []).append(h)
+        for fmt_name, group in by_format.items():
+            if len(group) < 2:
+                continue
+            sizes = [texture_info[h].get('width') for h in group]
+            if None in sizes or 0 in sizes or len(set(sizes)) != len(group):
+                continue
+            kept = [h for h in group if h in mod_hashes]
+            if len(kept) != 1:
+                continue
+            for h in group:
+                if h != kept[0]:
+                    alias.setdefault(h, kept[0])
     if alias:
         for _, form_data in forms:
             for comp_pairs in form_data.values():
@@ -447,6 +467,39 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 'no form fork derivable (no (component, slot) where the forms '
                 'bind disjoint kept material content) - forms cannot be '
                 'auto-detected at runtime')
+
+    # L1 zero-latency fast path: a PS recorded in exactly ONE form's maps,
+    # material-classified there, latches that form on its very first draw
+    # (shaders swap on the switch frame and never stream — the texture
+    # latches above need the new form's textures to climb back to a captured
+    # residency level first). DETECTION ONLY and auto-degrading: after a game
+    # update the dead shader sections make these checks constant-false and
+    # the texture latches take over; no binding condition ever reads them.
+    ps_fast_latches: List[Tuple[int, str, int]] = []  # (comp, ps hash, form)
+    if multi_form:
+        ps_form_presence: Dict[str, Set[int]] = {}
+        ps_material_comps: Dict[Tuple[str, int], Set[int]] = {}
+        for form_id, (_, form_data) in enumerate(forms, start=1):
+            for comp_id, comp_pairs in form_data.items():
+                for ps, pair_map in comp_pairs.items():
+                    ps_form_presence.setdefault(ps, set()).add(form_id)
+                    if _is_material_pair(pair_map, texture_info):
+                        ps_material_comps.setdefault((ps, form_id), set()).add(comp_id)
+        ps_values: Dict[str, int] = {}
+        for ps, presence in sorted(ps_form_presence.items()):
+            if len(presence) != 1:
+                continue
+            form_id = next(iter(presence))
+            comps = ps_material_comps.get((ps, form_id))
+            if not comps:
+                continue
+            value = constants.ps_mark_value(ps)
+            if value in ps_values.values():
+                warnings.append(f'ps mark value collision on {ps}, fast path dropped')
+                continue
+            ps_values[ps] = value
+            for comp_id in sorted(comps):
+                ps_fast_latches.append((comp_id, ps, form_id))
 
     # ------------------------------------------------------ branch building --
     all_comp_ids = sorted({c for _, fd in forms for c in fd})
@@ -813,14 +866,34 @@ def build_plan(forms: List[Tuple[str, FormData]],
             out.append('allow_duplicate_hash = true')
             out.append(f'match_priority = {constants.MARK_PRIORITY}')
             out.append(f'filter_index = {marks[h]}')
-            for e_comp, e_slot, kind, payload in sorted(
-                    effects_by_hash.get(h, ()), key=lambda e: (e[0], e[1], e[2], str(e[3]))):
-                out.append(f'if {constants.VAR_LATCH_KEY} == {constants.probe_key(e_comp, e_slot)}')
+            # One block per distinct effect, probe keys OR-merged.
+            by_effect: Dict[Tuple[str, object], List[int]] = {}
+            for e_comp, e_slot, kind, payload in effects_by_hash.get(h, ()):
+                by_effect.setdefault((kind, payload), []).append(
+                    constants.probe_key(e_comp, e_slot))
+            for (kind, payload), keys in sorted(by_effect.items(),
+                                                key=lambda e: (e[0][0], str(e[0][1]))):
+                cond = ' || '.join(f'{constants.VAR_LATCH_KEY} == {k}'
+                                   for k in sorted(set(keys)))
+                out.append(f'if {cond}')
                 if kind == 'latch':
                     out.append(f'    {constants.VAR_FORM} = {payload}')
                 else:
                     out.append(f'    {constants.VAR_HIT.format(texture_hash=payload)} = 1')
                 out.append('endif')
+
+    if ps_fast_latches:
+        out.append('')
+        out.append('; -- DETECTION-ONLY shader marks (zero-latency form-switch fast path:')
+        out.append(';    shaders swap on the switch frame, textures still stream). After a')
+        out.append(';    game update these go dead and the texture latches take over -')
+        out.append(';    no binding condition ever references a shader.')
+        for ps in sorted({p for _, p, _ in ps_fast_latches}):
+            out.append('')
+            out.append(f'[{constants.SEC_PS_MARK.format(ps_hash=ps)}]')
+            out.append(f'hash = {ps}')
+            out.append('allow_duplicate_hash = true')
+            out.append(f'filter_index = {constants.ps_mark_value(ps)}')
 
     component_list_names: Dict[int, str] = {}
     body_chunks: List[str] = []
@@ -828,6 +901,17 @@ def build_plan(forms: List[Tuple[str, FormData]],
         name = constants.CMDLIST_SET_TEXTURES.format(component_id=comp_id)
         component_list_names[comp_id] = name
         chunk: List[str] = ['', f'[{name}]']
+        # L1 fast-path latches first: instant on the switch frame.
+        ps_by_form: Dict[int, List[str]] = {}
+        for latch_comp, ps, form_id in ps_fast_latches:
+            if latch_comp == comp_id:
+                ps_by_form.setdefault(form_id, []).append(ps)
+        for form_id in sorted(ps_by_form):
+            cond = ' || '.join(f'ps == {constants.ps_mark_value(ps)}'
+                               for ps in sorted(set(ps_by_form[form_id])))
+            chunk.append(f'if {cond}')
+            chunk.append(f'    {constants.VAR_FORM} = {form_id}')
+            chunk.append('endif')
         for form_id, markers in sorted(form_markers_m1.items()):
             for marker_comp, slot, key in markers:
                 if marker_comp != comp_id:
@@ -955,6 +1039,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'conflicts': conflict_count,
             'marks': len(marks),
             'fork_latches': len(fork_latches),
+            'ps_fast_latches': len(ps_fast_latches),
             'probes': len(probe_effects),
             'format_sections': format_section_count,
             'covered_textures': len(covered_resource_indices),

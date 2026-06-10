@@ -97,7 +97,9 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
 
     form_label: bpy.props.StringProperty(
         name="形态标签",
-        description="可选：该形态在合并数据里的显示名（留空自动编号）",
+        description="可选：该形态在合并数据里的显示名（留空自动编号）。"
+                    "同一标签再合并不同距离的 dump 会收割该形态贴图的其它流送级 "
+                    "hash（缩短形态切换的检测延迟）；填 base 表示收割进基础提取数据",
         default='',
     )
 
@@ -128,11 +130,13 @@ class VTWW_OT_merge_form_textures(bpy.types.Operator):
             return {'CANCELLED'}
 
         action = "覆盖" if summary['replaced'] else "新增"
+        harvest = (f"，收割 {summary['variants_added']} 个残留度变体"
+                   if summary.get('variants_added') else "")
         self.report(
             {'INFO'},
             f"已{action}形态「{summary['label']}」（按 {summary['matched_by']} 匹配，"
             f"{summary['components']} 组件 / {summary['pairs']} 着色器对，"
-            f"拷入 {summary['textures_copied']} 张该形态贴图），"
+            f"拷入 {summary['textures_copied']} 张该形态贴图{harvest}），"
             f"当前共 {summary['total_forms']} 个形态。"
         )
         return {'FINISHED'}

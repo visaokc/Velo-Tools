@@ -196,6 +196,41 @@ def _copy_form_textures(object_source_folder: Path, sources: dict) -> int:
     return copied
 
 
+def _merge_variant_records(dst_components, src_components):
+    """Folds a re-merged dump of the SAME form into existing records:
+    same (component, pair, slot) with same format but different size means
+    another streaming residency level of the texture — recorded under the
+    record's "variants" key (extra latch keys shrink the form-switch latency
+    after the shader fast path goes stale). New pairs/slots are added for
+    coverage; contradicting records (same size or different format) keep the
+    existing data. Returns (variants_added, records_added)."""
+    variants_added = 0
+    records_added = 0
+    for comp, src_vs in src_components.items():
+        dst_vs = dst_components.setdefault(comp, OrderedDict())
+        for vs_key, src_ps in src_vs.items():
+            dst_ps = dst_vs.setdefault(vs_key, OrderedDict())
+            for ps_key, src_slots in src_ps.items():
+                dst_slots = dst_ps.setdefault(ps_key, OrderedDict())
+                for slot, record in src_slots.items():
+                    existing = dst_slots.get(slot)
+                    if existing is None:
+                        dst_slots[slot] = record
+                        records_added += 1
+                        continue
+                    new_hash = record.get('hash')
+                    if (not new_hash or new_hash == existing.get('hash')
+                            or new_hash in (existing.get('variants') or [])):
+                        continue
+                    if (record.get('format') and existing.get('format')
+                            and record['format'] == existing['format']
+                            and record.get('width') != existing.get('width')):
+                        existing.setdefault('variants', [])
+                        existing['variants'].append(new_hash)
+                        variants_added += 1
+    return variants_added, records_added
+
+
 def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
                     texture_filter: TextureFilter = None) -> dict:
     """Parses one extra-form RAW dump and merges it into ShaderTextureUsage.json.
@@ -238,6 +273,40 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         mesh_object, surviving.get(mesh_object.vb0_hash))
     textures_copied = _copy_form_textures(object_source_folder, texture_sources)
 
+    label = form_label.strip()
+    if label.lower() == 'base':
+        # Residency harvest INTO the base maps: another-distance dump of the
+        # base form adds variant hashes (and new pairs) to the top-level
+        # records; the recorded canonical hashes never change.
+        usage_path = object_source_folder / constants.BASE_USAGE_FILENAME
+        if not usage_path.is_file():
+            raise FormMergeError(
+                f'{constants.BASE_USAGE_FILENAME} is missing - re-extract the '
+                f'object before harvesting into the base maps')
+        with open(usage_path, encoding='utf-8') as f:
+            usage = json.load(f)
+        base_components = OrderedDict(
+            (k, v) for k, v in usage.items() if k.startswith('Component'))
+        variants_added, records_added = _merge_variant_records(
+            base_components, components_usage)
+        usage.update(base_components)
+        with open(usage_path, 'w', encoding='utf-8') as f:
+            f.write(json.dumps(usage, indent=4))
+        return {
+            'usage_file': str(usage_path),
+            'label': 'base',
+            'source': dump_path.name,
+            'matched_by': matched_by,
+            'replaced': True,
+            'migrated_sidecar': False,
+            'components': len(components_usage),
+            'pairs': sum(len(ps_map) for vs_map in components_usage.values()
+                         for ps_map in vs_map.values()),
+            'textures_copied': textures_copied,
+            'variants_added': variants_added,
+            'total_forms': 1 + len(usage.get(constants.EXTRA_FORMS_KEY) or []),
+        }
+
     # Single-file schema v2: extra forms live INSIDE ShaderTextureUsage.json.
     usage_path = object_source_folder / constants.BASE_USAGE_FILENAME
     if not usage_path.is_file():
@@ -278,10 +347,21 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
     }
 
     replaced = False
+    variants_added = 0
     for index, existing in enumerate(extra_forms):
         if existing.get('source') == source:
+            # Same dump re-merged: full overwrite.
             entry['label'] = form_label.strip() or existing.get('label') or entry['label']
             extra_forms[index] = entry
+            replaced = True
+            break
+        if form_label.strip() and existing.get('label') == form_label.strip():
+            # Same form, ANOTHER dump (e.g. a different camera distance):
+            # residency harvest into the existing entry instead of replacing
+            # it or spawning a spurious extra form.
+            variants_added, _ = _merge_variant_records(
+                existing['components'], components_usage)
+            entry = existing
             replaced = True
             break
     if not replaced:
@@ -305,5 +385,6 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         'components': len(components_usage),
         'pairs': pair_count,
         'textures_copied': textures_copied,
+        'variants_added': variants_added,
         'total_forms': 1 + len(extra_forms),
     }

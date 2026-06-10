@@ -59,6 +59,9 @@ def probe_key(component_id: int, slot: int) -> int:
     return 16 * component_id + slot + 1
 RES_BACKUP = "ResourceTextureBackupT{slot}"
 SEC_TEX_MARK = "TextureOverrideMarkTexture{texture_hash}"
+# Detection-only fast path (form switch is instant on the shader axis while
+# textures still stream): never referenced by any binding condition.
+SEC_PS_MARK = "ShaderOverrideMarkPs{ps_hash}"
 SEC_FORMAT_TAG = "TextureOverrideComponent{component_id}{format_name}"
 SEC_FORMAT_TAG_LOD = "TextureOverrideLod{level}Component{component_id}{format_name}"
 
@@ -75,10 +78,22 @@ MARK_PRIORITY = 200
 _MARK_BASE = 16200000
 _MARK_MOD = 499979  # prime
 
+_PS_MARK_BASE = 2000000
+_PS_MARK_MOD = 13999981  # prime
+
 
 def mark_value(texture_hash: str) -> int:
     """Deterministic filter_index for a per-texture mark (8 hex chars)."""
     return _MARK_BASE + int(texture_hash, 16) % _MARK_MOD
+
+
+def ps_mark_value(ps_hash: str) -> int:
+    """Deterministic filter_index for a DETECTION-ONLY pixel shader mark
+    (16 hex chars). Shader hashes churn on every game update, so these only
+    feed the zero-latency form-switch fast path: a dead section makes its
+    check constant-false and detection falls back to the texture latches —
+    the binding layer never references shader hashes."""
+    return _PS_MARK_BASE + int(ps_hash, 16) % _PS_MARK_MOD
 
 
 def format_prefix(format_name: str) -> str:
