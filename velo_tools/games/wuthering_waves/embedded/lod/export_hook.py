@@ -73,8 +73,18 @@ def _post_export_lod(exporter):
     except Exception:
         return
 
-    lods = metadata.get('lods')
-    if not lods:
+    # Per-component lods entries (EFMI-style), grouped per LOD object.
+    full_components_meta = metadata['components']
+    lod_groups = {}  # lod_object_name -> {component_id: entry}
+    for component_id, component_meta in enumerate(full_components_meta):
+        for lod_entry in component_meta.get('lods') or []:
+            name = lod_entry.get('lod_object_name')
+            if name:
+                lod_groups.setdefault(name, {})[component_id] = lod_entry
+    if not lod_groups:
+        if metadata.get('lods'):
+            print('[VeloLOD] Legacy top-level "lods" metadata found — the schema has moved into '
+                  'components[].lods; re-run Extract LOD Data. LOD export skipped.')
         return
 
     if cfg.mod_skeleton_type != 'MERGED':
@@ -108,7 +118,6 @@ def _post_export_lod(exporter):
 
     component_of_vertex = _remap.build_vertex_component_map(index_data, index_layout, vertex_count)
 
-    full_components_meta = metadata['components']
     shared = {
         'color_present': 'Color' in exporter.buffers,
         'blend_stride': blend.layout.stride,
@@ -120,13 +129,19 @@ def _post_export_lod(exporter):
     for stale in exporter.meshes_path.glob('VeloLod*.buf'):
         stale.unlink()
 
+    # Level numbering: groups ordered by total matched vertex_count desc
+    # (more retained geometry = nearer LOD level), name as deterministic tie-break.
+    ordered_groups = sorted(
+        lod_groups.items(),
+        key=lambda item: (-sum(e.get('vertex_count', 0) for e in item[1].values()), item[0]),
+    )
+
     try:
         lod_plans = []
-        for lod_index, entry in enumerate(lods):
-            level = lod_index + 1
-            lod_plans.append(_build_lod_level(exporter, level, entry, full_components_meta,
-                                              true_vg_ids, weights, index_data, index_layout,
-                                              component_of_vertex))
+        for lod_index, (lod_object_name, entries) in enumerate(ordered_groups):
+            lod_plans.append(_build_lod_level(exporter, lod_index + 1, lod_object_name, entries,
+                                              full_components_meta, true_vg_ids, weights,
+                                              index_data, index_layout, component_of_vertex))
     except _remap.LodRemapError as e:
         raise LodExportError(f'LOD export failed: {e}') from e
 
@@ -147,16 +162,17 @@ def _post_export_lod(exporter):
     print(f'[VeloLOD] Appended {len(lod_plans)} LOD level(s) ({total_sections} override sections) to mod.ini.')
 
 
-def _build_lod_level(exporter, level, entry, full_components_meta,
+def _build_lod_level(exporter, level, lod_object_name, entries, full_components_meta,
                      true_vg_ids, weights, index_data, index_layout, component_of_vertex):
     merged_components = exporter.merged_object.components
 
-    entry_components = entry.get('components') or []
+    # Rebuild the index-aligned per-component entry list (None = no entry).
+    entry_components = [entries.get(i) for i in range(len(full_components_meta))]
 
     # Components that get real LOD draws: matched + non-empty custom geometry.
     draw_indices = [
         component_id for component_id, entry_component in enumerate(entry_components)
-        if entry_component.get('matched')
+        if entry_component is not None
         and component_id < len(merged_components)
         and len(merged_components[component_id].objects) > 0
     ]
@@ -192,7 +208,7 @@ def _build_lod_level(exporter, level, entry, full_components_meta,
     # Assemble the pure-data ini plan.
     plan_components = []
     for component_id, entry_component in enumerate(entry_components):
-        if not entry_component.get('matched'):
+        if entry_component is None:
             continue
         draws = []
         if component_id in draw_indices:
@@ -216,11 +232,13 @@ def _build_lod_level(exporter, level, entry, full_components_meta,
             'compaction': compaction,
         })
 
+    # All entries of a group share the LOD object's hashes (single writer).
+    first_entry = next(iter(entries.values()))
     return {
         'level': level,
-        'lod_object_name': entry.get('lod_object_name', ''),
-        'vb0_hash': entry['vb0_hash'],
-        'cb4_hash': entry.get('cb4_hash', ''),
+        'lod_object_name': lod_object_name,
+        'vb0_hash': first_entry['vb0_hash'],
+        'cb4_hash': first_entry.get('cb4_hash', ''),
         'components': plan_components,
         'has_compaction': bool(forward_blocks),
     }

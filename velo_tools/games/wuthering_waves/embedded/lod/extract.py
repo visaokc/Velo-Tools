@@ -3,9 +3,11 @@
 # Mirrors the EFMI extract_lods flow: run the stock WWMI extraction chain on a
 # LOD frame dump (in memory, nothing written to disk), match the resulting
 # candidate objects against the already-extracted full object, then persist
-# the match as a velo-owned top-level "lods" key inside the full object's
-# Metadata.json. The merge is JSON-level on purpose: round-tripping through
-# _wwmi_core's dataclasses would silently drop unknown keys.
+# each match as a per-component "lods" entry nested inside the stock
+# components[] dicts (EFMI-style, appended right after the stock vg_map key;
+# unmatched components get no entry). The merge is JSON-level on purpose:
+# round-tripping through _wwmi_core's dataclasses would silently drop unknown
+# keys.
 
 import json
 import re
@@ -61,13 +63,13 @@ def extract_candidate_objects(dump_path: Path) -> list:
         draw_data=data_extractor.draw_data,
     )
 
-    # Capture texture hashes before OutputBuilder.filter_textures drops them all.
+    # Capture texture hashes per component before OutputBuilder.filter_textures
+    # drops them all.
     texture_hashes = {
-        vb0_hash: sorted({
-            texture.hash
+        vb0_hash: [
+            sorted({texture.hash for texture in component.textures.values()})
             for component in mesh_object.components
-            for texture in component.textures.values()
-        })
+        ]
         for vb0_hash, mesh_object in component_builder.mesh_objects.items()
     }
 
@@ -133,66 +135,74 @@ def _match_type_for(full_component, lod_component) -> str:
     return "geometry"
 
 
-def build_lods_entry(full_object, lod_object, matched_components) -> dict:
-    """Builds one velo "lods" entry (index-aligned with the full object's components)."""
-    components = []
-    for full_component in full_object.components:
-        lod_component, vg_map = matched_components.get(full_component, (None, None))
-        if lod_component is None:
-            components.append({
-                "matched": False,
-                "match_type": "unmatched",
-                "lod_component_index": None,
-            })
-            continue
-        lod_meta = lod_component.meta
-        components.append({
-            "matched": True,
-            "match_type": _match_type_for(full_component, lod_component),
-            "lod_component_index": lod_component.index,
-            "vertex_offset": lod_meta["vertex_offset"],
-            "vertex_count": lod_meta["vertex_count"],
-            "index_offset": lod_meta["index_offset"],
-            "index_count": lod_meta["index_count"],
-            "vg_offset": lod_meta["vg_offset"],
-            "vg_count": lod_meta["vg_count"],
-            # LOD component-local -> LOD merged ids (copied from the LOD object's metadata).
-            "vg_map": lod_meta["vg_map"],
-            # Matcher output: full component-local -> LOD component-local; None == identity.
-            "full_to_lod_vg_map": vg_map,
-        })
+def build_component_lod_entry(full_component, lod_component, vg_map, lod_object) -> dict:
+    """Builds one per-component lods entry (EFMI ExtractedObjectComponentLOD-aligned).
 
+    Field semantics: `vg_map` is the matcher remap (full component-local ->
+    LOD component-local, None = identity), matching EFMI's per-component LOD
+    vg_map; `lod_vg_map` is the LOD component's own stock map (LOD local ->
+    LOD merged) needed to compose the merged-id chain at export time.
+    """
+    lod_meta = lod_component.meta
     return {
         "lod_object_name": lod_object.id,
         "vb0_hash": lod_object.meta["vb0_hash"],
         "cb4_hash": lod_object.meta["cb4_hash"],
-        "vertex_count": lod_object.meta["vertex_count"],
-        "index_count": lod_object.meta["index_count"],
+        "vertex_offset": lod_meta["vertex_offset"],
+        "vertex_count": lod_meta["vertex_count"],
+        "index_offset": lod_meta["index_offset"],
+        "index_count": lod_meta["index_count"],
+        "vg_offset": lod_meta["vg_offset"],
+        "vg_count": lod_meta["vg_count"],
+        "vg_map": vg_map,
+        "lod_vg_map": lod_meta["vg_map"],
         "shapekeys_offsets_hash": (lod_object.meta.get("shapekeys") or {}).get("offsets_hash", ""),
-        "texture_hashes": lod_object.texture_hashes,
-        "components": components,
+        "texture_hashes": lod_component.texture_hashes,
+        "match_type": _match_type_for(full_component, lod_component),
+        "lod_component_index": lod_component.index,
     }
 
 
-def merge_lods_entry(metadata: dict, entry: dict, allow_overwrite: bool) -> dict:
-    """Merges a lods entry into a raw Metadata.json dict (returns the same dict)."""
-    lods = metadata.get("lods") or []
+def merge_component_lods(metadata: dict, lod_object_name: str, component_entries: dict,
+                         allow_overwrite: bool) -> dict:
+    """Merges per-component lods entries into a raw Metadata.json dict.
 
-    existing = [i for i, lod in enumerate(lods) if lod.get("lod_object_name") == entry["lod_object_name"]]
-    if existing:
-        if not allow_overwrite:
-            raise DuplicateLodDataError(
-                f"LOD data for object {entry['lod_object_name']} already exists in Metadata.json! "
-                f"Enable 'Allow LoD Data Overwrite' to replace it."
-            )
-        for i in reversed(existing):
-            del lods[i]
+    component_entries maps full component index -> entry (matched components
+    only). Duplicate semantics mirror EFMI's import_lod_metadata, lifted to
+    the object level: any existing entry with the same lod_object_name on any
+    component requires the overwrite flag (checked before any mutation).
+    """
+    components_meta = metadata["components"]
 
-    lods.append(entry)
-    # Highest-resolution LOD first (LOD1 = largest), same ordering as EFMI.
-    lods.sort(key=lambda lod: lod.get("vertex_count", 0), reverse=True)
+    if not allow_overwrite:
+        for component_meta in components_meta:
+            for lod_entry in component_meta.get("lods") or []:
+                if lod_entry.get("lod_object_name") == lod_object_name:
+                    raise DuplicateLodDataError(
+                        f"LOD data for object {lod_object_name} already exists in Metadata.json! "
+                        f"Enable 'Allow LoD Data Overwrite' to replace it."
+                    )
 
-    metadata["lods"] = lods
+    for component_id, component_meta in enumerate(components_meta):
+        # Drop stale same-name entries everywhere (incl. components no longer matched).
+        lods = [
+            lod_entry for lod_entry in (component_meta.get("lods") or [])
+            if lod_entry.get("lod_object_name") != lod_object_name
+        ]
+        entry = component_entries.get(component_id)
+        if entry is not None:
+            lods.append(entry)
+        # Highest-resolution LOD first, same per-component ordering as EFMI.
+        lods.sort(key=lambda lod_entry: lod_entry.get("vertex_count", 0), reverse=True)
+        if lods:
+            # First-time assignment appends right after the stock vg_map key;
+            # re-assignment keeps the existing position.
+            component_meta["lods"] = lods
+        else:
+            component_meta.pop("lods", None)
+
+    # Silently retire the legacy top-level container (entries are regenerated).
+    metadata.pop("lods", None)
     return metadata
 
 
@@ -221,8 +231,12 @@ def run_extract_lod_data(context) -> dict:
     matcher = build_matcher(lod_cfg)
     lod_object, matched_components = matcher.find_matching_lods(full_object, candidates)
 
-    entry = build_lods_entry(full_object, lod_object, matched_components)
-    metadata = merge_lods_entry(full_object.meta, entry, lod_cfg.allow_lod_overwrite)
+    component_entries = {
+        full_component.index: build_component_lod_entry(full_component, lod_component, vg_map, lod_object)
+        for full_component, (lod_component, vg_map) in matched_components.items()
+    }
+    metadata = merge_component_lods(full_object.meta, lod_object.id, component_entries,
+                                    lod_cfg.allow_lod_overwrite)
 
     with open(metadata_path, 'w', encoding='utf-8') as f:
         f.write(json.dumps(metadata, indent=4))

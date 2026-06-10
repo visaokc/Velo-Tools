@@ -248,7 +248,7 @@ def register():
         traceback.print_exc()
     # LOD export hook: patches ModExporter.export_mod (independent target from the operator wraps
     # above); appends per-LOD remapped blend buffers + ini override sections when the export source's
-    # Metadata.json carries velo "lods" data (MERGED mode only; a no-op otherwise).
+    # Metadata.json carries velo per-component "lods" entries (MERGED mode only; a no-op otherwise).
     try:
         from .embedded.lod import export_hook as _lodhook
         _lodhook.install()

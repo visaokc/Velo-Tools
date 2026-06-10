@@ -11,10 +11,11 @@
 #
 # The exported Blend data references *full merged* ids; LOD draws build their
 # own merged skeleton (per-LOD SkeletonMerger mirror), so the LOD blend buffer
-# must reference *lod merged* ids. The chain per component c:
+# must reference *lod merged* ids. The chain per component c (field names per
+# the EFMI-aligned per-component lods entry):
 #   full merged --invert(full.vg_map[c])--> full local
-#               --full_to_lod_vg_map[c]--> lod local
-#               --lod.vg_map[c]--> lod merged
+#               --lods.vg_map[c]--> lod local
+#               --lods.lod_vg_map[c]--> lod merged
 
 import numpy
 
@@ -36,8 +37,10 @@ def compose_full_to_lod_merged(full_components_meta, entry_components) -> dict:
     Args:
         full_components_meta: stock Metadata.json "components" list of the full
             object (vg_offset / vg_count / vg_map per component).
-        entry_components: the "components" list of one velo lods entry
-            (index-aligned; each with vg_map / full_to_lod_vg_map / matched).
+        entry_components: index-aligned list of per-component lods entries for
+            ONE LOD object (None = component has no entry for it); each entry
+            carries vg_map (full local -> lod local matcher remap, None =
+            identity) and lod_vg_map (lod local -> lod merged).
 
     A full merged id may be reachable through several components (WWMI dedups
     identical bones across components); the chain of the component that *owns*
@@ -50,12 +53,12 @@ def compose_full_to_lod_merged(full_components_meta, entry_components) -> dict:
         if component_id >= len(entry_components):
             break
         entry = entry_components[component_id]
-        if not entry.get("matched"):
+        if entry is None:
             continue
 
         full_map = _to_int_map(full_meta["vg_map"])
-        full_to_lod = _to_int_map(entry.get("full_to_lod_vg_map"))
-        lod_map = _to_int_map(entry["vg_map"])
+        full_to_lod = _to_int_map(entry.get("vg_map"))
+        lod_map = _to_int_map(entry["lod_vg_map"])
 
         vg_offset = full_meta["vg_offset"]
         vg_count = full_meta["vg_count"]
