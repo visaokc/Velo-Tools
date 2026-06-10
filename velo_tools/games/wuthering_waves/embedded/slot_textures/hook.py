@@ -13,6 +13,7 @@
 # structure, cross-scene export, value collision) falls back to the untouched
 # stock hash-style output with a console explanation - never a half result.
 
+import json
 import traceback
 
 from ..._wwmi_core.blender_export import ini_maker as _im_module
@@ -73,7 +74,8 @@ def install():
                     're-extract to record the original game formats')
             plan = generator.build_plan(
                 forms, textures, texture_info, load_warnings,
-                component_ranges=transform.extract_component_ranges(result))
+                component_ranges=transform.extract_component_ranges(result),
+                lod_ranges=_read_lod_ranges(source_folder))
             result = transform.apply(result, plan)
             for warning in plan.warnings:
                 _report(f'[SlotTextures] WARNING: {warning}')
@@ -104,6 +106,29 @@ def remove():
     _im_module.IniMaker.build_from_template = _ORIG_BUILD_FROM_TEMPLATE
     _ORIG_BUILD_FROM_TEMPLATE = None
     _INSTALLED = False
+
+
+def _read_lod_ranges(source_folder):
+    """lod level -> comp_id -> (index_offset, index_count) from the velo lods
+    metadata. LOD draws use the LOD object's component index ranges; the
+    generator emits a fuzzy format-tag twin per level so the slot conditions
+    keep working at LOD distance. Empty when the object has no lods data."""
+    lod_ranges = {}
+    meta_path = source_folder / 'Metadata.json'
+    if not meta_path.is_file():
+        return lod_ranges
+    try:
+        with open(meta_path, encoding='utf-8') as f:
+            metadata = json.load(f)
+        for comp_id, component in enumerate(metadata.get('components') or []):
+            for level, entry in enumerate(component.get('lods') or [], start=1):
+                first = entry.get('index_offset')
+                count = entry.get('index_count')
+                if first is not None and count is not None:
+                    lod_ranges.setdefault(level, {})[comp_id] = (first, count)
+    except Exception:
+        traceback.print_exc()
+    return lod_ranges
 
 
 def _report(message: str):

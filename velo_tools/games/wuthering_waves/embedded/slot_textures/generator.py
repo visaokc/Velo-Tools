@@ -30,10 +30,23 @@
 #     wrong-at-worst, never flickering.
 #   * Multi-form characters get a persistent $form_id driven by a marker
 #     ladder: M1 format markers (zero-hash, when one form has a format family
-#     unique at some (component, slot)) else M2 texture-hash markers (every
-#     form-unique replaced texture sets $form_id on bind; detection-only —
-#     a stale marker degrades to the default form, the slot rebinding itself
-#     never depends on texture hashes).
+#     unique at some (component, slot)) else FORK LATCHES: at a (component,
+#     MAIN slot) where the forms' material pairs bind disjoint KEPT content
+#     (the per-slot content fork of a form switch), each side's texture
+#     latches its form — checked INLINE inside the component's own command
+#     list at that exact slot, so unrelated draws binding the texture (or
+#     dump contamination from transition frames) can never flip the form.
+#     Detection-only: a stale latch degrades to the last/default form, the
+#     slot rebinding itself never depends on texture hashes.
+#   * Residency dedup: two hashes at the same (component, slot) with the same
+#     format but different sizes, of which the author kept exactly ONE file,
+#     are streaming residency levels of one texture (per-mip hash churn), not
+#     a form difference — they collapse to the kept one before any other
+#     derivation.
+#   * Non-material pairs (eye/face/screen-space overlays, whose slot content
+#     drifts per scene pipeline) condition on their FULL recorded format
+#     signature (aux slots included) — specific enough to need no hash keys
+#     and residency-invariant by construction.
 #
 # Marked textures read back their mark value instead of the family tag, so
 # every condition term whose slot can carry a marked texture is emitted as an
@@ -264,27 +277,69 @@ def build_plan(forms: List[Tuple[str, FormData]],
                textures: List[Tuple[str, str]],
                texture_info: TextureInfo,
                load_warnings: Optional[List[str]] = None,
-               component_ranges: Optional[Dict[int, Tuple[int, int]]] = None) -> SlotPlan:
+               component_ranges: Optional[Dict[int, Tuple[int, int]]] = None,
+               lod_ranges: Optional[Dict[int, Dict[int, Tuple[int, int]]]] = None) -> SlotPlan:
     """textures: (texture hash, resource section name) in template order.
     texture_info: hash -> format/size of the ORIGINAL game textures.
     component_ranges: comp_id -> (match_first_index, match_index_count) of the
-    rendered ini, used to scope the fuzzy format tag sections XQFA-style."""
+    rendered ini, used to scope the fuzzy format tag sections XQFA-style.
+    lod_ranges: lod level -> comp_id -> index range of the LOD object draws
+    (from the velo lods metadata); LOD draws use the LOD component ranges, so
+    each format tag section gets a twin per LOD level or the conditions go
+    blind exactly at LOD distance."""
     warnings: List[str] = list(load_warnings or [])
     multi_form = len(forms) > 1
     mod_hashes = {h: res for h, res in textures}
     if not mod_hashes:
         raise SlotStyleDegrade('mod has no textures, nothing to do')
 
+    # ----------------------------------------------- residency-variant dedup --
+    # Exactly two hashes ever seen at one (component, slot), same format,
+    # different size, exactly one kept by the author: streaming residency
+    # levels of one texture (3.4 per-mip hash churn), not a form difference.
+    # Collapse to the kept one BEFORE any other derivation (else they fake a
+    # form fork / get form-gated / spawn bogus detection keys).
+    slot_content: Dict[Tuple[int, int], Set[str]] = {}
+    for _, form_data in forms:
+        for comp_id, comp_pairs in form_data.items():
+            for pair_map in comp_pairs.values():
+                for slot, h in pair_map.items():
+                    if h is not None:
+                        slot_content.setdefault((comp_id, slot), set()).add(h)
+    alias: Dict[str, str] = {}
+    for (comp_id, slot), hashes in sorted(slot_content.items()):
+        if len(hashes) != 2:
+            continue
+        a, b = sorted(hashes)
+        ia, ib = texture_info.get(a), texture_info.get(b)
+        if not ia or not ib or not ia.get('format'):
+            continue
+        if ia.get('format') != ib.get('format') or ia.get('width') == ib.get('width'):
+            continue
+        kept = [h for h in (a, b) if h in mod_hashes]
+        if len(kept) != 1:
+            continue
+        other = b if kept[0] == a else a
+        alias.setdefault(other, kept[0])
+    if alias:
+        for _, form_data in forms:
+            for comp_pairs in form_data.values():
+                for pair_map in comp_pairs.values():
+                    for slot, h in list(pair_map.items()):
+                        if h in alias:
+                            pair_map[slot] = alias[h]
+        for variant, canon in sorted(alias.items()):
+            warnings.append(
+                f'texture {variant} treated as a residency level of {canon} '
+                f'(same slot/format, different size, only one kept)')
+
     # ------------------------------------------------ coverage / blind zone --
     seen_hashes: Set[str] = set()
-    form_hashes: Dict[int, Set[str]] = {}
-    for form_id, (_, form_data) in enumerate(forms, start=1):
-        bucket = form_hashes.setdefault(form_id, set())
+    for _, form_data in forms:
         for comp_pairs in form_data.values():
             for pair_map in comp_pairs.values():
                 for h in pair_map.values():
                     if h is not None:
-                        bucket.add(h)
                         seen_hashes.add(h)
     covered_resource_indices: Set[int] = set()
     blind_zone: List[Tuple[str, str]] = []
@@ -316,9 +371,15 @@ def build_plan(forms: List[Tuple[str, FormData]],
     # M1: a format family unique to one form at some (component, slot) on
     # material-class pairs, with the other forms having recorded data at the
     # same (component, slot) (two-sided evidence; absence proves nothing).
-    # M2: every form-unique REPLACED texture hash becomes a marker section.
+    # Fork latches: at a (component, MAIN slot) where the forms' material
+    # pairs bind disjoint KEPT content (the per-slot content fork of a form
+    # switch), each side's texture latches its form. Checked inline at that
+    # exact slot during the component's own draws — dump transition
+    # contamination and unrelated draws binding the texture cannot flip the
+    # form (the root cause of the v3 form-flip bug, whose global hash-section
+    # detection this replaces).
     form_markers_m1: Dict[int, List[Tuple[int, int, float]]] = {}  # form -> [(comp, slot, fi)]
-    form_markers_m2: Dict[int, List[str]] = {}
+    fork_latches: List[Tuple[int, int, str, int]] = []  # (comp, slot, hash, form)
     if multi_form:
         slot_families: Dict[Tuple[int, int], Dict[int, Set[float]]] = {}
         slot_presence: Dict[Tuple[int, int], Set[int]] = {}
@@ -347,20 +408,37 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     if len(per_form) == len(forms):
                         form_markers_m1.setdefault(form_id, []).append((comp_id, slot, key))
 
-        for form_id in sorted(form_hashes):
-            others = set().union(*(v for f, v in form_hashes.items() if f != form_id))
-            unique_replaced = sorted((form_hashes[form_id] - others) & set(mod_hashes))
-            # Small (residency-stable) textures first: they are the markers
-            # most likely to be bound verbatim at any camera distance.
-            unique_replaced.sort(key=lambda h: (
-                (texture_info.get(h) or {}).get('width', 1 << 20) *
-                (texture_info.get(h) or {}).get('height', 1 << 20), h))
-            form_markers_m2[form_id] = unique_replaced
-            if not unique_replaced and not form_markers_m1.get(form_id):
-                label = forms[form_id - 1][0]
-                warnings.append(
-                    f'form "{label}" has no detectable marker (no unique format, no '
-                    f'unique replaced texture) - it cannot be auto-detected at runtime')
+        mat_content: Dict[int, Dict[Tuple[int, int], Set[str]]] = {}
+        for form_id, (_, form_data) in enumerate(forms, start=1):
+            bucket = mat_content.setdefault(form_id, {})
+            for comp_id, comp_pairs in form_data.items():
+                for pair_map in comp_pairs.values():
+                    if not _is_material_pair(pair_map, texture_info):
+                        continue
+                    for slot in constants.MAIN_SLOTS:
+                        h = pair_map.get(slot)
+                        if h is not None and h in mod_hashes:
+                            bucket.setdefault((comp_id, slot), set()).add(h)
+        fork_keys = set()
+        for bucket in mat_content.values():
+            fork_keys.update(bucket)
+        for key in sorted(fork_keys):
+            per_form = {f: bucket.get(key, set())
+                        for f, bucket in mat_content.items()}
+            nonempty = {f: s for f, s in per_form.items() if s}
+            if len(nonempty) < 2:
+                continue
+            all_hashes = [h for s in nonempty.values() for h in s]
+            if len(all_hashes) != len(set(all_hashes)):
+                continue  # shared content at this slot: not a fork
+            for form_id, hashes in sorted(nonempty.items()):
+                for h in sorted(hashes):
+                    fork_latches.append((key[0], key[1], h, form_id))
+        if not fork_latches and not form_markers_m1:
+            warnings.append(
+                'no form fork derivable (no (component, slot) where the forms '
+                'bind disjoint kept material content) - forms cannot be '
+                'auto-detected at runtime')
 
     # ------------------------------------------------------ branch building --
     all_comp_ids = sorted({c for _, fd in forms for c in fd})
@@ -379,28 +457,57 @@ def build_plan(forms: List[Tuple[str, FormData]],
             # Group this pair's forms by condition signature; identical
             # signatures share one branch (form-gated bodies when the
             # assignments diverge), distinct signatures separate naturally
-            # (the condition itself distinguishes the forms).
+            # (the condition itself distinguishes the forms). Material pairs
+            # condition on MAIN slots only (aux slots vary across pipeline
+            # variants and would break the structural transition coverage);
+            # non-material pairs (eye/face/screen-space overlays) condition
+            # on their FULL recorded signature — specific enough to need no
+            # hash keys and immune to look-alike pipeline draws.
             by_sig: Dict[tuple, List[int]] = {}
             for form_id, pair_map in per_form.items():
+                if _is_material_pair(pair_map, texture_info):
+                    sig_slots = set(constants.MAIN_SLOTS)
+                else:
+                    sig_slots = set(pair_map)
                 sig = tuple(sorted(
                     (slot, key) for slot, h in pair_map.items()
-                    if slot in constants.MAIN_SLOTS
+                    if slot in sig_slots
                     and (key := _family_key(h, texture_info)) is not None))
                 by_sig.setdefault(sig, []).append(form_id)
+            # When the pair's per-form assignments are COMPATIBLE (no slot
+            # bound to different resources — identical content, or one form's
+            # record merely sparser than another's, e.g. a residency-deduped
+            # eye texture with per-dump coverage gaps), form gates add
+            # nothing but fragility: every signature variant fires ungated
+            # with the union assignment, binding what every form wants
+            # anyway. Only a real content fork (same slot, different
+            # resource, like a form-switched diffuse) keeps its gates.
+            pair_assigns = {
+                f: {slot: mod_hashes[h] for slot, h in pm.items()
+                    if h is not None and h in mod_hashes}
+                for f, pm in per_form.items()}
+            union_assign: Dict[int, str] = {}
+            compatible = True
+            for a in pair_assigns.values():
+                for slot, res in a.items():
+                    if union_assign.get(slot, res) != res:
+                        compatible = False
+                        break
+                    union_assign[slot] = res
+                if not compatible:
+                    break
+            pair_uniform = compatible and bool(union_assign)
             for sig, form_ids in by_sig.items():
                 if not sig:
                     continue  # nothing testable: a vacuous condition would fire on every draw
-                assigns = {}
-                for form_id in form_ids:
-                    assigns[form_id] = {
-                        slot: mod_hashes[h] for slot, h in per_form[form_id].items()
-                        if h is not None and h in mod_hashes}
-                nonempty = {f: a for f, a in assigns.items() if a}
+                nonempty = {f: pair_assigns[f] for f in form_ids if pair_assigns[f]}
+                if pair_uniform:
+                    nonempty = {f: union_assign for f in form_ids}
                 if not nonempty:
                     continue
                 material = any(_is_material_pair(per_form[f], texture_info) for f in form_ids)
                 distinct = {tuple(sorted(a.items())) for a in nonempty.values()}
-                if len(nonempty) == len(forms) and len(distinct) == 1:
+                if pair_uniform or (len(nonempty) == len(forms) and len(distinct) == 1):
                     gates = {None: next(iter(nonempty.values()))}
                 else:
                     gates = {f: nonempty[f] for f in sorted(nonempty)}
@@ -439,16 +546,16 @@ def build_plan(forms: List[Tuple[str, FormData]],
     # Same (signature, form gate) with different assignments: keep the
     # component-local material set as the bare-condition fallback and require
     # an exact per-texture mark for every other member.
-    marks: Dict[str, Dict] = {}  # hash -> {'value': int, 'form': Optional[int]}
+    marks: Dict[str, int] = {}  # hash -> filter_index value
 
     def _ensure_mark(tex_hash: str) -> Optional[int]:
         if tex_hash in marks:
-            return marks[tex_hash]['value']
+            return marks[tex_hash]
         value = constants.mark_value(tex_hash)
-        if any(m['value'] == value for m in marks.values()):
+        if value in marks.values():
             warnings.append(f'mark value collision on {tex_hash}, mark dropped')
             return None
-        marks[tex_hash] = {'value': value, 'form': None}
+        marks[tex_hash] = value
         return value
 
     for comp_id, branches in component_branches.items():
@@ -516,12 +623,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
         if dropped:
             component_branches[comp_id] = [b for b in branches if b not in dropped]
 
-    # M2 form markers join the same mark table (a hash can be both).
-    for form_id, hashes in sorted(form_markers_m2.items()):
-        for h in hashes:
-            value = _ensure_mark(h)
-            if value is not None:
-                marks[h]['form'] = form_id
+    # Fork latch keys join the same mark table (a hash can be both a latch
+    # key and a disambiguator); entries whose mark collided are dropped.
+    fork_latches = [(c, s, h, f) for c, s, h, f in fork_latches
+                    if _ensure_mark(h) is not None]
 
     # ------------------------------------------------------------ emission --
     used_slots: Set[int] = set()
@@ -551,10 +656,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
             values.append(fi_text[key])
             for h in sorted(branch.cond_slots.get(slot, ())):
                 if h in marks:
-                    values.append(str(marks[h]['value']))
+                    values.append(str(marks[h]))
             used_families.setdefault(comp_id, set()).add(key)
         else:
-            values.append(str(marks[branch.mark_hash]['value']))
+            values.append(str(marks[branch.mark_hash]))
         if len(values) == 1:
             return f'ps-t{slot} == {values[0]}'
         return '(' + ' || '.join(f'ps-t{slot} == {v}' for v in values) + ')'
@@ -574,17 +679,15 @@ def build_plan(forms: List[Tuple[str, FormData]],
     if marks:
         out.append('')
         out.append('; -- Per-texture marks (deterministic filter_index = f(hash): identical')
-        out.append(';    across all velo mods, duplicates coexist harmlessly)')
+        out.append(';    across all velo mods, duplicates coexist harmlessly; value-only,')
+        out.append(';    form latching happens inline in the component command lists)')
         for h in sorted(marks):
-            entry = marks[h]
             out.append('')
             out.append(f'[{constants.SEC_TEX_MARK.format(texture_hash=h)}]')
             out.append(f'hash = {h}')
             out.append('allow_duplicate_hash = true')
             out.append(f'match_priority = {constants.MARK_PRIORITY}')
-            out.append(f'filter_index = {entry["value"]}')
-            if entry['form'] is not None:
-                out.append(f'{constants.VAR_FORM} = {entry["form"]}')
+            out.append(f'filter_index = {marks[h]}')
 
     component_list_names: Dict[int, str] = {}
     body_chunks: List[str] = []
@@ -600,6 +703,12 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 chunk.append(f'if ps-t{slot} == {fi_text[key]}')
                 chunk.append(f'    {constants.VAR_FORM} = {form_id}')
                 chunk.append('endif')
+        for latch_comp, slot, h, form_id in fork_latches:
+            if latch_comp != comp_id:
+                continue
+            chunk.append(f'if ps-t{slot} == {marks[h]}')
+            chunk.append(f'    {constants.VAR_FORM} = {form_id}')
+            chunk.append('endif')
         # Exact-mark branches first, then bare-condition branches by
         # specificity (slot count desc, cluster winners before shadowed
         # leftovers) - subset conditions go last so a superset draw is
@@ -642,7 +751,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
 
     # Fuzzy format-family tag sections (XQFA-compatible: one section per
     # family member format per component, scoped to the component index range,
-    # all members of one family sharing the same filter_index).
+    # all members of one family sharing the same filter_index). LOD object
+    # draws use the LOD component index ranges, so every section gets a twin
+    # per LOD level — without them the conditions go blind exactly at LOD
+    # distance (field-proven: the LOD texture reversion of the v3 test mod).
     format_section_count = 0
     out.append('')
     out.append('; -- Format-family tags (filter_index identical to XQFA-fork exports:')
@@ -653,18 +765,25 @@ def build_plan(forms: List[Tuple[str, FormData]],
             raise SlotStyleDegrade(
                 f'component {comp_id} index range unknown - cannot emit its '
                 f'format tag sections')
+        ranges = [(constants.SEC_FORMAT_TAG, None, crange)]
+        for level, lranges in sorted((lod_ranges or {}).items()):
+            if comp_id in lranges:
+                ranges.append((constants.SEC_FORMAT_TAG_LOD, level, lranges[comp_id]))
         for key in sorted(used_families[comp_id]):
             for prefix in sorted(group_families.get(key, {})):
                 name, text = group_families[key][prefix]
                 for member in constants.same_prefix_formats(name):
-                    out.append('')
-                    out.append(f'[{constants.SEC_FORMAT_TAG.format(component_id=comp_id, format_name=member)}]')
-                    out.append(f'match_first_index = {crange[0]}')
-                    out.append(f'match_index_count = {crange[1]}')
-                    out.append(f'match_priority = {constants.FORMAT_TAG_PRIORITY}')
-                    out.append(f'match_format = {member}')
-                    out.append(f'filter_index = {text}')
-                    format_section_count += 1
+                    for template, level, (first, count) in ranges:
+                        out.append('')
+                        out.append('[' + template.format(component_id=comp_id,
+                                                         format_name=member,
+                                                         level=level) + ']')
+                        out.append(f'match_first_index = {first}')
+                        out.append(f'match_index_count = {count}')
+                        out.append(f'match_priority = {constants.FORMAT_TAG_PRIORITY}')
+                        out.append(f'match_format = {member}')
+                        out.append(f'filter_index = {text}')
+                        format_section_count += 1
     out.append('')
 
     return SlotPlan(
@@ -681,7 +800,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'branches': sum(len(b) for b in component_branches.values()),
             'conflicts': conflict_count,
             'marks': len(marks),
-            'form_markers': sum(1 for m in marks.values() if m['form'] is not None),
+            'fork_latches': len(fork_latches),
             'format_sections': format_section_count,
             'covered_textures': len(covered_resource_indices),
             'blind_zone_textures': len(blind_zone),

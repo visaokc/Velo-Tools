@@ -45,6 +45,7 @@ CMDLIST_RESTORE = "CommandListRestoreTextures"
 RES_BACKUP = "ResourceTextureBackupT{slot}"
 SEC_TEX_MARK = "TextureOverrideMarkTexture{texture_hash}"
 SEC_FORMAT_TAG = "TextureOverrideComponent{component_id}{format_name}"
+SEC_FORMAT_TAG_LOD = "TextureOverrideLod{level}Component{component_id}{format_name}"
 
 # Fuzzy format-tag sections use the same match_priority as the XQFA fork (the
 # value is part of the cross-mod contract: equal-value duplicate sections must
