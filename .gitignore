@@ -26,8 +26,10 @@ verify_install.py
 tests/
 
 # Host updater runtime state folder (CGCookie addon_updater writes last_check /
-# backup state into <pkg>_updater/ next to addon_updater.py; created at runtime,
-# e.g. when opening the updater prefs through the dev junction). Never publish it.
+# backup state into <pkg>_updater/; created at runtime). Since the v1.3.1 path
+# hotfix it lives at the addon root (velo_tools/velo_tools_updater/); the old
+# nested location is kept ignored for stale leftovers. Never publish either.
+velo_tools/velo_tools_updater/
 velo_tools/updater/*_updater/
 
 # Misc local outputs

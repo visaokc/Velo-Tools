@@ -42,5 +42,10 @@ if (-not (Test-Path $addons)) { New-Item -ItemType Directory -Path $addons -Forc
 
 Remove-Existing $link
 New-Item -ItemType Junction -Path $link -Target $pkg | Out-Null
+# Pre-create the host updater's runtime state dir on the target side: on some
+# systems creating a directory THROUGH a junction fails with ERROR_ALREADY_EXISTS,
+# which would abort velo_tools registration (updater's makedirs at startup).
+$updaterState = Join-Path $pkg 'velo_tools_updater'
+if (-not (Test-Path $updaterState)) { New-Item -ItemType Directory -Path $updaterState | Out-Null }
 Write-Host "Linked $link -> $pkg"
 Write-Host "Enable 'Velo-Tools' in Blender 4.4 (Edit > Preferences > Add-ons), then Reload Scripts after edits."

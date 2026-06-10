@@ -246,6 +246,23 @@ def register():
     except Exception:
         import traceback
         traceback.print_exc()
+    # LOD export hook: patches ModExporter.export_mod (independent target from the operator wraps
+    # above); appends per-LOD remapped blend buffers + ini override sections when the export source's
+    # Metadata.json carries velo "lods" data (MERGED mode only; a no-op otherwise).
+    try:
+        from .embedded.lod import export_hook as _lodhook
+        _lodhook.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    # Extract LOD Data UI (panel + operator + Scene properties); registered before the cross-scene UI
+    # so the LOD panel sits right under the WWMI section, above the cross-scene panel.
+    try:
+        from .embedded.lod import ui as _lodui
+        _lodui.register()
+    except Exception:
+        import traceback
+        traceback.print_exc()
     # Cross-scene merge UI (panel + merge operator + Scene properties).
     try:
         from .embedded.crossscene import ui as _xsui
@@ -277,7 +294,18 @@ def unregister():
         _stu.uninstall_patches()
     except Exception:
         pass
-    # Remove the Per-Component (from Merged) hook first (LIFO: it was installed last / outermost).
+    # Unregister the LOD UI / hook first (LIFO: they were installed last).
+    try:
+        from .embedded.lod import ui as _lodui
+        _lodui.unregister()
+    except Exception:
+        pass
+    try:
+        from .embedded.lod import export_hook as _lodhook
+        _lodhook.remove()
+    except Exception:
+        pass
+    # Remove the Per-Component (from Merged) hook (LIFO: it wraps the operator outermost).
     try:
         from .embedded import per_from_merged as _pfm
         _pfm.remove()
