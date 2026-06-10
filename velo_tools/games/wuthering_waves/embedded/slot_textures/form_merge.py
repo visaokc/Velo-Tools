@@ -2,20 +2,21 @@
 #
 # A multi-form character binds different texture sets (and partially different
 # material PS) per form, so exact per-form slot maps require one frame dump
-# per form (data-determined, see ADR 0006; any form count >= 2 is supported,
-# forms are an ordered list). This module consumes a RAW FrameAnalysis folder
-# of an extra form directly — no second object extraction is needed: it runs
-# the stock in-memory extraction chain up to ComponentBuilder (the same five
-# steps extract_frame_data() runs before OutputBuilder; mirrors
-# embedded/lod/extract.py), picks the object matching the already-extracted
-# one (vb0 hash first, skeleton cb4 hash as fallback) and persists its
-# per-(component x shader-pair x slot) texture maps under the "extra_forms"
-# key INSIDE ShaderTextureUsage.json (single-file schema v2; a pre-v2
+# per form (data-determined, see ADR 0006/0007; any form count >= 2 is
+# supported, forms are an ordered list). This module consumes a RAW
+# FrameAnalysis folder of an extra form directly — no second object extraction
+# is needed: it runs the stock in-memory extraction chain up to
+# ComponentBuilder (the same five steps extract_frame_data() runs before
+# OutputBuilder; mirrors embedded/lod/extract.py), picks the object matching
+# the already-extracted one (vb0 hash first, skeleton cb4 hash as fallback)
+# and persists its per-(component x shader-pair x slot) texture records under
+# the "extra_forms" key INSIDE ShaderTextureUsage.json (single file; a legacy
 # ShaderTextureUsageForms.json sidecar is auto-migrated in and deleted).
 #
-# Unlike the base maps (which only seat textures surviving the extraction
-# texture filter), extra forms keep ALL bound descriptors — more coverage
-# costs nothing here because no texture files are written.
+# Schema v3: slot records are rich objects {filename, hash, format, width,
+# height} (XQFA-fork compatible), with format/size read from the dump DDS
+# headers — the slot-style combination conditions match ORIGINAL game formats,
+# so they must be captured while the dump files are still around.
 
 import json
 
@@ -32,6 +33,7 @@ from ..._wwmi_core.extract_frame_data.component_builder import ComponentBuilder
 from ..._wwmi_core.extract_frame_data.output_builder import OutputBuilder, TextureFilter
 
 from . import constants
+from . import dds_meta
 
 # Same exclusion list the stock extraction / export use for well-known cubemaps.
 KNOWN_CUBEMAP_HASHES = ['af26db30', '1320a071', '10d7937d', '87505b2b',
@@ -60,13 +62,26 @@ class FormMergeError(Exception):
     pass
 
 
-def _pair_key(descriptor) -> str:
-    """Same stable "vs=<hash>-ps=<hash>" key as _shader_texture_usage.py."""
+def _shader_keys(descriptor):
+    """Same nested-schema keys ("vs=<hash>", "ps=<hash>") as
+    _shader_texture_usage.py."""
     vs = next((s for s in descriptor.shaders if s.type is ShaderType.Vertex), None)
     ps = next((s for s in descriptor.shaders if s.type is ShaderType.Pixel), None)
-    vs_part = vs.raw if vs is not None else 'vs=?'
-    ps_part = ps.raw if ps is not None else 'ps=?'
-    return f'{vs_part}-{ps_part}'
+    return (vs.raw if vs is not None else 'vs=?',
+            ps.raw if ps is not None else 'ps=?')
+
+
+def _texture_record(descriptor) -> OrderedDict:
+    """Rich slot record; extra forms write no texture files, so filename stays
+    empty (same convention as the XQFA exporter for unavailable data)."""
+    meta = dds_meta.read_dds_meta(descriptor.path)
+    return OrderedDict((
+        ('filename', ''),
+        ('hash', descriptor.hash),
+        ('format', meta.format if meta else ''),
+        ('width', meta.width if meta else 0),
+        ('height', meta.height if meta else 0),
+    ))
 
 
 def collect_mesh_objects(dump_path: Path, texture_filter: TextureFilter):
@@ -119,12 +134,15 @@ def _match_object(mesh_objects, vb0_hash: str, cb4_hash: str):
         f'{len(candidates)} objects - cannot pick the form object unambiguously')
 
 
-def _build_components_usage(mesh_object, surviving_sets) -> "OrderedDict[str, OrderedDict]":
-    """Component N -> "vs=..-ps=.." -> "ps-tN" -> hash (exactly the base
-    ShaderTextureUsage.json shape: only descriptors surviving the stock
-    texture filter are seated, which strips the inherited-binding noise raw
-    per-draw records carry)."""
+def _build_components_usage(mesh_object, surviving_sets):
+    """Component N -> "vs=.." -> "ps=.." -> "ps-tN" -> rich record (exactly
+    the base ShaderTextureUsage.json shape: only descriptors surviving the
+    stock texture filter are seated, which strips the inherited-binding noise
+    raw per-draw records carry). Also returns {hash: (dump path, component id
+    set)} of the surviving textures for the copy step."""
     out = OrderedDict()
+    record_cache = {}
+    sources = {}
     for component_id, component_data in enumerate(mesh_object.components_data):
         keep = (surviving_sets[component_id]
                 if surviving_sets and component_id < len(surviving_sets) else None)
@@ -133,18 +151,49 @@ def _build_components_usage(mesh_object, surviving_sets) -> "OrderedDict[str, Or
             if keep is not None and descriptor.get_slot_hash() not in keep:
                 continue
             slot = descriptor.get_slot()
-            pair = pairs.setdefault(_pair_key(descriptor), {})
-            if slot in pair and pair[slot] != descriptor.hash:
+            vs_key, ps_key = _shader_keys(descriptor)
+            pair = pairs.setdefault(vs_key, {}).setdefault(ps_key, {})
+            if slot in pair and pair[slot].get('hash') != descriptor.hash:
                 # Conflicting bindings for the same (pair, slot) within one
                 # frame: multi-state variant, mark unknown (generator skips).
-                pair[slot] = None
+                pair[slot] = OrderedDict((('filename', ''), ('hash', None),
+                                          ('format', ''), ('width', 0), ('height', 0)))
             else:
-                pair[slot] = descriptor.hash
+                if descriptor.hash not in record_cache:
+                    record_cache[descriptor.hash] = _texture_record(descriptor)
+                pair[slot] = record_cache[descriptor.hash]
+                entry = sources.setdefault(descriptor.hash, (descriptor.path, set()))
+                entry[1].add(str(component_id))
         component_out = OrderedDict()
-        for pair in sorted(pairs):
-            component_out[pair] = OrderedDict(sorted(pairs[pair].items()))
+        for vs_key in sorted(pairs):
+            vs_out = OrderedDict()
+            for ps_key in sorted(pairs[vs_key]):
+                vs_out[ps_key] = OrderedDict(sorted(pairs[vs_key][ps_key].items()))
+            component_out[vs_key] = vs_out
         out[f'Component {component_id}'] = component_out
-    return out
+    return out, sources
+
+
+def _copy_form_textures(object_source_folder: Path, sources: dict) -> int:
+    """Copies the form's surviving textures into the object source folder
+    (stock extraction naming) unless a file for the hash already exists.
+    Without the files the form is map-only: its slots could never be rebound
+    to anything and no form-unique REPLACED texture would exist to drive the
+    runtime form detection — the author edits these files like any extracted
+    texture."""
+    import shutil
+    copied = 0
+    for tex_hash, (path, comp_ids) in sorted(sources.items()):
+        if any(object_source_folder.glob(f'* t={tex_hash}.*')):
+            continue
+        src = Path(path)
+        joined = '-'.join(sorted(comp_ids))
+        try:
+            shutil.copyfile(src, object_source_folder / f'Components-{joined} t={tex_hash}{src.suffix}')
+            copied += 1
+        except OSError:
+            pass  # unreadable dump file: the map entry alone still helps
+    return copied
 
 
 def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
@@ -185,8 +234,9 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             f'{len(mesh_object.components_data)}, extracted object has '
             f'{len(base_components)} - forms must share the same mesh')
 
-    components_usage = _build_components_usage(
+    components_usage, texture_sources = _build_components_usage(
         mesh_object, surviving.get(mesh_object.vb0_hash))
+    textures_copied = _copy_form_textures(object_source_folder, texture_sources)
 
     # Single-file schema v2: extra forms live INSIDE ShaderTextureUsage.json.
     usage_path = object_source_folder / constants.BASE_USAGE_FILENAME
@@ -243,7 +293,8 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
     if legacy_path.is_file():
         legacy_path.unlink()
 
-    pair_count = sum(len(pairs) for pairs in components_usage.values())
+    pair_count = sum(len(ps_map) for vs_map in components_usage.values()
+                     for ps_map in vs_map.values())
     return {
         'usage_file': str(usage_path),
         'label': entry['label'],
@@ -253,5 +304,6 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         'migrated_sidecar': migrated,
         'components': len(components_usage),
         'pairs': pair_count,
+        'textures_copied': textures_copied,
         'total_forms': 1 + len(extra_forms),
     }

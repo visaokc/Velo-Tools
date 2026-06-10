@@ -1,114 +1,140 @@
-# Game-level constants for the WWMI slot-style texture layer.
+# Game-level constants for the WWMI slot-style texture layer (v3, zero
+# shader-hash architecture — see docs/adr/0007).
 #
-# Everything in this file is WUTHERING WAVES PIPELINE knowledge (same nature as
-# WWMI core's own 3381.7777 bone-CB filter_index) and is shared by every mod
-# exported with the slot-style option. Character-level data (PS hashes, slot
-# maps, sentinel texture hashes, form sets) is NEVER hardcoded — it is derived
-# from ShaderTextureUsage.json (+ its extra_forms key) at export time by
-# generator.py, plus DDS descriptors read live from the source folder files.
+# Replacement is driven by slot+format combination conditions compatible with
+# the XQFA WWMI-Tools fork (github.com/XQFAAAA/WWMI-Tools/tree/xqfa): fuzzy
+# TextureOverride sections tag every texture of a DXGI format family with a
+# deterministic filter_index derived from the format-name prefix, and the
+# component draw command lists branch on the tags of the bound ps-t slots.
+# No ShaderOverride / ShaderRegex sections are emitted at all — shader hashes
+# churn on every game update, formats and slot layouts do not, and format
+# tags are residency-invariant (every streaming mip level of a texture shares
+# the format family), which is what makes the scheme immune to streaming.
 #
-# Generated section/variable names are intentionally brand-free (project rule
-# since the LOD round: descriptive names only inside emitted mod.ini content).
-# Both section names and ini variables are namespaced per ini file by 3DMigoto,
+# Character-level data (slot maps, formats, form sets, marker hashes) is NEVER
+# hardcoded — generator.py derives everything from ShaderTextureUsage.json
+# (+ its extra_forms key) and the source-folder texture files at export time.
+#
+# Generated section/variable names are brand-free (project rule since the LOD
+# round). Sections and ini variables are namespaced per ini file by 3DMigoto,
 # so generic names cannot collide across mods.
 #
-# filter_index namespace (ADR 0006). All values are integers exactly
-# representable in float32 (< 16,777,216) and deterministic, so any two mods
-# independently derive the SAME value for the same shader/texture and duplicate
-# marker sections coexist without conflicts:
+# filter_index namespaces (ecosystem contracts, ADR 0007):
 #
-#   1,999,801                      structural family tag (ShaderRegex, fixed)
-#   [2,000,000 .. 15,999,981)      per-PS tags:      2,000,000 + hash64 % 13,999,981
-#   [16,200,000 .. 16,699,979)     sentinel marks:  16,200,000 + hash32 % 499,979
+#   83.{ascii}                    format-family tags, IDENTICAL to the XQFA
+#                                 fork derivation: prefix letters of the DXGI
+#                                 format name mapped to their ascii codes
+#                                 (BC7 -> 83.666755). filter_index is global
+#                                 per resource, so velo mods MUST use the same
+#                                 values as XQFA-exported mods or whichever
+#                                 loses the section-priority race goes blind.
+#   [16,200,000 .. 16,699,979)    per-texture marks (form markers and
+#                                 same-signature disambiguators):
+#                                 16,200,000 + hash32 % 499,979. Deterministic,
+#                                 so any two velo mods derive the same value
+#                                 for the same texture; float32-exact ints.
 #
-# Known co-tenants kept clear of: WWMI core 3381.7777 (bone CB), hand-made mod
-# values around 3381.x, RabbitFX 1718.x / 1719.x. Competition with NON-velo
-# tools tagging the same shaders with different values is an ecosystem-wide
-# limitation (ShaderOverride filter_index is global per shader) — velo cannot
-# fix that, only avoid clashing values among its own exports.
+# Known co-tenants kept clear of: WWMI core 3381.7777 (bone CB), RabbitFX
+# 1718.x / 1719.x, hand-made mod values around 3381.x.
 
 # ----------------------------------------------------- emitted names --------
 
 VAR_FORM = "$form_id"
 CMDLIST_SET_TEXTURES = "CommandListSetTexturesComponent{component_id}"
 CMDLIST_RESTORE = "CommandListRestoreTextures"
-CMDLIST_DETECT_FORM = "CommandListDetectForm"
 RES_BACKUP = "ResourceTextureBackupT{slot}"
-SEC_PS_MARK = "ShaderOverrideMarkPs{ps_hash}"
 SEC_TEX_MARK = "TextureOverrideMarkTexture{texture_hash}"
-SEC_REGEX_GBUFFER = "ShaderRegexMaterialGBuffer"
-SEC_REGEX_FORWARD = "ShaderRegexMaterialForward"
+SEC_FORMAT_TAG = "TextureOverrideComponent{component_id}{format_name}"
+
+# Fuzzy format-tag sections use the same match_priority as the XQFA fork (the
+# value is part of the cross-mod contract: equal-value duplicate sections must
+# tie, not fight). Per-texture mark sections outrank them so a marked texture
+# reads back its mark value (conditions OR the format value in as a fallback
+# in case the local 3DMigoto build resolves hash-vs-fuzzy differently).
+FORMAT_TAG_PRIORITY = 100
+MARK_PRIORITY = 200
 
 # ----------------------------------------------------- filter values --------
 
-FAMILY_TAG_VALUE = 1999801
-
-_PS_TAG_BASE = 2000000
-_PS_TAG_MOD = 13999981  # prime
-
-_SENTINEL_BASE = 16200000
-_SENTINEL_MOD = 499979  # prime
+_MARK_BASE = 16200000
+_MARK_MOD = 499979  # prime
 
 
-def ps_tag_value(ps_hash: str) -> int:
-    """Deterministic filter_index for a pixel shader hash (16 hex chars)."""
-    return _PS_TAG_BASE + int(ps_hash, 16) % _PS_TAG_MOD
+def mark_value(texture_hash: str) -> int:
+    """Deterministic filter_index for a per-texture mark (8 hex chars)."""
+    return _MARK_BASE + int(texture_hash, 16) % _MARK_MOD
 
 
-def sentinel_value(texture_hash: str) -> int:
-    """Deterministic filter_index for a sentinel texture hash (8 hex chars)."""
-    return _SENTINEL_BASE + int(texture_hash, 16) % _SENTINEL_MOD
+def format_prefix(format_name: str) -> str:
+    """DXGI format name -> family prefix, XQFA derivation (name.split('_')[0])."""
+    return format_name.split('_')[0]
 
 
-# Structural classification of the character material shader family by DXBC
-# shape (RabbitFX-proven approach, match-only ShaderRegex without a Replace
-# block). Catches material-pass variants that exist in no dump — its hit on
-# the menu-open transition pipeline is field-proven by the hand-converted
-# reference mod. May go stale on a big game update that reshapes the material
-# shaders; the per-PS tags keep working regardless (they outrank ShaderRegex),
-# only the unknown-variant fallback coverage degrades.
-FAMILY_REGEX_SECTIONS = """\
-[{gbuffer}]
-shader_model = ps_4_0 ps_5_0
-filter_index = {family}
+def format_filter_index(format_name: str) -> float:
+    """Format-family filter_index, byte-compatible with the XQFA fork:
+    float("83." + concatenated ascii codes of the prefix letters)."""
+    prefix = format_prefix(format_name)
+    return float('83.' + ''.join(str(ord(c)) for c in prefix))
 
-[{gbuffer}.Pattern]
-dcl_constantbuffer\\hCB4\\[\\d{{3}}\\].*\\n(?:dcl.+\\n)*?(?:dcl_output\\ho\\d\\.xyzw\\n){{7}}
 
-[{forward}]
-shader_model = ps_4_0 ps_5_0
-filter_index = {family}
+# Full DXGI_FORMAT name vocabulary (indices 1..99 of the D3D spec; the
+# DXGI_FORMAT_ prefix is stripped, matching both 3DMigoto's match_format
+# parser and the XQFA fork's DXGIFormatIndex enum). Used to enumerate the
+# same-prefix family members a fuzzy tag section set must cover.
+DXGI_FORMAT_NAMES = (
+    'R32G32B32A32_TYPELESS', 'R32G32B32A32_FLOAT', 'R32G32B32A32_UINT',
+    'R32G32B32A32_SINT', 'R32G32B32_TYPELESS', 'R32G32B32_FLOAT',
+    'R32G32B32_UINT', 'R32G32B32_SINT', 'R16G16B16A16_TYPELESS',
+    'R16G16B16A16_FLOAT', 'R16G16B16A16_UNORM', 'R16G16B16A16_UINT',
+    'R16G16B16A16_SNORM', 'R16G16B16A16_SINT', 'R32G32_TYPELESS',
+    'R32G32_FLOAT', 'R32G32_UINT', 'R32G32_SINT', 'R32G8X24_TYPELESS',
+    'D32_FLOAT_S8X24_UINT', 'R32_FLOAT_X8X24_TYPELESS',
+    'X32_TYPELESS_G8X24_UINT', 'R10G10B10A2_TYPELESS', 'R10G10B10A2_UNORM',
+    'R10G10B10A2_UINT', 'R11G11B10_FLOAT', 'R8G8B8A8_TYPELESS',
+    'R8G8B8A8_UNORM', 'R8G8B8A8_UNORM_SRGB', 'R8G8B8A8_UINT',
+    'R8G8B8A8_SNORM', 'R8G8B8A8_SINT', 'R16G16_TYPELESS', 'R16G16_FLOAT',
+    'R16G16_UNORM', 'R16G16_UINT', 'R16G16_SNORM', 'R16G16_SINT',
+    'R32_TYPELESS', 'D32_FLOAT', 'R32_FLOAT', 'R32_UINT', 'R32_SINT',
+    'R24G8_TYPELESS', 'D24_UNORM_S8_UINT', 'R24_UNORM_X8_TYPELESS',
+    'X24_TYPELESS_G8_UINT', 'R8G8_TYPELESS', 'R8G8_UNORM', 'R8G8_UINT',
+    'R8G8_SNORM', 'R8G8_SINT', 'R16_TYPELESS', 'R16_FLOAT', 'D16_UNORM',
+    'R16_UNORM', 'R16_UINT', 'R16_SNORM', 'R16_SINT', 'R8_TYPELESS',
+    'R8_UNORM', 'R8_UINT', 'R8_SNORM', 'R8_SINT', 'A8_UNORM', 'R1_UNORM',
+    'R9G9B9E5_SHAREDEXP', 'R8G8_B8G8_UNORM', 'G8R8_G8B8_UNORM',
+    'BC1_TYPELESS', 'BC1_UNORM', 'BC1_UNORM_SRGB', 'BC2_TYPELESS',
+    'BC2_UNORM', 'BC2_UNORM_SRGB', 'BC3_TYPELESS', 'BC3_UNORM',
+    'BC3_UNORM_SRGB', 'BC4_TYPELESS', 'BC4_UNORM', 'BC4_SNORM',
+    'BC5_TYPELESS', 'BC5_UNORM', 'BC5_SNORM', 'B5G6R5_UNORM',
+    'B5G5R5A1_UNORM', 'B8G8R8A8_UNORM', 'B8G8R8X8_UNORM',
+    'R10G10B10_XR_BIAS_A2_UNORM', 'B8G8R8A8_TYPELESS', 'B8G8R8A8_UNORM_SRGB',
+    'B8G8R8X8_TYPELESS', 'B8G8R8X8_UNORM_SRGB', 'BC6H_TYPELESS', 'BC6H_UF16',
+    'BC6H_SF16', 'BC7_TYPELESS', 'BC7_UNORM', 'BC7_UNORM_SRGB',
+)
 
-[{forward}.Pattern]
-dcl_constantbuffer\\hCB6\\[\\d+\\].*\\n(?:dcl.+\\n)*?dcl_output\\ho0\\.xyzw\\n(?!dcl_output)
-""".format(gbuffer=SEC_REGEX_GBUFFER, forward=SEC_REGEX_FORWARD, family=FAMILY_TAG_VALUE)
+
+def same_prefix_formats(format_name: str) -> list:
+    """All DXGI format names sharing the family prefix (XQFA
+    get_same_prefix_formats parity, e.g. BC7 -> the three BC7_* names).
+    Fuzzy tag sections are emitted for every member so both typed and
+    typeless-created game resources receive the family tag."""
+    prefix = format_prefix(format_name) + '_'
+    return [n for n in DXGI_FORMAT_NAMES if n.startswith(prefix)]
+
 
 # --------------------------------------------------- classification ---------
 
 # A pair is material-class when its slot map carries ALL of MAIN_SLOTS — a
 # structural slot-set fingerprint, independent of which textures the author
-# kept in the folder (the membership-based rule broke under unpruned texture
-# sets: screen-space/face/outline pairs became "material" and emptied the
-# safe-intersection fallback maps). Verified across both AMS form dumps:
-# true material pairs always bind t0..t3; screen-space family never binds t1;
-# face/outline families never bind t0.
+# kept in the folder. v3 uses it only for marker/ordering heuristics (which
+# pairs anchor form detection, which set wins a same-signature conflict);
+# replacement branches themselves are emitted for every pair.
 MAIN_SLOTS = (0, 1, 2, 3)
 
-# Optional belt on top of the slot-set fingerprint: when the DDS descriptor of
-# a MAIN_SLOTS texture is known (file present in the source folder), material
-# pairs must look like character textures (square; dump-extracted files carry
-# only the base mip level, so a mip-count requirement is NOT usable). Unknown
-# descriptors never block.
+# Optional belt on top of the slot-set fingerprint: when a MAIN_SLOTS texture
+# descriptor is known, material pairs must look like character textures
+# (square; dump-extracted files carry only the base mip level, so a mip-count
+# requirement is NOT usable). Unknown descriptors never block.
 MATERIAL_REQUIRE_SQUARE = True
-
-# Slot used by the negative sentinel guard of the structural fallback branch
-# (screen-space / outline / face binding families pin distinctive textures
-# there, verified per-draw in the 2026-06-10 transition hold-log).
-SENTINEL_SLOT = 2
-
-# Cap the number of sentinel guards per fallback condition to keep the emitted
-# ini condition readable; most frequent sentinels win.
-MAX_SENTINELS = 6
 
 # Single data file: base form maps live in the top-level "Component N" keys,
 # extra forms under the reserved top-level key below (preserved across

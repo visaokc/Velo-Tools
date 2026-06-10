@@ -9,17 +9,19 @@
 #   1. [TextureOverrideTexture{i}] hash sections whose texture is covered by
 #      the slot maps are removed ([ResourceTexture{i}] filename sections stay;
 #      blind-zone textures keep their stock hash section as a fallback).
-#   2. The per-slot `CheckTextureOverride = ps-tN` trigger lines are dropped
-#      from [CommandListTriggerResourceOverrides] (kept when a blind-zone
-#      hash section still needs them).
-#   3. Every non-comment `run = CommandListTriggerResourceOverrides` line that
+#      The per-slot `CheckTextureOverride = ps-tN` trigger lines always stay:
+#      v3 conditions read the filter_index of bound slots, which is exactly
+#      what those checks resolve.
+#   2. Every non-comment `run = CommandListTriggerResourceOverrides` line that
 #      lives in a section whose name carries a component id gets
-#      `run = CommandList<prefix>TexturesC{id}` injected right after it, and
-#      the matching non-comment `run = CommandListCleanupSharedResources` in
-#      the same section gets `run = CommandList<prefix>Restore` injected right
-#      before it (set/restore always paired - a missing cleanup anchor aborts).
-#   4. Multi-form only: `global $velo_form = 0` is added to [Constants].
-#   5. The generated slot-style block is appended at the end.
+#      `run = CommandListSetTexturesComponent{id}` injected right after it,
+#      and the matching non-comment `run = CommandListCleanupSharedResources`
+#      in the same section gets `run = CommandListRestoreTextures` injected
+#      right before it (set/restore always paired - a missing cleanup anchor
+#      aborts).
+#   3. Multi-form only: `global $form_id = 1` is added to [Constants]
+#      (1 = base form; form markers latch it to the active form at runtime).
+#   4. The generated slot-style block is appended at the end.
 #
 # Any missing anchor raises SlotStyleDegrade: the caller falls back to the
 # untouched stock output (fail-safe, never a half-transformed ini).
@@ -33,11 +35,12 @@ from .generator import SlotPlan, SlotStyleDegrade
 
 _SECTION_RE = re.compile(r'^\[([^\]]+)\]\s*$')
 _COMP_ID_RE = re.compile(r'component\s*(\d+)\s*$', re.I)
-_CHECK_PS_T_RE = re.compile(r'^checktextureoverride\s*=\s*ps-t\d+$', re.I)
+_RANGE_SECTION_RE = re.compile(r'^textureoverridecomponent(\d+)$')
+_FIRST_INDEX_RE = re.compile(r'^match_first_index\s*=\s*(\d+)\s*$', re.I)
+_INDEX_COUNT_RE = re.compile(r'^match_index_count\s*=\s*(\d+)\s*$', re.I)
 
 _TRIGGER_LINE = 'run = commandlisttriggerresourceoverrides'
 _CLEANUP_LINE = 'run = commandlistcleanupsharedresources'
-_TRIGGER_SECTION = 'commandlisttriggerresourceoverrides'
 _CONSTANTS_SECTION = 'constants'
 
 
@@ -52,6 +55,29 @@ def _section_spans(lines: List[str]) -> List[Tuple[str, int, int]]:
     return spans
 
 
+def extract_component_ranges(ini_text: str) -> Dict[int, Tuple[int, int]]:
+    """Reads each [TextureOverrideComponent{N}] section's
+    (match_first_index, match_index_count) from the rendered ini — the ranges
+    the fuzzy format tag sections are scoped to (XQFA-style)."""
+    lines = ini_text.split('\n')
+    ranges: Dict[int, Tuple[int, int]] = {}
+    for name, start, end in _section_spans(lines):
+        m = _RANGE_SECTION_RE.match(name.strip().lower())
+        if not m:
+            continue
+        comp_id = int(m.group(1))
+        first = count = None
+        for i in range(start + 1, end):
+            stripped = lines[i].strip()
+            if (fm := _FIRST_INDEX_RE.match(stripped)):
+                first = int(fm.group(1))
+            elif (cm := _INDEX_COUNT_RE.match(stripped)):
+                count = int(cm.group(1))
+        if first is not None and count is not None:
+            ranges[comp_id] = (first, count)
+    return ranges
+
+
 def apply(ini_text: str, plan: SlotPlan) -> str:
     lines = ini_text.split('\n')
     spans = _section_spans(lines)
@@ -60,7 +86,6 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
 
     drop_sections = {f'textureoverridetexture{i}'
                      for i in plan.covered_resource_indices}
-    keep_ps_t_checks = bool(plan.blind_zone)
 
     deleted: Set[int] = set()
     # after-insertions keyed by line index -> list of new lines, before- likewise.
@@ -79,17 +104,11 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             removed_sections.add(lname)
             continue
 
-        if lname == _TRIGGER_SECTION and not keep_ps_t_checks:
-            for i in range(start + 1, end):
-                if _CHECK_PS_T_RE.match(lines[i].strip()):
-                    deleted.add(i)
-            continue
-
         if lname == _CONSTANTS_SECTION:
             found_constants = True
             if plan.multi_form:
                 insert_after.setdefault(start, []).append(
-                    f'global {constants.VAR_FORM} = 0')
+                    f'global {constants.VAR_FORM} = 1')
             continue
 
         comp_match = _COMP_ID_RE.search(name.strip())

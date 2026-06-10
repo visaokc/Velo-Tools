@@ -1,6 +1,18 @@
 """WWMI driver-layer patch: also emit a complete ``ShaderTextureUsage.json`` during extraction.
 
-Key path: ``"Component {id}" -> "vs=<hash>-ps=<hash>" -> "ps-tN" -> "<texture hash>"``.
+Schema v3 (aligned with the XQFA WWMI-Tools fork so extractions are
+interchangeable between the two plugins):
+
+    "Component {id}" -> "vs=<hash>" -> "ps=<hash>" -> "ps-tN" ->
+        {"filename", "hash", "format", "width", "height"}
+
+``format`` is the canonical DXGI format name (vocabulary of
+``embedded/slot_textures/constants.DXGI_FORMAT_NAMES``) read from the dump
+DDS headers by the pure-python ``dds_meta`` parser (the XQFA fork shells out
+to texdiag.exe for the same data). Formats are captured at EXTRACTION time on
+purpose: they describe the ORIGINAL game resources and are the core matching
+key of the slot-style layer — the model-folder files get overwritten by the
+author and cannot be trusted at export time.
 
 Background (bug): in vendored WWMI-Tools 1.7.3, ``MeshObject.build_component`` in
 ``_wwmi_core/extract_frame_data/component_builder.py`` builds the texture dict keyed
@@ -47,6 +59,8 @@ from ._wwmi_core.extract_frame_data import component_builder as _cb_module
 from ._wwmi_core.extract_frame_data import extract_frame_data as _efd_module
 from ._wwmi_core.migoto_io.dump_parser.filename_parser import ShaderType
 
+from .embedded.slot_textures import dds_meta as _dds_meta
+
 _INSTALLED = False
 _ORIG_BUILD_COMPONENTS = None
 _ORIG_WRITE_OBJECTS = None
@@ -54,18 +68,29 @@ _ORIG_WRITE_OBJECTS = None
 _CAPTURE = {}
 
 
-def _pair_key(descriptor):
-    """Extract (vs, ps) from the descriptor's shader refs to form the stable pair key ``"vs=<hash>-ps=<hash>"``.
-
-    Selected by ``ShaderRef.type`` (not by ``.shaders`` parse order, which is not
-    enforced); when a stage is missing, fall back to ``vs=?`` / ``ps=?`` so it never
-    raises ``StopIteration`` and the key stays self-describing and sortable.
-    """
+def _shader_keys(descriptor):
+    """Extract the nested-schema keys ("vs=<hash>", "ps=<hash>") from the
+    descriptor's shader refs. Selected by ``ShaderRef.type`` (not by parse
+    order); a missing stage falls back to a self-describing placeholder."""
     vs = next((s for s in descriptor.shaders if s.type is ShaderType.Vertex), None)
     ps = next((s for s in descriptor.shaders if s.type is ShaderType.Pixel), None)
-    vs_part = vs.raw if vs is not None else "vs=?"
-    ps_part = ps.raw if ps is not None else "ps=?"
-    return f"{vs_part}-{ps_part}"
+    return (vs.raw if vs is not None else 'vs=?',
+            ps.raw if ps is not None else 'ps=?')
+
+
+def texture_record(descriptor, filename: str = '') -> OrderedDict:
+    """Rich slot record (XQFA-compatible shape) for one texture descriptor.
+    Format/size come from the dump DDS header; unreadable / non-DDS sources
+    yield empty format and zero size (the generator skips such slots in
+    conditions, exactly like unknown formats in the XQFA exporter)."""
+    meta = _dds_meta.read_dds_meta(descriptor.path)
+    return OrderedDict((
+        ('filename', filename),
+        ('hash', descriptor.hash),
+        ('format', meta.format if meta else ''),
+        ('width', meta.width if meta else 0),
+        ('height', meta.height if meta else 0),
+    ))
 
 
 def _wrapped_build_components(self, vb_layout, shapekeys):
@@ -94,7 +119,23 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
             object_directory = output_directory / object_name
             per_object = _CAPTURE.get(object_hash)
 
+            # hash -> set of component ids carrying it, to rebuild the exact
+            # texture filenames the original write loop produced
+            # (Components-{ids} t={hash}{suffix}).
+            hash_components = {}
+            for component_id, component in enumerate(object_data.components):
+                for texture in component.textures:
+                    hash_components.setdefault(texture.hash, set()).add(str(component_id))
+
+            def stock_filename(descriptor):
+                ids = hash_components.get(descriptor.hash)
+                if not ids:
+                    return ''
+                joined = '-'.join(sorted(ids))
+                return f'Components-{joined} t={descriptor.hash}{Path(descriptor.path).suffix}'
+
             shader_texture_usage = OrderedDict()
+            record_cache = {}
             for component_id, component in enumerate(object_data.components):
                 # slot_hash values surviving the original pipeline filter (whether a texture file is included is entirely decided by the original pipeline).
                 surviving = {t.get_slot_hash() for t in component.textures}
@@ -104,17 +145,23 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                 for desc in full:
                     if desc.get_slot_hash() not in surviving:
                         continue
-                    # A single draw call binds only one texture per ps-tN -> (pair, slot) is unique, value is the scalar hash.
-                    pairs.setdefault(_pair_key(desc), {})[desc.get_slot()] = desc.hash
+                    vs_key, ps_key = _shader_keys(desc)
+                    if desc.hash not in record_cache:
+                        record_cache[desc.hash] = texture_record(desc, stock_filename(desc))
+                    # A single draw call binds only one texture per ps-tN -> (pair, slot) is unique.
+                    pairs.setdefault(vs_key, {}).setdefault(ps_key, {})[desc.get_slot()] = record_cache[desc.hash]
 
-                # Deterministic ordering: sort pair keys and slot keys for easy diffing.
+                # Deterministic ordering: sort vs / ps / slot keys for easy diffing.
                 component_out = OrderedDict()
-                for pair in sorted(pairs):
-                    component_out[pair] = OrderedDict(sorted(pairs[pair].items()))
+                for vs_key in sorted(pairs):
+                    vs_out = OrderedDict()
+                    for ps_key in sorted(pairs[vs_key]):
+                        vs_out[ps_key] = OrderedDict(sorted(pairs[vs_key][ps_key].items()))
+                    component_out[vs_key] = vs_out
                 shader_texture_usage[f'Component {component_id}'] = component_out
 
-            # Schema v2: preserve the slot-texture layer's "extra_forms" key
-            # (merged extra-form maps) across re-extraction.
+            # Preserve the slot-texture layer's "extra_forms" key (merged
+            # extra-form maps) across re-extraction.
             usage_path = object_directory / 'ShaderTextureUsage.json'
             if usage_path.is_file():
                 try:

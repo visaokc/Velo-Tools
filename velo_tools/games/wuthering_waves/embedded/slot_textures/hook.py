@@ -53,16 +53,27 @@ def install():
             if (source_folder / 'CrossSceneRouting.json').is_file():
                 raise generator.SlotStyleDegrade(
                     'cross-scene exports are not supported yet')
-            forms, load_warnings = generator.load_forms(source_folder)
+            forms, texture_info, load_warnings = generator.load_forms(source_folder)
             textures = [(texture.hash, f'ResourceTexture{index}')
                         for index, texture in enumerate(self.textures)]
-            # DDS descriptors read live from the source-folder files (user
-            # decision: no pre-capture into the json; deleted textures are
-            # exactly the ones that never need a descriptor).
-            dds_lookup = dds_meta.read_for_textures(
-                (texture.hash, texture.path) for texture in self.textures)
-            plan = generator.build_plan(forms, textures, load_warnings,
-                                        dds_lookup=dds_lookup)
+            if not texture_info:
+                # Legacy-schema json (no recorded formats): best-effort DDS
+                # read of the model-folder files. Risk (reported): the author
+                # may have re-saved a texture in a different format than the
+                # game original the conditions must match.
+                for texture in self.textures:
+                    meta = dds_meta.read_dds_meta(texture.path)
+                    if meta is not None and meta.format:
+                        texture_info[texture.hash] = {
+                            'format': meta.format, 'width': meta.width,
+                            'height': meta.height}
+                load_warnings.append(
+                    'legacy ShaderTextureUsage.json without recorded formats - '
+                    'formats were read from the model-folder files instead; '
+                    're-extract to record the original game formats')
+            plan = generator.build_plan(
+                forms, textures, texture_info, load_warnings,
+                component_ranges=transform.extract_component_ranges(result))
             result = transform.apply(result, plan)
             for warning in plan.warnings:
                 _report(f'[SlotTextures] WARNING: {warning}')
