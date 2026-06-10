@@ -211,6 +211,14 @@ def register():
     _neutralize_updater()
     _patch_tool_mode()
     _patch_mod_skeleton_type()
+    # Slot-style texture export option: the VTWW_Settings annotation must be
+    # injected before _al.register() registers the settings class.
+    try:
+        from .embedded import slot_textures as _slott
+        _slott.inject_settings()
+    except Exception:
+        import traceback
+        traceback.print_exc()
     _strip_unwanted_vendor_panels()
     _patch_panels_for_velo_tools()
     _al.register()
@@ -270,6 +278,16 @@ def register():
     except Exception:
         import traceback
         traceback.print_exc()
+    # Slot-style texture layer: IniMaker hook (installed AFTER the LOD hook so
+    # it post-processes the final rendered ini, whatever template produced it)
+    # + the "Velo 兼容选项" export box and the form-merge sub-panel.
+    try:
+        from .embedded import slot_textures as _slott
+        _slott.install()
+        _slott.register_ui()
+    except Exception:
+        import traceback
+        traceback.print_exc()
     # During extraction, additionally produce ShaderTextureUsage.json (hook build_components to capture + write_objects to output, idempotent and reversible).
     try:
         from . import _shader_texture_usage as _stu
@@ -286,6 +304,13 @@ def register():
 def unregister():
     try:
         _a2.ungate("VTWW_PT_SIDEBAR")
+    except Exception:
+        pass
+    # Slot-style texture layer first (LIFO: installed last, wraps outermost).
+    try:
+        from .embedded import slot_textures as _slott
+        _slott.unregister_ui()
+        _slott.remove()
     except Exception:
         pass
     # Restore the ShaderTextureUsage hook (don't copy WWMI unregister's omission of unhooking the export hook; this patch unhooks explicitly).
@@ -363,6 +388,13 @@ def unregister():
     if _orig_mod_skeleton_type_annotation is not _MISSING and _orig_mod_skeleton_type_annotation is not None:
         _wsettings.VTWW_Settings.__annotations__["mod_skeleton_type"] = _orig_mod_skeleton_type_annotation
     _orig_mod_skeleton_type_annotation = None
+
+    # Restore the slot-style settings annotation.
+    try:
+        from .embedded import slot_textures as _slott
+        _slott.restore_settings()
+    except Exception:
+        pass
 
     # Restore updater / Preferences.
     global _orig_updater_register, _orig_pref_draw, _orig_pref_auto_check
