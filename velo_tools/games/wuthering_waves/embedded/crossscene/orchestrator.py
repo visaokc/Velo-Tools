@@ -51,6 +51,54 @@ def _pos_hole(obj, frac=35):
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
+def _bake_shapekeys(obj):
+    """Bake the current shape-key mix into plain mesh coordinates (own-buffer hosts have no
+    shape-key pipeline at runtime; the edited part exports whatever mix is currently visible)."""
+    sk = obj.data.shape_keys
+    if not sk:
+        return
+    mix = obj.shape_key_add(name="xs_mix", from_mix=True)
+    co = [0.0] * (len(obj.data.vertices) * 3)
+    mix.data.foreach_get("co", co)
+    for kb in list(sk.key_blocks):
+        obj.shape_key_remove(kb)
+    obj.data.vertices.foreach_set("co", co)
+    obj.data.update()
+
+
+def _translate_host_vgs(obj, split_rec, tag):
+    """Rename the split copy's digit VG names (base-component-local) to the host extract's
+    local numbering per the producer's host_vg_remap table; drop weightless out-of-table
+    digit VGs; hard-error on weighted VGs outside the host skeleton. Two-pass rename (temp
+    prefix) so transient name collisions during the swap are safe (per_from_merged pattern)."""
+    from . import vg_translate
+    weighted = set()
+    for v in obj.data.vertices:
+        for g in v.groups:
+            if g.weight > 1e-6:
+                weighted.add(g.group)
+    entries = [(vg.name, vg.index in weighted) for vg in obj.vertex_groups]
+    chk = split_rec.get("host_vg_selfcheck") or {}
+    remap = split_rec.get("host_vg_remap")
+    renames, drops, strays = vg_translate.plan_host_vg_translation(
+        entries, remap, chk.get("host_vg_count"))
+    if strays:
+        usable = (sorted(remap.keys(), key=int) if remap
+                  else ["0..%d" % (int(chk.get("host_vg_count") or 1) - 1)])
+        raise RuntimeError(
+            "own-buffer 部件 %s（IB %s）存在带权重的顶点组 %s 不在 host 骨表内——该饰品的权重必须"
+            "刷在 host 既有骨上（本部件可用顶点组：%s）。请把越界权重转移到可用顶点组或刷零后再导出。"
+            % (split_rec.get("split_object"), tag, strays, usable))
+    by_name = {vg.name: vg for vg in obj.vertex_groups}
+    for old in drops:
+        obj.vertex_groups.remove(by_name[old])
+    for old, new in renames.items():
+        by_name[old].name = vg_translate.TMP_PREFIX + new
+    for vg in obj.vertex_groups:
+        if vg.name.startswith(vg_translate.TMP_PREFIX):
+            vg.name = vg.name[len(vg_translate.TMP_PREFIX):]
+
+
 def _import_one(cfg, src, want_hash):
     before = set(c.name for c in bpy.data.collections)
     cfg.object_source_folder = src
@@ -152,15 +200,53 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         # body = showcase shared buffer mod (base export copied verbatim into body); all foldable IBs fold into it.
         mods = [str(_copy_body(work))]
 
-        # 2) Non-foldable IB (the bear waist): each host-exports its own buffer (host-transfer)
+        # 2) Non-foldable IB (the bear waist): exports its own buffer.
+        #    New path (split part with a producer host VG translation table): export the EDITED
+        #    split object from the base collection with its VG names translated to host-local
+        #    numbering -- edits propagate (move / delete / full mesh replacement). Falls back to
+        #    the legacy pristine reimport when the table is missing (old routing JSON / table
+        #    build failed / MERGED export / split object not found) -- edits don't propagate there.
+        own_legacy = []
+        splits_by_ib = {sp.get("ib_hash"): sp for sp in routing["base"].get("splits", [])}
         for s in own_ibs:
             src = str(merged_folder / s["source_folder"])
-            col = _import_one(cfg, src, s["ib_hash"])
-            if hole:
-                for o in [o for o in col.objects if o.type == 'MESH']:
-                    _pos_hole(o)
             tag = s["ib_hash"]
-            _export_col(cfg, col, str(work / tag), "om_" + tag, src)
+            sp = splits_by_ib.get(tag)
+            split_obj = base_collection.objects.get(sp["split_object"]) if sp else None
+            if sp is not None and "host_vg_remap" in sp and split_obj is not None \
+                    and cfg.mod_skeleton_type == 'COMPONENT':
+                own_col = bpy.data.collections.new("xs_own_" + tag)
+                bpy.context.scene.collection.children.link(own_col)
+                temp_cols.append(own_col)
+                cp = split_obj.copy()
+                cp.data = split_obj.data.copy()
+                cp.name = sp.get("host_component_object", "Component 0")
+                own_col.objects.link(cp)
+                try:
+                    _bake_shapekeys(cp)
+                    _translate_host_vgs(cp, sp, tag)
+                    if hole:
+                        _pos_hole(cp)
+                    _export_col(cfg, own_col, str(work / tag), "om_" + tag, src)
+                finally:
+                    mesh = cp.data
+                    bpy.data.objects.remove(cp, do_unlink=True)
+                    try:
+                        bpy.data.meshes.remove(mesh)
+                    except Exception:
+                        pass
+            else:
+                why = ("路由无骨级翻译表（请重跑合并以生成）" if sp is None or "host_vg_remap" not in sp
+                       else ("MERGED 导出模式" if cfg.mod_skeleton_type != 'COMPONENT'
+                             else "基底集合中找不到拆件对象 %s" % sp["split_object"]))
+                own_legacy.append("%s: %s" % (tag, why))
+                print("[velo.xscene] own-buffer IB %s 走 legacy 重导入路径（%s）——对该部件的编辑不会传播。"
+                      % (tag, why))
+                col = _import_one(cfg, src, tag)
+                if hole:
+                    for o in [o for o in col.objects if o.type == 'MESH']:
+                        _pos_hole(o)
+                _export_col(cfg, col, str(work / tag), "om_" + tag, src)
             mods.append(str(work / tag))
 
         # 3) Foldable IB (clothing/face): export takes its host (face carries morph), then fold.apply_fold redirects the geometry
@@ -226,6 +312,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         report = assembler.assemble(str(out_folder), mods)
         report["ib_count"] = len(mods)
         report["roles"] = ["body"] + [s["ib_hash"] for s in own_ibs] + eib_roles
+        if own_legacy:
+            report["own_buffer_legacy"] = own_legacy
         return report
     finally:
         cfg.object_source_folder, cfg.mod_output_folder, cfg.mod_name = saved[0], saved[2], saved[3]

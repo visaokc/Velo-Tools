@@ -31,6 +31,7 @@ GRID = 0.001
 TOL = 0.0015
 _OVERLAP_WARN = 0.5  # fold IB vs base mesh overlap ratio below this -> foolproof warning (likely independent morph, should be set Editable).
                      # Measured: normal fold parts (clothes/face/bear)=1.0; form2 face ≈0.05 (barely the same mesh as base).
+_HOST_CORR_MIN = 0.95  # own-buffer split vs host vertex-correspondence coverage below this -> no VG table (legacy fallback).
 _POS = AbstractSemantic(Semantic.Position)
 _IDX = AbstractSemantic(Semantic.Index)
 _BI = AbstractSemantic(Semantic.Blendindices)
@@ -334,6 +335,54 @@ def _vote_vg_remap(out_dir, base_name, ib_dir, ib_name, corr_map):
                    "used_vgs": len(used_vgs), "uncovered_vgs": len(uncovered_vgs)}
 
 
+def _build_host_vg_table(out_dir, split_name, split_vb, host_folder):
+    """For an own-buffer split part: vote a "split (base-component-local) VG -> host scene-IB
+    local VG" translation table, so the export side can derive the host sub-mod from the EDITED
+    split object instead of re-importing the pristine extract (edits then propagate). The table
+    is bone-level, geometry-independent: it stays valid after any mesh edit or full replacement,
+    as long as weights stay on the host's existing bones.
+
+    Built at merge time because both sides are in bind pose with exactly overlapping positions
+    (the only moment a vertex correspondence is trustworthy). Returns (record_fields|None, why):
+    fields = {host_component_object, host_vg_remap(None=identity), host_vg_selfcheck} to merge
+    into the split record; None + reason string when the table cannot be built (multi-component
+    host / low coverage / uncovered VGs) -> the export side falls back to the legacy path."""
+    host = Path(host_folder)
+    host_names = _comp_names(host)
+    if len(host_names) != 1:
+        return None, "host has %d components, split part cannot be aligned" % len(host_names)
+    host_vb, _, _ = _read_comp(host, host_names[0])
+    hbi, hbw = _blend(host_vb)
+    if hbi is None:
+        return None, "host has no blend semantics"
+    host_pos = _positions(host_vb)
+    host_grid = _build_grid(host_pos)
+    split_pos = _positions(split_vb)
+    corr = {}
+    for vi, p in enumerate(split_pos):
+        j = _nearest(p, host_pos, host_grid)
+        if j is not None:
+            corr[vi] = int(j)
+    coverage = len(corr) / max(1, len(split_pos))
+    rmap, chk = _vote_vg_remap(out_dir, split_name, host, host_names[0], corr)
+    wmask = np.asarray(hbw) > 0
+    host_vg_count = int(np.asarray(hbi)[wmask].max()) + 1 if wmask.any() else 0
+    chk.update({"covered": len(corr), "split_total": len(split_pos),
+                "coverage": round(coverage, 4), "host_vg_count": host_vg_count})
+    if rmap is None:
+        return None, "split part has no blend semantics"
+    if coverage < _HOST_CORR_MIN:
+        return None, "split/host vertex correspondence coverage too low (%.1f%%)" % (coverage * 100)
+    if chk.get("uncovered_vgs"):
+        return None, "%d used VGs of the split part not covered by the vote" % chk["uncovered_vgs"]
+    return {
+        "host_component_object": host_names[0],
+        "host_vg_remap": (None if chk.get("identity")
+                          else {str(k): int(v) for k, v in rmap.items()}),
+        "host_vg_selfcheck": chk,
+    }, None
+
+
 def build_fold_correspondence(out_dir, base_comps, base_pos_c, base_pos_g, base_grid_g, comp_of_g, dspec):
     """For one foldable dungeon IB, build the fold correspondence on the (post-split) merged components. Keyed by
     VertexId = VB row number (proven: import is 1:1, vertex i = extract VB row i; export VertexId = that row number; stable under position editing).
@@ -452,6 +501,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
 
     # 2) For each dungeon IB "wrapped by a single component": split the parent component into X + X.001.
     splits = []
+    split_warnings = []
     for spec, meta in zip(dungeon_specs, info):
         cid = meta["wrapped_in"]
         if cid is None:
@@ -465,11 +515,22 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         split_name = f"{name}.001"
         _write_comp(out, name, rem[0], rem[1], fmt_text)          # overwrite: parent component remainder
         _write_comp(out, split_name, bear[0], bear[1], fmt_text)  # new: sub-part
-        splits.append({
+        rec = {
             "base_component": cid, "base_object": name, "split_object": split_name,
             "ib_hash": spec["hash"], "split_vertex_count": len(bear[0]),
             "split_tri_count": len(bear[1]), "remainder_vertex_count": len(rem[0]),
-        })
+        }
+        # 2.1) Own-buffer split parts additionally get a host VG translation table so the export
+        #      side can derive the host sub-mod from the edited split object (free editing).
+        if not meta.get("foldable"):
+            fields, why = _build_host_vg_table(out, split_name, bear[0], spec["folder"])
+            if fields:
+                rec.update(fields)
+            else:
+                split_warnings.append(
+                    "own-buffer 拆件 %s（IB %s）骨级翻译表构建失败（%s）——导出端将回退 legacy 重导入路径，"
+                    "对该拆件的编辑不会传播到该场景。" % (split_name, spec["hash"], why))
+        splits.append(rec)
 
     # 3) Copy each dungeon IB's native extract whole into scene_ibs/<hash>/ (for export to reimport per IB as host).
     scene_root = out / "scene_ibs"
@@ -603,7 +664,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     # an independent morph (e.g. another form's face); mis-setting it as Fold would fold it into the base buffer and break it.
     # Overlap ratio = analyze's matched/total (measured: normal fold parts=1.0, form2≈0.05). Shapekey hashes can't tell them
     # apart (form1/form2 faces share the numbering range); geometric overlap is the criterion.
-    warnings = []
+    warnings = list(split_warnings)
     for spec, meta in zip(dungeon_specs, info):
         ratio = meta["matched"] / max(1, meta["total"])
         if ratio < _OVERLAP_WARN:
