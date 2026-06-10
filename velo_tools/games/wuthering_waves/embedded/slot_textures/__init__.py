@@ -8,12 +8,16 @@
 # to stock. See games/wuthering_waves/docs/adr/0006.
 #
 #   constants.py   game-level constants (filter_index namespace, structural
-#                  ShaderRegex patterns) - the only non-derived knowledge
+#                  ShaderRegex patterns, emitted brand-free names) - the only
+#                  non-derived knowledge
+#   dds_meta.py    pure: minimal DDS header reader (descriptors read live from
+#                  the source-folder files at export time)
 #   generator.py   pure: per-form maps + texture list -> slot-style ini block
 #   transform.py   pure: rendered mod.ini -> slot-style mod.ini (anchor-based,
 #                  template-agnostic: stock + LOD fork + future templates)
-#   form_merge.py  raw extra-form FrameAnalysis dump -> ShaderTextureUsageForms
-#                  sidecar (multi-form characters need one dump per form)
+#   form_merge.py  raw extra-form FrameAnalysis dump -> "extra_forms" key inside
+#                  ShaderTextureUsage.json (multi-form characters need one dump
+#                  per form; any form count supported)
 #   hook.py        IniMaker.build_from_template wrap (installed after the LOD
 #                  hook so it post-processes the final rendered text)
 #   ui.py          "Velo 兼容选项" export box + form-merge sub-panel/operator

@@ -89,7 +89,7 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             found_constants = True
             if plan.multi_form:
                 insert_after.setdefault(start, []).append(
-                    'global $velo_form = 0')
+                    f'global {constants.VAR_FORM} = 0')
             continue
 
         comp_match = _COMP_ID_RE.search(name.strip())
@@ -123,7 +123,7 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
         for i in cleanup_indices:
             indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
             insert_before.setdefault(i, []).append(
-                f'{indent}run = CommandList{constants.SECTION_PREFIX}Restore')
+                f'{indent}run = {constants.CMDLIST_RESTORE}')
         injected_components.add(comp_id)
 
     if not injected_components:
@@ -135,7 +135,8 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
         raise SlotStyleDegrade(
             f'expected stock texture sections not found: {sorted(missing)}')
     if plan.multi_form and not found_constants:
-        raise SlotStyleDegrade('[Constants] section not found for $velo_form')
+        raise SlotStyleDegrade(
+            f'[Constants] section not found for {constants.VAR_FORM}')
 
     out: List[str] = []
     for i, line in enumerate(lines):

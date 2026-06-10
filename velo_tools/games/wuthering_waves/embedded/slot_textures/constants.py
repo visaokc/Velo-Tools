@@ -4,7 +4,13 @@
 # WWMI core's own 3381.7777 bone-CB filter_index) and is shared by every mod
 # exported with the slot-style option. Character-level data (PS hashes, slot
 # maps, sentinel texture hashes, form sets) is NEVER hardcoded — it is derived
-# from ShaderTextureUsage(.Forms).json at export time by generator.py.
+# from ShaderTextureUsage.json (+ its extra_forms key) at export time by
+# generator.py, plus DDS descriptors read live from the source folder files.
+#
+# Generated section/variable names are intentionally brand-free (project rule
+# since the LOD round: descriptive names only inside emitted mod.ini content).
+# Both section names and ini variables are namespaced per ini file by 3DMigoto,
+# so generic names cannot collide across mods.
 #
 # filter_index namespace (ADR 0006). All values are integers exactly
 # representable in float32 (< 16,777,216) and deterministic, so any two mods
@@ -21,7 +27,19 @@
 # limitation (ShaderOverride filter_index is global per shader) — velo cannot
 # fix that, only avoid clashing values among its own exports.
 
-SECTION_PREFIX = "VeloSlot"
+# ----------------------------------------------------- emitted names --------
+
+VAR_FORM = "$form_id"
+CMDLIST_SET_TEXTURES = "CommandListSetTexturesComponent{component_id}"
+CMDLIST_RESTORE = "CommandListRestoreTextures"
+CMDLIST_DETECT_FORM = "CommandListDetectForm"
+RES_BACKUP = "ResourceTextureBackupT{slot}"
+SEC_PS_MARK = "ShaderOverrideMarkPs{ps_hash}"
+SEC_TEX_MARK = "TextureOverrideMarkTexture{texture_hash}"
+SEC_REGEX_GBUFFER = "ShaderRegexMaterialGBuffer"
+SEC_REGEX_FORWARD = "ShaderRegexMaterialForward"
+
+# ----------------------------------------------------- filter values --------
 
 FAMILY_TAG_VALUE = 1999801
 
@@ -44,45 +62,58 @@ def sentinel_value(texture_hash: str) -> int:
 
 # Structural classification of the character material shader family by DXBC
 # shape (RabbitFX-proven approach, match-only ShaderRegex without a Replace
-# block). Catches material-pass variants that exist in no dump (e.g. the
-# ~0.5s menu-open transition pipeline), so they need no hash enumeration.
-# May go stale on a big game update that reshapes the material shaders; the
-# per-PS tags keep working regardless (they outrank ShaderRegex), only the
-# unknown-variant fallback coverage degrades.
+# block). Catches material-pass variants that exist in no dump — its hit on
+# the menu-open transition pipeline is field-proven by the hand-converted
+# reference mod. May go stale on a big game update that reshapes the material
+# shaders; the per-PS tags keep working regardless (they outrank ShaderRegex),
+# only the unknown-variant fallback coverage degrades.
 FAMILY_REGEX_SECTIONS = """\
-[ShaderRegex{prefix}MaterialGBuffer]
+[{gbuffer}]
 shader_model = ps_4_0 ps_5_0
 filter_index = {family}
 
-[ShaderRegex{prefix}MaterialGBuffer.Pattern]
+[{gbuffer}.Pattern]
 dcl_constantbuffer\\hCB4\\[\\d{{3}}\\].*\\n(?:dcl.+\\n)*?(?:dcl_output\\ho\\d\\.xyzw\\n){{7}}
 
-[ShaderRegex{prefix}MaterialForward]
+[{forward}]
 shader_model = ps_4_0 ps_5_0
 filter_index = {family}
 
-[ShaderRegex{prefix}MaterialForward.Pattern]
+[{forward}.Pattern]
 dcl_constantbuffer\\hCB6\\[\\d+\\].*\\n(?:dcl.+\\n)*?dcl_output\\ho0\\.xyzw\\n(?!dcl_output)
-""".format(prefix=SECTION_PREFIX, family=FAMILY_TAG_VALUE)
+""".format(gbuffer=SEC_REGEX_GBUFFER, forward=SEC_REGEX_FORWARD, family=FAMILY_TAG_VALUE)
 
-# Slots considered "main material textures" when classifying pairs. A pair is
-# material-class when >= MATERIAL_MIN_MODDED of its modded slots sit in
-# MAIN_SLOTS (face pairs mod only t1, screen-space pairs only t0, outline
-# pairs only t7 — none qualify).
+# --------------------------------------------------- classification ---------
+
+# A pair is material-class when its slot map carries ALL of MAIN_SLOTS — a
+# structural slot-set fingerprint, independent of which textures the author
+# kept in the folder (the membership-based rule broke under unpruned texture
+# sets: screen-space/face/outline pairs became "material" and emptied the
+# safe-intersection fallback maps). Verified across both AMS form dumps:
+# true material pairs always bind t0..t3; screen-space family never binds t1;
+# face/outline families never bind t0.
 MAIN_SLOTS = (0, 1, 2, 3)
-MATERIAL_MIN_MODDED = 2
+
+# Optional belt on top of the slot-set fingerprint: when the DDS descriptor of
+# a MAIN_SLOTS texture is known (file present in the source folder), material
+# pairs must look like character textures (square; dump-extracted files carry
+# only the base mip level, so a mip-count requirement is NOT usable). Unknown
+# descriptors never block.
+MATERIAL_REQUIRE_SQUARE = True
 
 # Slot used by the negative sentinel guard of the structural fallback branch
-# (screen-space / outline / face binding families pin distinctive non-modded
-# textures there, verified per-draw in the 2026-06-10 transition hold-log).
+# (screen-space / outline / face binding families pin distinctive textures
+# there, verified per-draw in the 2026-06-10 transition hold-log).
 SENTINEL_SLOT = 2
 
 # Cap the number of sentinel guards per fallback condition to keep the emitted
 # ini condition readable; most frequent sentinels win.
 MAX_SENTINELS = 6
 
-# Sidecar filename written by form_merge.py next to Metadata.json.
-FORMS_SIDECAR_FILENAME = "ShaderTextureUsageForms.json"
-
-# Base per-pair maps produced by the extraction patch (_shader_texture_usage).
+# Single data file: base form maps live in the top-level "Component N" keys,
+# extra forms under the reserved top-level key below (preserved across
+# re-extraction by the _shader_texture_usage patch).
 BASE_USAGE_FILENAME = "ShaderTextureUsage.json"
+EXTRA_FORMS_KEY = "extra_forms"
+# Pre-v2 sidecar (auto-migrated into the single file, then deleted).
+LEGACY_SIDECAR_FILENAME = "ShaderTextureUsageForms.json"

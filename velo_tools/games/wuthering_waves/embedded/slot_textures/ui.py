@@ -105,8 +105,9 @@ class VTWW_OT_merge_form_textures(bpy.types.Operator):
     bl_idname = "vtww.merge_form_textures"
     bl_label = "合并形态贴图数据 (Merge Form Dump)"
     bl_description = ("解析另一形态的原始帧转储，把它的 (组件 x 着色器对 x 槽位) 贴图表"
-                      "合并进模型文件夹的 ShaderTextureUsageForms.json，供插槽风格导出生成"
-                      "形态检测与 per-form 分支。同名 dump 重复合并会覆盖旧条目")
+                      "合并进模型文件夹 ShaderTextureUsage.json 的 extra_forms 键（支持任意"
+                      "数量形态），供插槽风格导出生成形态检测与 per-form 分支。"
+                      "同名 dump 重复合并会覆盖旧条目")
 
     def execute(self, context):
         cfg = context.scene.VTWW_settings
@@ -118,6 +119,7 @@ class VTWW_OT_merge_form_textures(bpy.types.Operator):
                 resolve_path(cfg.object_source_folder),
                 resolve_path(slot_cfg.form_dump_folder),
                 slot_cfg.form_label,
+                texture_filter=form_merge.texture_filter_from_cfg(cfg),
             )
         except Exception as exc:
             traceback.print_exc()

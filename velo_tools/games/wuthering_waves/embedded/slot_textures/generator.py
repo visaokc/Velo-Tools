@@ -1,20 +1,29 @@
 # Slot-style texture layer generator (pure python, no bpy / no _wwmi_core
 # imports — unit-testable headless).
 #
-# Input: per-form per-(component x shader-pair x slot) texture maps (base
-# ShaderTextureUsage.json + optional ShaderTextureUsageForms.json sidecar) and
-# the export texture list. Output: the ini text block implementing the
-# slot-style replacement layer plus the metadata transform.py needs to rewire
-# the rendered mod.ini.
+# Input: per-form per-(component x shader-pair x slot) texture maps (the
+# "Component N" keys of ShaderTextureUsage.json plus its "extra_forms" key),
+# the export texture list, and optional DDS descriptors read live from the
+# source-folder files. Output: the ini text block implementing the slot-style
+# replacement layer plus the metadata transform.py needs to rewire the
+# rendered mod.ini.
 #
 # Replacement model (mechanizes the hand-validated Aemeath conversion, see
 # docs/adr/0006): per known PS a deterministic ShaderOverride tag; component
 # command lists branch on `ps == <tag>` and rebind only slots whose dumped
 # hash belongs to the mod's texture set (backup -> ref rebind -> restore after
-# the draws); multi-form characters get a persistent $velo_form flag driven by
-# form-unique material PS; a structural ShaderRegex family tag plus negative
-# sentinel guards covers material-pass variants absent from every dump (menu
-# transition pipeline etc.) with the per-form safe-intersection map.
+# the draws); multi-form characters (any count >= 2) get a persistent $form_id
+# flag driven by form-unique material PS; a structural ShaderRegex family tag
+# plus negative sentinel guards covers material-pass variants absent from
+# every dump (menu transition pipeline etc.) with the per-form
+# safe-intersection map.
+#
+# Material classification is STRUCTURAL (slot-set fingerprint: a pair binding
+# all of t0..t3, with an optional square+mipmapped DDS belt) — independent of
+# which textures the author kept, so pruned and unpruned folders derive the
+# same pass structure. The membership-based rule this replaces broke under
+# unpruned sets (screen-space/face pairs classified material, emptying the
+# fallback intersections — the in-game "transition reverts to vanilla" bug).
 
 import json
 import re
@@ -39,6 +48,9 @@ _PS_RE = re.compile(r'ps=([0-9a-f]{16})')
 _COMP_RE = re.compile(r'component\s*(\d+)\s*$', re.I)
 _SLOT_RE = re.compile(r'^ps-t(\d+)$')
 
+# Top-level keys of ShaderTextureUsage.json that are not component maps.
+_RESERVED_KEYS = {constants.EXTRA_FORMS_KEY, 'version'}
+
 
 # ---------------------------------------------------------------- loading --
 
@@ -46,6 +58,8 @@ def normalize_usage(raw: dict, source: str, warnings: List[str]) -> FormData:
     """Converts one ShaderTextureUsage-shaped dict into FormData."""
     out: FormData = {}
     for comp_name, pairs in (raw or {}).items():
+        if comp_name in _RESERVED_KEYS:
+            continue
         found = _COMP_RE.search(comp_name)
         if not found:
             warnings.append(f'{source}: unrecognized component key "{comp_name}" skipped')
@@ -76,7 +90,10 @@ def normalize_usage(raw: dict, source: str, warnings: List[str]) -> FormData:
 
 
 def load_forms(object_source_folder: Path) -> Tuple[List[Tuple[str, FormData]], List[str]]:
-    """Loads base + extra form maps. forms[0] is always the base extraction."""
+    """Loads base + extra form maps from the single ShaderTextureUsage.json
+    (schema v2: extra forms under the reserved "extra_forms" key). A pre-v2
+    sidecar file is still read for compatibility until the next merge migrates
+    it. forms[0] is always the base extraction."""
     warnings: List[str] = []
     base_path = Path(object_source_folder) / constants.BASE_USAGE_FILENAME
     if not base_path.is_file():
@@ -91,16 +108,22 @@ def load_forms(object_source_folder: Path) -> Tuple[List[Tuple[str, FormData]], 
 
     forms: List[Tuple[str, FormData]] = [('base', normalize_usage(base_raw, 'base', warnings))]
 
-    sidecar_path = Path(object_source_folder) / constants.FORMS_SIDECAR_FILENAME
-    if sidecar_path.is_file():
-        try:
-            with open(sidecar_path, encoding='utf-8') as f:
-                sidecar = json.load(f)
-        except Exception as e:
-            raise SlotStyleDegrade(f'failed to read {constants.FORMS_SIDECAR_FILENAME}: {e}')
-        for entry in sidecar.get('extra_forms') or []:
-            label = entry.get('label') or entry.get('source') or f'form{len(forms) + 1}'
-            forms.append((label, normalize_usage(entry.get('components'), label, warnings)))
+    extra_entries = base_raw.get(constants.EXTRA_FORMS_KEY)
+    if not extra_entries:
+        legacy_path = Path(object_source_folder) / constants.LEGACY_SIDECAR_FILENAME
+        if legacy_path.is_file():
+            try:
+                with open(legacy_path, encoding='utf-8') as f:
+                    extra_entries = (json.load(f) or {}).get(constants.EXTRA_FORMS_KEY)
+                warnings.append(
+                    f'legacy {constants.LEGACY_SIDECAR_FILENAME} used - re-run the form '
+                    f'merge once to migrate it into {constants.BASE_USAGE_FILENAME}')
+            except Exception as e:
+                raise SlotStyleDegrade(
+                    f'failed to read {constants.LEGACY_SIDECAR_FILENAME}: {e}')
+    for entry in extra_entries or []:
+        label = entry.get('label') or entry.get('source') or f'form{len(forms) + 1}'
+        forms.append((label, normalize_usage(entry.get('components'), label, warnings)))
 
     if not any(form_data for _, form_data in forms):
         raise SlotStyleDegrade('no usable shader/texture usage data found')
@@ -128,25 +151,50 @@ def _modded_map(pair_map: Dict[int, Optional[str]],
 
 
 def _is_material_pair(pair_map: Dict[int, Optional[str]],
-                      mod_hashes: Dict[str, str]) -> bool:
-    modded_main = sum(1 for slot, h in pair_map.items()
-                      if slot in constants.MAIN_SLOTS
-                      and h is not None and h in mod_hashes)
-    return modded_main >= constants.MATERIAL_MIN_MODDED
+                      dds_lookup: Optional[Dict[str, "object"]] = None) -> bool:
+    """Structural slot-set fingerprint: material pairs bind ALL main slots.
+    When a slot's texture descriptor is known (file present in the source
+    folder), it must look like a character texture (square; dump-extracted
+    files carry no mip chain, so squareness is the only reliable belt);
+    unknown descriptors never block."""
+    if not all(slot in pair_map for slot in constants.MAIN_SLOTS):
+        return False
+    if dds_lookup and constants.MATERIAL_REQUIRE_SQUARE:
+        for slot in constants.MAIN_SLOTS:
+            h = pair_map.get(slot)
+            meta = dds_lookup.get(h) if h else None
+            if meta is not None and not meta.is_square:
+                return False
+    return True
 
 
 def _fallback_map(comp_pairs: Dict[str, Dict[int, Optional[str]]],
-                  mod_hashes: Dict[str, str]) -> Optional[Dict[int, str]]:
+                  mod_hashes: Dict[str, str],
+                  dds_lookup,
+                  local_ps: Optional[Set[str]] = None) -> Optional[Dict[int, str]]:
     """Safe intersection of the material pairs of one (form, component):
-    a slot is included only when EVERY material pair binds the same modded
-    texture there (divergent / unknown / unmodded slots are skipped)."""
-    material = [m for m in comp_pairs.values() if _is_material_pair(m, mod_hashes)]
+    a slot is included only when EVERY contributing pair binds the same modded
+    texture there (divergent / unknown / unmodded slots are skipped).
+
+    When the component has COMPONENT-LOCAL material PS (appearing in no other
+    component), only those contribute: a component carrying both an own
+    material set and a cross-component shared one (e.g. accessory components)
+    would otherwise intersect to nothing, and the undumped variants of its
+    own material pass are the ones the fallback exists for (field data: the
+    transition variant observed for such a component carried the own-material
+    layout)."""
+    material = {ps: m for ps, m in comp_pairs.items()
+                if _is_material_pair(m, dds_lookup)}
     if not material:
         return None
+    if local_ps:
+        local = {ps: m for ps, m in material.items() if ps in local_ps}
+        if local:
+            material = local
     out: Dict[int, str] = {}
     for slot in constants.MAIN_SLOTS:
         resources = set()
-        for pair_map in material:
+        for pair_map in material.values():
             h = pair_map.get(slot)
             if h is None or h not in mod_hashes:
                 resources = None
@@ -158,35 +206,43 @@ def _fallback_map(comp_pairs: Dict[str, Dict[int, Optional[str]]],
 
 
 def _collect_sentinels(forms: List[Tuple[str, FormData]],
-                       mod_hashes: Dict[str, str]) -> List[str]:
-    """Texture hashes pinned at the sentinel slot of NON-material pairs —
-    distinctive of the screen-space / outline / face binding families. Used as
-    negative guards so the structural fallback never fires on those."""
+                       dds_lookup) -> List[str]:
+    """Texture hashes pinned at the sentinel slot of NON-material pairs and
+    never seen at that slot of a material pair — distinctive of the
+    screen-space / outline / face binding families. Mod-set membership is
+    irrelevant on purpose (marking is not replacing), so the sentinel set
+    survives unpruned texture folders."""
     counter: Dict[str, int] = {}
+    material_t2: Set[str] = set()
     for _, form_data in forms:
         for comp_pairs in form_data.values():
             for pair_map in comp_pairs.values():
-                if _is_material_pair(pair_map, mod_hashes):
-                    continue
                 h = pair_map.get(constants.SENTINEL_SLOT)
-                if h is not None and h not in mod_hashes:
+                if h is None:
+                    continue
+                if _is_material_pair(pair_map, dds_lookup):
+                    material_t2.add(h)
+                else:
                     counter[h] = counter.get(h, 0) + 1
     ranked = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
-    return [h for h, _ in ranked[:constants.MAX_SENTINELS]]
+    return [h for h, _ in ranked if h not in material_t2][:constants.MAX_SENTINELS]
 
 
 def _render_assignments(assign: Dict[int, str], indent: str) -> List[str]:
     lines = []
     for slot in sorted(assign):
-        lines.append(f'{indent}Resource{constants.SECTION_PREFIX}TempT{slot} = ref ps-t{slot}')
+        backup = constants.RES_BACKUP.format(slot=slot)
+        lines.append(f'{indent}{backup} = ref ps-t{slot}')
         lines.append(f'{indent}ps-t{slot} = ref {assign[slot]}')
     return lines
 
 
 def build_plan(forms: List[Tuple[str, FormData]],
                textures: List[Tuple[str, str]],
-               load_warnings: Optional[List[str]] = None) -> SlotPlan:
-    """textures: (texture hash, resource section name) in template order."""
+               load_warnings: Optional[List[str]] = None,
+               dds_lookup: Optional[Dict[str, "object"]] = None) -> SlotPlan:
+    """textures: (texture hash, resource section name) in template order.
+    dds_lookup: optional {texture hash: DdsMeta} read from the source folder."""
     warnings: List[str] = list(load_warnings or [])
     multi_form = len(forms) > 1
     mod_hashes = {h: res for h, res in textures}
@@ -213,12 +269,15 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'none of the mod textures appear in the shader/texture usage maps '
             '(stale extraction data?)')
 
-    # Per-PS presence across forms (form ids are 1-based, base = 1).
+    # Per-PS presence across forms (form ids are 1-based, base = 1) and
+    # across components (for the fallback locality preference).
     ps_forms: Dict[str, Set[int]] = {}
+    ps_components: Dict[str, Set[int]] = {}
     for form_id, (_, form_data) in enumerate(forms, start=1):
-        for comp_pairs in form_data.values():
+        for comp_id, comp_pairs in form_data.items():
             for ps in comp_pairs:
                 ps_forms.setdefault(ps, set()).add(form_id)
+                ps_components.setdefault(ps, set()).add(comp_id)
 
     # Deterministic PS tags + collision check.
     ps_tags: Dict[str, int] = {}
@@ -233,7 +292,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
         value_owner[value] = ps
         ps_tags[ps] = value
 
-    sentinels = _collect_sentinels(forms, mod_hashes)
+    sentinels = _collect_sentinels(forms, dds_lookup)
     sentinel_values = {}
     for h in sentinels:
         value = constants.sentinel_value(h)
@@ -249,7 +308,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             det: List[int] = []
             for comp_pairs in form_data.values():
                 for ps, pair_map in comp_pairs.items():
-                    if ps_forms[ps] == {form_id} and _is_material_pair(pair_map, mod_hashes):
+                    if ps_forms[ps] == {form_id} and _is_material_pair(pair_map, dds_lookup):
                         tag = ps_tags[ps]
                         if tag not in det:
                             det.append(tag)
@@ -288,13 +347,16 @@ def build_plan(forms: List[Tuple[str, FormData]],
             else:
                 for form_id in sorted(nonempty):
                     branches.append(
-                        (f'ps == {tag} && $velo_form == {form_id}', nonempty[form_id]))
+                        (f'ps == {tag} && {constants.VAR_FORM} == {form_id}',
+                         nonempty[form_id]))
 
         # Structural family fallback (only when sentinels are derivable).
         if sentinel_values:
+            local_ps = {ps for ps in ps_in_comp if ps_components.get(ps) == {comp_id}}
             per_form_fb: Dict[int, Dict[int, str]] = {}
             for form_id, (_, form_data) in enumerate(forms, start=1):
-                fb = _fallback_map(form_data.get(comp_id, {}), mod_hashes)
+                fb = _fallback_map(form_data.get(comp_id, {}), mod_hashes,
+                                   dds_lookup, local_ps=local_ps)
                 if fb:
                     per_form_fb[form_id] = fb
             if per_form_fb:
@@ -305,7 +367,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 else:
                     for form_id in sorted(per_form_fb):
                         branches.append(
-                            (f'{base_cond} && $velo_form == {form_id}', per_form_fb[form_id]))
+                            (f'{base_cond} && {constants.VAR_FORM} == {form_id}',
+                             per_form_fb[form_id]))
         elif comp_id == all_comp_ids[0]:
             warnings.append(
                 'no sentinel textures derivable — structural fallback disabled '
@@ -320,37 +383,35 @@ def build_plan(forms: List[Tuple[str, FormData]],
         raise SlotStyleDegrade('no component produced any slot assignment')
 
     # ------------------------------------------------------------ emission --
-    prefix = constants.SECTION_PREFIX
     out: List[str] = []
     form_sources = ', '.join(label for label, _ in forms)
     out.append('')
     out.append('; ============================================================')
-    out.append(f'; Velo slot-style texture layer (generated - do not edit by hand)')
+    out.append('; Slot-style texture layer (generated - do not edit by hand)')
     out.append(f'; Forms: {form_sources}')
     out.append('; Textures are rebound by slot inside the component draw scope; game')
-    out.append('; texture hashes (which churn with streaming) are never matched. See')
-    out.append('; games/wuthering_waves/docs/adr/0006-slot-style-texture-overrides.md')
+    out.append('; texture hashes (which churn with streaming) are never matched.')
     out.append('; ============================================================')
     out.append('')
     out.append(constants.FAMILY_REGEX_SECTIONS.rstrip())
     out.append('')
 
-    out.append(f'; -- Deterministic per-PS tags (filter_index = f(ps hash): identical')
-    out.append(f';    across all velo slot-style mods, duplicates coexist harmlessly)')
+    out.append('; -- Deterministic per-PS tags (filter_index = f(ps hash): identical')
+    out.append(';    across all slot-style mods, duplicates coexist harmlessly)')
     for ps in sorted(ps_tags):
         out.append('')
-        out.append(f'[ShaderOverride{prefix}Ps{ps}]')
+        out.append(f'[{constants.SEC_PS_MARK.format(ps_hash=ps)}]')
         out.append(f'hash = {ps}')
         out.append('allow_duplicate_hash = true')
         out.append(f'filter_index = {ps_tags[ps]}')
 
     if sentinel_values:
         out.append('')
-        out.append(f'; -- Sentinel marks: non-material binding families pin these textures')
+        out.append('; -- Sentinel marks: non-material binding families pin these textures')
         out.append(f';    at ps-t{constants.SENTINEL_SLOT}; the structural fallback rejects such draws')
         for h in sorted(sentinel_values):
             out.append('')
-            out.append(f'[TextureOverride{prefix}Sentinel{h}]')
+            out.append(f'[{constants.SEC_TEX_MARK.format(texture_hash=h)}]')
             out.append(f'hash = {h}')
             out.append('match_priority = 0')
             out.append(f'filter_index = {sentinel_values[h]}')
@@ -358,11 +419,11 @@ def build_plan(forms: List[Tuple[str, FormData]],
     out.append('')
     out.append('; -- Per-draw backup slots (restored right after the component draws)')
     for slot in sorted(used_slots):
-        out.append(f'[Resource{prefix}TempT{slot}]')
+        out.append(f'[{constants.RES_BACKUP.format(slot=slot)}]')
 
     if multi_form:
         out.append('')
-        out.append(f'[CommandList{prefix}DetectForm]')
+        out.append(f'[{constants.CMDLIST_DETECT_FORM}]')
         out.append('; Persistent form flag driven by form-unique material PS (shared or')
         out.append('; transition PS are excluded - their binding roles swap between forms).')
         first = True
@@ -372,19 +433,19 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 continue
             cond = ' || '.join(f'ps == {t}' for t in tags)
             out.append(f'{"if" if first else "else if"} {cond}')
-            out.append(f'    $velo_form = {form_id}')
+            out.append(f'    {constants.VAR_FORM} = {form_id}')
             first = False
         if not first:
             out.append('endif')
 
     component_list_names: Dict[int, str] = {}
     for comp_id, branches in sorted(component_branches.items()):
-        name = f'CommandList{prefix}TexturesC{comp_id}'
+        name = constants.CMDLIST_SET_TEXTURES.format(component_id=comp_id)
         component_list_names[comp_id] = name
         out.append('')
         out.append(f'[{name}]')
         if multi_form:
-            out.append(f'run = CommandList{prefix}DetectForm')
+            out.append(f'run = {constants.CMDLIST_DETECT_FORM}')
         first = True
         for cond, assign in branches:
             out.append(f'{"if" if first else "else if"} {cond}')
@@ -393,13 +454,14 @@ def build_plan(forms: List[Tuple[str, FormData]],
         out.append('endif')
 
     out.append('')
-    out.append(f'[CommandList{prefix}Restore]')
+    out.append(f'[{constants.CMDLIST_RESTORE}]')
     out.append('; Rebind original game textures after our draws so later draws that')
     out.append('; inherit pipeline state never see mod textures.')
     for slot in sorted(used_slots):
-        out.append(f'if Resource{prefix}TempT{slot} !== null')
-        out.append(f'    ps-t{slot} = ref Resource{prefix}TempT{slot}')
-        out.append(f'    Resource{prefix}TempT{slot} = null')
+        backup = constants.RES_BACKUP.format(slot=slot)
+        out.append(f'if {backup} !== null')
+        out.append(f'    ps-t{slot} = ref {backup}')
+        out.append(f'    {backup} = null')
         out.append('endif')
     out.append('')
 
@@ -417,6 +479,9 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'sentinels': len(sentinel_values),
             'components': len(component_branches),
             'branches': sum(len(b) for b in component_branches.values()),
+            'fallback_branches': sum(
+                1 for b in component_branches.values()
+                for cond, _ in b if f'ps == {constants.FAMILY_TAG_VALUE}' in cond),
             'covered_textures': len(covered_resource_indices),
             'blind_zone_textures': len(blind_zone),
         },

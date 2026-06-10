@@ -18,6 +18,7 @@ import traceback
 from ..._wwmi_core.blender_export import ini_maker as _im_module
 from ..._wwmi_core.migoto_io.blender_interface.utility import resolve_path
 
+from . import dds_meta
 from . import generator
 from . import transform
 
@@ -55,7 +56,13 @@ def install():
             forms, load_warnings = generator.load_forms(source_folder)
             textures = [(texture.hash, f'ResourceTexture{index}')
                         for index, texture in enumerate(self.textures)]
-            plan = generator.build_plan(forms, textures, load_warnings)
+            # DDS descriptors read live from the source-folder files (user
+            # decision: no pre-capture into the json; deleted textures are
+            # exactly the ones that never need a descriptor).
+            dds_lookup = dds_meta.read_for_textures(
+                (texture.hash, texture.path) for texture in self.textures)
+            plan = generator.build_plan(forms, textures, load_warnings,
+                                        dds_lookup=dds_lookup)
             result = transform.apply(result, plan)
             for warning in plan.warnings:
                 _report(f'[SlotTextures] WARNING: {warning}')

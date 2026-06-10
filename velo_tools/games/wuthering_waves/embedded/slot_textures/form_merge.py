@@ -2,18 +2,20 @@
 #
 # A multi-form character binds different texture sets (and partially different
 # material PS) per form, so exact per-form slot maps require one frame dump
-# per form (data-determined, see ADR 0006). This module consumes a RAW
-# FrameAnalysis folder of an extra form directly — no second object extraction
-# is needed: it runs the stock in-memory extraction chain up to
-# ComponentBuilder (the same five steps extract_frame_data() runs before
-# OutputBuilder; mirrors embedded/lod/extract.py), picks the object matching
-# the already-extracted one (vb0 hash first, skeleton cb4 hash as fallback)
-# and persists its per-(component x shader-pair x slot) texture maps into the
-# ShaderTextureUsageForms.json sidecar next to Metadata.json.
+# per form (data-determined, see ADR 0006; any form count >= 2 is supported,
+# forms are an ordered list). This module consumes a RAW FrameAnalysis folder
+# of an extra form directly — no second object extraction is needed: it runs
+# the stock in-memory extraction chain up to ComponentBuilder (the same five
+# steps extract_frame_data() runs before OutputBuilder; mirrors
+# embedded/lod/extract.py), picks the object matching the already-extracted
+# one (vb0 hash first, skeleton cb4 hash as fallback) and persists its
+# per-(component x shader-pair x slot) texture maps under the "extra_forms"
+# key INSIDE ShaderTextureUsage.json (single-file schema v2; a pre-v2
+# ShaderTextureUsageForms.json sidecar is auto-migrated in and deleted).
 #
-# Unlike the base ShaderTextureUsage.json (which only seats textures surviving
-# the extraction texture filter), the sidecar keeps ALL bound descriptors —
-# more coverage costs nothing here because no texture files are written.
+# Unlike the base maps (which only seat textures surviving the extraction
+# texture filter), extra forms keep ALL bound descriptors — more coverage
+# costs nothing here because no texture files are written.
 
 import json
 
@@ -27,8 +29,31 @@ from ..._wwmi_core.extract_frame_data.extract_frame_data import configuration
 from ..._wwmi_core.extract_frame_data.data_extractor import DataExtractor
 from ..._wwmi_core.extract_frame_data.shapekey_builder import ShapeKeyBuilder
 from ..._wwmi_core.extract_frame_data.component_builder import ComponentBuilder
+from ..._wwmi_core.extract_frame_data.output_builder import OutputBuilder, TextureFilter
 
 from . import constants
+
+# Same exclusion list the stock extraction / export use for well-known cubemaps.
+KNOWN_CUBEMAP_HASHES = ['af26db30', '1320a071', '10d7937d', '87505b2b',
+                        'e5df00a8', 'ec2fecec', 'd313d349']
+
+
+def texture_filter_from_cfg(cfg) -> TextureFilter:
+    """Mirrors the TextureFilter the stock extraction builds from the same
+    settings, so extra-form maps share the base maps' shape. Critical: raw
+    per-draw dump records include INHERITED bindings (stale state from earlier
+    draws); the stock filter (size / cubemap / same-slot-hash rules) is what
+    makes the base maps structurally clean, so the merged forms must pass
+    through the very same sieve or the slot-set material fingerprint drowns
+    in inherited-slot noise."""
+    return TextureFilter(
+        min_file_size=(cfg.skip_small_textures_size * 1024
+                       if getattr(cfg, 'skip_small_textures', False) else 0),
+        exclude_extensions=['jpg'] if getattr(cfg, 'skip_jpg_textures', False) else [],
+        exclude_same_slot_hash_textures=getattr(cfg, 'skip_same_slot_hash_textures', False),
+        exclude_hashes=(KNOWN_CUBEMAP_HASHES
+                        if getattr(cfg, 'skip_known_cubemap_textures', False) else []),
+    )
 
 
 class FormMergeError(Exception):
@@ -44,9 +69,12 @@ def _pair_key(descriptor) -> str:
     return f'{vs_part}-{ps_part}'
 
 
-def collect_mesh_objects(dump_path: Path):
-    """Stock in-memory extraction chain, stopped at ComponentBuilder (we need
-    the full per-draw texture descriptors, which OutputBuilder would filter)."""
+def collect_mesh_objects(dump_path: Path, texture_filter: TextureFilter):
+    """Stock in-memory extraction chain. Returns both the raw mesh objects
+    (full per-draw descriptor lists, with shader-pair attribution) and the
+    per-object SURVIVING slot-hash sets after the stock OutputBuilder texture
+    filter — the same combination _shader_texture_usage.py uses for the base
+    maps, so extra-form maps come out shape-identical."""
     dump = Dump(dump_directory=dump_path)
     frame_data = DataCollector(
         dump=dump,
@@ -61,7 +89,18 @@ def collect_mesh_objects(dump_path: Path):
         shapekeys=shapekeys.shapekeys,
         draw_data=data_extractor.draw_data,
     )
-    return component_builder.mesh_objects
+    output_builder = OutputBuilder(
+        shapekeys=shapekeys.shapekeys,
+        mesh_objects=component_builder.mesh_objects,
+        texture_filter=texture_filter,
+    )
+    surviving = {}
+    for vb0_hash, object_data in output_builder.objects.items():
+        surviving[vb0_hash] = [
+            {t.get_slot_hash() for t in component.textures}
+            for component in object_data.components
+        ]
+    return component_builder.mesh_objects, surviving
 
 
 def _match_object(mesh_objects, vb0_hash: str, cb4_hash: str):
@@ -80,13 +119,19 @@ def _match_object(mesh_objects, vb0_hash: str, cb4_hash: str):
         f'{len(candidates)} objects - cannot pick the form object unambiguously')
 
 
-def _build_components_usage(mesh_object) -> "OrderedDict[str, OrderedDict]":
-    """Component N -> "vs=..-ps=.." -> "ps-tN" -> hash (sidecar shape; same
-    layout as ShaderTextureUsage.json but unfiltered)."""
+def _build_components_usage(mesh_object, surviving_sets) -> "OrderedDict[str, OrderedDict]":
+    """Component N -> "vs=..-ps=.." -> "ps-tN" -> hash (exactly the base
+    ShaderTextureUsage.json shape: only descriptors surviving the stock
+    texture filter are seated, which strips the inherited-binding noise raw
+    per-draw records carry)."""
     out = OrderedDict()
     for component_id, component_data in enumerate(mesh_object.components_data):
+        keep = (surviving_sets[component_id]
+                if surviving_sets and component_id < len(surviving_sets) else None)
         pairs = {}
         for descriptor in component_data.draw_data.textures:
+            if keep is not None and descriptor.get_slot_hash() not in keep:
+                continue
             slot = descriptor.get_slot()
             pair = pairs.setdefault(_pair_key(descriptor), {})
             if slot in pair and pair[slot] != descriptor.hash:
@@ -102,12 +147,19 @@ def _build_components_usage(mesh_object) -> "OrderedDict[str, OrderedDict]":
     return out
 
 
-def merge_form_dump(object_source_folder, dump_path, form_label: str = '') -> dict:
-    """Parses one extra-form RAW dump and merges it into the sidecar.
+def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
+                    texture_filter: TextureFilter = None) -> dict:
+    """Parses one extra-form RAW dump and merges it into ShaderTextureUsage.json.
 
+    texture_filter should mirror the settings the base extraction ran with
+    (texture_filter_from_cfg); None falls back to an unfiltered merge.
     Returns a summary dict for operator reporting."""
     object_source_folder = Path(object_source_folder)
     dump_path = Path(dump_path)
+    if texture_filter is None:
+        texture_filter = TextureFilter(
+            min_file_size=0, exclude_extensions=[],
+            exclude_same_slot_hash_textures=False, exclude_hashes=[])
 
     if not (dump_path / 'log.txt').is_file():
         raise FormMergeError('selected folder is not a frame dump (log.txt missing)')
@@ -124,7 +176,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '') -> di
 
     base_components = metadata.get('components') or []
 
-    mesh_objects = collect_mesh_objects(dump_path)
+    mesh_objects, surviving = collect_mesh_objects(dump_path, texture_filter)
     mesh_object, matched_by = _match_object(mesh_objects, vb0_hash, cb4_hash)
 
     if base_components and len(mesh_object.components_data) != len(base_components):
@@ -133,22 +185,42 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '') -> di
             f'{len(mesh_object.components_data)}, extracted object has '
             f'{len(base_components)} - forms must share the same mesh')
 
-    components_usage = _build_components_usage(mesh_object)
+    components_usage = _build_components_usage(
+        mesh_object, surviving.get(mesh_object.vb0_hash))
 
-    sidecar_path = object_source_folder / constants.FORMS_SIDECAR_FILENAME
-    sidecar = {'version': 1, 'extra_forms': []}
-    if sidecar_path.is_file():
+    # Single-file schema v2: extra forms live INSIDE ShaderTextureUsage.json.
+    usage_path = object_source_folder / constants.BASE_USAGE_FILENAME
+    if not usage_path.is_file():
+        raise FormMergeError(
+            f'{constants.BASE_USAGE_FILENAME} is missing - re-extract the object '
+            f'with a current Velo Tools build before merging forms')
+    with open(usage_path, encoding='utf-8') as f:
+        usage = json.load(f)
+    if not isinstance(usage, dict):
+        raise FormMergeError(f'{constants.BASE_USAGE_FILENAME} has an unexpected shape')
+
+    extra_forms = usage.get(constants.EXTRA_FORMS_KEY)
+    if not isinstance(extra_forms, list):
+        extra_forms = []
+
+    # Migrate a pre-v2 sidecar (fold its entries in, then delete the file).
+    migrated = False
+    legacy_path = object_source_folder / constants.LEGACY_SIDECAR_FILENAME
+    if legacy_path.is_file():
         try:
-            with open(sidecar_path, encoding='utf-8') as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict) and isinstance(loaded.get('extra_forms'), list):
-                sidecar = loaded
+            with open(legacy_path, encoding='utf-8') as f:
+                legacy = json.load(f)
+            for legacy_entry in (legacy or {}).get(constants.EXTRA_FORMS_KEY) or []:
+                if not any(e.get('source') == legacy_entry.get('source')
+                           for e in extra_forms):
+                    extra_forms.append(legacy_entry)
+            migrated = True
         except Exception:
-            pass  # unreadable sidecar is rebuilt from scratch
+            pass  # unreadable sidecar: drop it, the new entry supersedes
 
     source = dump_path.name
     entry = {
-        'label': form_label.strip() or f'form{len(sidecar["extra_forms"]) + 2}',
+        'label': form_label.strip() or f'form{len(extra_forms) + 2}',
         'source': source,
         'matched_by': matched_by,
         'vb0_hash': mesh_object.vb0_hash,
@@ -156,26 +228,30 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '') -> di
     }
 
     replaced = False
-    for index, existing in enumerate(sidecar['extra_forms']):
+    for index, existing in enumerate(extra_forms):
         if existing.get('source') == source:
             entry['label'] = form_label.strip() or existing.get('label') or entry['label']
-            sidecar['extra_forms'][index] = entry
+            extra_forms[index] = entry
             replaced = True
             break
     if not replaced:
-        sidecar['extra_forms'].append(entry)
+        extra_forms.append(entry)
 
-    with open(sidecar_path, 'w', encoding='utf-8') as f:
-        f.write(json.dumps(sidecar, indent=4))
+    usage[constants.EXTRA_FORMS_KEY] = extra_forms
+    with open(usage_path, 'w', encoding='utf-8') as f:
+        f.write(json.dumps(usage, indent=4))
+    if legacy_path.is_file():
+        legacy_path.unlink()
 
     pair_count = sum(len(pairs) for pairs in components_usage.values())
     return {
-        'sidecar': str(sidecar_path),
+        'usage_file': str(usage_path),
         'label': entry['label'],
         'source': source,
         'matched_by': matched_by,
         'replaced': replaced,
+        'migrated_sidecar': migrated,
         'components': len(components_usage),
         'pairs': pair_count,
-        'total_forms': 1 + len(sidecar['extra_forms']),
+        'total_forms': 1 + len(extra_forms),
     }

@@ -113,7 +113,20 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                     component_out[pair] = OrderedDict(sorted(pairs[pair].items()))
                 shader_texture_usage[f'Component {component_id}'] = component_out
 
-            with open(object_directory / 'ShaderTextureUsage.json', "w") as f:
+            # Schema v2: preserve the slot-texture layer's "extra_forms" key
+            # (merged extra-form maps) across re-extraction.
+            usage_path = object_directory / 'ShaderTextureUsage.json'
+            if usage_path.is_file():
+                try:
+                    with open(usage_path, encoding='utf-8') as f:
+                        previous = json.load(f)
+                    extra_forms = previous.get('extra_forms')
+                    if isinstance(extra_forms, list) and extra_forms:
+                        shader_texture_usage['extra_forms'] = extra_forms
+                except Exception:
+                    pass  # unreadable previous file: write fresh maps only
+
+            with open(usage_path, "w") as f:
                 f.write(json.dumps(shader_texture_usage, indent=4))
     finally:
         # Bound the side-channel lifetime (also prevents cross-round leftovers). The next build round refills it.
