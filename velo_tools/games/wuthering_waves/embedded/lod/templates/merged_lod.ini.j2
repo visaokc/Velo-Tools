@@ -477,12 +477,20 @@ run = CommandListOverrideSharedResources
 {%- endif %}
 {%- for obj in merged_object.components[loop.index0].objects %}
 ; Draw {{ obj.name }}
+{%- set lod_excluded = extracted_object.velo_lods and obj.name in (extracted_object.velo_lod_excluded_objects or []) %}
+{%- if lod_excluded %}
+{{note("Split object absent from the LOD objects: full-model path only")}}
+if $lod_level == 0
+{%- endif %}
 {%- if cfg.use_ini_toggles %}
 if {{ formatter.format_ini_drawvar(obj.name) }}
     drawindexed = {{ obj.index_count }}, {{ obj.index_offset }}, 0
 endif
 {%- else %}
 drawindexed = {{ obj.index_count }}, {{ obj.index_offset }}, 0
+{%- endif %}
+{%- if lod_excluded %}
+endif
 {%- endif %}
 {%- endfor %}
 {{note("Restore required parts of original context")}}

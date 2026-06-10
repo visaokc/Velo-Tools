@@ -39,10 +39,20 @@ def _rd(path, dt):
 # ----------------------------------------------------------------- ini parsing
 
 def parse_draws(text):
-    """{component_id: [(index_count, first_index), ...]} (one component may have multiple draws, e.g. C5 = c5-face + the little bear)."""
+    """{component_id: [(index_count, first_index), ...]} (one component may have multiple draws, e.g. C5 = c5-face + the little bear).
+
+    LOD-fork inis factor the inline draws into shared [CommandListDrawComponent{c}]
+    lists (the component section just runs them); follow that indirection so both
+    ini shapes parse identically."""
     d = {}
     for m in re.finditer(r'\[TextureOverrideComponent(\d+)\][^\[]*', text):
-        d[int(m.group(1))] = [(int(c), int(o)) for c, o in re.findall(r'drawindexed = (\d+), (\d+)', m.group(0))]
+        cid = int(m.group(1))
+        draws = [(int(c), int(o)) for c, o in re.findall(r'drawindexed = (\d+), (\d+)', m.group(0))]
+        if not draws and re.search(r'run = CommandListDrawComponent%d\b' % cid, m.group(0)):
+            blk = _section(text, 'CommandListDrawComponent%d' % cid)
+            if blk:
+                draws = [(int(c), int(o)) for c, o in re.findall(r'drawindexed = (\d+), (\d+)', blk)]
+        d[cid] = draws
     return d
 
 

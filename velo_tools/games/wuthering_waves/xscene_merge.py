@@ -25,6 +25,7 @@ import numpy as np
 from ._wwmi_core.migoto_io.data_model.byte_buffer import (
     MigotoFormat, NumpyBuffer, Semantic, AbstractSemantic,
 )
+from .embedded.lod import cross_scene as lod_cross_scene
 
 GRID = 0.001
 TOL = 0.0015
@@ -443,6 +444,10 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
             shutil.copy2(base / f"{name}{ext}", out / f"{name}{ext}")
     if (base / "Metadata.json").exists():
         shutil.copy2(base / "Metadata.json", out / "Metadata.json")
+    # The slot-style texture export layer reads ShaderTextureUsage.json from the
+    # export source folder; carry the base's copy (incl. extra_forms) along.
+    if (base / "ShaderTextureUsage.json").exists():
+        shutil.copy2(base / "ShaderTextureUsage.json", out / "ShaderTextureUsage.json")
     base_tex = _copy_textures(base, out)
 
     # 2) For each dungeon IB "wrapped by a single component": split the parent component into X + X.001.
@@ -577,6 +582,23 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     routing = _build_routing(base, base_comps, info, splits, editable_ib_records, fold_data)
     (out / "CrossSceneRouting.json").write_text(json.dumps(routing, indent=2, ensure_ascii=False))
 
+    # 4.5) Merge per-IB "lods" entries into the merged root Metadata.json (mirrors the
+    #      automatic vg merge feel; see embedded/lod/cross_scene.py for the chain
+    #      pre-composition). Run the per-IB "Extract LOD Data" BEFORE merging so the
+    #      scene extracts carry their lods; re-running the merge refreshes the root copy.
+    lod_entries_merged = 0
+    meta_path = out / "Metadata.json"
+    if meta_path.exists():
+        merged_meta = json.loads(meta_path.read_text())
+        scene_metas = {}
+        for spec in list(dungeon_specs) + list(editable_ibs or []):
+            scene_meta_path = scene_root / spec["hash"] / "Metadata.json"
+            if scene_meta_path.exists():
+                scene_metas[spec["hash"]] = json.loads(scene_meta_path.read_text())
+        lod_entries_merged = lod_cross_scene.merge_lods_into_base(merged_meta, routing, scene_metas)
+        if lod_entries_merged:
+            meta_path.write_text(json.dumps(merged_meta, indent=4, ensure_ascii=False))
+
     # Foolproof: if a fold(dungeon) IB's overlap ratio with the base mesh is too low (barely the same mesh) -> likely
     # an independent morph (e.g. another form's face); mis-setting it as Fold would fold it into the base buffer and break it.
     # Overlap ratio = analyze's matched/total (measured: normal fold parts=1.0, form2≈0.05). Shapekey hashes can't tell them
@@ -594,6 +616,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         "out_folder": str(out), "base_components": len(base_comps),
         "splits": splits, "scene_ibs": [s["hash"] for s in dungeon_specs],
         "editable_ibs": editable_ib_records, "warnings": warnings,
+        "lod_entries_merged": lod_entries_merged,
         "base_textures": base_tex, "analyze": [
             {k: (sorted(v) if isinstance(v, set) else v) for k, v in m.items() if k != "member_in_comp"}
             for m in info

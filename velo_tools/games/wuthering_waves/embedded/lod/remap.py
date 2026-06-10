@@ -84,7 +84,8 @@ def build_vertex_component_map(index_data, index_layout, vertex_count) -> numpy.
     return component_of_vertex
 
 
-def remap_blend_component_local(true_vg_ids, weights, component_of_vertex, component_maps):
+def remap_blend_component_local(true_vg_ids, weights, component_of_vertex, component_maps,
+                                excluded_vertex_mask=None):
     """Builds the per-draw LOD blend ids: each vertex row holds its own
     component's LOD-local ids.
 
@@ -94,6 +95,9 @@ def remap_blend_component_local(true_vg_ids, weights, component_of_vertex, compo
         component_of_vertex: (N,) component attribution (-1 = unreferenced).
         component_maps: {component_id: {full merged -> lod local}} for components
             that get LOD draws.
+        excluded_vertex_mask: optional (N,) bool; True rows are excluded from
+            the LOD path entirely (zero-filled, never error) — e.g. cross-scene
+            split objects whose geometry does not exist in the LOD object.
 
     Returns (N, K) uint8. Rows of components without a map (and unreferenced
     vertices) are zeroed — they are never read by the LOD draws. A weighted
@@ -109,6 +113,8 @@ def remap_blend_component_local(true_vg_ids, weights, component_of_vertex, compo
 
     for component_id, mapping in component_maps.items():
         rows = component_of_vertex == component_id
+        if excluded_vertex_mask is not None:
+            rows = rows & ~numpy.asarray(excluded_vertex_mask)
         if not rows.any():
             continue
 

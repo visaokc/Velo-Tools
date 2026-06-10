@@ -113,9 +113,8 @@ def _prepare_lod_export(exporter):
     if getattr(cfg, 'use_custom_template', False):
         print('[LOD] Custom ini template active — LOD sections skipped.')
         return
-    if (exporter.object_source_folder / 'CrossSceneRouting.json').is_file():
-        print('[LOD] Cross-scene export detected, LOD overrides are not supported yet — skipped.')
-        return
+    routing_path = exporter.object_source_folder / 'CrossSceneRouting.json'
+    is_cross_scene = routing_path.is_file()
 
     try:
         with open(exporter.object_source_folder / 'Metadata.json', encoding='utf-8') as f:
@@ -141,6 +140,11 @@ def _prepare_lod_export(exporter):
               f'supported — skipped.')
         return
     is_merged = cfg.mod_skeleton_type == 'MERGED'
+
+    if is_cross_scene and is_merged:
+        print('[LOD] Cross-scene LOD export currently supports the COMPONENT runtimes only — '
+              'skipped for the MERGED skeleton mode.')
+        return
 
     blend = exporter.buffers.get('Blend')
     index_buffer = exporter.buffers.get('Index')
@@ -176,6 +180,33 @@ def _prepare_lod_export(exporter):
     component_of_vertex = _remap.build_vertex_component_map(
         index_data, index_layout, true_vg_ids.shape[0])
 
+    # Cross-scene split objects (parts wrapped by an own-buffer IB, e.g. X.001)
+    # do not exist in the dungeon LOD objects: exclude their rows from the LOD
+    # blend and their draws from the LOD path (the own-buffer sub-mod covers
+    # them with its own LOD sections when matched).
+    excluded_names = set()
+    if is_cross_scene:
+        try:
+            routing = json.loads(routing_path.read_text(encoding='utf-8'))
+            excluded_names = {
+                split.get('split_object')
+                for split in (routing.get('base') or {}).get('splits') or []
+                if split.get('split_object')
+            }
+        except Exception:
+            excluded_names = set()
+
+    excluded_vertex_mask = None
+    if excluded_names:
+        excluded_vertex_mask = numpy.zeros(true_vg_ids.shape[0], dtype=bool)
+        for component in exporter.merged_object.components:
+            for temp_object in component.objects:
+                if temp_object.name in excluded_names:
+                    vertex_ids = numpy.unique(
+                        index_data[temp_object.index_offset:
+                                   temp_object.index_offset + temp_object.index_count])
+                    excluded_vertex_mask[vertex_ids] = True
+
     # Level numbering: groups ordered by total matched vertex_count desc
     # (more retained geometry = nearer LOD level), name as deterministic tie-break.
     ordered_groups = sorted(
@@ -207,7 +238,8 @@ def _prepare_lod_export(exporter):
                         else {i: i for i in range(256)})
 
             lod_ids = _remap.remap_blend_component_local(
-                true_vg_ids, weights, component_of_vertex, component_maps)
+                true_vg_ids, weights, component_of_vertex, component_maps,
+                excluded_vertex_mask=excluded_vertex_mask)
 
             lod_blend = NumpyBuffer(blend.layout, data=blend.data.copy())
             lod_blend.set_field(
@@ -227,6 +259,7 @@ def _prepare_lod_export(exporter):
         raise LodExportError(f'LOD export failed: {e}') from e
 
     exporter.extracted_object.velo_lods = velo_lods
+    exporter.extracted_object.velo_lod_excluded_objects = sorted(excluded_names)
 
     total_sections = sum(
         1 for lod in velo_lods for entry in lod['components'] if entry is not None)
