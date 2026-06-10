@@ -66,6 +66,20 @@ def _bake_shapekeys(obj):
     obj.data.update()
 
 
+def _translate_unified_to_local(obj, component_vg_map, split_name, tag):
+    """MERGED import carries UNIFIED VG names; translate them back to the split's base-component
+    local numbering (the domain of host_vg_remap) via the component's vg_map inverse. Reuses the
+    per_from_merged applier (two-pass rename + drop out-of-palette). Weighted VGs outside the
+    component's palette are cross-component weights -> hard error (per_from_merged semantics)."""
+    from ..per_from_merged import _remap_object
+    stray = _remap_object(obj, component_vg_map)
+    if stray:
+        raise RuntimeError(
+            "own-buffer 部件 %s（IB %s）的顶点组 %s 权重越界——它们对应的统一骨不在该部件的 vg_map 内"
+            "（跨部件权重无法进入该饰品的 host 骨架）。请把这些权重转回本部件的骨，或刷零后再导出。"
+            % (split_name, tag, stray))
+
+
 def _translate_host_vgs(obj, split_rec, tag):
     """Rename the split copy's digit VG names (base-component-local) to the host extract's
     local numbering per the producer's host_vg_remap table; drop weightless out-of-table
@@ -103,8 +117,38 @@ def _import_one(cfg, src, want_hash):
     before = set(c.name for c in bpy.data.collections)
     cfg.object_source_folder = src
     bpy.ops.vtww.import_object()
-    new = set(c.name for c in bpy.data.collections) - before
-    return bpy.data.collections.get(want_hash) or (bpy.data.collections[sorted(new)[0]] if new else None)
+    new = [c for c in bpy.data.collections if c.name not in before]
+    # Prefer the collection created by THIS import: a previous export in the same session may
+    # have left a same-named collection imported under another skeleton mode, whose VG naming
+    # would silently corrupt this export (e.g. COMPONENT-local digits read as unified ids).
+    for c in sorted(new, key=lambda c: c.name):
+        if c.name.startswith(want_hash):
+            return c
+    if new:
+        return sorted(new, key=lambda c: c.name)[0]
+    return bpy.data.collections.get(want_hash)
+
+
+def _purge_collection(col):
+    """Fully remove a sub-IB import (objects + meshes + collection) once its export is done --
+    keeps the scene clean across repeated exports and makes stale-collection reuse impossible."""
+    if col is None:
+        return
+    for o in list(col.objects):
+        data = o.data
+        try:
+            bpy.data.objects.remove(o, do_unlink=True)
+        except Exception:
+            pass
+        try:
+            if data is not None:
+                bpy.data.meshes.remove(data)
+        except Exception:
+            pass
+    try:
+        bpy.data.collections.remove(col)
+    except Exception:
+        pass
 
 
 def _export_col(cfg, col, modout, name, src):
@@ -203,9 +247,10 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         # 2) Non-foldable IB (the bear waist): exports its own buffer.
         #    New path (split part with a producer host VG translation table): export the EDITED
         #    split object from the base collection with its VG names translated to host-local
-        #    numbering -- edits propagate (move / delete / full mesh replacement). Falls back to
-        #    the legacy pristine reimport when the table is missing (old routing JSON / table
-        #    build failed / MERGED export / split object not found) -- edits don't propagate there.
+        #    numbering -- edits propagate (move / delete / full mesh replacement). MERGED exports
+        #    take an extra unified->component-local rename first. Falls back to the legacy
+        #    pristine reimport when the table is missing (old routing JSON / table build failed /
+        #    split object not found) -- edits don't propagate there.
         own_legacy = []
         splits_by_ib = {sp.get("ib_hash"): sp for sp in routing["base"].get("splits", [])}
         for s in own_ibs:
@@ -214,7 +259,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             sp = splits_by_ib.get(tag)
             split_obj = base_collection.objects.get(sp["split_object"]) if sp else None
             if sp is not None and "host_vg_remap" in sp and split_obj is not None \
-                    and cfg.mod_skeleton_type == 'COMPONENT':
+                    and cfg.mod_skeleton_type in ('COMPONENT', 'MERGED'):
                 own_col = bpy.data.collections.new("xs_own_" + tag)
                 bpy.context.scene.collection.children.link(own_col)
                 temp_cols.append(own_col)
@@ -224,6 +269,13 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 own_col.objects.link(cp)
                 try:
                     _bake_shapekeys(cp)
+                    if cfg.mod_skeleton_type == 'MERGED':
+                        # MERGED import names VGs by UNIFIED ids; bring them back to the base
+                        # component's local numbering first (host_vg_remap's domain).
+                        meta = json.loads((merged_folder / "Metadata.json").read_text(encoding="utf-8"))
+                        comp_meta = (meta.get("components") or [])[sp["base_component"]]
+                        _translate_unified_to_local(cp, comp_meta.get("vg_map") or {},
+                                                    sp["split_object"], tag)
                     _translate_host_vgs(cp, sp, tag)
                     if hole:
                         _pos_hole(cp)
@@ -237,7 +289,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                         pass
             else:
                 why = ("路由无骨级翻译表（请重跑合并以生成）" if sp is None or "host_vg_remap" not in sp
-                       else ("MERGED 导出模式" if cfg.mod_skeleton_type != 'COMPONENT'
+                       else ("不支持的导出骨架模式 %s" % cfg.mod_skeleton_type
+                             if cfg.mod_skeleton_type not in ('COMPONENT', 'MERGED')
                              else "基底集合中找不到拆件对象 %s" % sp["split_object"]))
                 own_legacy.append("%s: %s" % (tag, why))
                 print("[velo.xscene] own-buffer IB %s 走 legacy 重导入路径（%s）——对该部件的编辑不会传播。"
@@ -247,6 +300,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     for o in [o for o in col.objects if o.type == 'MESH']:
                         _pos_hole(o)
                 _export_col(cfg, col, str(work / tag), "om_" + tag, src)
+                _purge_collection(col)
             mods.append(str(work / tag))
 
         # 3) Foldable IB (clothing/face): export takes its host (face carries morph), then fold.apply_fold redirects the geometry
@@ -264,6 +318,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     _pos_hole(o)
             tag = s["ib_hash"]
             _export_col(cfg, col, str(work / tag), "om_" + tag, src)
+            _purge_collection(col)
             fold.apply_fold(work, s, tag)
 
         # 4) editable_ibs (form2 face etc.): copy C8-11 -> temporary Component 0-3 -> export against their own source

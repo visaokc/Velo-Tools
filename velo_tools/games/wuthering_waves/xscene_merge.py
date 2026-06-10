@@ -383,6 +383,93 @@ def _build_host_vg_table(out_dir, split_name, split_vb, host_folder):
     }, None
 
 
+_MORPH_SAMPLE = 3000   # corresponded vertex pairs per component used for shapekey delta voting
+_MORPH_MIN_SIG = 8     # min sampled entries with signal for a key to be votable
+_MORPH_RESID_MAX = 0.05
+
+
+def _read_shapekey_deltas(folder, name):
+    """{global shapekey id: (N,3) float32 deltas} from a component vb's inline SHAPEKEY columns.
+    The element's semantic index IS the game shapekey id (the importer names keys
+    'Deform {index}' from it), so each pipeline's deltas come keyed in its own id space."""
+    vb, _, _ = _read_comp(Path(folder), name)
+    out = {}
+    n = len(vb.data)
+    for e in vb.layout.semantics:
+        if e.abstract.enum == Semantic.ShapeKey:
+            arr = np.asarray(vb.get_field(e.get_name()), dtype=np.float32).reshape(n, -1)
+            out[int(e.abstract.index)] = arr[:, :3]
+    return out
+
+
+def _vote_morph_id_map(out_dir, base_comps, ib_dir, fold_entry):
+    """Vote a "dungeon shapekey id -> base shapekey id" translation table for a morph-carrying
+    foldable IB by comparing both extracts' inline per-key deltas at fold-corresponded vertex
+    pairs (pristine vs pristine -- the only moment the comparison is valid; the user edits the
+    base afterwards). Per dungeon key, the base key minimizing the scalar-fit residual
+    (f*base_delta ~= dungeon_delta) wins; low-signal or ambiguous keys stay unvoted -- the
+    export side falls back to pristine reprojection for them, so voting can only improve,
+    never regress. The fitted f doubles as the cross-pipeline delta scale (expected ~1).
+
+    Returns (id_map {dungeon_id: base_id} voted keys only, selfcheck)."""
+    votes = defaultdict(lambda: defaultdict(int))
+    fits = defaultdict(list)
+    keys_seen = set()
+    ambiguous = 0
+    ib_names = _comp_names(Path(ib_dir))
+    for bc_s, info in (fold_entry.get("corr") or {}).items():
+        bc = int(bc_s)
+        base_sk = _read_shapekey_deltas(out_dir, base_comps[bc])
+        ib_sk = _read_shapekey_deltas(ib_dir, ib_names[info["ib_comp"]])
+        if not base_sk or not ib_sk:
+            continue
+        pairs = [(int(bl), int(il)) for bl, il in info["map"].items()]
+        if len(pairs) > _MORPH_SAMPLE:
+            pairs = pairs[::len(pairs) // _MORPH_SAMPLE]
+        bl = np.array([p[0] for p in pairs])
+        il = np.array([p[1] for p in pairs])
+        base_ids = sorted(base_sk)
+        B = np.stack([base_sk[b][bl] for b in base_ids])   # (KB, S, 3)
+        for d, dd_full in sorted(ib_sk.items()):
+            dd = dd_full[il]                                # (S, 3)
+            sig = (np.abs(dd) > 1e-5).any(axis=1)
+            keys_seen.add(d)
+            if int(sig.sum()) < _MORPH_MIN_SIG:
+                continue
+            ddm = dd[sig]
+            Bm = B[:, sig]
+            den = np.maximum((Bm * Bm).sum(axis=(1, 2)), 1e-12)
+            f = (Bm * ddm).sum(axis=(1, 2)) / den
+            resid = (((f[:, None, None] * Bm - ddm) ** 2).sum(axis=(1, 2))
+                     / max(float((ddm ** 2).sum()), 1e-12))
+            order = np.argsort(resid)
+            best = int(order[0])
+            if resid[best] >= _MORPH_RESID_MAX:
+                continue
+            # Near-duplicate base keys can fit comparably well; picking the best is data-safe
+            # (their deltas coincide on the folded vertices), so ambiguity is only tracked.
+            if len(order) > 1 and float(resid[int(order[1])]) < _MORPH_RESID_MAX:
+                ambiguous += 1
+            votes[d][base_ids[best]] += int(sig.sum())
+            fits[d].append(float(f[best]))
+    id_map, scales = {}, []
+    conflicts = 0
+    for d, v in votes.items():
+        if len(v) > 1:
+            conflicts += 1
+        id_map[d] = max(v, key=v.get)
+        scales.append(float(np.median(fits[d])))
+    chk = {
+        "keys_seen": len(keys_seen), "voted": len(id_map),
+        "unvoted": len(keys_seen) - len(id_map),
+        "unvoted_ids": sorted(keys_seen - set(id_map)),
+        "ambiguous": ambiguous, "cross_component_conflicts": conflicts,
+        "identity": all(k == v for k, v in id_map.items()) if id_map else None,
+        "scale": (round(float(np.median(scales)), 6) if scales else None),
+    }
+    return id_map, chk
+
+
 def build_fold_correspondence(out_dir, base_comps, base_pos_c, base_pos_g, base_grid_g, comp_of_g, dspec):
     """For one foldable dungeon IB, build the fold correspondence on the (post-split) merged components. Keyed by
     VertexId = VB row number (proven: import is 1:1, vertex i = extract VB row i; export VertexId = that row number; stable under position editing).
@@ -638,6 +725,23 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         if meta.get("foldable"):
             fold_data[spec["hash"]] = build_fold_correspondence(
                 out, base_comps, base_pos_c, base_pos_g, base_grid_g, _comp_of_g, spec)
+
+    # 3.8) For morph-carrying foldable IBs, vote the shapekey id translation table (dungeon key
+    #      id -> base key id) on pristine data. The export side then derives the dungeon morph
+    #      from the EDITED shape keys for voted keys; unvoted keys keep pristine reprojection.
+    for spec, meta in zip(dungeon_specs, info):
+        fd = fold_data.get(spec["hash"])
+        if not meta.get("foldable") or not fd:
+            continue
+        try:
+            ib_meta = json.loads((Path(spec["folder"]) / "Metadata.json").read_text())
+        except Exception:
+            ib_meta = {}
+        if not int(((ib_meta.get("shapekeys") or {}).get("shapekey_count")) or 0):
+            continue
+        id_map, chk = _vote_morph_id_map(out, base_comps, Path(spec["folder"]), fd)
+        fd["morph_id_map"] = {str(k): int(v) for k, v in sorted(id_map.items())}
+        fd["morph_selfcheck"] = chk
 
     # 4) Write CrossSceneRouting.json.
     routing = _build_routing(base, base_comps, info, splits, editable_ib_records, fold_data)

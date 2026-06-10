@@ -69,56 +69,121 @@ def parse_match(text):
 
 # ------------------------------------------------- 1) morph dun2body reprojection
 
-def reproject_morph(body_meshes, face_meshes, body_segs, seg_comp, face_draws, tag, ref_meshes=None):
-    """Reproject the dungeon IB's shapekeys onto the base(body) vertex order, writing ShapeKey{Offset,VertexId,VertexOffset}_<tag>.buf.
+def _iter_key_entries(sko):
+    """Yield (global_key_id, lo, hi) entry ranges per shapekey from a stock ShapeKeyOffset
+    table (uint32 x128 per batch, cumulative within batch; key id = batch*127 + slot)."""
+    nbatch = len(sko) // 128
+    bstart = 0
+    for b in range(nbatch):
+        bo = sko[b * 128:(b + 1) * 128]
+        for s in range(127):
+            lo, hi = bstart + int(bo[s]), bstart + int(bo[s + 1])
+            if hi > lo:
+                yield b * 127 + s, lo, hi
+        bstart += int(bo[127])
 
-    body-centric: for each body seg vertex find the nearest dungeon vertex (**component-scoped**: body C2<->face C0 etc.,
-    to prevent face vertices projecting onto a co-located different component), invert to get ``dungeon_vert -> [body verts]``; then for each shapekey,
-    each dungeon shapekey entry, emit the body vertices under it -- guaranteeing **exactly once per shapekey per body vid**.
+
+def reproject_morph(body_meshes, face_meshes, body_segs, seg_comp, face_draws, tag, ref_meshes=None,
+                    morph_id_map=None, morph_scale=None):
+    """Build the dungeon morph buffers ShapeKey{Offset,VertexId,VertexOffset}_<tag>.buf in body
+    vertex order. Each dungeon shapekey takes one of two sources:
+
+    * **voted keys** (producer ``morph_id_map``: dungeon key id -> base key id): entries come
+      from the BODY EXPORT's own ShapeKey buffers -- the user's EDITED shape keys, already in
+      body vertex order (exactly the rows the folded draws read). No position matching involved,
+      so delta edits propagate and full mesh replacement stays valid. Entries are restricted to
+      the folded components' vertex ranges; ``morph_scale`` (cross-pipeline delta factor voted
+      by the producer, expected ~1) is applied to the position components when it deviates.
+    * **unvoted keys / no map (old routings)**: the original pristine reprojection -- for each
+      body seg vertex find the nearest dungeon vertex (**component-scoped**: to prevent face
+      vertices projecting onto a co-located different component), invert to
+      ``dungeon_vert -> [body verts]`` and re-emit the dungeon extract's deltas, exactly once
+      per shapekey per body vid. Known limitation: far-moved vertices approximate by nearest
+      neighbor.
 
     Args:
       body_segs:  {body_comp: (index_count, first_index)}  the draw segment of each corresponding body component (c5-face takes the first draw).
       seg_comp:   [(body_comp, face_comp), ...]            body component <- dungeon face component pairing.
       face_draws: {face_comp: (index_count, first_index)}  the draw segment of each dungeon face component.
-    Returns batch_counts (the number of reprojected entries per batch, for ini constants).
-
-    M2: use export-layer position matching (same algorithm/data as the external xscene_fold_prep -> byte-for-byte identical).
+      ref_meshes: unedited body reference for the fallback position matching (edit-derived
+                  exports pass it; body row numbers are identical under unchanged topology).
+    Returns batch_counts (the number of emitted entries per dungeon batch, for ini constants).
     """
     body_meshes, face_meshes = Path(body_meshes), Path(face_meshes)
-    # ref_meshes = unedited body reference (passed in when edit-derived hole=False): dun2body's position matching must use unedited geometry
-    # to match the dungeon face, otherwise the edited body won't align with the dungeon. The body row numbers referenced by morph are
-    # unchanged before/after editing under the same topology, so the morph computed from ref is written directly into (applies to) the actually exported body_meshes. When hole=True/unedited, ref==body.
-    ref = Path(ref_meshes) if ref_meshes else body_meshes
-    body_pos = _rd(ref / "Position.buf", np.float32).reshape(-1, 3)
-    face_pos = _rd(face_meshes / "Position.buf", np.float32).reshape(-1, 3)
-    body_idx = _rd(ref / "Index.buf", np.uint32)
-    face_idx = _rd(face_meshes / "Index.buf", np.uint32)
-
-    dun2body = defaultdict(list)
-    for bcomp, fcomp in seg_comp:
-        fcd, fod = face_draws[fcomp]
-        dgrid = defaultdict(list)
-        for dv in np.unique(face_idx[fod:fod + fcd]):
-            dgrid[_qk(face_pos[int(dv)])].append(int(dv))
-        bcd, bod = body_segs[bcomp]
-        for bv in np.unique(body_idx[bod:bod + bcd]):
-            bv = int(bv)
-            bp = body_pos[bv]
-            k = _qk(bp)
-            best, bb = None, TOL2
-            for d in _NB:
-                for dv in dgrid.get((k[0] + d[0], k[1] + d[1], k[2] + d[2]), ()):
-                    dd = float(((face_pos[dv] - bp) ** 2).sum())
-                    if dd <= bb:
-                        bb, best = dd, dv
-            if best is not None:
-                dun2body[best].append(bv)
 
     sko = _rd(face_meshes / "ShapeKeyOffset.buf", np.uint32)
     svid = _rd(face_meshes / "ShapeKeyVertexId.buf", np.uint32)
     svoff_b = (face_meshes / "ShapeKeyVertexOffset.buf").read_bytes()
     stride = len(svoff_b) // len(svid)
     nbatch = len(sko) // 128
+
+    id_map = {int(k): int(v) for k, v in (morph_id_map or {}).items()}
+
+    # ---- mapped source: the body export's edited ShapeKey buffers, sliced per base key id
+    mapped = {}
+    body_sko_p = body_meshes / "ShapeKeyOffset.buf"
+    if id_map and body_sko_p.is_file():
+        bko = _rd(body_sko_p, np.uint32)
+        bvid = _rd(body_meshes / "ShapeKeyVertexId.buf", np.uint32)
+        bvoff_b = (body_meshes / "ShapeKeyVertexOffset.buf").read_bytes()
+        bstride = len(bvoff_b) // max(1, len(bvid))
+        if bstride != stride:
+            raise AssertionError(
+                "ShapeKeyVertexOffset stride mismatch body=%d dungeon=%d" % (bstride, stride))
+        voff_rows = np.frombuffer(bvoff_b, np.uint8).reshape(-1, stride)
+        # gate entries to this fold's component vertex ranges (a base morph component folded
+        # into ANOTHER IB must not leak into this IB's buffers)
+        body_idx_real = _rd(body_meshes / "Index.buf", np.uint32)
+        allowed = np.unique(np.concatenate(
+            [body_idx_real[off:off + cnt] for cnt, off in body_segs.values()]
+            or [np.empty(0, np.uint32)]))
+        base_entries = {key: (lo, hi) for key, lo, hi in _iter_key_entries(bko)}
+        scale = float(morph_scale) if morph_scale else 1.0
+        for dkey, bkey in id_map.items():
+            rng = base_entries.get(bkey)
+            if rng is None:
+                # key absent on the edited base (e.g. user removed it) -> empty, consistent
+                # with the showcase side
+                mapped[dkey] = (np.empty(0, np.uint32), b"")
+                continue
+            vids = bvid[rng[0]:rng[1]]
+            keep = np.isin(vids, allowed)
+            rows = voff_rows[rng[0]:rng[1]][keep]
+            if abs(scale - 1.0) > 0.01 and len(rows):
+                rows = rows.copy()
+                pos = rows[:, :6].copy().view(np.float16) * np.float16(scale)
+                rows[:, :6] = pos.view(np.uint8).reshape(len(rows), 6)
+            mapped[dkey] = (vids[keep], rows.tobytes())
+
+    # ---- fallback source: pristine reprojection (position matching) for unvoted keys only
+    dun2body = defaultdict(list)
+    if any(key not in mapped for key, _lo, _hi in _iter_key_entries(sko)):
+        # ref_meshes = unedited body reference (passed in when edit-derived hole=False): dun2body's position matching must use unedited geometry
+        # to match the dungeon face, otherwise the edited body won't align with the dungeon. The body row numbers referenced by morph are
+        # unchanged before/after editing under the same topology, so the morph computed from ref is written directly into (applies to) the actually exported body_meshes. When hole=True/unedited, ref==body.
+        ref = Path(ref_meshes) if ref_meshes else body_meshes
+        body_pos = _rd(ref / "Position.buf", np.float32).reshape(-1, 3)
+        face_pos = _rd(face_meshes / "Position.buf", np.float32).reshape(-1, 3)
+        body_idx = _rd(ref / "Index.buf", np.uint32)
+        face_idx = _rd(face_meshes / "Index.buf", np.uint32)
+        for bcomp, fcomp in seg_comp:
+            fcd, fod = face_draws[fcomp]
+            dgrid = defaultdict(list)
+            for dv in np.unique(face_idx[fod:fod + fcd]):
+                dgrid[_qk(face_pos[int(dv)])].append(int(dv))
+            bcd, bod = body_segs[bcomp]
+            for bv in np.unique(body_idx[bod:bod + bcd]):
+                bv = int(bv)
+                bp = body_pos[bv]
+                k = _qk(bp)
+                best, bb = None, TOL2
+                for d in _NB:
+                    for dv in dgrid.get((k[0] + d[0], k[1] + d[1], k[2] + d[2]), ()):
+                        dd = float(((face_pos[dv] - bp) ** 2).sum())
+                        if dd <= bb:
+                            bb, best = dd, dv
+                if best is not None:
+                    dun2body[best].append(bv)
 
     new_sko, new_svid, new_svoff = [], [], bytearray()
     batch_counts = []
@@ -127,15 +192,22 @@ def reproject_morph(body_meshes, face_meshes, body_segs, seg_comp, face_draws, t
         bo = sko[b * 128:(b + 1) * 128]
         nbo, cum = [0], 0
         for s in range(127):
-            for i in range(bstart + int(bo[s]), bstart + int(bo[s + 1])):
-                bvs = dun2body.get(int(svid[i]))
-                if not bvs:
-                    continue
-                ob = svoff_b[i * stride:(i + 1) * stride]
-                for bv in bvs:
-                    new_svid.append(bv)
-                    new_svoff += ob
-                    cum += 1
+            key = b * 127 + s
+            if key in mapped:
+                vids, blob = mapped[key]
+                new_svid.extend(int(v) for v in vids)
+                new_svoff += blob
+                cum += len(vids)
+            else:
+                for i in range(bstart + int(bo[s]), bstart + int(bo[s + 1])):
+                    bvs = dun2body.get(int(svid[i]))
+                    if not bvs:
+                        continue
+                    ob = svoff_b[i * stride:(i + 1) * stride]
+                    for bv in bvs:
+                        new_svid.append(bv)
+                        new_svoff += ob
+                        cum += 1
             nbo.append(cum)
         new_sko += nbo
         batch_counts.append(cum)
@@ -430,7 +502,11 @@ def apply_fold(work, fold_entry, tag, morph_ref=None):
         body_segs = {bc: bd[bc][0] for bc in comp_map.values()}
         seg_comp = [(comp_map[fc], fc) for fc in sorted(comp_map)]
         face_draws = {fc: fd[fc][0] for fc in comp_map}
-        batch_counts = reproject_morph(body / "Meshes", face / "Meshes", body_segs, seg_comp, face_draws, tag, ref_meshes=morph_ref)
+        batch_counts = reproject_morph(
+            body / "Meshes", face / "Meshes", body_segs, seg_comp, face_draws, tag,
+            ref_meshes=morph_ref,
+            morph_id_map=fold_entry["fold"].get("morph_id_map"),
+            morph_scale=(fold_entry["fold"].get("morph_selfcheck") or {}).get("scale"))
     else:
         batch_counts = []
     for k, table in vg_remap.items():
