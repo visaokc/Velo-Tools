@@ -60,12 +60,26 @@ def probe_key(component_id: int, slot: int) -> int:
 RES_BACKUP = "ResourceTextureBackupT{slot}"
 SEC_TEX_MARK = "TextureOverrideMarkTexture{texture_hash}"
 # USER-SPECIFIED form anchors (detection only, optional): a form-exclusive
-# resource (best: an ib/vb — geometry never streams, so the latch is instant
-# and far more version-stable than shaders) or shader latches $form_id the
-# moment the form draws. A stale anchor never fires and the texture latches
-# take over; no binding condition ever references an anchor.
+# resource (a vb0 — geometry never streams, so the latch is instant and far
+# more version-stable than shaders) or shader latches $form_id the moment
+# the form draws. Field facts (v3.5): this WWMI 3dmigoto fork matches draws
+# by VERTEX BUFFER hash only — ib hashes are logged in dumps but never
+# matched (exhaustive cross-check: every ini hash in the install shows up
+# as a vb in dumps); and a buffer-hash section needs match_first_index to
+# enter the per-draw command-list path at all. A stale anchor never fires
+# and the texture latches take over; no binding condition ever references
+# an anchor.
 SEC_RESOURCE_ANCHOR = "TextureOverrideFormAnchor{anchor_hash}"
 SEC_SHADER_ANCHOR = "ShaderOverrideFormAnchor{anchor_hash}"
+# Anchor heartbeat + per-frame watchdog (only emitted for the field-proven
+# topology: exactly two forms, exactly one of them anchored). The anchored
+# form's exclusive part draws every frame, so a whole frame without a
+# heartbeat means the OTHER form is active — that yields bidirectional
+# zero-latency switching from a single anchor. ARMED gates the absence
+# rule: a stale anchor never arms, so the watchdog stays inert and the
+# texture latches keep full authority instead of fighting it every frame.
+VAR_ANCHOR_SEEN = "$anchor_seen"
+VAR_ANCHOR_ARMED = "$anchor_armed"
 SEC_FORMAT_TAG = "TextureOverrideComponent{component_id}{format_name}"
 SEC_FORMAT_TAG_LOD = "TextureOverrideLod{level}Component{component_id}{format_name}"
 

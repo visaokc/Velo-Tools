@@ -81,9 +81,14 @@ def install():
                 manual_anchors=manual_anchors)
             result = transform.apply(result, plan)
             for anchor_hash, form_id in manual_anchors:
-                kind = 'shader' if len(anchor_hash) == 16 else 'resource (ib/vb/texture)'
+                kind = 'shader (ps)' if len(anchor_hash) == 16 else 'resource (vb0)'
                 _report(f'[SlotTextures] form anchor {anchor_hash} ({kind}) -> '
                         f'form "{forms[form_id - 1][0]}"')
+            if plan.stats.get('anchor_watchdog'):
+                _report(f'[SlotTextures] anchor watchdog active: a frame without '
+                        f'an anchor hit commits form '
+                        f'"{forms[plan.default_form_id - 1][0]}" - both switch '
+                        f'directions are zero-latency')
             for warning in plan.warnings:
                 _report(f'[SlotTextures] WARNING: {warning}')
             for tex_hash, section in plan.blind_zone:

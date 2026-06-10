@@ -224,6 +224,12 @@ class SlotPlan:
     probe_list_names: Dict[int, str] = field(default_factory=dict)
     # ini variables the transform must declare global in [Constants].
     extra_globals: List[str] = field(default_factory=list)
+    # Anchor-watchdog block appended to the stock [Present] section (empty
+    # unless the two-forms/one-anchored-form topology holds).
+    watchdog_lines: List[str] = field(default_factory=list)
+    # [Constants] default for $form_id: the unanchored form when the
+    # watchdog is active (instant-correct on load either way), else 1.
+    default_form_id: int = 1
     warnings: List[str] = field(default_factory=list)
     stats: Dict[str, int] = field(default_factory=dict)
 
@@ -470,12 +476,14 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 'auto-detected at runtime')
 
     # Zero-latency form anchors are USER-SPECIFIED only (manual_anchors): the
-    # plugin never auto-picks shader hashes. A form-exclusive ib/vb anchor
-    # latches on the new form's very first draw (geometry never streams);
-    # shader anchors are instant too but version-fragile. A stale anchor
-    # section simply never fires and the texture latches take over.
-    anchor_resources: List[Tuple[str, int]] = []  # 8-hex: ib/vb/texture hash
-    anchor_shaders: List[Tuple[str, int]] = []    # 16-hex: ps/vs hash
+    # plugin never auto-picks shader hashes. A form-exclusive vb0 anchor
+    # latches on the new form's very first draw (geometry never streams).
+    # Field facts (v3.5): this WWMI fork matches draws by vertex-buffer hash
+    # only — an ib hash never fires (vs untested, treated the same); shader
+    # anchors are instant too but version-fragile. A stale anchor section
+    # simply never fires and the texture latches take over.
+    anchor_resources: List[Tuple[str, int]] = []  # 8-hex: vb0 hash
+    anchor_shaders: List[Tuple[str, int]] = []    # 16-hex: ps hash
     for anchor_hash, form_id in (manual_anchors or []):
         if not isinstance(anchor_hash, str) or form_id < 1 or form_id > len(forms):
             warnings.append(f'form anchor {anchor_hash!r} skipped (bad form id)')
@@ -488,11 +496,19 @@ def build_plan(forms: List[Tuple[str, FormData]],
         else:
             warnings.append(
                 f'form anchor {anchor_hash!r} skipped (expected an 8-hex '
-                f'resource hash or a 16-hex shader hash)')
+                f'vb0 hash or a 16-hex ps hash)')
+    # Heartbeat watchdog: with exactly two forms and exactly one of them
+    # anchored, a whole frame without an anchor heartbeat means the OTHER
+    # form is active — one anchor covers both switch directions with zero
+    # latency. Only this field-proven topology is emitted; anything else
+    # keeps the v3.4 behavior (instant entry, latch-driven return).
+    anchored_forms = {f for _, f in anchor_resources + anchor_shaders}
+    watchdog_form = None  # the UNANCHORED form the absence rule commits to
+    if multi_form and len(forms) == 2 and len(anchored_forms) == 1:
+        watchdog_form = ({1, 2} - anchored_forms).pop()
     if multi_form:
-        anchored_forms = {f for _, f in anchor_resources + anchor_shaders}
         for form_id, (label, _) in enumerate(forms, start=1):
-            if form_id not in anchored_forms:
+            if form_id not in anchored_forms and form_id != watchdog_form:
                 warnings.append(
                     f'form "{label}" has no manual anchor - switching TO it '
                     f'relies on the texture latches (streaming-delayed)')
@@ -881,14 +897,21 @@ def build_plan(forms: List[Tuple[str, FormData]],
     if anchor_resources or anchor_shaders:
         out.append('')
         out.append('; -- USER-SPECIFIED form anchors (detection only, zero-latency: a')
-        out.append(';    form-exclusive ib/vb fires on the form\'s very first draw). A')
+        out.append(';    form-exclusive vb0 fires on the form\'s very first draw). A')
         out.append(';    stale anchor never fires and the texture latches take over.')
         for h, form_id in sorted(anchor_resources):
             out.append('')
             out.append(f'[{constants.SEC_RESOURCE_ANCHOR.format(anchor_hash=h)}]')
             out.append(f'hash = {h}')
             out.append('allow_duplicate_hash = true')
+            # Field-proven shape: without match_first_index a buffer-hash
+            # section never enters the per-draw command-list path.
+            out.append('match_priority = 0')
+            out.append('match_first_index = 0')
             out.append(f'{constants.VAR_FORM} = {form_id}')
+            if watchdog_form is not None:
+                out.append(f'{constants.VAR_ANCHOR_SEEN} = 1')
+                out.append(f'{constants.VAR_ANCHOR_ARMED} = 1')
         for h, form_id in sorted(anchor_shaders):
             out.append('')
             out.append(f'[{constants.SEC_SHADER_ANCHOR.format(anchor_hash=h)}]')
@@ -909,6 +932,9 @@ def build_plan(forms: List[Tuple[str, FormData]],
             value = constants.ps_mark_value(h)
             chunk.append(f'if ps == {value} || vs == {value}')
             chunk.append(f'    {constants.VAR_FORM} = {form_id}')
+            if watchdog_form is not None:
+                chunk.append(f'    {constants.VAR_ANCHOR_SEEN} = 1')
+                chunk.append(f'    {constants.VAR_ANCHOR_ARMED} = 1')
             chunk.append('endif')
         for form_id, markers in sorted(form_markers_m1.items()):
             for marker_comp, slot, key in markers:
@@ -1020,6 +1046,22 @@ def build_plan(forms: List[Tuple[str, FormData]],
         extra_globals.extend(constants.VAR_HIT.format(texture_hash=h)
                              for h in sorted(all_hits))
 
+    watchdog_lines: List[str] = []
+    if watchdog_form is not None:
+        extra_globals.append(constants.VAR_ANCHOR_SEEN)
+        extra_globals.append(constants.VAR_ANCHOR_ARMED)
+        watchdog_lines = [
+            '; Form-anchor watchdog: the anchored form\'s exclusive part draws',
+            '; every frame, so a whole frame without a heartbeat means the',
+            '; other form is active. ARMED only after a real anchor hit - a',
+            '; stale anchor leaves the texture latches in charge.',
+            f'if {constants.VAR_ANCHOR_SEEN}',
+            f'    post {constants.VAR_ANCHOR_SEEN} = 0',
+            f'elif {constants.VAR_ANCHOR_ARMED}',
+            f'    {constants.VAR_FORM} = {watchdog_form}',
+            'endif',
+        ]
+
     return SlotPlan(
         block_text='\n'.join(out),
         component_list_names=component_list_names,
@@ -1029,6 +1071,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
         used_slots=sorted(used_slots),
         probe_list_names=probe_list_names,
         extra_globals=extra_globals,
+        watchdog_lines=watchdog_lines,
+        default_form_id=watchdog_form if watchdog_form is not None else 1,
         warnings=warnings,
         stats={
             'forms': len(forms),
@@ -1038,6 +1082,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'marks': len(marks),
             'fork_latches': len(fork_latches),
             'anchors': len(anchor_resources) + len(anchor_shaders),
+            'anchor_watchdog': 1 if watchdog_form is not None else 0,
             'probes': len(probe_effects),
             'format_sections': format_section_count,
             'covered_textures': len(covered_resource_indices),

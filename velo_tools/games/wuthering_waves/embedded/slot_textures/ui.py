@@ -109,11 +109,13 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
     form_anchors: bpy.props.StringProperty(
         name="形态锚点 (Form Anchors)",
         description="可选：手动指定形态独占的锚点 hash，格式 hash:形态标签，"
-                    "逗号/空格分隔（如 ce56ef1a:base）。基础形态标签固定为 base，"
-                    "其余用合并时起的标签。命中即零延迟锁存形态；版本更新失效后"
-                    "自动退回贴图锁存（有流送延迟）。推荐用形态独占的 ib/vb"
-                    "（即时且较稳）；16 位 shader hash 也可（即时但版本必变）；"
-                    "贴图 hash 可用但有流送延迟与任意绑定触发风险",
+                    "逗号/空格分隔（如 358cdfe4:base）。基础形态标签固定为 base，"
+                    "其余用合并时起的标签。只能用两类值：8 位 = vb0 hash"
+                    "（dump 文件名里 vb0= 的值；ib 值不参与 WWMI 匹配、无效），"
+                    "16 位 = ps hash（vs 有同样失效风险，勿用）。恰好两个形态且"
+                    "仅一侧有锚点时自动启用每帧看门狗：命中=该形态，整帧无命中="
+                    "另一形态，双向零延迟切换；锚点因版本更新失效后自动退回"
+                    "贴图锁存（有流送延迟）",
         default='',
     )
 

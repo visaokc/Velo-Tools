@@ -19,9 +19,13 @@
 #      in the same section gets `run = CommandListRestoreTextures` injected
 #      right before it (set/restore always paired - a missing cleanup anchor
 #      aborts).
-#   3. Multi-form only: `global $form_id = 1` is added to [Constants]
-#      (1 = base form; form markers latch it to the active form at runtime).
-#   4. The generated slot-style block is appended at the end.
+#   3. Multi-form only: `global $form_id = {plan.default_form_id}` is added
+#      to [Constants] (the unanchored form while the anchor watchdog is
+#      active, else 1 = base form; form markers latch it at runtime).
+#   4. Anchor watchdog only: plan.watchdog_lines are appended at the end of
+#      the stock [Present] section (a [Present] section is created if the
+#      template has none).
+#   5. The generated slot-style block is appended at the end.
 #
 # Any missing anchor raises SlotStyleDegrade: the caller falls back to the
 # untouched stock output (fail-safe, never a half-transformed ini).
@@ -42,6 +46,7 @@ _INDEX_COUNT_RE = re.compile(r'^match_index_count\s*=\s*(\d+)\s*$', re.I)
 _TRIGGER_LINE = 'run = commandlisttriggerresourceoverrides'
 _CLEANUP_LINE = 'run = commandlistcleanupsharedresources'
 _CONSTANTS_SECTION = 'constants'
+_PRESENT_SECTION = 'present'
 
 
 def _section_spans(lines: List[str]) -> List[Tuple[str, int, int]]:
@@ -95,6 +100,7 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
     removed_sections = set()
     injected_components = set()
     found_constants = False
+    found_present = False
 
     for name, start, end in spans:
         lname = name.strip().lower()
@@ -108,11 +114,24 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             found_constants = True
             globals_to_add = []
             if plan.multi_form:
-                globals_to_add.append(f'global {constants.VAR_FORM} = 1')
+                globals_to_add.append(
+                    f'global {constants.VAR_FORM} = {plan.default_form_id}')
             globals_to_add.extend(f'global {var} = 0'
                                   for var in plan.extra_globals)
             if globals_to_add:
                 insert_after.setdefault(start, []).extend(globals_to_add)
+            continue
+
+        if lname == _PRESENT_SECTION:
+            found_present = True
+            if plan.watchdog_lines:
+                # Append at the end of the stock per-frame logic (after the
+                # last non-blank line, before the inter-section gap).
+                last = start
+                for i in range(start + 1, end):
+                    if lines[i].strip():
+                        last = i
+                insert_after.setdefault(last, []).extend(plan.watchdog_lines)
             continue
 
         comp_match = _COMP_ID_RE.search(name.strip())
@@ -179,6 +198,9 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
     result = '\n'.join(out)
     if not result.endswith('\n'):
         result += '\n'
+    if plan.watchdog_lines and not found_present:
+        # Template has no [Present]: create one (no duplicate can exist).
+        result += '\n[Present]\n' + '\n'.join(plan.watchdog_lines) + '\n'
     result += plan.block_text
     if not result.endswith('\n'):
         result += '\n'
