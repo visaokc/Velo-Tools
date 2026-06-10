@@ -59,9 +59,13 @@ def probe_key(component_id: int, slot: int) -> int:
     return 16 * component_id + slot + 1
 RES_BACKUP = "ResourceTextureBackupT{slot}"
 SEC_TEX_MARK = "TextureOverrideMarkTexture{texture_hash}"
-# Detection-only fast path (form switch is instant on the shader axis while
-# textures still stream): never referenced by any binding condition.
-SEC_PS_MARK = "ShaderOverrideMarkPs{ps_hash}"
+# USER-SPECIFIED form anchors (detection only, optional): a form-exclusive
+# resource (best: an ib/vb — geometry never streams, so the latch is instant
+# and far more version-stable than shaders) or shader latches $form_id the
+# moment the form draws. A stale anchor never fires and the texture latches
+# take over; no binding condition ever references an anchor.
+SEC_RESOURCE_ANCHOR = "TextureOverrideFormAnchor{anchor_hash}"
+SEC_SHADER_ANCHOR = "ShaderOverrideFormAnchor{anchor_hash}"
 SEC_FORMAT_TAG = "TextureOverrideComponent{component_id}{format_name}"
 SEC_FORMAT_TAG_LOD = "TextureOverrideLod{level}Component{component_id}{format_name}"
 

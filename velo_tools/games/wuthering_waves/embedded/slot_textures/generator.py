@@ -289,7 +289,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                texture_info: TextureInfo,
                load_warnings: Optional[List[str]] = None,
                component_ranges: Optional[Dict[int, Tuple[int, int]]] = None,
-               lod_ranges: Optional[Dict[int, Dict[int, Tuple[int, int]]]] = None) -> SlotPlan:
+               lod_ranges: Optional[Dict[int, Dict[int, Tuple[int, int]]]] = None,
+               manual_anchors: Optional[List[Tuple[str, int]]] = None) -> SlotPlan:
     """textures: (texture hash, resource section name) in template order.
     texture_info: hash -> format/size of the ORIGINAL game textures.
     component_ranges: comp_id -> (match_first_index, match_index_count) of the
@@ -468,38 +469,33 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 'bind disjoint kept material content) - forms cannot be '
                 'auto-detected at runtime')
 
-    # L1 zero-latency fast path: a PS recorded in exactly ONE form's maps,
-    # material-classified there, latches that form on its very first draw
-    # (shaders swap on the switch frame and never stream — the texture
-    # latches above need the new form's textures to climb back to a captured
-    # residency level first). DETECTION ONLY and auto-degrading: after a game
-    # update the dead shader sections make these checks constant-false and
-    # the texture latches take over; no binding condition ever reads them.
-    ps_fast_latches: List[Tuple[int, str, int]] = []  # (comp, ps hash, form)
+    # Zero-latency form anchors are USER-SPECIFIED only (manual_anchors): the
+    # plugin never auto-picks shader hashes. A form-exclusive ib/vb anchor
+    # latches on the new form's very first draw (geometry never streams);
+    # shader anchors are instant too but version-fragile. A stale anchor
+    # section simply never fires and the texture latches take over.
+    anchor_resources: List[Tuple[str, int]] = []  # 8-hex: ib/vb/texture hash
+    anchor_shaders: List[Tuple[str, int]] = []    # 16-hex: ps/vs hash
+    for anchor_hash, form_id in (manual_anchors or []):
+        if not isinstance(anchor_hash, str) or form_id < 1 or form_id > len(forms):
+            warnings.append(f'form anchor {anchor_hash!r} skipped (bad form id)')
+            continue
+        h = anchor_hash.strip().lower()
+        if re.fullmatch(r'[0-9a-f]{8}', h):
+            anchor_resources.append((h, form_id))
+        elif re.fullmatch(r'[0-9a-f]{16}', h):
+            anchor_shaders.append((h, form_id))
+        else:
+            warnings.append(
+                f'form anchor {anchor_hash!r} skipped (expected an 8-hex '
+                f'resource hash or a 16-hex shader hash)')
     if multi_form:
-        ps_form_presence: Dict[str, Set[int]] = {}
-        ps_material_comps: Dict[Tuple[str, int], Set[int]] = {}
-        for form_id, (_, form_data) in enumerate(forms, start=1):
-            for comp_id, comp_pairs in form_data.items():
-                for ps, pair_map in comp_pairs.items():
-                    ps_form_presence.setdefault(ps, set()).add(form_id)
-                    if _is_material_pair(pair_map, texture_info):
-                        ps_material_comps.setdefault((ps, form_id), set()).add(comp_id)
-        ps_values: Dict[str, int] = {}
-        for ps, presence in sorted(ps_form_presence.items()):
-            if len(presence) != 1:
-                continue
-            form_id = next(iter(presence))
-            comps = ps_material_comps.get((ps, form_id))
-            if not comps:
-                continue
-            value = constants.ps_mark_value(ps)
-            if value in ps_values.values():
-                warnings.append(f'ps mark value collision on {ps}, fast path dropped')
-                continue
-            ps_values[ps] = value
-            for comp_id in sorted(comps):
-                ps_fast_latches.append((comp_id, ps, form_id))
+        anchored_forms = {f for _, f in anchor_resources + anchor_shaders}
+        for form_id, (label, _) in enumerate(forms, start=1):
+            if form_id not in anchored_forms:
+                warnings.append(
+                    f'form "{label}" has no manual anchor - switching TO it '
+                    f'relies on the texture latches (streaming-delayed)')
 
     # ------------------------------------------------------ branch building --
     all_comp_ids = sorted({c for _, fd in forms for c in fd})
@@ -882,18 +878,23 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     out.append(f'    {constants.VAR_HIT.format(texture_hash=payload)} = 1')
                 out.append('endif')
 
-    if ps_fast_latches:
+    if anchor_resources or anchor_shaders:
         out.append('')
-        out.append('; -- DETECTION-ONLY shader marks (zero-latency form-switch fast path:')
-        out.append(';    shaders swap on the switch frame, textures still stream). After a')
-        out.append(';    game update these go dead and the texture latches take over -')
-        out.append(';    no binding condition ever references a shader.')
-        for ps in sorted({p for _, p, _ in ps_fast_latches}):
+        out.append('; -- USER-SPECIFIED form anchors (detection only, zero-latency: a')
+        out.append(';    form-exclusive ib/vb fires on the form\'s very first draw). A')
+        out.append(';    stale anchor never fires and the texture latches take over.')
+        for h, form_id in sorted(anchor_resources):
             out.append('')
-            out.append(f'[{constants.SEC_PS_MARK.format(ps_hash=ps)}]')
-            out.append(f'hash = {ps}')
+            out.append(f'[{constants.SEC_RESOURCE_ANCHOR.format(anchor_hash=h)}]')
+            out.append(f'hash = {h}')
             out.append('allow_duplicate_hash = true')
-            out.append(f'filter_index = {constants.ps_mark_value(ps)}')
+            out.append(f'{constants.VAR_FORM} = {form_id}')
+        for h, form_id in sorted(anchor_shaders):
+            out.append('')
+            out.append(f'[{constants.SEC_SHADER_ANCHOR.format(anchor_hash=h)}]')
+            out.append(f'hash = {h}')
+            out.append('allow_duplicate_hash = true')
+            out.append(f'filter_index = {constants.ps_mark_value(h)}')
 
     component_list_names: Dict[int, str] = {}
     body_chunks: List[str] = []
@@ -901,15 +902,12 @@ def build_plan(forms: List[Tuple[str, FormData]],
         name = constants.CMDLIST_SET_TEXTURES.format(component_id=comp_id)
         component_list_names[comp_id] = name
         chunk: List[str] = ['', f'[{name}]']
-        # L1 fast-path latches first: instant on the switch frame.
-        ps_by_form: Dict[int, List[str]] = {}
-        for latch_comp, ps, form_id in ps_fast_latches:
-            if latch_comp == comp_id:
-                ps_by_form.setdefault(form_id, []).append(ps)
-        for form_id in sorted(ps_by_form):
-            cond = ' || '.join(f'ps == {constants.ps_mark_value(ps)}'
-                               for ps in sorted(set(ps_by_form[form_id])))
-            chunk.append(f'if {cond}')
+        # Manual shader anchors: instant on the switch frame, evaluated only
+        # during this character's draws (other characters sharing the shader
+        # never run these lists). The hash may be a vs or a ps - check both.
+        for h, form_id in sorted(anchor_shaders):
+            value = constants.ps_mark_value(h)
+            chunk.append(f'if ps == {value} || vs == {value}')
             chunk.append(f'    {constants.VAR_FORM} = {form_id}')
             chunk.append('endif')
         for form_id, markers in sorted(form_markers_m1.items()):
@@ -1039,7 +1037,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'conflicts': conflict_count,
             'marks': len(marks),
             'fork_latches': len(fork_latches),
-            'ps_fast_latches': len(ps_fast_latches),
+            'anchors': len(anchor_resources) + len(anchor_shaders),
             'probes': len(probe_effects),
             'format_sections': format_section_count,
             'covered_textures': len(covered_resource_indices),

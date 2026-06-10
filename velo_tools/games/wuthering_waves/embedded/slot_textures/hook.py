@@ -14,6 +14,7 @@
 # stock hash-style output with a console explanation - never a half result.
 
 import json
+import re
 import traceback
 
 from ..._wwmi_core.blender_export import ini_maker as _im_module
@@ -72,11 +73,17 @@ def install():
                     'legacy ShaderTextureUsage.json without recorded formats - '
                     'formats were read from the model-folder files instead; '
                     're-extract to record the original game formats')
+            manual_anchors = _parse_form_anchors(context, forms, load_warnings)
             plan = generator.build_plan(
                 forms, textures, texture_info, load_warnings,
                 component_ranges=transform.extract_component_ranges(result),
-                lod_ranges=_read_lod_ranges(source_folder))
+                lod_ranges=_read_lod_ranges(source_folder),
+                manual_anchors=manual_anchors)
             result = transform.apply(result, plan)
+            for anchor_hash, form_id in manual_anchors:
+                kind = 'shader' if len(anchor_hash) == 16 else 'resource (ib/vb/texture)'
+                _report(f'[SlotTextures] form anchor {anchor_hash} ({kind}) -> '
+                        f'form "{forms[form_id - 1][0]}"')
             for warning in plan.warnings:
                 _report(f'[SlotTextures] WARNING: {warning}')
             for tex_hash, section in plan.blind_zone:
@@ -106,6 +113,39 @@ def remove():
     _im_module.IniMaker.build_from_template = _ORIG_BUILD_FROM_TEMPLATE
     _ORIG_BUILD_FROM_TEMPLATE = None
     _INSTALLED = False
+
+
+def _parse_form_anchors(context, forms, warnings):
+    """USER-SPECIFIED form anchors from the slot settings: "hash:formlabel"
+    tokens (comma/space separated). Labels: 'base' for the base extraction,
+    else the labels given in the form-merge panel. Returns
+    [(hash, form_id)]; malformed tokens are skipped with a warning."""
+    try:
+        spec = (context.scene.vtww_slot_settings.form_anchors or '').strip()
+    except Exception:
+        return []
+    if not spec:
+        return []
+    labels = {label.strip().lower(): form_id
+              for form_id, (label, _) in enumerate(forms, start=1)}
+    anchors = []
+    for token in re.split(r'[\s,;]+', spec):
+        if not token:
+            continue
+        if ':' not in token:
+            warnings.append(
+                f'form anchor "{token}" skipped (expected hash:formlabel)')
+            continue
+        anchor_hash, label = token.rsplit(':', 1)
+        form_id = labels.get(label.strip().lower())
+        if form_id is None:
+            known = ', '.join(label for label, _ in forms)
+            warnings.append(
+                f'form anchor "{token}" skipped (unknown form label '
+                f'"{label}"; known labels: {known})')
+            continue
+        anchors.append((anchor_hash.strip().lower(), form_id))
+    return anchors
 
 
 def _read_lod_ranges(source_folder):

@@ -70,6 +70,9 @@ def _patch_export_menu():
         box.label(text="Velo 兼容选项", icon="TOOL_SETTINGS")
         if hasattr(cfg, "velo_slot_style_textures"):
             box.prop(cfg, "velo_slot_style_textures")
+            slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
+            if (slot_cfg is not None and cfg.velo_slot_style_textures):
+                box.prop(slot_cfg, "form_anchors")
 
     _wui.VTWW_PT_SIDEBAR.draw_menu_export_mod = draw_menu_export_mod
 
@@ -100,6 +103,17 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
         description="可选：该形态在合并数据里的显示名（留空自动编号）。"
                     "同一标签再合并不同距离的 dump 会收割该形态贴图的其它流送级 "
                     "hash（缩短形态切换的检测延迟）；填 base 表示收割进基础提取数据",
+        default='',
+    )
+
+    form_anchors: bpy.props.StringProperty(
+        name="形态锚点 (Form Anchors)",
+        description="可选：手动指定形态独占的锚点 hash，格式 hash:形态标签，"
+                    "逗号/空格分隔（如 ce56ef1a:base）。基础形态标签固定为 base，"
+                    "其余用合并时起的标签。命中即零延迟锁存形态；版本更新失效后"
+                    "自动退回贴图锁存（有流送延迟）。推荐用形态独占的 ib/vb"
+                    "（即时且较稳）；16 位 shader hash 也可（即时但版本必变）；"
+                    "贴图 hash 可用但有流送延迟与任意绑定触发风险",
         default='',
     )
 
