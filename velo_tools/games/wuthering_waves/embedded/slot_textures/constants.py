@@ -40,8 +40,23 @@
 # ----------------------------------------------------- emitted names --------
 
 VAR_FORM = "$form_id"
+# Probe scope key: set around our own CheckTextureOverride calls so a mark
+# section knows WHICH (component, slot) is being checked. Field evidence
+# (v3.1): reading a mark's filter_index back via `ps-tN == value` does NOT
+# work when fuzzy format sections cover the same texture (the fuzzy tag wins
+# the fi contest), but hash-section command lists reliably RUN on check —
+# so exact per-texture discrimination goes through section-driven flags
+# instead of fi comparisons.
+VAR_LATCH_KEY = "$latch_key"
+VAR_HIT = "$hit_{texture_hash}"
+CMDLIST_PROBE = "CommandListProbeComponent{component_id}"
 CMDLIST_SET_TEXTURES = "CommandListSetTexturesComponent{component_id}"
 CMDLIST_RESTORE = "CommandListRestoreTextures"
+
+
+def probe_key(component_id: int, slot: int) -> int:
+    """Distinct int per (component, slot) probe scope."""
+    return 16 * component_id + slot + 1
 RES_BACKUP = "ResourceTextureBackupT{slot}"
 SEC_TEX_MARK = "TextureOverrideMarkTexture{texture_hash}"
 SEC_FORMAT_TAG = "TextureOverrideComponent{component_id}{format_name}"

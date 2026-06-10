@@ -213,6 +213,10 @@ class SlotPlan:
     blind_zone: List[Tuple[str, str]]  # (texture hash, kept stock section name)
     multi_form: bool
     used_slots: List[int]
+    # comp -> probe command list name, injected BEFORE the trigger anchor.
+    probe_list_names: Dict[int, str] = field(default_factory=dict)
+    # ini variables the transform must declare global in [Constants].
+    extra_globals: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     stats: Dict[str, int] = field(default_factory=dict)
 
@@ -391,7 +395,11 @@ def build_plan(forms: List[Tuple[str, FormData]],
                         if h is None:
                             continue
                         slot_presence.setdefault((comp_id, slot), set()).add(form_id)
-                        if not is_mat:
+                        # MAIN slots of material pairs only: aux-slot family
+                        # differences between dumps are coverage noise, not a
+                        # form signal (an aux-slot M1 marker re-latched the
+                        # wrong form on every draw in the field).
+                        if not is_mat or slot not in constants.MAIN_SLOTS:
                             continue
                         key = _family_key(h, texture_info)
                         if key is not None:
@@ -443,6 +451,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
     # ------------------------------------------------------ branch building --
     all_comp_ids = sorted({c for _, fd in forms for c in fd})
     component_branches: Dict[int, List[_Branch]] = {}
+    # Every (pair, form) record of a component, assigned or not — unassigned
+    # ones act as VANILLA GUARDS below: a branch whose signature an
+    # unreplaced set also satisfies would bind mod content onto vanilla draws.
+    comp_records: Dict[int, List[Tuple[dict, Dict[int, Optional[str]], bool]]] = {}
     conflict_count = 0
     for comp_id in all_comp_ids:
         seeds: List[_Branch] = []
@@ -474,6 +486,9 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     if slot in sig_slots
                     and (key := _family_key(h, texture_info)) is not None))
                 by_sig.setdefault(sig, []).append(form_id)
+                comp_records.setdefault(comp_id, []).append(
+                    (dict(sig), pair_map,
+                     any(h in mod_hashes for h in pair_map.values() if h)))
             # When the pair's per-form assignments are COMPATIBLE (no slot
             # bound to different resources — identical content, or one form's
             # record merely sparser than another's, e.g. a residency-deduped
@@ -496,7 +511,14 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     union_assign[slot] = res
                 if not compatible:
                     break
-            pair_uniform = compatible and bool(union_assign)
+            # Uniform ONLY when the pair covers EVERY form with a nonempty,
+            # compatible assignment. A single-form pair (form-unique PS) or a
+            # pair whose other form keeps nothing must stay form-gated:
+            # dropping the gate runs both forms' branches at once (the form
+            # lock), and the union would project one form's content onto the
+            # other form's signature variant (the C6 scramble).
+            pair_uniform = (compatible and len(pair_assigns) == len(forms)
+                            and all(pair_assigns.values()))
             for sig, form_ids in by_sig.items():
                 if not sig:
                     continue  # nothing testable: a vacuous condition would fire on every draw
@@ -512,10 +534,13 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 else:
                     gates = {f: nonempty[f] for f in sorted(nonempty)}
                 for gate, assign in gates.items():
-                    cond_slots = {
-                        slot: {h for f in (form_ids if gate is None else [gate])
-                               if (h := per_form[f].get(slot)) is not None}
-                        for slot, _key in sig}
+                    # ALL recorded slots (terms only read the signature slots;
+                    # the extra entries feed OR-arms and content-key search)
+                    cond_slots: Dict[int, Set[str]] = {}
+                    for f in (form_ids if gate is None else [gate]):
+                        for slot, h in per_form[f].items():
+                            if h is not None:
+                                cond_slots.setdefault(slot, set()).add(h)
                     seeds.append(_Branch(cond_slots=cond_slots, signature=sig,
                                          assign=assign, form_gate=gate,
                                          ps_set={ps}, local=local, material=material))
@@ -623,10 +648,98 @@ def build_plan(forms: List[Tuple[str, FormData]],
         if dropped:
             component_branches[comp_id] = [b for b in branches if b not in dropped]
 
+    # ---------------------------------------------- vanilla-pair guards --
+    # A branch whose signature an UNREPLACED pair of the same component also
+    # satisfies (no recorded shared slot with a differing family) would bind
+    # mod content onto vanilla draws (the C6 scramble: the shared chameleon
+    # set's bare condition matched the component's own unkept material).
+    # Such branches must be content-keyed on a kept original that differs by
+    # hash from every collider, or be dropped.
+    for comp_id, branches in component_branches.items():
+        unassigned = [(sig, pm) for sig, pm, has in comp_records.get(comp_id, [])
+                      if not has and sig]
+        if not unassigned:
+            continue
+        dropped = []
+        for branch in branches:
+            if branch.mark_hash is not None:
+                continue  # already content-keyed by cluster disambiguation
+            bsig = dict(branch.signature)
+            colliders = []
+            for osig, opm in unassigned:
+                shared = set(bsig) & set(osig)
+                if shared and any(bsig[s] != osig[s] for s in shared):
+                    continue  # mutually exclusive on a recorded shared slot
+                colliders.append(opm)
+            if not colliders:
+                continue
+            candidate = None
+            for slot in sorted(branch.cond_slots):
+                for h in sorted(branch.cond_slots[slot]):
+                    if h not in mod_hashes:
+                        continue
+                    if all(opm.get(slot) != h for opm in colliders):
+                        candidate = (slot, h)
+                        break
+                if candidate:
+                    break
+            if candidate is not None and _ensure_mark(candidate[1]) is not None:
+                branch.mark_slot, branch.mark_hash = candidate
+            else:
+                dropped.append(branch)
+                warnings.append(
+                    f'component {comp_id}: a branch shares its format signature '
+                    f'with an unreplaced texture set and no kept texture '
+                    f'distinguishes them - branch dropped (those draws stay vanilla)')
+        if dropped:
+            component_branches[comp_id] = [b for b in branches
+                                           if not any(b is d for d in dropped)]
+    component_branches = {c: b for c, b in component_branches.items() if b}
+    if not component_branches:
+        raise SlotStyleDegrade('no component produced any slot assignment')
+
     # Fork latch keys join the same mark table (a hash can be both a latch
     # key and a disambiguator); entries whose mark collided are dropped.
     fork_latches = [(c, s, h, f) for c, s, h, f in fork_latches
                     if _ensure_mark(h) is not None]
+
+    # -------------------------------------------------- probe collection --
+    # Field evidence (v3.1): `ps-tN == <mark fi>` reads do NOT work while
+    # fuzzy format sections cover the texture — but hash-section command
+    # lists DO run on CheckTextureOverride. All exact per-texture
+    # discrimination therefore goes through PROBES: the component's probe
+    # command list (injected BEFORE the stock trigger) brackets its own
+    # CheckTextureOverride calls with $latch_key, and the mark sections
+    # react only to their own (component, slot) keys — latching $form_id or
+    # raising a per-draw $hit flag the branch conditions read.
+    # (comp, slot, section hash) -> list of ('latch', form) / ('hit', canon)
+    probe_effects: Dict[Tuple[int, int, str], List[Tuple[str, object]]] = {}
+    for comp_id, slot, h, form_id in fork_latches:
+        probe_effects.setdefault((comp_id, slot, h), []).append(('latch', form_id))
+    for comp_id, branches in component_branches.items():
+        for branch in branches:
+            if branch.mark_hash is not None and branch.mark_slot is not None:
+                effects = probe_effects.setdefault(
+                    (comp_id, branch.mark_slot, branch.mark_hash), [])
+                if ('hit', branch.mark_hash) not in effects:
+                    effects.append(('hit', branch.mark_hash))
+    # Residency variants collapsed by the dedup react like their canonical
+    # texture (e.g. both mip-level hashes of the eye texture raise one flag).
+    variants_of: Dict[str, List[str]] = {}
+    for variant, canon in alias.items():
+        variants_of.setdefault(canon, []).append(variant)
+    for (comp_id, slot, h), effects in list(probe_effects.items()):
+        for variant in variants_of.get(h, ()):
+            if _ensure_mark(variant) is not None:
+                probe_effects.setdefault((comp_id, slot, variant),
+                                         []).extend(effects)
+    probe_slots: Dict[int, Set[int]] = {}
+    probe_hits: Dict[int, Set[str]] = {}
+    for (comp_id, slot, h), effects in probe_effects.items():
+        probe_slots.setdefault(comp_id, set()).add(slot)
+        for kind, payload in effects:
+            if kind == 'hit':
+                probe_hits.setdefault(comp_id, set()).add(payload)
 
     # ------------------------------------------------------------ emission --
     used_slots: Set[int] = set()
@@ -650,19 +763,26 @@ def build_plan(forms: List[Tuple[str, FormData]],
             group_families.setdefault(key, {}).setdefault(
                 constants.format_prefix(fmt), (fmt, _fi_str(fi)))
 
-    def _term(branch: _Branch, slot: int, key: float) -> str:
-        values: List[str] = []
-        if not (branch.mark_slot == slot and branch.mark_hash):
-            values.append(fi_text[key])
+    def _terms(branch: _Branch) -> List[str]:
+        terms: List[str] = []
+        for slot, key in branch.signature:
+            if branch.mark_slot == slot and branch.mark_hash:
+                continue  # the exact content key below covers this slot
+            values: List[str] = [fi_text[key]]
             for h in sorted(branch.cond_slots.get(slot, ())):
                 if h in marks:
                     values.append(str(marks[h]))
             used_families.setdefault(comp_id, set()).add(key)
-        else:
-            values.append(str(marks[branch.mark_hash]))
-        if len(values) == 1:
-            return f'ps-t{slot} == {values[0]}'
-        return '(' + ' || '.join(f'ps-t{slot} == {v}' for v in values) + ')'
+            if len(values) == 1:
+                terms.append(f'ps-t{slot} == {values[0]}')
+            else:
+                terms.append('(' + ' || '.join(f'ps-t{slot} == {v}' for v in values) + ')')
+        if branch.mark_hash:
+            # Exact content key: probe-driven flag, NOT an fi comparison
+            # (mark fi reads lose to the fuzzy format tags in the field).
+            # Works for aux-slot keys outside the signature too.
+            terms.append(f'{constants.VAR_HIT.format(texture_hash=branch.mark_hash)} == 1')
+        return terms
 
     out: List[str] = []
     form_sources = ', '.join(label for label, _ in forms)
@@ -676,11 +796,16 @@ def build_plan(forms: List[Tuple[str, FormData]],
     out.append('; set disambiguation and degrade gracefully when stale.')
     out.append('; ============================================================')
 
+    effects_by_hash: Dict[str, List[Tuple[int, int, str, object]]] = {}
+    for (e_comp, e_slot, e_hash), effects in probe_effects.items():
+        for kind, payload in effects:
+            effects_by_hash.setdefault(e_hash, []).append((e_comp, e_slot, kind, payload))
     if marks:
         out.append('')
-        out.append('; -- Per-texture marks (deterministic filter_index = f(hash): identical')
-        out.append(';    across all velo mods, duplicates coexist harmlessly; value-only,')
-        out.append(';    form latching happens inline in the component command lists)')
+        out.append('; -- Per-texture marks. filter_index = f(hash): deterministic, identical')
+        out.append(';    across all velo mods. The command bodies react ONLY to their own')
+        out.append(';    probe keys (set around our CheckTextureOverride calls), latching')
+        out.append(';    the form or raising a per-draw flag for the branch conditions.')
         for h in sorted(marks):
             out.append('')
             out.append(f'[{constants.SEC_TEX_MARK.format(texture_hash=h)}]')
@@ -688,6 +813,14 @@ def build_plan(forms: List[Tuple[str, FormData]],
             out.append('allow_duplicate_hash = true')
             out.append(f'match_priority = {constants.MARK_PRIORITY}')
             out.append(f'filter_index = {marks[h]}')
+            for e_comp, e_slot, kind, payload in sorted(
+                    effects_by_hash.get(h, ()), key=lambda e: (e[0], e[1], e[2], str(e[3]))):
+                out.append(f'if {constants.VAR_LATCH_KEY} == {constants.probe_key(e_comp, e_slot)}')
+                if kind == 'latch':
+                    out.append(f'    {constants.VAR_FORM} = {payload}')
+                else:
+                    out.append(f'    {constants.VAR_HIT.format(texture_hash=payload)} = 1')
+                out.append('endif')
 
     component_list_names: Dict[int, str] = {}
     body_chunks: List[str] = []
@@ -703,12 +836,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 chunk.append(f'if ps-t{slot} == {fi_text[key]}')
                 chunk.append(f'    {constants.VAR_FORM} = {form_id}')
                 chunk.append('endif')
-        for latch_comp, slot, h, form_id in fork_latches:
-            if latch_comp != comp_id:
-                continue
-            chunk.append(f'if ps-t{slot} == {marks[h]}')
-            chunk.append(f'    {constants.VAR_FORM} = {form_id}')
-            chunk.append('endif')
         # Exact-mark branches first, then bare-condition branches by
         # specificity (slot count desc, cluster winners before shadowed
         # leftovers) - subset conditions go last so a superset draw is
@@ -720,8 +847,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                            tuple(sorted(b.assign.items()))))
         first = True
         for branch in ordered:
-            terms = [_term(branch, slot, key) for slot, key in branch.signature]
-            cond = ' && '.join(terms)
+            cond = ' && '.join(_terms(branch))
             if branch.form_gate is not None:
                 cond += f' && {constants.VAR_FORM} == {branch.form_gate}'
             chunk.append(f'{"if" if first else "else if"} {cond}')
@@ -730,6 +856,24 @@ def build_plan(forms: List[Tuple[str, FormData]],
             used_slots.update(branch.assign)
         chunk.append('endif')
         body_chunks.append('\n'.join(chunk))
+
+    probe_list_names: Dict[int, str] = {}
+    if probe_slots:
+        out.append('')
+        out.append('; -- Probe lists (run BEFORE the stock resource-override trigger):')
+        out.append(';    bracket our own slot checks with the probe key so the mark')
+        out.append(';    sections above know which (component, slot) is being checked')
+        for comp_id in sorted(probe_slots):
+            name = constants.CMDLIST_PROBE.format(component_id=comp_id)
+            probe_list_names[comp_id] = name
+            out.append('')
+            out.append(f'[{name}]')
+            for h in sorted(probe_hits.get(comp_id, ())):
+                out.append(f'{constants.VAR_HIT.format(texture_hash=h)} = 0')
+            for slot in sorted(probe_slots[comp_id]):
+                out.append(f'{constants.VAR_LATCH_KEY} = {constants.probe_key(comp_id, slot)}')
+                out.append(f'CheckTextureOverride = ps-t{slot}')
+            out.append(f'{constants.VAR_LATCH_KEY} = 0')
 
     out.append('')
     out.append('; -- Per-draw backup slots (restored right after the component draws)')
@@ -786,6 +930,14 @@ def build_plan(forms: List[Tuple[str, FormData]],
                         format_section_count += 1
     out.append('')
 
+    extra_globals: List[str] = []
+    if probe_effects:
+        extra_globals.append(constants.VAR_LATCH_KEY)
+        all_hits = {payload for effects in probe_effects.values()
+                    for kind, payload in effects if kind == 'hit'}
+        extra_globals.extend(constants.VAR_HIT.format(texture_hash=h)
+                             for h in sorted(all_hits))
+
     return SlotPlan(
         block_text='\n'.join(out),
         component_list_names=component_list_names,
@@ -793,6 +945,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
         blind_zone=blind_zone,
         multi_form=multi_form,
         used_slots=sorted(used_slots),
+        probe_list_names=probe_list_names,
+        extra_globals=extra_globals,
         warnings=warnings,
         stats={
             'forms': len(forms),
@@ -801,6 +955,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'conflicts': conflict_count,
             'marks': len(marks),
             'fork_latches': len(fork_latches),
+            'probes': len(probe_effects),
             'format_sections': format_section_count,
             'covered_textures': len(covered_resource_indices),
             'blind_zone_textures': len(blind_zone),

@@ -106,9 +106,13 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
 
         if lname == _CONSTANTS_SECTION:
             found_constants = True
+            globals_to_add = []
             if plan.multi_form:
-                insert_after.setdefault(start, []).append(
-                    f'global {constants.VAR_FORM} = 1')
+                globals_to_add.append(f'global {constants.VAR_FORM} = 1')
+            globals_to_add.extend(f'global {var} = 0'
+                                  for var in plan.extra_globals)
+            if globals_to_add:
+                insert_after.setdefault(start, []).extend(globals_to_add)
             continue
 
         comp_match = _COMP_ID_RE.search(name.strip())
@@ -136,8 +140,14 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             raise SlotStyleDegrade(
                 f'section [{name}] has a resource-override trigger without a '
                 f'matching cleanup anchor - unknown template structure')
+        probe_name = plan.probe_list_names.get(comp_id)
         for i in trigger_indices:
             indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+            if probe_name is not None:
+                # Probes run BEFORE the stock trigger: the FIRST check of a
+                # resource is ours, so the probe-key bracketing cannot be
+                # starved by a once-per-draw check cache.
+                insert_before.setdefault(i, []).append(f'{indent}run = {probe_name}')
             insert_after.setdefault(i, []).append(f'{indent}run = {list_name}')
         for i in cleanup_indices:
             indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
