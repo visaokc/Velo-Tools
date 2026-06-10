@@ -1,21 +1,22 @@
-# Pure map-composition and compaction math for the LOD export hook.
-#
-# No bpy / _wwmi_core imports: everything here is plain numpy + dicts so it
-# can be unit-tested outside Blender.
+# Pure remap math for the per-draw LOD export. No bpy / _wwmi_core imports:
+# plain numpy + dicts, unit-testable outside Blender.
 #
 # Id spaces involved (see CONTEXT.md):
-#   full local  -- component-local VG ids of the full object (8-bit blend data)
-#   full merged -- unified ids of the full object's merged skeleton
-#   lod local   -- component-local VG ids of the LOD object
-#   lod merged  -- unified ids of the LOD object's merged skeleton
+#   full local  -- component-local VG ids of the full object (per-draw bone palette)
+#   full merged -- unified ids of the full object's merged skeleton (MERGED export)
+#   lod local   -- component-local VG ids of the LOD object (its native per-draw palette)
 #
-# The exported Blend data references *full merged* ids; LOD draws build their
-# own merged skeleton (per-LOD SkeletonMerger mirror), so the LOD blend buffer
-# must reference *lod merged* ids. The chain per component c (field names per
-# the EFMI-aligned per-component lods entry):
-#   full merged --invert(full.vg_map[c])--> full local
-#               --lods.vg_map[c]--> lod local
-#               --lods.lod_vg_map[c]--> lod merged
+# The exported Blend data references *full merged* ids. LOD draws are stateless
+# per-draw overrides that keep the game's native bone constant buffers, so the
+# LOD blend buffer must reference *lod component-LOCAL* ids. Chain per component c:
+#   full merged --invert(full.vg_map[c])--> full local --lods.vg_map[c]--> lod local
+#
+# Inverting only component c's OWN vg_map is sufficient: get_merged_vg_map maps
+# every local id of c to a merged id (including duplicates collapsed into other
+# components' ranges), so every merged id legitimately reachable from c's
+# vertices appears in c's own map. Ids outside that inverse are true
+# user-painted cross-component weights — inexpressible in the LOD draw's native
+# per-component skeleton (same situation as per_from_merged's stray weights).
 
 import numpy
 
@@ -31,51 +32,38 @@ def _to_int_map(mapping):
     return {int(k): int(v) for k, v in mapping.items()}
 
 
-def compose_full_to_lod_merged(full_components_meta, entry_components) -> dict:
-    """Composes the global full-merged -> lod-merged VG id map.
+def build_inverse_vg_map(vg_map) -> dict:
+    """Inverts one component's stock vg_map: {merged id: smallest full local id}.
 
-    Args:
-        full_components_meta: stock Metadata.json "components" list of the full
-            object (vg_offset / vg_count / vg_map per component).
-        entry_components: index-aligned list of per-component lods entries for
-            ONE LOD object (None = component has no entry for it); each entry
-            carries vg_map (full local -> lod local matcher remap, None =
-            identity) and lod_vg_map (lod local -> lod merged).
-
-    A full merged id may be reachable through several components (WWMI dedups
-    identical bones across components); the chain of the component that *owns*
-    the id (vg_offset <= id < vg_offset + vg_count) wins.
+    Smallest-local-wins on duplicates, mirroring per_from_merged.build_inverse_vg_map.
     """
+    inverse = {}
+    for local, merged in _to_int_map(vg_map).items():
+        if merged not in inverse or local < inverse[merged]:
+            inverse[merged] = local
+    return inverse
+
+
+def compose_full_to_lod_local(full_component_meta: dict, entry: dict) -> dict:
+    """Composes ONE component's {full merged id -> LOD component-local id} map.
+
+    Chain: invert(full vg_map) -> entry vg_map (matcher remap, None = identity).
+    """
+    inverse = build_inverse_vg_map(full_component_meta["vg_map"])
+    full_to_lod = _to_int_map(entry.get("vg_map"))
+
     result = {}
-    owner_resolved = set()
-
-    for component_id, full_meta in enumerate(full_components_meta):
-        if component_id >= len(entry_components):
-            break
-        entry = entry_components[component_id]
-        if entry is None:
+    for merged, full_local in inverse.items():
+        lod_local = full_to_lod.get(full_local) if full_to_lod is not None else full_local
+        if lod_local is None:
             continue
-
-        full_map = _to_int_map(full_meta["vg_map"])
-        full_to_lod = _to_int_map(entry.get("vg_map"))
-        lod_map = _to_int_map(entry["lod_vg_map"])
-
-        vg_offset = full_meta["vg_offset"]
-        vg_count = full_meta["vg_count"]
-
-        for full_local, full_merged in full_map.items():
-            lod_local = full_to_lod.get(full_local) if full_to_lod is not None else full_local
-            if lod_local is None:
-                continue
-            lod_merged = lod_map.get(lod_local)
-            if lod_merged is None:
-                continue
-            if vg_offset <= full_merged < vg_offset + vg_count:
-                result[full_merged] = lod_merged
-                owner_resolved.add(full_merged)
-            elif full_merged not in owner_resolved and full_merged not in result:
-                result[full_merged] = lod_merged
-
+        if lod_local >= 256:
+            # LOD palettes are 8-bit per-draw by construction; this would mean
+            # corrupt LOD metadata rather than a real skeleton.
+            raise LodRemapError(
+                f"LOD component-local VG id {lod_local} exceeds the 8-bit blend bound "
+                f"(corrupt LOD metadata?)")
+        result[merged] = lod_local
     return result
 
 
@@ -96,109 +84,59 @@ def build_vertex_component_map(index_data, index_layout, vertex_count) -> numpy.
     return component_of_vertex
 
 
-def remap_blend(true_vg_ids, weights, compose, relevant_vertex_mask=None):
-    """Applies the composed map to per-vertex VG ids.
+def remap_blend_component_local(true_vg_ids, weights, component_of_vertex, component_maps):
+    """Builds the per-draw LOD blend ids: each vertex row holds its own
+    component's LOD-local ids.
 
     Args:
         true_vg_ids: (N, K) int array of full merged ids (16-bit truth).
         weights: (N, K) weights array (zero weight = unused slot).
-        compose: full-merged -> lod-merged dict.
-        relevant_vertex_mask: optional (N,) bool; only these vertices must
-            resolve (vertices of unmatched components are zero-filled).
+        component_of_vertex: (N,) component attribution (-1 = unreferenced).
+        component_maps: {component_id: {full merged -> lod local}} for components
+            that get LOD draws.
 
-    Returns (N, K) int32 lod merged ids. Raises LodRemapError when a used
-    (weight > 0) id of a relevant vertex has no mapping.
+    Returns (N, K) uint8. Rows of components without a map (and unreferenced
+    vertices) are zeroed — they are never read by the LOD draws. A weighted
+    slot that does not resolve means weights painted onto another component's
+    bones -> LodRemapError (per-draw native skeletons cannot express them).
     """
     true_vg_ids = numpy.asarray(true_vg_ids, dtype=numpy.int64)
-    lookup_size = max(int(true_vg_ids.max()) + 1, max(compose.keys(), default=0) + 1)
-    lookup = numpy.full(lookup_size, -1, dtype=numpy.int32)
-    if compose:
-        lookup[numpy.fromiter(compose.keys(), dtype=numpy.int64)] = (
-            numpy.fromiter(compose.values(), dtype=numpy.int32))
+    weights = numpy.asarray(weights)
+    component_of_vertex = numpy.asarray(component_of_vertex)
 
-    lod_ids = lookup[true_vg_ids]
+    lod_ids = numpy.zeros(true_vg_ids.shape, dtype=numpy.uint8)
+    unresolved = {}
 
-    unresolved = (lod_ids < 0) & (numpy.asarray(weights) > 0)
-    if relevant_vertex_mask is not None:
-        unresolved &= numpy.asarray(relevant_vertex_mask)[:, None]
+    for component_id, mapping in component_maps.items():
+        rows = component_of_vertex == component_id
+        if not rows.any():
+            continue
 
-    if unresolved.any():
-        bad_ids = numpy.unique(true_vg_ids[unresolved]).tolist()
+        lookup_size = max(int(true_vg_ids[rows].max()) + 1,
+                          max(mapping.keys(), default=0) + 1)
+        lookup = numpy.full(lookup_size, -1, dtype=numpy.int32)
+        if mapping:
+            lookup[numpy.fromiter(mapping.keys(), dtype=numpy.int64)] = (
+                numpy.fromiter(mapping.values(), dtype=numpy.int32))
+
+        mapped = lookup[true_vg_ids[rows]]
+        bad = (mapped < 0) & (weights[rows] > 0)
+        if bad.any():
+            bad_ids = numpy.unique(true_vg_ids[rows][bad]).tolist()
+            unresolved[component_id] = bad_ids
+            continue
+
+        mapped[mapped < 0] = 0
+        lod_ids[rows] = mapped.astype(numpy.uint8)
+
+    if unresolved:
+        details = '; '.join(
+            f"Component{component_id}: merged VG ids {ids}"
+            for component_id, ids in sorted(unresolved.items()))
         raise LodRemapError(
-            f"Failed to remap {len(bad_ids)} merged VG id(s) to the LOD skeleton: {bad_ids}. "
-            f"These bones belong to components without LOD match (or weights painted onto "
-            f"an unmatched component's bones). Re-run Extract LOD Data or fix the weights."
-        )
+            f"Weights painted onto another component's bones cannot be expressed in the "
+            f"LOD draw's native per-component skeleton ({details}). Move those weights "
+            f"back to the component's own bones or zero them "
+            f"(cf. Per-Component (from Merged) stray-weight rules).")
 
-    lod_ids[lod_ids < 0] = 0
     return lod_ids
-
-
-def plan_component_compaction(lod_ids, weights, index_data, index_layout, component_ids):
-    """Plans per-component 8-bit compaction for the stock SkeletonRemapper mirror.
-
-    For each component in component_ids whose used lod-merged ids exceed 255,
-    builds a compact id space (sorted used ids -> 0..n-1) plus the 512-entry
-    forward map (forward[i] = lod merged id) consumed by SkeletonRemapper.
-
-    Returns {component_id: plan} where plan is:
-        {"needs_compaction": bool,
-         "vg_count": int,              # used id count (compacted only)
-         "forward": (512,) uint16,     # compacted only
-         "compact_lookup": (M,) int32} # lod merged id -> compact id (compacted only)
-    Raises LodRemapError if a component uses more than 256 ids (cannot fit 8-bit).
-    """
-    plans = {}
-    index_offset = 0
-    offsets = {}
-    for component_id, index_count in enumerate(index_layout):
-        offsets[component_id] = (index_offset, index_count)
-        index_offset += index_count
-
-    for component_id in component_ids:
-        index_offset, index_count = offsets[component_id]
-        if index_count == 0:
-            continue
-
-        vertex_ids = numpy.unique(index_data[index_offset:index_offset + index_count])
-        component_vg_ids = lod_ids[vertex_ids].flatten()
-        component_weights = numpy.asarray(weights)[vertex_ids].flatten()
-
-        used_ids = numpy.unique(component_vg_ids[component_weights > 0])
-        if used_ids.size == 0 or int(used_ids.max()) < 256:
-            plans[component_id] = {"needs_compaction": False}
-            continue
-
-        if used_ids.size > 256:
-            raise LodRemapError(
-                f"Component{component_id} references {used_ids.size} LOD skeleton bones, "
-                f"exceeding the 256 VG limit of the 8-bit blend buffer.")
-
-        forward = numpy.zeros(512, dtype=numpy.uint16)
-        forward[numpy.arange(used_ids.size)] = used_ids
-
-        compact_lookup = numpy.zeros(int(used_ids.max()) + 1, dtype=numpy.int32)
-        compact_lookup[used_ids] = numpy.arange(used_ids.size)
-
-        plans[component_id] = {
-            "needs_compaction": True,
-            "vg_count": int(used_ids.size),
-            "forward": forward,
-            "compact_lookup": compact_lookup,
-            "vertex_ids": vertex_ids,
-        }
-
-    return plans
-
-
-def compact_component_ids(lod_ids, plan) -> numpy.ndarray:
-    """Returns a copy of lod_ids where the plan's component vertices use compact ids."""
-    compacted = lod_ids.copy()
-    vertex_ids = plan["vertex_ids"]
-    lookup = plan["compact_lookup"]
-    rows = compacted[vertex_ids]
-    # Ids beyond the lookup belong to other components' slots within shared
-    # vertices and are never read by this component's draws; clamp to 0.
-    rows = numpy.where(rows < len(lookup), rows, 0)
-    compacted[vertex_ids] = lookup[rows]
-    return compacted

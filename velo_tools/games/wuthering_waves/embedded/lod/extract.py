@@ -41,8 +41,7 @@ def extract_candidate_objects(dump_path: Path) -> list:
     Same 6-step chain as _wwmi_core.extract_frame_data.extract_frame_data(),
     minus write_objects: candidates never touch the disk. Textures are
     hard-skipped via an impossible min_file_size (the size check runs before
-    the expensive per-file sha256 read in OutputBuilder.filter_textures);
-    their hashes are captured beforehand for the lods metadata.
+    the expensive per-file sha256 read in OutputBuilder.filter_textures).
     """
     dump = Dump(dump_directory=dump_path)
 
@@ -63,16 +62,6 @@ def extract_candidate_objects(dump_path: Path) -> list:
         draw_data=data_extractor.draw_data,
     )
 
-    # Capture texture hashes per component before OutputBuilder.filter_textures
-    # drops them all.
-    texture_hashes = {
-        vb0_hash: [
-            sorted({texture.hash for texture in component.textures.values()})
-            for component in mesh_object.components
-        ]
-        for vb0_hash, mesh_object in component_builder.mesh_objects.items()
-    }
-
     output_builder = OutputBuilder(
         shapekeys=shapekeys.shapekeys,
         mesh_objects=component_builder.mesh_objects,
@@ -85,7 +74,7 @@ def extract_candidate_objects(dump_path: Path) -> list:
     )
 
     return [
-        model.from_output_object(vb0_hash, object_data, texture_hashes.get(vb0_hash, []))
+        model.from_output_object(vb0_hash, object_data)
         for vb0_hash, object_data in output_builder.objects.items()
     ]
 
@@ -138,26 +127,20 @@ def _match_type_for(full_component, lod_component) -> str:
 def build_component_lod_entry(full_component, lod_component, vg_map, lod_object) -> dict:
     """Builds one per-component lods entry (EFMI ExtractedObjectComponentLOD-aligned).
 
-    Field semantics: `vg_map` is the matcher remap (full component-local ->
-    LOD component-local, None = identity), matching EFMI's per-component LOD
-    vg_map; `lod_vg_map` is the LOD component's own stock map (LOD local ->
-    LOD merged) needed to compose the merged-id chain at export time.
+    `vg_map` is the matcher remap (full component-local -> LOD component-local,
+    None = identity), matching EFMI's per-component LOD vg_map semantics. The
+    per-draw LOD export consumes only vb0_hash + index ranges + vg_map; the
+    native LOD bone buffers need no further skeleton data.
     """
     lod_meta = lod_component.meta
     return {
         "lod_object_name": lod_object.id,
         "vb0_hash": lod_object.meta["vb0_hash"],
-        "cb4_hash": lod_object.meta["cb4_hash"],
         "vertex_offset": lod_meta["vertex_offset"],
         "vertex_count": lod_meta["vertex_count"],
         "index_offset": lod_meta["index_offset"],
         "index_count": lod_meta["index_count"],
-        "vg_offset": lod_meta["vg_offset"],
-        "vg_count": lod_meta["vg_count"],
         "vg_map": vg_map,
-        "lod_vg_map": lod_meta["vg_map"],
-        "shapekeys_offsets_hash": (lod_object.meta.get("shapekeys") or {}).get("offsets_hash", ""),
-        "texture_hashes": lod_component.texture_hashes,
         "match_type": _match_type_for(full_component, lod_component),
         "lod_component_index": lod_component.index,
     }

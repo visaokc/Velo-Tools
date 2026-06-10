@@ -64,7 +64,6 @@ class LodComponent:
     content_hash: str  # sha1 over ib+vb bytes; WWMI has no per-component IB hash
     meta: dict         # component entry from Metadata.json (offsets, counts, vg_map)
     mesh_name: str     # mutable diagnostics label; matcher writes "Skipped ..." markers
-    texture_hashes: list = field(default_factory=list)  # this component's texture hashes
 
     @property
     def vertex_count(self) -> int:
@@ -85,15 +84,13 @@ def _content_hash(ib_bytes: bytes, vb_bytes: bytes) -> str:
     return digest.hexdigest()
 
 
-def _make_component(index: int, fmt_text: str, vb_bytes: bytes, ib_bytes: bytes, meta: dict,
-                    texture_hashes=()) -> LodComponent:
+def _make_component(index: int, fmt_text: str, vb_bytes: bytes, ib_bytes: bytes, meta: dict) -> LodComponent:
     return LodComponent(
         index=index,
         mesh=LodMesh(fmt_text=fmt_text, vb_bytes=vb_bytes, ib_bytes=ib_bytes),
         content_hash=_content_hash(ib_bytes, vb_bytes),
         meta=meta,
         mesh_name=f"Component {index}",
-        texture_hashes=list(texture_hashes),
     )
 
 
@@ -126,12 +123,8 @@ def load_full_object(source_folder: Path) -> LodObject:
     )
 
 
-def from_output_object(vb0_hash: str, object_data, texture_hashes: list) -> LodObject:
-    """Wraps one in-memory extraction result (output_builder.ObjectData).
-
-    texture_hashes is a per-component list of hash lists, index-aligned with
-    meta['components'].
-    """
+def from_output_object(vb0_hash: str, object_data) -> LodObject:
+    """Wraps one in-memory extraction result (output_builder.ObjectData)."""
     meta = json.loads(object_data.metadata)
 
     components = []
@@ -142,7 +135,6 @@ def from_output_object(vb0_hash: str, object_data, texture_hashes: list) -> LodO
             vb_bytes=component_data.vb,
             ib_bytes=component_data.ib,
             meta=component_meta,
-            texture_hashes=texture_hashes[index] if index < len(texture_hashes) else (),
         ))
 
     return LodObject(
