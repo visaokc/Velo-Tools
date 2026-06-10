@@ -141,11 +141,6 @@ def _prepare_lod_export(exporter):
         return
     is_merged = cfg.mod_skeleton_type == 'MERGED'
 
-    if is_cross_scene and is_merged:
-        print('[LOD] Cross-scene LOD export currently supports the COMPONENT runtimes only — '
-              'skipped for the MERGED skeleton mode.')
-        return
-
     blend = exporter.buffers.get('Blend')
     index_buffer = exporter.buffers.get('Index')
     if blend is None or index_buffer is None:

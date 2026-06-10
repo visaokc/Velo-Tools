@@ -213,7 +213,8 @@ def _merge_offset_shift(remap_table):
     return shift, n
 
 
-def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_count_override=None):
+def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_count_override=None,
+                           primary=None):
     """MERGED FoldHost = the native body ``[TextureOverrideComponent<bc>]`` override replicated verbatim,
     so it inherits everything that component needs to draw correctly: the ``if $merge_status_id != 2``
     skeleton-build block, the ``if ResourceMergedSkeleton !== null`` draw block, and -- crucially for
@@ -233,7 +234,14 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
     sub-component (e.g. the bear), so its bones are numbered ``vg_shift`` lower and there are
     ``vg_count_override`` of them. The merge block's ``$\\WWMIv1\\vg_offset``/``vg_count`` are rewritten so
     the dungeon cb4 lands at ``base_offset + vg_shift`` (where the base surviving geometry reads), not at the
-    bear-inclusive base offset. Identity folds pass ``vg_shift=0`` (no rewrite, byte-identical)."""
+    bear-inclusive base offset. Identity folds pass ``vg_shift=0`` (no rewrite, byte-identical).
+
+    ``primary`` = (index_count, first_index) of the base component's primary draw. Needed for the
+    LOD-fork ini shape, where the native section carries no inline draws but delegates to the shared
+    ``[CommandListDrawComponent{N}]`` list -- that list holds ALL objects' draws (incl. ``.001``
+    sub-draws) plus the ``$lod_level`` dispatch, so running it from the FoldHost would also draw the
+    split sub-part with shifted (wrong) bones in the dungeon scene. The delegation line is replaced
+    with the stock inline sequence (trigger / shared-resources bind / primary draw / cleanup)."""
     native = _section(body_text, "TextureOverrideComponent%d" % bc)
     if not native:
         return ""
@@ -260,6 +268,17 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
                 out.append(ln)            # keep the primary draw verbatim
                 seen_draw = True
             # drop subsequent draws (e.g. the .001 sub-component, drawn by its own IB)
+        elif s.startswith("run = CommandListDrawComponent"):
+            # LOD-fork shape: replace the shared-list delegation with the stock inline
+            # sequence, primary draw only (see docstring).
+            if primary is None:
+                raise ValueError("LOD-fork body ini shape requires the primary draw of C%d" % bc)
+            indent = ln[:len(ln) - len(ln.lstrip())]
+            out.append("%srun = CommandListTriggerResourceOverrides" % indent)
+            out.append("%srun = CommandListOverrideSharedResources" % indent)
+            out.append("%sdrawindexed = %d, %d, 0" % (indent, primary[0], primary[1]))
+            out.append("%srun = CommandListCleanupSharedResources" % indent)
+            seen_draw = True
         elif s.startswith("; Draw "):
             if not seen_draw:
                 out.append(ln)            # keep only the primary draw's comment
@@ -368,7 +387,8 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             # dungeon's missing-leading-bone count so its cb4 lands where the base surviving geometry reads.
             rt = vg_remap_all.get(str(bc))
             vg_shift, vg_count_override = _merge_offset_shift(rt) if rt else (0, None)
-            out.append(_build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift, vg_count_override))
+            out.append(_build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift, vg_count_override,
+                                              primary=(body_draws.get(bc) or [None])[0]))
         else:
             cnt, offd = body_draws[bc][0]
             ovr = remap_cmd[bc][0] if bc in remap_cmd else "CommandListOverrideSharedResources"
