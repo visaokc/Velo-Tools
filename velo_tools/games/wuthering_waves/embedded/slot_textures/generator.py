@@ -304,7 +304,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                lod_ranges: Optional[Dict[int, Dict[int, Tuple[int, int]]]] = None,
                manual_anchors: Optional[List[Tuple[str, int]]] = None,
                multi_state_seats: Optional[Dict[Tuple[int, int], Set[str]]] = None,
-               live_seed: Optional[Set[str]] = None) -> SlotPlan:
+               live_seed: Optional[Set[str]] = None,
+               trusted_hashes: Optional[Set[str]] = None) -> SlotPlan:
     """textures: (texture hash, resource section name) in template order.
     texture_info: hash -> format/size of the ORIGINAL game textures.
     component_ranges: comp_id -> (match_first_index, match_index_count) of the
@@ -327,7 +328,15 @@ def build_plan(forms: List[Tuple[str, FormData]],
     offenders). They are excluded from every condition/assignment up front;
     same-signature conflicts discovered DURING this pass are returned in
     plan.live_fallback but not re-applied within the pass - re-run with the
-    grown seed until the set stops growing."""
+    grown seed until the set stops growing.
+    trusted_hashes: hashes whose slot content is SESSION-STABLE (the
+    object's own textures: bound exclusively during its draws across the
+    caller's dumps). When provided, condition signatures only use slots
+    holding a replaced or trusted texture - scene inputs (shadow masks,
+    lightmaps) recorded at aux slots change between sessions and a single
+    stale term kills the whole branch in game (field evidence, the leg-pass
+    bug: both dumps replayed green while the live session diverged on a
+    scene slot). None = legacy behavior (every recorded slot qualifies)."""
     warnings: List[str] = list(load_warnings or [])
     multi_form = len(forms) > 1
     mod_hashes = {h: res for h, res in textures}
@@ -440,6 +449,16 @@ def build_plan(forms: List[Tuple[str, FormData]],
     def _is_live(tex_hash: Optional[str]) -> bool:
         return (tex_hash is not None
                 and alias.get(tex_hash, tex_hash) in live_fallback)
+
+    def _is_trusted(tex_hash: str) -> bool:
+        """Replaced textures are always condition-worthy; everything else
+        must be in the caller's trusted set (session-stable object inputs)
+        when one is provided."""
+        canon = alias.get(tex_hash, tex_hash)
+        if canon in mod_hashes:
+            return True
+        return (trusted_hashes is None or tex_hash in trusted_hashes
+                or canon in trusted_hashes)
 
     def _route_live(tex_hash: str, reason: str):
         canon = alias.get(tex_hash, tex_hash)
@@ -640,6 +659,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 sig = tuple(sorted(
                     (slot, key) for slot, h in pair_map.items()
                     if slot in sig_slots and not _is_live(h)
+                    and _is_trusted(h)
                     and (key := _family_key(h, texture_info)) is not None))
                 by_sig.setdefault(sig, []).append(form_id)
                 comp_records.setdefault(comp_id, []).append(
