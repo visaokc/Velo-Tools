@@ -281,13 +281,9 @@ def _fi_str(value: float) -> str:
     return text[:-2] if text.endswith('.0') else text
 
 
-def _render_assignments(assign: Dict[int, str], indent: str) -> List[str]:
-    lines = []
-    for slot in sorted(assign):
-        backup = constants.RES_BACKUP.format(slot=slot)
-        lines.append(f'{indent}{backup} = ref ps-t{slot}')
-        lines.append(f'{indent}ps-t{slot} = ref {assign[slot]}')
-    return lines
+# NOTE: assignment rendering lives inside build_plan (_guarded_assignments):
+# non-signature slots self-guard on their recorded format-family tag, which
+# needs the plan's texture_info / marks / fi_text context.
 
 
 def build_plan(forms: List[Tuple[str, FormData]],
@@ -882,6 +878,50 @@ def build_plan(forms: List[Tuple[str, FormData]],
             terms.append(f'{constants.VAR_HIT.format(texture_hash=branch.mark_hash)} == 1')
         return terms
 
+    def _guarded_assignments(branch: _Branch) -> List[str]:
+        """Backup+bind lines for one branch body. The branch condition only
+        pins the SIGNATURE slots, so every other assigned slot self-guards on
+        its recorded format-family tag (OR mark values, same dual-semantics
+        convention as the condition terms): compatible-cluster unions and
+        multi-state passes bind a slot only while it actually carries the
+        recorded family - binding "harmlessly" onto whatever the pass left
+        there over-wrote cubemap/depth inputs on shared outline/shadow passes
+        (field bug, ADR 0007 rev 8). Slots with no verifiable state (no
+        recorded format or mark anywhere) are skipped, never bound blind."""
+        sig_slots = {slot for slot, _ in branch.signature}
+        lines: List[str] = []
+        for slot in sorted(branch.assign):
+            backup = constants.RES_BACKUP.format(slot=slot)
+            bind = [f'{backup} = ref ps-t{slot}',
+                    f'ps-t{slot} = ref {branch.assign[slot]}']
+            if slot in sig_slots or slot == branch.mark_slot:
+                # the condition (family term / probe content key) already
+                # verified this slot for the current draw
+                lines.extend(f'    {line}' for line in bind)
+                used_slots.add(slot)
+                continue
+            values: List[str] = []
+            for h in sorted(branch.cond_slots.get(slot, ())):
+                key = _family_key(h, texture_info)
+                if key is not None:
+                    used_families.setdefault(comp_id, set()).add(key)
+                    if fi_text[key] not in values:
+                        values.append(fi_text[key])
+                if h in marks and str(marks[h]) not in values:
+                    values.append(str(marks[h]))
+            if not values:
+                warnings.append(
+                    f'component {comp_id}: assignment at ps-t{slot} skipped - '
+                    f'no recorded format to verify the slot state '
+                    f'(re-extract with a current build to record formats)')
+                continue
+            lines.append('    if ' + ' || '.join(f'ps-t{slot} == {v}'
+                                                 for v in values))
+            lines.extend(f'        {line}' for line in bind)
+            lines.append('    endif')
+            used_slots.add(slot)
+        return lines
+
     out: List[str] = []
     form_sources = ', '.join(label for label, _ in forms)
     out.append('')
@@ -992,9 +1032,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
             if branch.form_gate is not None:
                 cond += f' && {constants.VAR_FORM} == {branch.form_gate}'
             chunk.append(f'{"if" if first else "else if"} {cond}')
-            chunk.extend(_render_assignments(branch.assign, '    '))
+            chunk.extend(_guarded_assignments(branch))
             first = False
-            used_slots.update(branch.assign)
         chunk.append('endif')
         body_chunks.append('\n'.join(chunk))
 

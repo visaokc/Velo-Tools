@@ -202,10 +202,16 @@ def _merge_variant_records(dst_components, src_components):
     another streaming residency level of the texture — recorded under the
     record's "variants" key (extra latch keys shrink the form-switch latency
     after the shader fast path goes stale). New pairs/slots are added for
-    coverage; contradicting records (same size or different format) keep the
-    existing data. Returns (variants_added, records_added)."""
+    coverage. Any OTHER contradiction (different format, or same format and
+    size with a different hash) is MULTI-STATE evidence: shared outline/
+    shadow-style passes bind different content per frame, so the seat becomes
+    a conflict record the generator never assigns - keeping the first
+    sighting produced wrong slot bindings whenever the pass ran in its other
+    state (field-diagnosed on a converted third-party mod). Returns
+    (variants_added, records_added, conflicts_marked)."""
     variants_added = 0
     records_added = 0
+    conflicts_marked = 0
     for comp, src_vs in src_components.items():
         dst_vs = dst_components.setdefault(comp, OrderedDict())
         for vs_key, src_ps in src_vs.items():
@@ -228,7 +234,14 @@ def _merge_variant_records(dst_components, src_components):
                         existing.setdefault('variants', [])
                         existing['variants'].append(new_hash)
                         variants_added += 1
-    return variants_added, records_added
+                        continue
+                    if existing.get('hash') is None:
+                        continue  # already marked multi-state
+                    dst_slots[slot] = OrderedDict((
+                        ('filename', ''), ('hash', None), ('format', ''),
+                        ('width', 0), ('height', 0)))
+                    conflicts_marked += 1
+    return variants_added, records_added, conflicts_marked
 
 
 def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
@@ -287,7 +300,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             usage = json.load(f)
         base_components = OrderedDict(
             (k, v) for k, v in usage.items() if k.startswith('Component'))
-        variants_added, records_added = _merge_variant_records(
+        variants_added, records_added, conflicts_marked = _merge_variant_records(
             base_components, components_usage)
         usage.update(base_components)
         with open(usage_path, 'w', encoding='utf-8') as f:
@@ -304,6 +317,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
                          for ps_map in vs_map.values()),
             'textures_copied': textures_copied,
             'variants_added': variants_added,
+            'conflicts_marked': conflicts_marked,
             'total_forms': 1 + len(usage.get(constants.EXTRA_FORMS_KEY) or []),
         }
 
@@ -359,7 +373,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             # Same form, ANOTHER dump (e.g. a different camera distance):
             # residency harvest into the existing entry instead of replacing
             # it or spawning a spurious extra form.
-            variants_added, _ = _merge_variant_records(
+            variants_added, _, _ = _merge_variant_records(
                 existing['components'], components_usage)
             entry = existing
             replaced = True
