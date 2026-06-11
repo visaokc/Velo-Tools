@@ -71,13 +71,16 @@ SEC_TEX_MARK = "TextureOverrideMarkTexture{texture_hash}"
 # an anchor.
 SEC_RESOURCE_ANCHOR = "TextureOverrideFormAnchor{anchor_hash}"
 SEC_SHADER_ANCHOR = "ShaderOverrideFormAnchor{anchor_hash}"
-# Anchor heartbeat + per-frame watchdog (only emitted for the field-proven
-# topology: exactly two forms, exactly one of them anchored). The anchored
-# form's exclusive part draws every frame, so a whole frame without a
-# heartbeat means the OTHER form is active — that yields bidirectional
-# zero-latency switching from a single anchor. ARMED gates the absence
-# rule: a stale anchor never arms, so the watchdog stays inert and the
-# texture latches keep full authority instead of fighting it every frame.
+# Anchor heartbeat + per-frame watchdog (emitted when exactly ONE form is
+# left unanchored, any form count; two-forms/one-anchor is the field-proven
+# special case). Anchored forms' exclusive parts draw every frame, so a
+# whole frame without a heartbeat pins the unanchored form by elimination —
+# every switch direction becomes zero-latency. All anchors share the one
+# heartbeat (which anchored form is active is settled by their direct
+# latches). ARMED gates the absence rule: a stale anchor never arms, so the
+# watchdog stays inert and the texture latches keep full authority instead
+# of fighting it every frame (with multiple anchors ARMED is global — one
+# stale anchor among live ones degrades less gracefully, see ADR 0007).
 VAR_ANCHOR_SEEN = "$anchor_seen"
 VAR_ANCHOR_ARMED = "$anchor_armed"
 SEC_FORMAT_TAG = "TextureOverrideComponent{component_id}{format_name}"

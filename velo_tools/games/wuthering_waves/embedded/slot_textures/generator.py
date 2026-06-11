@@ -497,15 +497,22 @@ def build_plan(forms: List[Tuple[str, FormData]],
             warnings.append(
                 f'form anchor {anchor_hash!r} skipped (expected an 8-hex '
                 f'vb0 hash or a 16-hex ps hash)')
-    # Heartbeat watchdog: with exactly two forms and exactly one of them
-    # anchored, a whole frame without an anchor heartbeat means the OTHER
-    # form is active — one anchor covers both switch directions with zero
-    # latency. Only this field-proven topology is emitted; anything else
-    # keeps the v3.4 behavior (instant entry, latch-driven return).
+    # Heartbeat watchdog: with exactly ONE unanchored form (any form count),
+    # a whole frame without an anchor heartbeat pins that form by
+    # elimination — the anchors cover every switch direction with zero
+    # latency. All anchors share one heartbeat: WHICH anchored form is
+    # active is settled by the anchors' own direct latches; the absence
+    # rule only needs "did any anchor fire this frame". Two-forms/one-
+    # anchor is the field-proven special case. Known trade-off with
+    # multiple anchors: ARMED is global, so one stale anchor among live
+    # ones misreads its form's absence as the unanchored form (texture
+    # latches then fight per frame until re-export) — geometry hashes
+    # usually churn together, accepted and documented in ADR 0007 rev 6.
     anchored_forms = {f for _, f in anchor_resources + anchor_shaders}
     watchdog_form = None  # the UNANCHORED form the absence rule commits to
-    if multi_form and len(forms) == 2 and len(anchored_forms) == 1:
-        watchdog_form = ({1, 2} - anchored_forms).pop()
+    unanchored_forms = set(range(1, len(forms) + 1)) - anchored_forms
+    if multi_form and anchored_forms and len(unanchored_forms) == 1:
+        watchdog_form = unanchored_forms.pop()
     if multi_form:
         for form_id, (label, _) in enumerate(forms, start=1):
             if form_id not in anchored_forms and form_id != watchdog_form:
