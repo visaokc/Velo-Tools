@@ -23,11 +23,13 @@
 #     ShaderOverride / ShaderRegex / shader hash anywhere.
 #   * Same-signature conflicts (two texture sets whose recorded formats are
 #     identical, e.g. an own-material vs a shared-overlay set on one
-#     component) are resolved by marking ONE replaced texture per non-
-#     preferred set with a deterministic per-texture filter_index and testing
-#     it exactly; when no mark is resident (far camera, stale hash after a
-#     game update) the chain falls back to the component-local set — stable
-#     wrong-at-worst, never flickering.
+#     component) and multi-state seats (shared outline/shadow passes binding
+#     a different part per draw) need per-texture runtime identity, which
+#     the field WWMI fork does not provide (hash-matched sections never join
+#     the per-draw command-list path - ADR 0007 rev 10): such textures are
+#     routed to LIVE FALLBACK - the slot layer leaves them alone, their
+#     stock hash sections keep replacing them (family-expanded by callers
+#     with a hash family table), and plan.live_fallback reports them.
 #   * Multi-form characters get a persistent $form_id driven by a marker
 #     ladder: M1 format markers (zero-hash, when one form has a format family
 #     unique at some (component, slot)) else FORK LATCHES: at a (component,
@@ -48,10 +50,11 @@
 #     signature (aux slots included) — specific enough to need no hash keys
 #     and residency-invariant by construction.
 #
-# Marked textures read back their mark value instead of the family tag, so
-# every condition term whose slot can carry a marked texture is emitted as an
-# OR of (family tag, mark values) — correct under either hash-vs-fuzzy
-# precedence a 3DMigoto build implements.
+# Per-texture mark sections survive ONLY for form detection (fork latches):
+# they merely degrade there (anchors/M1 markers carry the switch when the
+# latch ladder is inert on a loader build). Condition terms whose slot can
+# carry a latch-marked texture are emitted as an OR of (family tag, mark
+# value) — correct under either hash-vs-fuzzy precedence.
 
 import json
 import re
@@ -230,6 +233,15 @@ class SlotPlan:
     # [Constants] default for $form_id: the unanchored form when the
     # watchdog is active (instant-correct on load either way), else 1.
     default_form_id: int = 1
+    # Mod textures the slot layer cannot serve safely with format conditions
+    # alone (multi-state seats, indistinguishable same-signature sets):
+    # canonical mod hash -> human-readable reason. The caller must keep their
+    # stock hash sections live (and may family-expand them); their resource
+    # indices are excluded from covered_resource_indices. Callers that can
+    # re-run the plan should feed these back via live_seed until the set
+    # stops growing (the exclusion of a live texture from conditions can
+    # surface new conflicts).
+    live_fallback: Dict[str, str] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
     stats: Dict[str, int] = field(default_factory=dict)
 
@@ -246,8 +258,6 @@ class _Branch:
     local: bool                       # every source PS exclusive to this component
     material: bool
     preferred: bool = False           # cluster winner (bare-condition fallback)
-    mark_slot: Optional[int] = None   # disambiguator slot (exact-mark branch)
-    mark_hash: Optional[str] = None
 
 
 def _is_material_pair(pair_map: Dict[int, Optional[str]],
@@ -293,7 +303,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                component_ranges: Optional[Dict[int, Tuple[int, int]]] = None,
                lod_ranges: Optional[Dict[int, Dict[int, Tuple[int, int]]]] = None,
                manual_anchors: Optional[List[Tuple[str, int]]] = None,
-               multi_state_seats: Optional[Dict[Tuple[int, int], Set[str]]] = None) -> SlotPlan:
+               multi_state_seats: Optional[Dict[Tuple[int, int], Set[str]]] = None,
+               live_seed: Optional[Set[str]] = None) -> SlotPlan:
     """textures: (texture hash, resource section name) in template order.
     texture_info: hash -> format/size of the ORIGINAL game textures.
     component_ranges: comp_id -> (match_first_index, match_index_count) of the
@@ -304,12 +315,19 @@ def build_plan(forms: List[Tuple[str, FormData]],
     blind exactly at LOD distance.
     multi_state_seats: (comp_id, slot) -> ORIGINAL hashes a multi-state pass
     binds there across frames/draws (shared outline/shadow shaders draw a
-    different part per draw). Format conditions cannot serve such seats: the
-    candidates act as synthetic vanilla-guard colliders (format branches
-    that could fire on those draws must carry their own content key), and
-    every REPLACED candidate gets a post-chain exact content-key block - the
-    slot binds only when the probe proves that very texture is bound (a
-    stale mark simply never binds; ADR 0007 rev 9)."""
+    different part per draw). Format conditions cannot serve such seats, and
+    the probe/content-key machinery of rev 9 is field-dead (hash-matched
+    sections never join the per-draw command-list path on the user's WWMI
+    fork: D1/D2 dye diagnostics, ADR 0007 rev 10) - every REPLACED candidate
+    is routed to LIVE FALLBACK instead: the slot layer leaves it alone, the
+    caller keeps its stock hash section live (family-expanded when a hash
+    family table is available).
+    live_seed: canonical mod hashes the CALLER already routed to live
+    fallback (unstable seats, prior-iteration discoveries, sandbox
+    offenders). They are excluded from every condition/assignment up front;
+    same-signature conflicts discovered DURING this pass are returned in
+    plan.live_fallback but not re-applied within the pass - re-run with the
+    grown seed until the set stops growing."""
     warnings: List[str] = list(load_warnings or [])
     multi_form = len(forms) > 1
     mod_hashes = {h: res for h, res in textures}
@@ -394,6 +412,41 @@ def build_plan(forms: List[Tuple[str, FormData]],
             warnings.append(
                 f'texture {variant} treated as a residency level of {canon} '
                 f'(same slot/format, different size, only one kept)')
+
+    # -------------------------------------------------------- live routing --
+    # Textures the slot layer must NOT touch: their replacement stays with
+    # the stock hash sections (the caller keeps them live and may expand
+    # them across the hash family). Two sources: the caller's live_seed,
+    # and every replaced multi-state candidate (exact per-texture runtime
+    # identity is unavailable on the field loader - ADR 0007 rev 10).
+    # At runtime a live-replaced texture is a file-backed custom resource
+    # the fuzzy format sections do not tag, so its slot reads fi 0: every
+    # condition term, OR-arm and self-guard referencing it must be skipped
+    # or the chain goes blind exactly where the live section fired.
+    live_fallback: Dict[str, str] = {}
+    for h in sorted(live_seed or ()):
+        canon = alias.get(h, h)
+        if canon in mod_hashes:
+            live_fallback.setdefault(canon, 'caller-routed (live_seed)')
+    for (ms_comp, ms_slot), ms_candidates in sorted(
+            (multi_state_seats or {}).items()):
+        for h in sorted(ms_candidates):
+            canon = alias.get(h, h)
+            if canon in mod_hashes:
+                live_fallback.setdefault(
+                    canon, f'multi-state seat (component {ms_comp}, '
+                           f'ps-t{ms_slot}): needs per-texture identity')
+
+    def _is_live(tex_hash: Optional[str]) -> bool:
+        return (tex_hash is not None
+                and alias.get(tex_hash, tex_hash) in live_fallback)
+
+    def _route_live(tex_hash: str, reason: str):
+        canon = alias.get(tex_hash, tex_hash)
+        if canon in mod_hashes and canon not in live_fallback:
+            live_fallback[canon] = reason
+            warnings.append(
+                f'texture {canon} routed to live hash fallback: {reason}')
 
     # ------------------------------------------------ coverage / blind zone --
     seen_hashes: Set[str] = set()
@@ -586,7 +639,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     sig_slots = set(pair_map)
                 sig = tuple(sorted(
                     (slot, key) for slot, h in pair_map.items()
-                    if slot in sig_slots
+                    if slot in sig_slots and not _is_live(h)
                     and (key := _family_key(h, texture_info)) is not None))
                 by_sig.setdefault(sig, []).append(form_id)
                 comp_records.setdefault(comp_id, []).append(
@@ -602,7 +655,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             # resource, like a form-switched diffuse) keeps its gates.
             pair_assigns = {
                 f: {slot: mod_hashes[h] for slot, h in pm.items()
-                    if h is not None and h in mod_hashes}
+                    if h is not None and h in mod_hashes and not _is_live(h)}
                 for f, pm in per_form.items()}
             union_assign: Dict[int, str] = {}
             compatible = True
@@ -642,7 +695,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     cond_slots: Dict[int, Set[str]] = {}
                     for f in (form_ids if gate is None else [gate]):
                         for slot, h in per_form[f].items():
-                            if h is not None:
+                            if h is not None and not _is_live(h):
                                 cond_slots.setdefault(slot, set()).add(h)
                     seeds.append(_Branch(cond_slots=cond_slots, signature=sig,
                                          assign=assign, form_gate=gate,
@@ -667,7 +720,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
         if merged:
             component_branches[comp_id] = merged
 
-    if not component_branches:
+    if not component_branches and not live_fallback:
         raise SlotStyleDegrade('no component produced any slot assignment')
 
     # --------------------------------------------------- conflict resolution --
@@ -721,33 +774,27 @@ def build_plan(forms: List[Tuple[str, FormData]],
             conflict_count += len(groups) - 1
             groups[0].preferred = True
             for member in groups[1:]:
-                candidate = None
-                for slot in sorted(member.cond_slots):
-                    for h in sorted(member.cond_slots[slot],
-                                    key=lambda h: ((texture_info.get(h) or {}).get('width', 1 << 20), h)):
-                        if h not in mod_hashes:
-                            continue
-                        others = set()
-                        for other in members:
-                            if other is not member:
-                                others |= other.cond_slots.get(slot, set())
-                        if h not in others:
-                            candidate = (slot, h)
-                            break
-                    if candidate:
-                        break
-                value = _ensure_mark(candidate[1]) if candidate else None
-                if value is None:
-                    # Indistinguishable at runtime: an identical bare condition
-                    # would be dead elif chain noise — drop it, the preferred
-                    # set claims those draws (stable wrong-at-worst).
-                    warnings.append(
-                        f'component {comp_id}: two texture sets share the same format '
-                        f'signature and no replaced texture distinguishes them - the '
-                        f'preferred set wins, the other set is shadowed')
-                    dropped.append(member)
-                    continue
-                member.mark_slot, member.mark_hash = candidate
+                # Same signature, conflicting assignments, and no per-texture
+                # runtime identity available on the field loader (hash-matched
+                # mark sections never join the per-draw path - ADR 0007
+                # rev 10): the member's own content goes to live fallback
+                # (its stock hash sections keep replacing it) and the branch
+                # is dropped. The preferred branch may still fire on the
+                # member's draws, but the routed textures are live-replaced
+                # there (untagged file resources), so signature terms and
+                # self-guards referencing those slots fail closed.
+                for slot, res in sorted(member.assign.items()):
+                    if groups[0].assign.get(slot) == res:
+                        continue
+                    for h in sorted(member.cond_slots.get(slot, ())):
+                        if mod_hashes.get(h) == res:
+                            _route_live(h, f'component {comp_id}: same-'
+                                           f'signature conflict at ps-t{slot}')
+                warnings.append(
+                    f'component {comp_id}: two texture sets share the same format '
+                    f'signature - the conflicting set falls back to live hash '
+                    f'sections, the preferred set keeps the slot layer')
+                dropped.append(member)
         if dropped:
             component_branches[comp_id] = [b for b in branches if b not in dropped]
 
@@ -756,21 +803,15 @@ def build_plan(forms: List[Tuple[str, FormData]],
     # satisfies (no recorded shared slot with a differing family) would bind
     # mod content onto vanilla draws (the C6 scramble: the shared chameleon
     # set's bare condition matched the component's own unkept material).
-    # Such branches must be content-keyed on a kept original that differs by
-    # hash from every collider, or be dropped.
-    #
-    # Multi-state seats join as SYNTHETIC colliders (ADR 0007 rev 9): a
-    # shared outline/shadow pass draws a different part per draw, so any
-    # format branch its layouts could satisfy must prove its own content or
-    # it paints mod textures onto the pass's other states (the field
-    # thigh-patch bug class).
-    for (ms_comp, ms_slot), ms_candidates in sorted(
-            (multi_state_seats or {}).items()):
-        for h in sorted(ms_candidates):
-            key = _family_key(h, texture_info)
-            if key is not None:
-                comp_records.setdefault(ms_comp, []).append(
-                    ({ms_slot: key}, {ms_slot: h}, False))
+    # With no per-texture runtime identity on the field loader (rev 10) the
+    # remaining protection is the per-slot self-guards, so a collider is
+    # DANGEROUS only where its recorded content shares a format family with
+    # the branch's content at an ASSIGNED slot (the self-guard would pass
+    # there and over-write the vanilla draw). Dangerous branches are dropped
+    # and their content routed to live fallback; harmless ones keep the slot
+    # layer (the self-guards fail closed on the collider's draws).
+    # Multi-state seats no longer join as synthetic colliders: their
+    # replaced candidates were routed to live fallback up front.
     for comp_id, branches in component_branches.items():
         unassigned = [(sig, pm) for sig, pm, has in comp_records.get(comp_id, [])
                       if not has and sig]
@@ -778,8 +819,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
             continue
         dropped = []
         for branch in branches:
-            if branch.mark_hash is not None:
-                continue  # already content-keyed by cluster disambiguation
             bsig = dict(branch.signature)
             colliders = []
             for osig, opm in unassigned:
@@ -789,82 +828,66 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 colliders.append(opm)
             if not colliders:
                 continue
-            candidate = None
-            for slot in sorted(branch.cond_slots):
-                for h in sorted(branch.cond_slots[slot]):
-                    if h not in mod_hashes:
-                        continue
-                    if all(opm.get(slot) != h for opm in colliders):
-                        candidate = (slot, h)
-                        break
-                if candidate:
-                    break
-            if candidate is not None and _ensure_mark(candidate[1]) is not None:
-                branch.mark_slot, branch.mark_hash = candidate
-            else:
+            guard_families = {
+                slot: {key for h in branch.cond_slots.get(slot, ())
+                       if (key := _family_key(h, texture_info)) is not None}
+                for slot in branch.assign}
+            dangerous_slots = set()
+            for opm in colliders:
+                for slot in branch.assign:
+                    okey = _family_key(opm.get(slot), texture_info)
+                    if okey is not None and okey in guard_families.get(slot, ()):
+                        dangerous_slots.add(slot)
+            if not dangerous_slots:
+                continue
+            # Per-slot precision: only the family-colliding seats lose the
+            # slot layer; the rest of the branch keeps binding (slots the
+            # collider never carries are protected by their self-guards,
+            # leftover-state coincidences are the dump-replay sandbox's
+            # job to surface).
+            for slot in sorted(dangerous_slots):
+                res = branch.assign.pop(slot)
+                for h in sorted(branch.cond_slots.get(slot, ())):
+                    if mod_hashes.get(h) == res:
+                        _route_live(h, f'component {comp_id}: ps-t{slot} '
+                                       f'collides with an unreplaced texture '
+                                       f'set of the same family')
+            warnings.append(
+                f'component {comp_id}: assignment(s) at '
+                f'{", ".join(f"ps-t{s}" for s in sorted(dangerous_slots))} '
+                f'share their format family with an unreplaced texture set - '
+                f'that content falls back to live hash sections')
+            if not branch.assign:
                 dropped.append(branch)
-                warnings.append(
-                    f'component {comp_id}: a branch shares its format signature '
-                    f'with an unreplaced texture set and no kept texture '
-                    f'distinguishes them - branch dropped (those draws stay vanilla)')
         if dropped:
             component_branches[comp_id] = [b for b in branches
                                            if not any(b is d for d in dropped)]
     component_branches = {c: b for c, b in component_branches.items() if b}
-    if not component_branches:
+    if not component_branches and not live_fallback:
         raise SlotStyleDegrade('no component produced any slot assignment')
+    # All-live is a valid outcome: an empty slot layer with every replaced
+    # texture kept on (family-expandable) stock hash sections.
 
-    # Fork latch keys join the same mark table (a hash can be both a latch
-    # key and a disambiguator); entries whose mark collided are dropped.
+    # Fork latch keys populate the mark table (form detection only).
     fork_latches = [(c, s, h, f) for c, s, h, f in fork_latches
                     if _ensure_mark(h) is not None]
 
-    # Post-chain exact content keys for REPLACED multi-state candidates: the
-    # main chain (collider-guarded above) leaves those seats alone, and each
-    # candidate binds itself only when its probe flag proves that very
-    # texture is bound - misbinding is impossible, a stale mark simply never
-    # binds (safe degrade).
-    content_blocks: Dict[int, List[Tuple[int, str, str]]] = {}
-    for (ms_comp, ms_slot), ms_candidates in sorted(
-            (multi_state_seats or {}).items()):
-        for h in sorted(ms_candidates):
-            res = mod_hashes.get(h)
-            if res is None:
-                continue
-            if _ensure_mark(h) is None:
-                warnings.append(
-                    f'component {ms_comp}: multi-state candidate {h} lost its '
-                    f'mark to a collision - that slot stays vanilla on its pass')
-                continue
-            content_blocks.setdefault(ms_comp, []).append((ms_slot, h, res))
-
     # -------------------------------------------------- probe collection --
-    # Field evidence (v3.1): `ps-tN == <mark fi>` reads do NOT work while
-    # fuzzy format sections cover the texture — but hash-section command
-    # lists DO run on CheckTextureOverride. All exact per-texture
-    # discrimination therefore goes through PROBES: the component's probe
-    # command list (injected BEFORE the stock trigger) brackets its own
-    # CheckTextureOverride calls with $latch_key, and the mark sections
-    # react only to their own (component, slot) keys — latching $form_id or
-    # raising a per-draw $hit flag the branch conditions read.
-    # (comp, slot, section hash) -> list of ('latch', form) / ('hit', canon)
+    # FORM DETECTION ONLY (rev 10). The rev-9 $hit content keys are gone:
+    # the D1/D2 dye diagnostics proved hash-matched mark sections never join
+    # the per-draw command-list path on the field WWMI fork (neither their
+    # filter_index nor their CheckTextureOverride-driven command lists are
+    # observable), so per-texture discrimination cannot be a binding-layer
+    # dependency - replaced multi-state candidates go to live fallback
+    # instead. The latch ladder is kept for form detection because it only
+    # DEGRADES there (anchors and M1 markers carry the switch; a dead latch
+    # leaves the last/default form).
+    # (comp, slot, section hash) -> list of ('latch', form)
     probe_effects: Dict[Tuple[int, int, str], List[Tuple[str, object]]] = {}
     for comp_id, slot, h, form_id in fork_latches:
         probe_effects.setdefault((comp_id, slot, h), []).append(('latch', form_id))
-    for comp_id, branches in component_branches.items():
-        for branch in branches:
-            if branch.mark_hash is not None and branch.mark_slot is not None:
-                effects = probe_effects.setdefault(
-                    (comp_id, branch.mark_slot, branch.mark_hash), [])
-                if ('hit', branch.mark_hash) not in effects:
-                    effects.append(('hit', branch.mark_hash))
-    for ms_comp, entries in content_blocks.items():
-        for ms_slot, h, _res in entries:
-            effects = probe_effects.setdefault((ms_comp, ms_slot, h), [])
-            if ('hit', h) not in effects:
-                effects.append(('hit', h))
     # Residency variants collapsed by the dedup react like their canonical
-    # texture (e.g. both mip-level hashes of the eye texture raise one flag).
+    # texture (e.g. both mip-level hashes of the eye texture latch one form).
     variants_of: Dict[str, List[str]] = {}
     for variant, canon in alias.items():
         variants_of.setdefault(canon, []).append(variant)
@@ -874,12 +897,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 probe_effects.setdefault((comp_id, slot, variant),
                                          []).extend(effects)
     probe_slots: Dict[int, Set[int]] = {}
-    probe_hits: Dict[int, Set[str]] = {}
     for (comp_id, slot, h), effects in probe_effects.items():
         probe_slots.setdefault(comp_id, set()).add(slot)
-        for kind, payload in effects:
-            if kind == 'hit':
-                probe_hits.setdefault(comp_id, set()).add(payload)
 
     # ------------------------------------------------------------ emission --
     used_slots: Set[int] = set()
@@ -906,8 +925,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
     def _terms(branch: _Branch) -> List[str]:
         terms: List[str] = []
         for slot, key in branch.signature:
-            if branch.mark_slot == slot and branch.mark_hash:
-                continue  # the exact content key below covers this slot
+            # Latch-marked hashes (form detection) keep an OR-arm: on
+            # 3DMigoto builds where the hash-matched mark section wins the
+            # fi contest the texture reads its mark value, on the field
+            # fork it reads the family tag - either arm matches.
             values: List[str] = [fi_text[key]]
             for h in sorted(branch.cond_slots.get(slot, ())):
                 if h in marks:
@@ -917,11 +938,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 terms.append(f'ps-t{slot} == {values[0]}')
             else:
                 terms.append('(' + ' || '.join(f'ps-t{slot} == {v}' for v in values) + ')')
-        if branch.mark_hash:
-            # Exact content key: probe-driven flag, NOT an fi comparison
-            # (mark fi reads lose to the fuzzy format tags in the field).
-            # Works for aux-slot keys outside the signature too.
-            terms.append(f'{constants.VAR_HIT.format(texture_hash=branch.mark_hash)} == 1')
         return terms
 
     def _guarded_assignments(branch: _Branch) -> List[str]:
@@ -940,9 +956,9 @@ def build_plan(forms: List[Tuple[str, FormData]],
             backup = constants.RES_BACKUP.format(slot=slot)
             bind = [f'{backup} = ref ps-t{slot}',
                     f'ps-t{slot} = ref {branch.assign[slot]}']
-            if slot in sig_slots or slot == branch.mark_slot:
-                # the condition (family term / probe content key) already
-                # verified this slot for the current draw
+            if slot in sig_slots:
+                # the condition's family term already verified this slot
+                # for the current draw
                 lines.extend(f'    {line}' for line in bind)
                 used_slots.add(slot)
                 continue
@@ -986,10 +1002,11 @@ def build_plan(forms: List[Tuple[str, FormData]],
             effects_by_hash.setdefault(e_hash, []).append((e_comp, e_slot, kind, payload))
     if marks:
         out.append('')
-        out.append('; -- Per-texture marks. filter_index = f(hash): deterministic, identical')
-        out.append(';    across all velo mods. The command bodies react ONLY to their own')
-        out.append(';    probe keys (set around our CheckTextureOverride calls), latching')
-        out.append(';    the form or raising a per-draw flag for the branch conditions.')
+        out.append('; -- Per-texture marks (FORM DETECTION only). filter_index = f(hash):')
+        out.append(';    deterministic, identical across all velo mods. The command bodies')
+        out.append(';    react ONLY to their own probe keys (set around our')
+        out.append(';    CheckTextureOverride calls), latching the form. Known to be inert')
+        out.append(';    on some loader builds - anchors/M1 markers carry the switch there.')
         for h in sorted(marks):
             out.append('')
             out.append(f'[{constants.SEC_TEX_MARK.format(texture_hash=h)}]')
@@ -1007,10 +1024,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 cond = ' || '.join(f'{constants.VAR_LATCH_KEY} == {k}'
                                    for k in sorted(set(keys)))
                 out.append(f'if {cond}')
-                if kind == 'latch':
-                    out.append(f'    {constants.VAR_FORM} = {payload}')
-                else:
-                    out.append(f'    {constants.VAR_HIT.format(texture_hash=payload)} = 1')
+                out.append(f'    {constants.VAR_FORM} = {payload}')
                 out.append('endif')
 
     if anchor_resources or anchor_shaders:
@@ -1040,7 +1054,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
 
     component_list_names: Dict[int, str] = {}
     body_chunks: List[str] = []
-    for comp_id in sorted(set(component_branches) | set(content_blocks)):
+    for comp_id in sorted(component_branches):
         branches = component_branches.get(comp_id, [])
         name = constants.CMDLIST_SET_TEXTURES.format(component_id=comp_id)
         component_list_names[comp_id] = name
@@ -1064,13 +1078,12 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 chunk.append(f'if ps-t{slot} == {fi_text[key]}')
                 chunk.append(f'    {constants.VAR_FORM} = {form_id}')
                 chunk.append('endif')
-        # Exact-mark branches first, then bare-condition branches by
-        # specificity (slot count desc, cluster winners before shadowed
-        # leftovers) - subset conditions go last so a superset draw is
-        # claimed by its own branch.
+        # Branches by specificity (slot count desc, cluster winners before
+        # shadowed leftovers) - subset conditions go last so a superset draw
+        # is claimed by its own branch.
         ordered = sorted(
             branches,
-            key=lambda b: (b.mark_hash is None, -len(b.signature),
+            key=lambda b: (-len(b.signature),
                            not b.preferred, b.form_gate or 0, b.signature,
                            tuple(sorted(b.assign.items()))))
         first = True
@@ -1083,19 +1096,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
             first = False
         if ordered:
             chunk.append('endif')
-        ms_entries = content_blocks.get(comp_id, ())
-        if ms_entries:
-            chunk.append('; multi-state seats: exact content keys '
-                         '(probe-driven), bound only when the chain above '
-                         'left the slot untouched')
-        for ms_slot, h, res in ms_entries:
-            backup = constants.RES_BACKUP.format(slot=ms_slot)
-            chunk.append(f'if {constants.VAR_HIT.format(texture_hash=h)} == 1 '
-                         f'&& {backup} === null')
-            chunk.append(f'    {backup} = ref ps-t{ms_slot}')
-            chunk.append(f'    ps-t{ms_slot} = ref {res}')
-            chunk.append('endif')
-            used_slots.add(ms_slot)
         body_chunks.append('\n'.join(chunk))
 
     probe_list_names: Dict[int, str] = {}
@@ -1109,8 +1109,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
             probe_list_names[comp_id] = name
             out.append('')
             out.append(f'[{name}]')
-            for h in sorted(probe_hits.get(comp_id, ())):
-                out.append(f'{constants.VAR_HIT.format(texture_hash=h)} = 0')
             for slot in sorted(probe_slots[comp_id]):
                 out.append(f'{constants.VAR_LATCH_KEY} = {constants.probe_key(comp_id, slot)}')
                 out.append(f'CheckTextureOverride = ps-t{slot}')
@@ -1174,10 +1172,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
     extra_globals: List[str] = []
     if probe_effects:
         extra_globals.append(constants.VAR_LATCH_KEY)
-        all_hits = {payload for effects in probe_effects.values()
-                    for kind, payload in effects if kind == 'hit'}
-        extra_globals.extend(constants.VAR_HIT.format(texture_hash=h)
-                             for h in sorted(all_hits))
 
     watchdog_lines: List[str] = []
     if watchdog_form is not None:
@@ -1195,6 +1189,14 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'endif',
         ]
 
+    # Live-fallback textures are NOT covered by the slot layer: excluding
+    # their indices makes the caller keep their stock hash sections live
+    # (family-expanded when a hash family table is available).
+    if live_fallback:
+        for index, (h, _res) in enumerate(textures):
+            if alias.get(h, h) in live_fallback:
+                covered_resource_indices.discard(index)
+
     return SlotPlan(
         block_text='\n'.join(out),
         component_list_names=component_list_names,
@@ -1206,6 +1208,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
         extra_globals=extra_globals,
         watchdog_lines=watchdog_lines,
         default_form_id=watchdog_form if watchdog_form is not None else 1,
+        live_fallback=dict(live_fallback),
         warnings=warnings,
         stats={
             'forms': len(forms),
@@ -1217,7 +1220,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'anchors': len(anchor_resources) + len(anchor_shaders),
             'anchor_watchdog': 1 if watchdog_form is not None else 0,
             'probes': len(probe_effects),
-            'content_keys': sum(len(v) for v in content_blocks.values()),
+            'live_fallback': len(live_fallback),
             'format_sections': format_section_count,
             'covered_textures': len(covered_resource_indices),
             'blind_zone_textures': len(blind_zone),

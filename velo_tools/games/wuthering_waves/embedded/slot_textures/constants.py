@@ -44,11 +44,15 @@ VAR_FORM = "$form_id"
 # section knows WHICH (component, slot) is being checked. Field evidence
 # (v3.1): reading a mark's filter_index back via `ps-tN == value` does NOT
 # work when fuzzy format sections cover the same texture (the fuzzy tag wins
-# the fi contest), but hash-section command lists reliably RUN on check —
-# so exact per-texture discrimination goes through section-driven flags
-# instead of fi comparisons.
+# the fi contest). Field evidence (rev 10, dye diagnostics D1/D2): on the
+# field WWMI fork hash-matched mark sections never join the per-draw
+# command-list path AT ALL (neither fi reads nor CheckTextureOverride-driven
+# command lists are observable), so the probe ladder survives only for FORM
+# DETECTION, where it merely degrades (anchors/M1 markers carry the switch).
+# The binding layer must never depend on per-texture identity: textures that
+# need it are routed to live hash fallback instead (generator.SlotPlan
+# .live_fallback).
 VAR_LATCH_KEY = "$latch_key"
-VAR_HIT = "$hit_{texture_hash}"
 CMDLIST_PROBE = "CommandListProbeComponent{component_id}"
 CMDLIST_SET_TEXTURES = "CommandListSetTexturesComponent{component_id}"
 CMDLIST_RESTORE = "CommandListRestoreTextures"
