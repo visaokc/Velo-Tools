@@ -292,7 +292,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                load_warnings: Optional[List[str]] = None,
                component_ranges: Optional[Dict[int, Tuple[int, int]]] = None,
                lod_ranges: Optional[Dict[int, Dict[int, Tuple[int, int]]]] = None,
-               manual_anchors: Optional[List[Tuple[str, int]]] = None) -> SlotPlan:
+               manual_anchors: Optional[List[Tuple[str, int]]] = None,
+               multi_state_seats: Optional[Dict[Tuple[int, int], Set[str]]] = None) -> SlotPlan:
     """textures: (texture hash, resource section name) in template order.
     texture_info: hash -> format/size of the ORIGINAL game textures.
     component_ranges: comp_id -> (match_first_index, match_index_count) of the
@@ -300,7 +301,15 @@ def build_plan(forms: List[Tuple[str, FormData]],
     lod_ranges: lod level -> comp_id -> index range of the LOD object draws
     (from the velo lods metadata); LOD draws use the LOD component ranges, so
     each format tag section gets a twin per LOD level or the conditions go
-    blind exactly at LOD distance."""
+    blind exactly at LOD distance.
+    multi_state_seats: (comp_id, slot) -> ORIGINAL hashes a multi-state pass
+    binds there across frames/draws (shared outline/shadow shaders draw a
+    different part per draw). Format conditions cannot serve such seats: the
+    candidates act as synthetic vanilla-guard colliders (format branches
+    that could fire on those draws must carry their own content key), and
+    every REPLACED candidate gets a post-chain exact content-key block - the
+    slot binds only when the probe proves that very texture is bound (a
+    stale mark simply never binds; ADR 0007 rev 9)."""
     warnings: List[str] = list(load_warnings or [])
     multi_form = len(forms) > 1
     mod_hashes = {h: res for h, res in textures}
@@ -749,6 +758,19 @@ def build_plan(forms: List[Tuple[str, FormData]],
     # set's bare condition matched the component's own unkept material).
     # Such branches must be content-keyed on a kept original that differs by
     # hash from every collider, or be dropped.
+    #
+    # Multi-state seats join as SYNTHETIC colliders (ADR 0007 rev 9): a
+    # shared outline/shadow pass draws a different part per draw, so any
+    # format branch its layouts could satisfy must prove its own content or
+    # it paints mod textures onto the pass's other states (the field
+    # thigh-patch bug class).
+    for (ms_comp, ms_slot), ms_candidates in sorted(
+            (multi_state_seats or {}).items()):
+        for h in sorted(ms_candidates):
+            key = _family_key(h, texture_info)
+            if key is not None:
+                comp_records.setdefault(ms_comp, []).append(
+                    ({ms_slot: key}, {ms_slot: h}, False))
     for comp_id, branches in component_branches.items():
         unassigned = [(sig, pm) for sig, pm, has in comp_records.get(comp_id, [])
                       if not has and sig]
@@ -797,6 +819,25 @@ def build_plan(forms: List[Tuple[str, FormData]],
     fork_latches = [(c, s, h, f) for c, s, h, f in fork_latches
                     if _ensure_mark(h) is not None]
 
+    # Post-chain exact content keys for REPLACED multi-state candidates: the
+    # main chain (collider-guarded above) leaves those seats alone, and each
+    # candidate binds itself only when its probe flag proves that very
+    # texture is bound - misbinding is impossible, a stale mark simply never
+    # binds (safe degrade).
+    content_blocks: Dict[int, List[Tuple[int, str, str]]] = {}
+    for (ms_comp, ms_slot), ms_candidates in sorted(
+            (multi_state_seats or {}).items()):
+        for h in sorted(ms_candidates):
+            res = mod_hashes.get(h)
+            if res is None:
+                continue
+            if _ensure_mark(h) is None:
+                warnings.append(
+                    f'component {ms_comp}: multi-state candidate {h} lost its '
+                    f'mark to a collision - that slot stays vanilla on its pass')
+                continue
+            content_blocks.setdefault(ms_comp, []).append((ms_slot, h, res))
+
     # -------------------------------------------------- probe collection --
     # Field evidence (v3.1): `ps-tN == <mark fi>` reads do NOT work while
     # fuzzy format sections cover the texture — but hash-section command
@@ -817,6 +858,11 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     (comp_id, branch.mark_slot, branch.mark_hash), [])
                 if ('hit', branch.mark_hash) not in effects:
                     effects.append(('hit', branch.mark_hash))
+    for ms_comp, entries in content_blocks.items():
+        for ms_slot, h, _res in entries:
+            effects = probe_effects.setdefault((ms_comp, ms_slot, h), [])
+            if ('hit', h) not in effects:
+                effects.append(('hit', h))
     # Residency variants collapsed by the dedup react like their canonical
     # texture (e.g. both mip-level hashes of the eye texture raise one flag).
     variants_of: Dict[str, List[str]] = {}
@@ -994,7 +1040,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
 
     component_list_names: Dict[int, str] = {}
     body_chunks: List[str] = []
-    for comp_id, branches in sorted(component_branches.items()):
+    for comp_id in sorted(set(component_branches) | set(content_blocks)):
+        branches = component_branches.get(comp_id, [])
         name = constants.CMDLIST_SET_TEXTURES.format(component_id=comp_id)
         component_list_names[comp_id] = name
         chunk: List[str] = ['', f'[{name}]']
@@ -1034,7 +1081,21 @@ def build_plan(forms: List[Tuple[str, FormData]],
             chunk.append(f'{"if" if first else "else if"} {cond}')
             chunk.extend(_guarded_assignments(branch))
             first = False
-        chunk.append('endif')
+        if ordered:
+            chunk.append('endif')
+        ms_entries = content_blocks.get(comp_id, ())
+        if ms_entries:
+            chunk.append('; multi-state seats: exact content keys '
+                         '(probe-driven), bound only when the chain above '
+                         'left the slot untouched')
+        for ms_slot, h, res in ms_entries:
+            backup = constants.RES_BACKUP.format(slot=ms_slot)
+            chunk.append(f'if {constants.VAR_HIT.format(texture_hash=h)} == 1 '
+                         f'&& {backup} === null')
+            chunk.append(f'    {backup} = ref ps-t{ms_slot}')
+            chunk.append(f'    ps-t{ms_slot} = ref {res}')
+            chunk.append('endif')
+            used_slots.add(ms_slot)
         body_chunks.append('\n'.join(chunk))
 
     probe_list_names: Dict[int, str] = {}
@@ -1156,6 +1217,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'anchors': len(anchor_resources) + len(anchor_shaders),
             'anchor_watchdog': 1 if watchdog_form is not None else 0,
             'probes': len(probe_effects),
+            'content_keys': sum(len(v) for v in content_blocks.values()),
             'format_sections': format_section_count,
             'covered_textures': len(covered_resource_indices),
             'blind_zone_textures': len(blind_zone),
