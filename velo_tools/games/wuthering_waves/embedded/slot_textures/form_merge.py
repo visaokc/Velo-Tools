@@ -202,13 +202,16 @@ def _merge_variant_records(dst_components, src_components):
     another streaming residency level of the texture — recorded under the
     record's "variants" key (extra latch keys shrink the form-switch latency
     after the shader fast path goes stale). New pairs/slots are added for
-    coverage. Any OTHER contradiction (different format, or same format and
-    size with a different hash) is MULTI-STATE evidence: shared outline/
-    shadow-style passes bind different content per frame, so the seat becomes
-    a conflict record the generator never assigns - keeping the first
-    sighting produced wrong slot bindings whenever the pass ran in its other
-    state (field-diagnosed on a converted third-party mod). Returns
-    (variants_added, records_added, conflicts_marked)."""
+    coverage (whole pairs only - single slots are not grafted onto existing
+    pairs, cross-frame layout variance would pollute the per-draw presence
+    truth). The EXISTING (canonical) maps win every other contradiction:
+    frame-state differences between captures (camera, expressions, pass
+    states) are runtime-resolved by the per-slot family guards, and marking
+    them as conflicts proved far too destructive in the field (evaporated
+    signatures, un-replaced stable textures). The variant heuristic carries
+    a coexistence guard: two hashes seated together in either frame cannot
+    be residency levels of one texture. Returns (variants_added,
+    records_added, kept_contradictions)."""
     variants_added = 0
     records_added = 0
     conflicts_marked = 0
@@ -224,18 +227,27 @@ def _merge_variant_records(dst_components, src_components):
                 for rec in dst_slots.values():
                     if isinstance(rec, dict) and rec.get('hash'):
                         dst_seated.add(rec['hash'])
+    src_seated = set()
+    for src_vs in src_components.values():
+        for src_ps in src_vs.values():
+            for src_slots in src_ps.values():
+                for rec in src_slots.values():
+                    if isinstance(rec, dict) and rec.get('hash'):
+                        src_seated.add(rec['hash'])
     for comp, src_vs in src_components.items():
         dst_vs = dst_components.setdefault(comp, OrderedDict())
         for vs_key, src_ps in src_vs.items():
             dst_ps = dst_vs.setdefault(vs_key, OrderedDict())
             for ps_key, src_slots in src_ps.items():
-                dst_slots = dst_ps.setdefault(ps_key, OrderedDict())
+                dst_slots = dst_ps.get(ps_key)
+                if dst_slots is None:
+                    dst_ps[ps_key] = OrderedDict(src_slots)
+                    records_added += len(src_slots)
+                    continue
                 for slot, record in src_slots.items():
                     existing = dst_slots.get(slot)
                     if existing is None:
-                        dst_slots[slot] = record
-                        records_added += 1
-                        continue
+                        continue  # no slot grafting onto existing pairs
                     new_hash = record.get('hash')
                     if (not new_hash or new_hash == existing.get('hash')
                             or new_hash in (existing.get('variants') or [])):
@@ -243,17 +255,13 @@ def _merge_variant_records(dst_components, src_components):
                     if (record.get('format') and existing.get('format')
                             and record['format'] == existing['format']
                             and record.get('width') != existing.get('width')
-                            and new_hash not in dst_seated):
+                            and new_hash not in dst_seated
+                            and existing.get('hash') not in src_seated):
                         existing.setdefault('variants', [])
                         existing['variants'].append(new_hash)
                         variants_added += 1
                         continue
-                    if existing.get('hash') is None:
-                        continue  # already marked multi-state
-                    dst_slots[slot] = OrderedDict((
-                        ('filename', ''), ('hash', None), ('format', ''),
-                        ('width', 0), ('height', 0)))
-                    conflicts_marked += 1
+                    conflicts_marked += 1  # canonical seat stands (reported)
     return variants_added, records_added, conflicts_marked
 
 
