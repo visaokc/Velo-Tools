@@ -62,6 +62,18 @@ class FormMergeError(Exception):
     pass
 
 
+def _same_format_family(fmt_a, fmt_b) -> bool:
+    """Runtime-equal format families (float32-collapsed filter_index)."""
+    if not fmt_a or not fmt_b:
+        return False
+    import struct
+
+    def f32(v):
+        return struct.unpack('<f', struct.pack('<f', v))[0]
+    return f32(constants.format_filter_index(fmt_a)) == \
+        f32(constants.format_filter_index(fmt_b))
+
+
 def _shader_keys(descriptor):
     """Same nested-schema keys ("vs=<hash>", "ps=<hash>") as
     _shader_texture_usage.py."""
@@ -261,7 +273,18 @@ def _merge_variant_records(dst_components, src_components):
                         existing['variants'].append(new_hash)
                         variants_added += 1
                         continue
-                    conflicts_marked += 1  # canonical seat stands (reported)
+                    if (existing.get('hash') is not None
+                            and _same_format_family(record.get('format'),
+                                                    existing.get('format'))):
+                        # same family on both sides: per-slot guards cannot
+                        # arbitrate the states - never assign this seat
+                        dst_slots[slot] = OrderedDict((
+                            ('filename', ''), ('hash', None), ('format', ''),
+                            ('width', 0), ('height', 0)))
+                        conflicts_marked += 1
+                        continue
+                    conflicts_marked += 1  # different family: guards
+                    #                        arbitrate, canonical stands
     return variants_added, records_added, conflicts_marked
 
 
