@@ -312,18 +312,31 @@ def build_plan(forms: List[Tuple[str, FormData]],
         raise SlotStyleDegrade('mod has no textures, nothing to do')
 
     # ----------------------------------------------- residency-variant dedup --
-    # Exactly two hashes ever seen at one (component, slot), same format,
-    # different size, exactly one kept by the author: streaming residency
-    # levels of one texture (3.4 per-mip hash churn), not a form difference.
-    # Collapse to the kept one BEFORE any other derivation (else they fake a
-    # form fork / get form-gated / spawn bogus detection keys).
+    # Hashes seen at one (component, slot), same format, different sizes,
+    # exactly one kept by the author: streaming residency levels of one
+    # texture (3.4 per-mip hash churn), not a form difference. Collapse to
+    # the kept one BEFORE any other derivation (else they fake a form fork /
+    # get form-gated / spawn bogus detection keys).
+    #
+    # CROSS-FORM ONLY (field-proven constraint): a streamed texture shows
+    # exactly ONE residency level within a captured frame, so two group
+    # members seated in the SAME form's maps are different textures that
+    # happen to share (component, slot, format) across pipeline passes - a
+    # 512 aux mask living beside the 2048 diffuse, not its mip ladder.
+    # Collapsing those binds the kept replacement onto the wrong passes
+    # (visible wrong-texture bug on a converted third-party mod). Each form
+    # may therefore contribute at most one member of a residency group; the
+    # explicit "variants" record key (cross-dump harvest) is unaffected.
     slot_content: Dict[Tuple[int, int], Set[str]] = {}
-    for _, form_data in forms:
+    slot_form_seats: Dict[Tuple[int, int], Dict[str, Set[int]]] = {}
+    for form_id, (_, form_data) in enumerate(forms, start=1):
         for comp_id, comp_pairs in form_data.items():
             for pair_map in comp_pairs.values():
                 for slot, h in pair_map.items():
                     if h is not None:
                         slot_content.setdefault((comp_id, slot), set()).add(h)
+                        slot_form_seats.setdefault((comp_id, slot), {}) \
+                            .setdefault(h, set()).add(form_id)
     alias: Dict[str, str] = {}
     # Harvested residency variants (the "variants" record key) are aliases by
     # declaration: the merge step only records them after a same-slot, same-
@@ -348,6 +361,19 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 continue
             kept = [h for h in group if h in mod_hashes]
             if len(kept) != 1:
+                continue
+            # One residency level per form: any two members co-seated in the
+            # same form's maps are different textures - no collapse.
+            member_forms = slot_form_seats.get((comp_id, slot), {})
+            forms_seen: Set[int] = set()
+            same_form_overlap = False
+            for h in group:
+                seats = member_forms.get(h, set())
+                if forms_seen & seats:
+                    same_form_overlap = True
+                    break
+                forms_seen |= seats
+            if same_form_overlap:
                 continue
             for h in group:
                 if h != kept[0]:
