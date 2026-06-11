@@ -212,6 +212,18 @@ def _merge_variant_records(dst_components, src_components):
     variants_added = 0
     records_added = 0
     conflicts_marked = 0
+    # Coexistence guard for the variant heuristic: a texture shows ONE
+    # residency level per frame, so a hash seated ANYWHERE in the existing
+    # maps cannot be "another level" of a different hash captured alongside
+    # it - such same-format/different-size contradictions are multi-state
+    # passes, not mip ladders.
+    dst_seated = set()
+    for dst_vs in dst_components.values():
+        for dst_ps in dst_vs.values():
+            for dst_slots in dst_ps.values():
+                for rec in dst_slots.values():
+                    if isinstance(rec, dict) and rec.get('hash'):
+                        dst_seated.add(rec['hash'])
     for comp, src_vs in src_components.items():
         dst_vs = dst_components.setdefault(comp, OrderedDict())
         for vs_key, src_ps in src_vs.items():
@@ -230,7 +242,8 @@ def _merge_variant_records(dst_components, src_components):
                         continue
                     if (record.get('format') and existing.get('format')
                             and record['format'] == existing['format']
-                            and record.get('width') != existing.get('width')):
+                            and record.get('width') != existing.get('width')
+                            and new_hash not in dst_seated):
                         existing.setdefault('variants', [])
                         existing['variants'].append(new_hash)
                         variants_added += 1
