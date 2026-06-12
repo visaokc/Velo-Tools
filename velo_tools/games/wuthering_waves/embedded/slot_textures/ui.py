@@ -98,6 +98,24 @@ class VTWW_AnchorCandidateItem(bpy.types.PropertyGroup):
     hits: bpy.props.StringProperty(default='')
 
 
+class VTWW_AnchorFormDump(bpy.types.PropertyGroup):
+    """One extra-form dump row of the anchor finder (the extraction blend
+    and the mod-making blend are different files, so the finder carries its
+    own dump paths instead of relying on the extraction page)."""
+    dump_folder: bpy.props.StringProperty(
+        name="形态 Dump",
+        description="该形态的原始帧转储目录",
+        default='',
+        subtype="DIR_PATH",
+    )
+    form_label: bpy.props.StringProperty(
+        name="标签",
+        description="该形态的标签（留空按行序自动 form2/form3...；"
+                    "采用候选时写入形态锚点字段的就是这个标签）",
+        default='',
+    )
+
+
 class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
 
     form_dump_folder: bpy.props.StringProperty(
@@ -118,6 +136,15 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
 
     anchor_candidates: bpy.props.CollectionProperty(type=VTWW_AnchorCandidateItem)
     anchor_status: bpy.props.StringProperty(default='')
+
+    anchor_base_dump_folder: bpy.props.StringProperty(
+        name="基础形态 Dump",
+        description="基础形态的原始帧转储目录。留空时点「查找」会自动取"
+                    "提取页的 Frame Dump 目录（单向同步，本 blend 内可改）",
+        default='',
+        subtype="DIR_PATH",
+    )
+    anchor_form_dumps: bpy.props.CollectionProperty(type=VTWW_AnchorFormDump)
 
     form_anchors: bpy.props.StringProperty(
         name="形态锚点 (Form Anchors)",
@@ -171,24 +198,66 @@ class VTWW_OT_merge_form_textures(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class VTWW_OT_anchor_form_dump_add(bpy.types.Operator):
+    bl_idname = "vtww.anchor_form_dump_add"
+    bl_label = "添加形态 Dump 行"
+    bl_description = "再加一行形态 dump（第三/第四形态角色逐形态各一份 dump）"
+
+    def execute(self, context):
+        context.scene.vtww_slot_settings.anchor_form_dumps.add()
+        return {'FINISHED'}
+
+
+class VTWW_OT_anchor_form_dump_remove(bpy.types.Operator):
+    bl_idname = "vtww.anchor_form_dump_remove"
+    bl_label = "移除"
+    bl_description = "移除这一行形态 dump"
+
+    index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        slot_cfg = context.scene.vtww_slot_settings
+        if 0 <= self.index < len(slot_cfg.anchor_form_dumps):
+            slot_cfg.anchor_form_dumps.remove(self.index)
+        return {'FINISHED'}
+
+
 class VTWW_OT_find_form_anchors(bpy.types.Operator):
     bl_idname = "vtww.find_form_anchors"
     bl_label = "查找形态锚点 (Find Form Anchors)"
-    bl_description = ("对比基础形态 dump（提取页的 Frame Dump 目录）与上方的形态 "
-                      "Frame Dump，给出 top5 形态独占 vb0 锚点候选：按角色贴图"
-                      "亲和度排序（新鲜绑定证据加权，场景道具的陈旧继承不计入），"
-                      "点行尾「采用」自动填入导出页的形态锚点字段")
+    bl_description = ("对比基础形态 dump 与全部已填的形态 dump 行（跨全部形态做"
+                      "独占交集），给出 top5 形态独占 vb0 锚点候选：按角色贴图"
+                      "亲和度排序（新鲜绑定证据加权），点行尾「采用」自动填入"
+                      "导出页的形态锚点字段")
 
     def execute(self, context):
         cfg = context.scene.VTWW_settings
         slot_cfg = context.scene.vtww_slot_settings
+
+        # One-way defaults: the extraction blend and the mod-making blend are
+        # different files, so the finder owns its paths; the extraction page
+        # and the merge panel only seed them when the finder's are blank
+        # (operator-time, never in draw - writing properties there is
+        # forbidden by Blender).
+        if not slot_cfg.anchor_base_dump_folder.strip() \
+                and cfg.frame_dump_folder.strip():
+            slot_cfg.anchor_base_dump_folder = cfg.frame_dump_folder
+        if not slot_cfg.anchor_form_dumps:
+            slot_cfg.anchor_form_dumps.add()
+        first = slot_cfg.anchor_form_dumps[0]
+        if not first.dump_folder.strip() and slot_cfg.form_dump_folder.strip():
+            first.dump_folder = slot_cfg.form_dump_folder
+            if not first.form_label.strip():
+                first.form_label = slot_cfg.form_label.strip()
+
         try:
             import json
             from ..._wwmi_core.migoto_io.blender_interface.utility import resolve_path
             from . import anchors
 
-            base_dump = resolve_path(cfg.frame_dump_folder)
-            form_dump = resolve_path(slot_cfg.form_dump_folder)
+            if not slot_cfg.anchor_base_dump_folder.strip():
+                raise ValueError("基础形态 dump 未指定（在上方框选择目录，"
+                                 "或先在提取页填 Frame Dump 目录）")
             meta_path = resolve_path(cfg.object_source_folder) / 'Metadata.json'
             if not meta_path.is_file():
                 raise ValueError("对象文件夹缺少 Metadata.json（先完成提取）")
@@ -196,15 +265,26 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
                 object_hash = json.load(f).get('vb0_hash') or ''
             if not object_hash:
                 raise ValueError("Metadata.json 没有 vb0_hash")
-            label = slot_cfg.form_label.strip() or 'form2'
-            if label.lower() == 'base':
-                raise ValueError("形态标签 base 是基础形态自身，请填另一形态的标签")
+            form_rows = anchors.resolve_form_rows(
+                [(row.dump_folder, row.form_label)
+                 for row in slot_cfg.anchor_form_dumps])
 
-            loaded_base = anchors.load_dump_calls(base_dump)
-            loaded_form = anchors.load_dump_calls(form_dump)
+            dumps_by_form = {}
+            form_labels = {1: 'base'}
+            try:
+                dumps_by_form[1] = [anchors.load_dump_calls(
+                    resolve_path(slot_cfg.anchor_base_dump_folder))]
+            except ValueError as exc:
+                raise ValueError(f"基础形态 dump：{exc}")
+            for offset, (label, folder) in enumerate(form_rows, start=2):
+                try:
+                    dumps_by_form[offset] = [anchors.load_dump_calls(
+                        resolve_path(folder))]
+                except ValueError as exc:
+                    raise ValueError(f"形态「{label}」dump：{exc}")
+                form_labels[offset] = label
             candidates = anchors.recommend_anchors(
-                {1: [loaded_base], 2: [loaded_form]},
-                {1: 'base', 2: label}, object_hash, top_n=5)
+                dumps_by_form, form_labels, object_hash, top_n=5)
         except Exception as exc:
             traceback.print_exc()
             slot_cfg.anchor_status = f"查找失败：{exc}"
@@ -290,7 +370,19 @@ class VELO_PT_wwmi_slot_forms(bpy.types.Panel):
         layout.row().operator(VTWW_OT_merge_form_textures.bl_idname, icon='TEXTURE')
 
         layout.separator()
-        layout.row().operator(VTWW_OT_find_form_anchors.bl_idname, icon='VIEWZOOM')
+        box = layout.box()
+        box.label(text="形态锚点查找（独立于提取页，可跨 blend 使用）")
+        box.row().prop(cfg, 'anchor_base_dump_folder')
+        for index, row_item in enumerate(cfg.anchor_form_dumps):
+            row = box.row(align=True)
+            row.prop(row_item, 'dump_folder')
+            row.prop(row_item, 'form_label', text='')
+            op = row.operator(VTWW_OT_anchor_form_dump_remove.bl_idname,
+                              text='', icon='X')
+            op.index = index
+        box.row().operator(VTWW_OT_anchor_form_dump_add.bl_idname,
+                           text="添加形态 Dump 行", icon='ADD')
+        box.row().operator(VTWW_OT_find_form_anchors.bl_idname, icon='VIEWZOOM')
         if cfg.anchor_status:
             layout.row().label(text=cfg.anchor_status)
         if len(cfg.anchor_candidates):
@@ -308,8 +400,11 @@ class VELO_PT_wwmi_slot_forms(bpy.types.Panel):
 
 _CLASSES = (
     VTWW_AnchorCandidateItem,
+    VTWW_AnchorFormDump,
     VTWW_SlotTextureSettings,
     VTWW_OT_merge_form_textures,
+    VTWW_OT_anchor_form_dump_add,
+    VTWW_OT_anchor_form_dump_remove,
     VTWW_OT_find_form_anchors,
     VTWW_OT_apply_form_anchor,
     VELO_PT_wwmi_slot_forms,

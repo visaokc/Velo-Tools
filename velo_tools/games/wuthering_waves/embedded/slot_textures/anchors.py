@@ -196,6 +196,36 @@ def object_texture_hashes(loaded, object_hash: str, evidence) -> Set[str]:
     return out
 
 
+def resolve_form_rows(rows: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """Normalizes the anchor finder's extra-form dump rows (UI order):
+    rows = [(dump_folder, form_label), ...]. Blank rows are skipped, blank
+    labels are numbered form2/form3/... by surviving row order. Returns
+    [(label, folder)]; duplicate labels, the reserved label 'base' or zero
+    usable rows raise ValueError with an actionable message. Folder
+    validity (log.txt) is load_dump_calls' job, not checked here."""
+    out: List[Tuple[str, str]] = []
+    seen: Set[str] = set()
+    for folder, label in rows:
+        folder = (folder or "").strip()
+        if not folder:
+            continue
+        label = (label or "").strip() or f"form{len(out) + 2}"
+        key = label.lower()
+        if key == "base":
+            raise ValueError(
+                "form label 'base' is the base form itself - give the extra "
+                "form another label")
+        if key in seen:
+            raise ValueError(f"duplicate form label '{label}' - every extra "
+                             f"form dump needs its own label")
+        seen.add(key)
+        out.append((label, folder))
+    if not out:
+        raise ValueError("no extra-form dump specified - fill at least one "
+                         "form dump row")
+    return out
+
+
 # -------------------------------------------------------- recommendation --
 
 def _character_ps_keys(loaded, object_hash: str) -> Set[str]:
