@@ -73,6 +73,7 @@ def _patch_export_menu():
             slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
             if (slot_cfg is not None and cfg.velo_slot_style_textures):
                 box.prop(slot_cfg, "form_anchors")
+                _draw_anchor_finder(box, slot_cfg, cfg)
 
     _wui.VTWW_PT_SIDEBAR.draw_menu_export_mod = draw_menu_export_mod
 
@@ -336,6 +337,47 @@ class VTWW_OT_apply_form_anchor(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _draw_anchor_finder(layout, slot_cfg, wwmi_cfg):
+    """Anchor finder UI, drawn inside the export page's Velo compatibility
+    box right under the form-anchors field (anchors are filled right before
+    exporting - keeping the whole flow in one place). Carries its own dump
+    paths: the extraction blend and the mod-making blend are different
+    files, the extraction page / merge panel values only seed blanks."""
+    box = layout.box()
+    box.label(text="形态锚点查找 (Find Form Anchors)", icon='VIEWZOOM')
+    box.row().prop(slot_cfg, 'anchor_base_dump_folder')
+    if (not slot_cfg.anchor_base_dump_folder.strip()
+            and wwmi_cfg.frame_dump_folder.strip()):
+        box.row().label(text=f"空 → 自动用提取页: {wwmi_cfg.frame_dump_folder}",
+                        icon='INFO')
+    for index, row_item in enumerate(slot_cfg.anchor_form_dumps):
+        row = box.row(align=True)
+        row.prop(row_item, 'dump_folder')
+        row.prop(row_item, 'form_label', text='')
+        op = row.operator(VTWW_OT_anchor_form_dump_remove.bl_idname,
+                          text='', icon='X')
+        op.index = index
+    if (not any(r.dump_folder.strip() for r in slot_cfg.anchor_form_dumps)
+            and slot_cfg.form_dump_folder.strip()):
+        box.row().label(text=f"形态行空 → 自动用合并页形态 Dump: "
+                             f"{slot_cfg.form_dump_folder}",
+                        icon='INFO')
+    box.row().operator(VTWW_OT_anchor_form_dump_add.bl_idname,
+                       text="添加形态 Dump 行", icon='ADD')
+    box.row().operator(VTWW_OT_find_form_anchors.bl_idname, icon='VIEWZOOM')
+    if slot_cfg.anchor_status:
+        box.row().label(text=slot_cfg.anchor_status)
+    for index, item in enumerate(slot_cfg.anchor_candidates):
+        row = box.row(align=True)
+        ps_mark = " ps" if item.shares_character_ps else ""
+        row.label(text=(f"{item.vb0}  {item.form_label}  "
+                        f"贴图×{item.shared_textures}{ps_mark}  "
+                        f"距{item.min_call_distance}  ({item.hits})"))
+        op = row.operator(VTWW_OT_apply_form_anchor.bl_idname,
+                          text="采用", icon='IMPORT')
+        op.index = index
+
+
 class VELO_PT_wwmi_slot_forms(bpy.types.Panel):
     bl_idname = "VELO_PT_wwmi_slot_forms"
     bl_label = "形态贴图合并 (Merge Form Textures)"
@@ -348,7 +390,8 @@ class VELO_PT_wwmi_slot_forms(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         # Same gating as the LOD extraction panel: WWMI game tab, extraction
-        # mode (reads as the next step of the extraction workflow).
+        # mode (reads as the next step of the extraction workflow). The
+        # anchor finder lives on the EXPORT page's Velo compatibility box.
         vt = getattr(context.scene, "velo_tools", None)
         if (vt is None
                 or getattr(vt, "active_tab", "") != 'GAME'
@@ -368,34 +411,6 @@ class VELO_PT_wwmi_slot_forms(bpy.types.Panel):
 
         layout.separator()
         layout.row().operator(VTWW_OT_merge_form_textures.bl_idname, icon='TEXTURE')
-
-        layout.separator()
-        box = layout.box()
-        box.label(text="形态锚点查找（独立于提取页，可跨 blend 使用）")
-        box.row().prop(cfg, 'anchor_base_dump_folder')
-        for index, row_item in enumerate(cfg.anchor_form_dumps):
-            row = box.row(align=True)
-            row.prop(row_item, 'dump_folder')
-            row.prop(row_item, 'form_label', text='')
-            op = row.operator(VTWW_OT_anchor_form_dump_remove.bl_idname,
-                              text='', icon='X')
-            op.index = index
-        box.row().operator(VTWW_OT_anchor_form_dump_add.bl_idname,
-                           text="添加形态 Dump 行", icon='ADD')
-        box.row().operator(VTWW_OT_find_form_anchors.bl_idname, icon='VIEWZOOM')
-        if cfg.anchor_status:
-            layout.row().label(text=cfg.anchor_status)
-        if len(cfg.anchor_candidates):
-            box = layout.box()
-            for index, item in enumerate(cfg.anchor_candidates):
-                row = box.row(align=True)
-                ps_mark = " ps" if item.shares_character_ps else ""
-                row.label(text=(f"{item.vb0}  {item.form_label}  "
-                                f"贴图×{item.shared_textures}{ps_mark}  "
-                                f"距{item.min_call_distance}  ({item.hits})"))
-                op = row.operator(VTWW_OT_apply_form_anchor.bl_idname,
-                                  text="采用", icon='IMPORT')
-                op.index = index
 
 
 _CLASSES = (
