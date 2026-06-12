@@ -34,6 +34,7 @@ from ..._wwmi_core.extract_frame_data.output_builder import OutputBuilder, Textu
 
 from . import constants
 from . import dds_meta
+from . import log_freshness
 
 # Same exclusion list the stock extraction / export use for well-known cubemaps.
 KNOWN_CUBEMAP_HASHES = ['af26db30', '1320a071', '10d7937d', '87505b2b',
@@ -146,12 +147,17 @@ def _match_object(mesh_objects, vb0_hash: str, cb4_hash: str):
         f'{len(candidates)} objects - cannot pick the form object unambiguously')
 
 
-def _build_components_usage(mesh_object, surviving_sets):
+def _build_components_usage(mesh_object, surviving_sets, evidence=None):
     """Component N -> "vs=.." -> "ps=.." -> "ps-tN" -> rich record (exactly
     the base ShaderTextureUsage.json shape: only descriptors surviving the
     stock texture filter are seated, which strips the inherited-binding noise
     raw per-draw records carry). Also returns {hash: (dump path, component id
-    set)} of the surviving textures for the copy step."""
+    set)} of the surviving textures for the copy step.
+
+    With log-freshness ``evidence`` (ADR 0007 rev 12) records additionally
+    carry ``fresh`` flags and pairs a ``depth_only`` flag; same-seat hash
+    disagreements become fresh-beats-stale instead of conflict-None when
+    exactly one side was freshly bound."""
     out = OrderedDict()
     record_cache = {}
     sources = {}
@@ -159,28 +165,67 @@ def _build_components_usage(mesh_object, surviving_sets):
         keep = (surviving_sets[component_id]
                 if surviving_sets and component_id < len(surviving_sets) else None)
         pairs = {}
+        seat_fresh = {}
+        pair_depth_only = {}
         for descriptor in component_data.draw_data.textures:
             if keep is not None and descriptor.get_slot_hash() not in keep:
                 continue
             slot = descriptor.get_slot()
             vs_key, ps_key = _shader_keys(descriptor)
+            fresh = None
+            if evidence is not None:
+                fresh = log_freshness.slot_is_fresh(
+                    evidence, descriptor.call_id, descriptor.slot_id,
+                    descriptor.hash, descriptor.old_hash)
+                rt = log_freshness.call_has_color_rt(evidence, descriptor.call_id)
+                depth = (rt is False)
+                prev = pair_depth_only.get((vs_key, ps_key))
+                pair_depth_only[(vs_key, ps_key)] = (
+                    depth if prev is None else (prev and depth))
             pair = pairs.setdefault(vs_key, {}).setdefault(ps_key, {})
+            seat = (vs_key, ps_key, slot)
             if slot in pair and pair[slot].get('hash') != descriptor.hash:
-                # Conflicting bindings for the same (pair, slot) within one
-                # frame: multi-state variant, mark unknown (generator skips).
-                pair[slot] = OrderedDict((('filename', ''), ('hash', None),
-                                          ('format', ''), ('width', 0), ('height', 0)))
-            else:
-                if descriptor.hash not in record_cache:
-                    record_cache[descriptor.hash] = _texture_record(descriptor)
-                pair[slot] = record_cache[descriptor.hash]
-                entry = sources.setdefault(descriptor.hash, (descriptor.path, set()))
-                entry[1].add(str(component_id))
+                seated_fresh = seat_fresh.get(seat)
+                if fresh is not None and fresh and seated_fresh is False:
+                    # Fresh newcomer replaces a stale-inherited seat.
+                    pass  # fall through to the seating branch below
+                elif fresh is not None and not fresh and seated_fresh:
+                    continue  # stale newcomer never demotes a fresh seat
+                else:
+                    # Conflicting bindings for the same (pair, slot) within one
+                    # frame: multi-state variant, mark unknown (generator skips).
+                    pair[slot] = OrderedDict((('filename', ''), ('hash', None),
+                                              ('format', ''), ('width', 0), ('height', 0)))
+                    seat_fresh.pop(seat, None)
+                    continue
+            elif slot in pair and pair[slot].get('hash') == descriptor.hash:
+                if fresh:
+                    seat_fresh[seat] = True  # OR-aggregate across draws
+                continue
+            if descriptor.hash not in record_cache:
+                record_cache[descriptor.hash] = _texture_record(descriptor)
+            pair[slot] = record_cache[descriptor.hash]
+            if fresh is not None:
+                seat_fresh[seat] = fresh
+            entry = sources.setdefault(descriptor.hash, (descriptor.path, set()))
+            entry[1].add(str(component_id))
         component_out = OrderedDict()
         for vs_key in sorted(pairs):
             vs_out = OrderedDict()
             for ps_key in sorted(pairs[vs_key]):
-                vs_out[ps_key] = OrderedDict(sorted(pairs[vs_key][ps_key].items()))
+                ps_out = OrderedDict()
+                for slot, record in sorted(pairs[vs_key][ps_key].items()):
+                    seat = (vs_key, ps_key, slot)
+                    if evidence is not None and record.get('hash') is not None:
+                        # record_cache entries are shared: per-seat flags go on
+                        # a copy.
+                        record = OrderedDict(record)
+                        record['fresh'] = bool(seat_fresh.get(seat, False))
+                    ps_out[slot] = record
+                if evidence is not None:
+                    ps_out['depth_only'] = bool(
+                        pair_depth_only.get((vs_key, ps_key), False))
+                vs_out[ps_key] = ps_out
             component_out[vs_key] = vs_out
         out[f'Component {component_id}'] = component_out
     return out, sources
@@ -254,15 +299,35 @@ def _merge_variant_records(dst_components, src_components):
                 dst_slots = dst_ps.get(ps_key)
                 if dst_slots is None:
                     dst_ps[ps_key] = OrderedDict(src_slots)
-                    records_added += len(src_slots)
+                    records_added += sum(
+                        1 for v in src_slots.values() if isinstance(v, dict))
                     continue
                 for slot, record in src_slots.items():
+                    if not isinstance(record, dict):
+                        continue  # pair-level flags (depth_only): canonical wins
                     existing = dst_slots.get(slot)
-                    if existing is None:
+                    if existing is None or not isinstance(existing, dict):
                         continue  # no slot grafting onto existing pairs
                     new_hash = record.get('hash')
+                    src_fresh = record.get('fresh')
+                    dst_fresh = existing.get('fresh')
                     if (not new_hash or new_hash == existing.get('hash')
                             or new_hash in (existing.get('variants') or [])):
+                        if (new_hash and new_hash == existing.get('hash')
+                                and src_fresh is True and dst_fresh is False):
+                            # Same seat re-verified as freshly bound in the new
+                            # dump: upgrade the canonical flag.
+                            existing['fresh'] = True
+                        continue
+                    if src_fresh is False:
+                        # Stale-inherited src records are not evidence: never
+                        # harvest variants from them, never contradict the
+                        # canonical seat with them (ADR 0007 rev 12).
+                        continue
+                    if src_fresh is True and dst_fresh is False:
+                        # Fresh src replaces a stale-inherited canonical seat.
+                        dst_slots[slot] = OrderedDict(record)
+                        records_added += 1
                         continue
                     if (record.get('format') and existing.get('format')
                             and record['format'] == existing['format']
@@ -305,6 +370,10 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
     if not (dump_path / 'log.txt').is_file():
         raise FormMergeError('selected folder is not a frame dump (log.txt missing)')
 
+    # ADR 0007 rev 12: binding-freshness evidence for the extra-form records
+    # (None -> legacy records without freshness flags).
+    evidence = log_freshness.parse_log_freshness(dump_path)
+
     metadata_path = object_source_folder / 'Metadata.json'
     if not metadata_path.is_file():
         raise FormMergeError('object source folder is missing Metadata.json')
@@ -327,7 +396,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             f'{len(base_components)} - forms must share the same mesh')
 
     components_usage, texture_sources = _build_components_usage(
-        mesh_object, surviving.get(mesh_object.vb0_hash))
+        mesh_object, surviving.get(mesh_object.vb0_hash), evidence)
     textures_copied = _copy_form_textures(object_source_folder, texture_sources)
 
     label = form_label.strip()
@@ -362,6 +431,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             'textures_copied': textures_copied,
             'variants_added': variants_added,
             'conflicts_marked': conflicts_marked,
+            'freshness': evidence is not None,
             'total_forms': 1 + len(usage.get(constants.EXTRA_FORMS_KEY) or []),
         }
 
@@ -444,5 +514,6 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         'pairs': pair_count,
         'textures_copied': textures_copied,
         'variants_added': variants_added,
+        'freshness': evidence is not None,
         'total_forms': 1 + len(extra_forms),
     }

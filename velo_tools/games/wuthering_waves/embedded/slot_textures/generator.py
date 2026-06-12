@@ -107,11 +107,18 @@ def _ingest_slot(pair_out: Dict[int, Optional[str]], slot: int,
 
 
 def normalize_usage(raw: dict, source: str, warnings: List[str],
-                    texture_info: Optional[TextureInfo] = None) -> FormData:
+                    texture_info: Optional[TextureInfo] = None,
+                    freshness: Optional[Dict[Tuple[int, str, int], bool]] = None) -> FormData:
     """Converts one ShaderTextureUsage-shaped dict into FormData. Accepts both
     the old flat schema ("vs=..-ps=.." -> slot -> hash string) and the v3
     nested rich schema ("vs=.." -> "ps=.." -> slot -> record); rich records
-    also feed texture_info (hash -> format/size)."""
+    also feed texture_info (hash -> format/size).
+
+    freshness (optional out-dict, ADR 0007 rev 12): filled with
+    (comp_id, ps_hash, slot) -> bool from v4 ``fresh`` record flags - the
+    freshness of the SEATED content, OR-aggregated across the vs-merge. When
+    flags are present, cross-vs seat conflicts arbitrate fresh-beats-stale
+    before the legacy conflict-None fail-safe."""
     out: FormData = {}
     for comp_name, pairs in (raw or {}).items():
         if comp_name in _RESERVED_KEYS:
@@ -130,7 +137,8 @@ def normalize_usage(raw: dict, source: str, warnings: List[str],
                     if not ps_found:
                         warnings.append(f'{source}: pair "{pair_key}/{ps_key}" has no ps hash, skipped')
                         continue
-                    pair_out = comp_out.setdefault(ps_found.group(1), {})
+                    ps_hash = ps_found.group(1)
+                    pair_out = comp_out.setdefault(ps_hash, {})
                     for slot_name, record in (slots or {}).items():
                         slot_found = _SLOT_RE.match(slot_name)
                         if not slot_found or not isinstance(record, dict):
@@ -151,7 +159,31 @@ def normalize_usage(raw: dict, source: str, warnings: List[str],
                                     info.setdefault('variants', [])
                                     if variant not in info['variants']:
                                         info['variants'].append(variant)
-                        _ingest_slot(pair_out, int(slot_found.group(1)), tex_hash)
+                        slot_id = int(slot_found.group(1))
+                        rec_fresh = record.get('fresh')
+                        if not isinstance(rec_fresh, bool):
+                            rec_fresh = None
+                        if (freshness is not None and rec_fresh is not None
+                                and slot_id in pair_out
+                                and pair_out[slot_id] != tex_hash):
+                            # Cross-vs seat conflict with freshness evidence:
+                            # fresh beats stale, stale never demotes fresh.
+                            seat_key = (comp_id, ps_hash, slot_id)
+                            seated = freshness.get(seat_key)
+                            if rec_fresh and seated is False:
+                                pair_out[slot_id] = tex_hash
+                                freshness[seat_key] = True
+                            elif not rec_fresh and seated is True:
+                                pass  # keep the fresh seat
+                            else:
+                                pair_out[slot_id] = None  # unarbitrable conflict
+                            continue
+                        _ingest_slot(pair_out, slot_id, tex_hash)
+                        if (freshness is not None and rec_fresh is not None
+                                and pair_out.get(slot_id) == tex_hash):
+                            seat_key = (comp_id, ps_hash, slot_id)
+                            freshness[seat_key] = bool(
+                                freshness.get(seat_key)) or rec_fresh
                 continue
             # old flat: "vs=..-ps=.." -> {slot -> hash string}
             ps_found = _PS_RE.search(pair_key)
@@ -169,11 +201,17 @@ def normalize_usage(raw: dict, source: str, warnings: List[str],
     return out
 
 
-def load_forms(object_source_folder: Path) -> Tuple[List[Tuple[str, FormData]], TextureInfo, List[str]]:
+def load_forms(object_source_folder: Path,
+               freshness_out: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+               ) -> Tuple[List[Tuple[str, FormData]], TextureInfo, List[str]]:
     """Loads base + extra form maps from the single ShaderTextureUsage.json.
     Returns (forms, texture_info, warnings); forms[0] is always the base
     extraction. texture_info is empty for old-schema files (the caller may
-    fall back to reading the model-folder DDS files)."""
+    fall back to reading the model-folder DDS files).
+
+    freshness_out (optional, ADR 0007 rev 12): receives one per-form seat
+    freshness dict (see normalize_usage) aligned with the returned forms, for
+    forwarding into build_plan(freshness=...)."""
     warnings: List[str] = []
     texture_info: TextureInfo = {}
     base_path = Path(object_source_folder) / constants.BASE_USAGE_FILENAME
@@ -187,8 +225,15 @@ def load_forms(object_source_folder: Path) -> Tuple[List[Tuple[str, FormData]], 
     except Exception as e:
         raise SlotStyleDegrade(f'failed to read {constants.BASE_USAGE_FILENAME}: {e}')
 
+    def _form_freshness() -> Optional[Dict[Tuple[int, str, int], bool]]:
+        return {} if freshness_out is not None else None
+
+    base_fresh = _form_freshness()
     forms: List[Tuple[str, FormData]] = [
-        ('base', normalize_usage(base_raw, 'base', warnings, texture_info))]
+        ('base', normalize_usage(base_raw, 'base', warnings, texture_info,
+                                 base_fresh))]
+    if freshness_out is not None:
+        freshness_out.append(base_fresh)
 
     extra_entries = base_raw.get(constants.EXTRA_FORMS_KEY)
     if not extra_entries:
@@ -205,8 +250,18 @@ def load_forms(object_source_folder: Path) -> Tuple[List[Tuple[str, FormData]], 
                     f'failed to read {constants.LEGACY_SIDECAR_FILENAME}: {e}')
     for entry in extra_entries or []:
         label = entry.get('label') or entry.get('source') or f'form{len(forms) + 1}'
+        entry_fresh = _form_freshness()
         forms.append((label, normalize_usage(entry.get('components'), label,
-                                             warnings, texture_info)))
+                                             warnings, texture_info,
+                                             entry_fresh)))
+        if freshness_out is not None:
+            freshness_out.append(entry_fresh)
+
+    if freshness_out is not None and not any(freshness_out):
+        warnings.append(
+            'ShaderTextureUsage.json carries no binding-freshness flags - '
+            'stale-inherited records cannot be filtered out (re-extract the '
+            'object with a current Velo Tools build)')
 
     if not any(form_data for _, form_data in forms):
         raise SlotStyleDegrade('no usable shader/texture usage data found')
@@ -305,7 +360,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                manual_anchors: Optional[List[Tuple[str, int]]] = None,
                multi_state_seats: Optional[Dict[Tuple[int, int], Set[str]]] = None,
                live_seed: Optional[Set[str]] = None,
-               trusted_hashes: Optional[Set[str]] = None) -> SlotPlan:
+               trusted_hashes: Optional[Set[str]] = None,
+               freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None) -> SlotPlan:
     """textures: (texture hash, resource section name) in template order.
     texture_info: hash -> format/size of the ORIGINAL game textures.
     component_ranges: comp_id -> (match_first_index, match_index_count) of the
@@ -336,12 +392,70 @@ def build_plan(forms: List[Tuple[str, FormData]],
     lightmaps) recorded at aux slots change between sessions and a single
     stale term kills the whole branch in game (field evidence, the leg-pass
     bug: both dumps replayed green while the live session diverged on a
-    scene slot). None = legacy behavior (every recorded slot qualifies)."""
+    scene slot). None = legacy behavior (every recorded slot qualifies).
+    freshness: per-form seat freshness maps aligned with forms (from
+    load_forms(freshness_out=...), ADR 0007 rev 12). Evidence/service split:
+    stale-inherited seats never feed signatures, conflict clustering, fork
+    latches, M1 markers or residency-dedup derivation; stale REPLACED seats
+    degrade to per-slot self-guarded service assignments; pairs with zero
+    fresh seats are phantoms (another draw's leftover state) and produce no
+    branch at all. None or empty maps = legacy behavior."""
     warnings: List[str] = list(load_warnings or [])
     multi_form = len(forms) > 1
     mod_hashes = {h: res for h, res in textures}
     if not mod_hashes:
         raise SlotStyleDegrade('mod has no textures, nothing to do')
+
+    # ------------------------------------------- freshness evidence split --
+    # (ADR 0007 rev 12) Frame-analysis dumps record EVERY bound slot per
+    # draw, including stale state inherited from earlier draws; only log-
+    # evidenced fresh binds are material evidence. service_seats keeps the
+    # stale REPLACED seats: they stay assigned (a shader may still sample an
+    # inherited binding - hash-style mods covered that by replacing
+    # globally) but only through their per-slot self-guards, never as
+    # signature/conflict/latch/M1 evidence.
+    service_seats: Set[Tuple[int, int, str, int]] = set()  # (form, comp, ps, slot)
+    phantom_pairs = 0
+    if freshness is not None and any(freshness):
+        variant_canon: Dict[str, str] = {}
+        for canon, info in texture_info.items():
+            for variant in info.get('variants', ()):
+                variant_canon.setdefault(variant, canon)
+        for form_id, (form_label, form_data) in enumerate(forms, start=1):
+            form_fresh = (freshness[form_id - 1]
+                          if form_id - 1 < len(freshness) else None) or {}
+            if not form_fresh:
+                continue  # no flags for this form: legacy, keep everything
+            for comp_id, comp_pairs in form_data.items():
+                for ps in list(comp_pairs):
+                    pair_map = comp_pairs[ps]
+                    flags = {slot: form_fresh.get((comp_id, ps, slot))
+                             for slot in pair_map}
+                    known = [f for f in flags.values() if f is not None]
+                    if not known:
+                        continue  # unflagged pair: legacy, keep as-is
+                    if not any(known):
+                        # Phantom pair: every evidenced seat is stale-
+                        # inherited - the pair is another draw's leftover
+                        # state, not this component's material.
+                        del comp_pairs[ps]
+                        phantom_pairs += 1
+                        warnings.append(
+                            f'form "{form_label}" component {comp_id}: pair '
+                            f'ps={ps} carries only stale-inherited bindings - '
+                            f'phantom pair dropped (no branch, no evidence)')
+                        continue
+                    for slot in list(pair_map):
+                        if flags.get(slot) is not False:
+                            continue
+                        h = pair_map[slot]
+                        replaced = (h is not None
+                                    and (h in mod_hashes
+                                         or variant_canon.get(h) in mod_hashes))
+                        if replaced:
+                            service_seats.add((form_id, comp_id, ps, slot))
+                        else:
+                            del pair_map[slot]  # stale unreplaced: not evidence
 
     # ----------------------------------------------- residency-variant dedup --
     # Hashes seen at one (component, slot), same format, different sizes,
@@ -363,9 +477,12 @@ def build_plan(forms: List[Tuple[str, FormData]],
     slot_form_seats: Dict[Tuple[int, int], Dict[str, Set[int]]] = {}
     for form_id, (_, form_data) in enumerate(forms, start=1):
         for comp_id, comp_pairs in form_data.items():
-            for pair_map in comp_pairs.values():
+            for ps, pair_map in comp_pairs.items():
                 for slot, h in pair_map.items():
-                    if h is not None:
+                    # Service (stale-inherited) seats are not evidence: they
+                    # must not drive the residency-group derivation (alias
+                    # APPLICATION below still rewrites them).
+                    if h is not None and (form_id, comp_id, ps, slot) not in service_seats:
                         slot_content.setdefault((comp_id, slot), set()).add(h)
                         slot_form_seats.setdefault((comp_id, slot), {}) \
                             .setdefault(h, set()).add(form_id)
@@ -519,11 +636,11 @@ def build_plan(forms: List[Tuple[str, FormData]],
         slot_presence: Dict[Tuple[int, int], Set[int]] = {}
         for form_id, (_, form_data) in enumerate(forms, start=1):
             for comp_id, comp_pairs in form_data.items():
-                for pair_map in comp_pairs.values():
+                for ps, pair_map in comp_pairs.items():
                     is_mat = _is_material_pair(pair_map, texture_info)
                     for slot, h in pair_map.items():
-                        if h is None:
-                            continue
+                        if h is None or (form_id, comp_id, ps, slot) in service_seats:
+                            continue  # stale-inherited seats are not form evidence
                         slot_presence.setdefault((comp_id, slot), set()).add(form_id)
                         # MAIN slots of material pairs only: aux-slot family
                         # differences between dumps are coverage noise, not a
@@ -550,12 +667,13 @@ def build_plan(forms: List[Tuple[str, FormData]],
         for form_id, (_, form_data) in enumerate(forms, start=1):
             bucket = mat_content.setdefault(form_id, {})
             for comp_id, comp_pairs in form_data.items():
-                for pair_map in comp_pairs.values():
+                for ps, pair_map in comp_pairs.items():
                     if not _is_material_pair(pair_map, texture_info):
                         continue
                     for slot in constants.MAIN_SLOTS:
                         h = pair_map.get(slot)
-                        if h is not None and h in mod_hashes:
+                        if (h is not None and h in mod_hashes
+                                and (form_id, comp_id, ps, slot) not in service_seats):
                             bucket.setdefault((comp_id, slot), set()).add(h)
         fork_keys = set()
         for bucket in mat_content.values():
@@ -572,11 +690,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
             for form_id, hashes in sorted(nonempty.items()):
                 for h in sorted(hashes):
                     fork_latches.append((key[0], key[1], h, form_id))
-        if not fork_latches and not form_markers_m1:
-            warnings.append(
-                'no form fork derivable (no (component, slot) where the forms '
-                'bind disjoint kept material content) - forms cannot be '
-                'auto-detected at runtime')
+        # ("no form fork derivable" warning is emitted below, once anchor
+        # coverage is known - fully anchored mods need no texture fork.)
 
     # Zero-latency form anchors are USER-SPECIFIED only (manual_anchors): the
     # plugin never auto-picks shader hashes. A form-exclusive vb0 anchor
@@ -614,6 +729,14 @@ def build_plan(forms: List[Tuple[str, FormData]],
     anchored_forms = {f for _, f in anchor_resources + anchor_shaders}
     watchdog_form = None  # the UNANCHORED form the absence rule commits to
     unanchored_forms = set(range(1, len(forms) + 1)) - anchored_forms
+    # Anchor coverage (ADR 0007 rev 12): anchors plus the watchdog fully
+    # cover form detection when at most one form is unanchored - texture-
+    # hash latches add only version-fragile dead weight there and are
+    # suppressed (uncovered_forms keeps the fallback set for partial
+    # coverage). M1 format markers are zero-hash and always kept.
+    uncovered_forms = set(unanchored_forms)
+    marks_fully_covered = bool(multi_form and anchored_forms
+                               and len(unanchored_forms) <= 1)
     if multi_form and anchored_forms and len(unanchored_forms) == 1:
         watchdog_form = unanchored_forms.pop()
     if multi_form:
@@ -622,6 +745,12 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 warnings.append(
                     f'form "{label}" has no manual anchor - switching TO it '
                     f'relies on the texture latches (streaming-delayed)')
+        if (not fork_latches and not form_markers_m1
+                and not marks_fully_covered):
+            warnings.append(
+                'no form fork derivable (no (component, slot) where the forms '
+                'bind disjoint kept material content) - forms cannot be '
+                'auto-detected at runtime')
 
     # ------------------------------------------------------ branch building --
     all_comp_ids = sorted({c for _, fd in forms for c in fd})
@@ -659,6 +788,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 sig = tuple(sorted(
                     (slot, key) for slot, h in pair_map.items()
                     if slot in sig_slots and not _is_live(h)
+                    and (form_id, comp_id, ps, slot) not in service_seats
                     and _is_trusted(h)
                     and (key := _family_key(h, texture_info)) is not None))
                 by_sig.setdefault(sig, []).append(form_id)
@@ -887,6 +1017,27 @@ def build_plan(forms: List[Tuple[str, FormData]],
         raise SlotStyleDegrade('no component produced any slot assignment')
     # All-live is a valid outcome: an empty slot layer with every replaced
     # texture kept on (family-expandable) stock hash sections.
+
+    # Anchor-coverage suppression of texture-hash latches (ADR 0007 rev 12):
+    # with every form covered by anchors + watchdog the latches are version-
+    # fragile dead weight; with partial coverage only the uncovered forms
+    # keep their fallback latches. No anchors at all = unchanged fallback.
+    suppressed_latches = 0
+    if fork_latches and marks_fully_covered:
+        suppressed_latches = len(fork_latches)
+        fork_latches = []
+        warnings.append(
+            'form anchors fully cover form detection - texture-hash mark '
+            'sections suppressed (zero-hash M1 format markers kept)')
+    elif fork_latches and multi_form and anchored_forms and len(uncovered_forms) >= 2:
+        kept_latches = [t for t in fork_latches if t[3] in uncovered_forms]
+        suppressed_latches = len(fork_latches) - len(kept_latches)
+        if suppressed_latches:
+            fork_latches = kept_latches
+            warnings.append(
+                f'{suppressed_latches} texture-hash latch(es) for anchored '
+                f'forms suppressed - fallback marks kept only for the '
+                f'unanchored forms')
 
     # Fork latch keys populate the mark table (form detection only).
     fork_latches = [(c, s, h, f) for c, s, h, f in fork_latches
@@ -1244,5 +1395,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'format_sections': format_section_count,
             'covered_textures': len(covered_resource_indices),
             'blind_zone_textures': len(blind_zone),
+            'phantom_pairs': phantom_pairs,
+            'service_slots': len(service_seats),
+            'suppressed_latches': suppressed_latches,
         },
     )

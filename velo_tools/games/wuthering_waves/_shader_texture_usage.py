@@ -6,6 +6,14 @@ interchangeable between the two plugins):
     "Component {id}" -> "vs=<hash>" -> "ps=<hash>" -> "ps-tN" ->
         {"filename", "hash", "format", "width", "height"}
 
+Schema v4 (ADR 0007 rev 12, additive - emitted only when the dump's log.txt
+yields usable binding-freshness evidence): top-level ``"version": 4``, per
+slot record ``"fresh": true/false`` (slot was explicitly PSSetShaderResources
+-bound under the draw's call id, vs. stale state inherited from an earlier
+draw), per (vs, ps) pair ``"depth_only": true/false`` (no color render target
+bound at any of the pair's draws). Consumers that predate v4 skip the extra
+keys structurally; without log evidence the writer emits a v3-identical file.
+
 ``format`` is the canonical DXGI format name (vocabulary of
 ``embedded/slot_textures/constants.DXGI_FORMAT_NAMES``) read from the dump
 DDS headers by the pure-python ``dds_meta`` parser (the XQFA fork shells out
@@ -60,6 +68,7 @@ from ._wwmi_core.extract_frame_data import extract_frame_data as _efd_module
 from ._wwmi_core.migoto_io.dump_parser.filename_parser import ShaderType
 
 from .embedded.slot_textures import dds_meta as _dds_meta
+from .embedded.slot_textures import log_freshness as _log_freshness
 
 _INSTALLED = False
 _ORIG_BUILD_COMPONENTS = None
@@ -119,6 +128,20 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
             object_directory = output_directory / object_name
             per_object = _CAPTURE.get(object_hash)
 
+            # ADR 0007 rev 12: binding-freshness evidence from the dump's
+            # log.txt (None -> legacy json without freshness flags).
+            evidence = None
+            if per_object:
+                first_desc = next((d for lst in per_object for d in lst), None)
+                if first_desc is not None:
+                    dump_root = _log_freshness.find_dump_root(first_desc.path)
+                    if dump_root is not None:
+                        evidence = _log_freshness.parse_log_freshness(dump_root)
+                if evidence is None:
+                    print(f'[velo slot-textures] {object_name}: no usable log.txt '
+                          f'freshness evidence - writing legacy ShaderTextureUsage.json '
+                          f'(stale-inherited records cannot be flagged)')
+
             # hash -> set of component ids carrying it, to rebuild the exact
             # texture filenames the original write loop produced
             # (Components-{ids} t={hash}{suffix}).
@@ -135,28 +158,70 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                 return f'Components-{joined} t={descriptor.hash}{Path(descriptor.path).suffix}'
 
             shader_texture_usage = OrderedDict()
+            if evidence is not None:
+                shader_texture_usage['version'] = 4
             record_cache = {}
             for component_id, component in enumerate(object_data.components):
                 # slot_hash values surviving the original pipeline filter (whether a texture file is included is entirely decided by the original pipeline).
                 surviving = {t.get_slot_hash() for t in component.textures}
                 full = per_object[component_id] if (per_object and component_id < len(per_object)) else []
 
-                pairs = {}
+                # (vs_key, ps_key) -> slot_key -> [record, fresh]. Freshness is
+                # OR-aggregated across the pair's draws; on same-seat hash
+                # disagreements fresh beats stale (legacy: silent last-wins).
+                seats = {}
+                pair_depth_only = {}
                 for desc in full:
                     if desc.get_slot_hash() not in surviving:
                         continue
                     vs_key, ps_key = _shader_keys(desc)
                     if desc.hash not in record_cache:
                         record_cache[desc.hash] = texture_record(desc, stock_filename(desc))
-                    # A single draw call binds only one texture per ps-tN -> (pair, slot) is unique.
-                    pairs.setdefault(vs_key, {}).setdefault(ps_key, {})[desc.get_slot()] = record_cache[desc.hash]
+                    record = record_cache[desc.hash]
+                    slot_key = desc.get_slot()
+                    fresh = None
+                    if evidence is not None:
+                        fresh = _log_freshness.slot_is_fresh(
+                            evidence, desc.call_id, desc.slot_id,
+                            desc.hash, desc.old_hash)
+                        rt = _log_freshness.call_has_color_rt(evidence, desc.call_id)
+                        depth = (rt is False)
+                        prev = pair_depth_only.get((vs_key, ps_key))
+                        pair_depth_only[(vs_key, ps_key)] = (
+                            depth if prev is None else (prev and depth))
+                    slot_map = seats.setdefault((vs_key, ps_key), {})
+                    entry = slot_map.get(slot_key)
+                    if entry is None:
+                        slot_map[slot_key] = [record, fresh]
+                    elif fresh is None:
+                        slot_map[slot_key] = [record, None]  # legacy last-wins
+                    elif entry[0]['hash'] == record['hash']:
+                        entry[1] = bool(entry[1]) or fresh
+                    elif fresh or not entry[1]:
+                        slot_map[slot_key] = [record, fresh]  # fresh beats stale
+                    # else: seated record is fresh, newcomer is stale -> keep seat
 
                 # Deterministic ordering: sort vs / ps / slot keys for easy diffing.
                 component_out = OrderedDict()
-                for vs_key in sorted(pairs):
+                for vs_key in sorted({k[0] for k in seats}):
                     vs_out = OrderedDict()
-                    for ps_key in sorted(pairs[vs_key]):
-                        vs_out[ps_key] = OrderedDict(sorted(pairs[vs_key][ps_key].items()))
+                    for ps_key in sorted({k[1] for k in seats if k[0] == vs_key}):
+                        slot_map = seats[(vs_key, ps_key)]
+                        ps_out = OrderedDict()
+                        for slot_key in sorted(slot_map):
+                            record, fresh = slot_map[slot_key]
+                            if fresh is None:
+                                ps_out[slot_key] = record
+                            else:
+                                # record_cache entries are shared across seats:
+                                # per-seat flags must go on a copy.
+                                seat_record = OrderedDict(record)
+                                seat_record['fresh'] = bool(fresh)
+                                ps_out[slot_key] = seat_record
+                        if evidence is not None:
+                            ps_out['depth_only'] = bool(
+                                pair_depth_only.get((vs_key, ps_key), False))
+                        vs_out[ps_key] = ps_out
                     component_out[vs_key] = vs_out
                 shader_texture_usage[f'Component {component_id}'] = component_out
 

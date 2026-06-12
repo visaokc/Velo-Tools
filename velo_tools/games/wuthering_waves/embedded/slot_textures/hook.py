@@ -55,7 +55,9 @@ def install():
             if (source_folder / 'CrossSceneRouting.json').is_file():
                 raise generator.SlotStyleDegrade(
                     'cross-scene exports are not supported yet')
-            forms, texture_info, load_warnings = generator.load_forms(source_folder)
+            form_freshness = []
+            forms, texture_info, load_warnings = generator.load_forms(
+                source_folder, freshness_out=form_freshness)
             textures = [(texture.hash, f'ResourceTexture{index}')
                         for index, texture in enumerate(self.textures)]
             if not texture_info:
@@ -78,7 +80,8 @@ def install():
                 forms, textures, texture_info, load_warnings,
                 component_ranges=transform.extract_component_ranges(result),
                 lod_ranges=_read_lod_ranges(source_folder),
-                manual_anchors=manual_anchors)
+                manual_anchors=manual_anchors,
+                freshness=form_freshness)
             result = transform.apply(result, plan)
             for anchor_hash, form_id in manual_anchors:
                 kind = 'shader (ps)' if len(anchor_hash) == 16 else 'resource (vb0)'
