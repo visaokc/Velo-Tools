@@ -29,7 +29,7 @@ def inject_settings():
     _orig_slot_style_annotation = _wsettings.VTWW_Settings.__annotations__.get(
         "velo_slot_style_textures", _MISSING)
     _wsettings.VTWW_Settings.__annotations__["velo_slot_style_textures"] = bpy.props.BoolProperty(
-        name="插槽风格贴图 (Slot-Style Textures)",
+        name="插槽风格贴图",
         description=(
             "用槽位重绑替代逐 hash 贴图段：贴图在组件 draw 范围内按槽位绑定，"
             "不再匹配游戏贴图 hash，因此对纹理流送（3.4 起每个 mip 级独立 hash）免疫。"
@@ -143,7 +143,7 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
     anchor_form_dumps: bpy.props.CollectionProperty(type=VTWW_AnchorFormDump)
 
     form_anchors: bpy.props.StringProperty(
-        name="形态锚点 (Form Anchors)",
+        name="形态锚点",
         description="可选：手动指定形态独占的锚点 hash，格式 hash:形态标签，"
                     "逗号/空格分隔（如 358cdfe4:base）。基础形态标签固定为 base，"
                     "其余用合并时起的标签。只能用两类值：8 位 = vb0 hash"
@@ -158,7 +158,7 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
 
 class VTWW_OT_merge_form_textures(bpy.types.Operator):
     bl_idname = "vtww.merge_form_textures"
-    bl_label = "合并形态贴图数据 (Merge Form Dump)"
+    bl_label = "合并形态贴图数据"
     bl_description = ("解析另一形态的原始帧转储，把它的 (组件 x 着色器对 x 槽位) 贴图表"
                       "合并进模型文件夹 ShaderTextureUsage.json 的 extra_forms 键（支持任意"
                       "数量形态），供插槽风格导出生成形态检测与 per-form 分支。"
@@ -220,7 +220,7 @@ class VTWW_OT_anchor_form_dump_remove(bpy.types.Operator):
 
 class VTWW_OT_find_form_anchors(bpy.types.Operator):
     bl_idname = "vtww.find_form_anchors"
-    bl_label = "查找形态锚点 (Find Form Anchors)"
+    bl_label = "查找形态锚点"
     bl_description = ("对比基础形态 dump 与全部已填的形态 dump 行（跨全部形态做"
                       "独占交集），给出 top5 形态独占 vb0 锚点候选：按角色贴图"
                       "亲和度排序（新鲜绑定证据加权），点行尾「采用」自动填入"
@@ -364,7 +364,7 @@ def _draw_anchor_finder(layout, slot_cfg, wwmi_cfg):
     fact, one property - the object_source_folder pattern), so both pages
     always show the same value with zero sync code."""
     box = layout.box()
-    box.label(text="形态锚点查找 (Find Form Anchors)", icon='VIEWZOOM')
+    box.label(text="形态锚点查找", icon='VIEWZOOM')
     box.row().prop(wwmi_cfg, 'frame_dump_folder', text="基础形态 Dump")
     for index, row_item in enumerate(slot_cfg.anchor_form_dumps):
         split = box.row(align=True).split(factor=0.62, align=True)
@@ -403,7 +403,7 @@ def _draw_anchor_finder(layout, slot_cfg, wwmi_cfg):
 
 class VELO_PT_wwmi_slot_forms(bpy.types.Panel):
     bl_idname = "VELO_PT_wwmi_slot_forms"
-    bl_label = "形态贴图合并 (Merge Form Textures)"
+    bl_label = "形态贴图合并"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Velo Tools"

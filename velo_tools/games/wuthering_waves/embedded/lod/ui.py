@@ -14,40 +14,39 @@ import bpy
 class VTWW_LodSettings(bpy.types.PropertyGroup):
 
     lod_frame_dump_folder: bpy.props.StringProperty(
-        name="LOD Frame Dump",
-        description="Frame dump files directory containing LOD draws. To properly dump character LODs, "
-                    "dump the frame while the model is rendered at LOD distance (e.g. walk a few steps away)",
+        name="LOD Frame Dump 目录",
+        description="存放 LOD draw 的 Frame Dump 目录。要正确 dump 角色 LOD，"
+                    "请在模型以 LOD 距离渲染时抓帧（例如走远几步）",
         default='',
         subtype="DIR_PATH",
     )
 
     allow_lod_overwrite: bpy.props.BoolProperty(
-        name="Allow LoD Data Overwrite",
-        description="Allow replacement of existing LOD data in Metadata.json on LoD object name collision",
+        name="允许覆盖 LOD 数据",
+        description="允许在 LOD 对象名冲突时替换 Metadata.json 中已有的 LOD 数据",
         default=False,
     )
 
     skip_lods_below_error_threshold: bpy.props.BoolProperty(
-        name="Skip LoDs Below Error Threshold",
-        description="Skip LoD with similarity percentage below Geometry Matcher Error Threshold "
-                    "instead of aborting LoDs extraction process",
+        name="低于阈值的 LOD 跳过",
+        description="相似度低于几何匹配误差阈值时跳过该 LOD，而不是中断整个提取流程",
         default=False,
     )
 
     geo_matcher_method: bpy.props.EnumProperty(
-        name="Method",
-        description="Controls which method is used for geometry-based LoDs search",
+        name="匹配方法",
+        description="选择用于自动查找 LOD 网格的几何匹配算法",
         items=[
-            ('VOXEL', 'Voxel Matching (Determenistic)', 'Samples mesh as voxel grid of given size'),
-            ('POINT_CLOUD', 'Point Cloud Matching (Random)',
-             'Uniformly samples random points on a mesh surface using triangle areas.'),
+            ('VOXEL', '体素匹配（确定性）', '把网格采样为指定大小的体素网格进行匹配'),
+            ('POINT_CLOUD', '点云匹配（随机）',
+             '按三角面面积在网格表面均匀随机采样点进行匹配'),
         ],
         default='VOXEL',
     )
 
     geo_matcher_sensivity: bpy.props.FloatProperty(
-        name="Geometry Matcher Sensivity",
-        description="LoD mesh matching sensivity. Controls how raw distance values affect resulting percent value",
+        name="几何匹配灵敏度",
+        description="控制原始距离值如何映射到最终相似度百分比",
         default=0.5,
         min=0.25,
         max=1,
@@ -55,9 +54,8 @@ class VTWW_LodSettings(bpy.types.PropertyGroup):
     )
 
     geo_matcher_voxel_size: bpy.props.FloatProperty(
-        name="Geometry Matcher Voxel Size",
-        description="Controls into how many voxels meshes will be split. The less the size, the more the voxels, "
-                    "the higher precision and the longer calculation time",
+        name="体素大小",
+        description="体素匹配时的网格划分大小；数值越小精度越高、计算越慢",
         default=0.01,
         min=0.005,
         max=0.1,
@@ -65,8 +63,8 @@ class VTWW_LodSettings(bpy.types.PropertyGroup):
     )
 
     geo_matcher_voxel_error_threshold: bpy.props.FloatProperty(
-        name="Geometry Matcher Error Threshold",
-        description="Similarity percentage required for LoD object to pass the check",
+        name="几何匹配误差阈值",
+        description="LOD 对象通过体素匹配所需的相似度百分比",
         default=55,
         min=25,
         max=100,
@@ -75,16 +73,16 @@ class VTWW_LodSettings(bpy.types.PropertyGroup):
     )
 
     geo_matcher_sample_size: bpy.props.IntProperty(
-        name="Geometry Matcher Sample Size",
-        description="Number of uniform geometry samples used for LoD mesh matching",
+        name="点云采样数",
+        description="点云匹配时从网格表面采样的点数",
         default=1000,
         min=500,
         max=5000,
     )
 
     geo_matcher_error_threshold: bpy.props.FloatProperty(
-        name="Geometry Matcher Error Threshold",
-        description="Similarity percentage required for LoD object to pass the check",
+        name="几何匹配误差阈值",
+        description="LOD 对象通过点云匹配所需的相似度百分比",
         default=85,
         min=50,
         max=100,
@@ -93,8 +91,8 @@ class VTWW_LodSettings(bpy.types.PropertyGroup):
     )
 
     geo_matcher_prefilter_voxel_size: bpy.props.FloatProperty(
-        name="Geometry Matcher Prefilter Voxel Size",
-        description="Controls into how many voxels meshes will be split during prefilter pass",
+        name="预过滤体素大小",
+        description="LOD 候选预过滤阶段使用的体素大小",
         default=0.05,
         min=0.01,
         max=0.2,
@@ -102,66 +100,66 @@ class VTWW_LodSettings(bpy.types.PropertyGroup):
     )
 
     geo_matcher_prefilter_sample_size: bpy.props.IntProperty(
-        name="Geometry Matcher Prefilter Sample Size",
-        description="Number of uniform geometry samples used for LoD mesh matching during prefilter pass",
+        name="预过滤采样数",
+        description="LOD 候选预过滤阶段使用的点云采样数",
         default=250,
         min=100,
         max=2500,
     )
 
     geo_matcher_prefilter_candidates_count: bpy.props.IntProperty(
-        name="Geometry Matcher Prefilter Candidates Count",
-        description="Number of pre-filtered candidates satisfying specified prefilter parameters",
+        name="预过滤候选数",
+        description="进入精确几何匹配的候选数量；数量越多越慢",
         default=5,
         min=1,
         max=10,
     )
 
     vg_matcher_candidates_count: bpy.props.IntProperty(
-        name="Vertex Groups Matcher Candidates Count",
-        description="Number of pre-filtered candidates based on centroid distance used for Vertex Groups matching",
+        name="顶点组匹配候选数",
+        description="按顶点组重心距离预选的候选数量",
         default=3,
         min=1,
         max=10,
     )
 
     skip_component_below_vertex_count_enabled: bpy.props.BoolProperty(
-        name="Components Filtering: Min Vertex Count",
-        description="Exclude LoD candidate components below specified vertex count from LoD matching",
+        name="组件过滤：最少顶点数",
+        description="启用后从 LOD 匹配候选中排除顶点数过少的组件",
         default=False,
     )
 
     skip_component_below_vertex_count: bpy.props.IntProperty(
-        name="Min Vertex Count",
-        description="Exclude LoD candidate components below specified vertex count from LoD matching",
+        name="最少顶点数",
+        description="LOD 候选组件低于该顶点数时会被排除",
         default=0,
         min=0,
         max=100000,
     )
 
     skip_object_hashes_enabled: bpy.props.BoolProperty(
-        name="Objects Filtering: Blacklisted Hashes",
-        description="Exclude candidate objects with specified vb0 hashes from LoD matching (separators: `,` `;` ` `)",
+        name="对象过滤：黑名单 Hash",
+        description="启用后从 LOD 匹配候选中排除指定 vb0 Hash 的对象（逗号、分号或空格分隔）",
         default=False,
     )
 
     skip_object_hashes: bpy.props.StringProperty(
         name="",
-        description="Exclude candidate objects with specified vb0 hashes from LoD matching (separators: `,` `;` ` `)",
+        description="要从 LOD 匹配候选中排除的对象 vb0 Hash，支持用逗号、分号或空格分隔",
         default="",
     )
 
     show_advanced: bpy.props.BoolProperty(
-        name="Advanced",
-        description="Show advanced LOD matching settings",
+        name="高级",
+        description="显示高级 LOD 匹配设置",
         default=False,
     )
 
 
 class VTWW_OT_extract_lod_data(bpy.types.Operator):
     bl_idname = "vtww.extract_lod_data"
-    bl_label = "Extract LOD Data"
-    bl_description = "提取 LOD 数据：从 LOD 帧 dump 中匹配当前模型的 LOD 对象，并把 LOD 数据写入 Metadata.json"
+    bl_label = "提取 LOD 数据"
+    bl_description = "从 LOD 帧 dump 中匹配当前模型的 LOD 对象，并把 LOD 数据写入 Metadata.json"
 
     def execute(self, context):
         try:
@@ -184,7 +182,7 @@ class VTWW_OT_extract_lod_data(bpy.types.Operator):
 
 class VELO_PT_wwmi_lod(bpy.types.Panel):
     bl_idname = "VELO_PT_wwmi_lod"
-    bl_label = "LOD 数据提取 (Extract LOD Data)"
+    bl_label = "LOD 数据提取"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Velo Tools"

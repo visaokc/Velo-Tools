@@ -25,12 +25,22 @@ from ._wwmi_core import auto_load as _al
 from ._wwmi_core import addon_updater_ops as _updater_ops
 from ._wwmi_core.addon import settings as _wsettings
 from ._wwmi_core.addon import ui as _wui
+from . import ui_l10n as _ui_l10n
 from .. import registry as _registry
 from .. import _a2_panels as _a2
 
 
 _TAB_VALUE = "GAME"
 _GAME_VALUE = "WUTHERING"
+
+
+def _zh(text: str) -> str:
+    # Self-heal strings that were decoded with the wrong codec (cp1252 vs
+    # utf-8), same guard as the EFMI bridge.
+    try:
+        return text.encode("cp1252").decode("utf-8")
+    except UnicodeError:
+        return text
 
 # Wuthering Waves (WWMI) game descriptor: export operator/settings both point to Velo's
 # built-in fork (vtww / VTWW_settings), no dependency on a standalone external WWMI-Tools.
@@ -52,13 +62,13 @@ _REMOVED_VENDOR_PANEL_IDS = {
     "VTWW_PT_DebugPanel",
 }
 
-# Items retained in tool_mode after dropping Toolbox (identifier / English label / description /
-# order kept consistent with upstream).
+# Items retained in tool_mode after dropping Toolbox (identifier / order kept
+# consistent with upstream; labels and descriptions localized like EFMI).
 _TOOL_MODE_ITEMS = [
-    ('EXPORT_MOD', 'Export Mod', 'Export selected collection as WWMI mod'),
-    ('IMPORT_OBJECT', 'Import Object', 'Import .ib ad .vb files from selected directory'),
-    ('EXTRACT_FRAME_DATA', 'Extract Objects From Dump',
-     'Extract components of all WWMI-compatible objects from the selected frame dump directory'),
+    ('EXPORT_MOD', '导出 Mod', '将所选集合导出为 WWMI mod'),
+    ('IMPORT_OBJECT', '导入对象', '从所选目录导入 .ib 和 .vb 模型'),
+    ('EXTRACT_FRAME_DATA', '提取帧数据',
+     '从所选 Frame Dump 目录提取所有 WWMI 兼容对象的组件'),
 ]
 
 # Original reference snapshots used for restoration (restored on unregister).
@@ -146,14 +156,111 @@ def _patch_panels_for_velo_tools():
         _patch_single_panel(cls, root)
 
 
+# Localization patch state (snapshots restored on unregister).
+_l10n_patched_classes = []  # [(cls, {attr: old_value_or_MISSING})]
+_l10n_orig_annotations = []  # [(cls, prop_name, original_deferred)]
+
+
+def _patch_l10n_class_texts():
+    """Set Chinese bl_label / bl_description on vendored classes by class name
+    (must run before _al.register(); Blender bakes these at register time)."""
+    texts = {**_ui_l10n.WWMI_CLASS_TEXTS, **_ui_l10n.INI_TOGGLE_CLASS_TEXTS}
+    for cls in list(_al.ordered_classes or ()):
+        entry = texts.get(getattr(cls, "__name__", ""))
+        if entry is None:
+            continue
+        label, description = entry
+        store = {}
+        _record_panel_attr(cls, "bl_label", store)
+        cls.bl_label = _zh(label)
+        if description:
+            _record_panel_attr(cls, "bl_description", store)
+            cls.bl_description = _zh(description)
+        _l10n_patched_classes.append((cls, store))
+
+
+def _translated_enum_items(items, enum_texts):
+    """Replace only label/description of static enum items by identifier;
+    identifier, icon and number fields pass through untouched."""
+    out = []
+    for item in items:
+        item = tuple(item)
+        entry = enum_texts.get(item[0])
+        if entry is None or len(item) < 3:
+            out.append(item)
+            continue
+        label, desc = entry
+        new = list(item)
+        new[1] = _zh(label)
+        if desc is not None:
+            new[2] = _zh(desc)
+        out.append(tuple(new))
+    return out
+
+
+def _patch_l10n_properties():
+    """Rebuild dictionary-listed property annotations with Chinese name /
+    description / enum texts. All other keywords are copied from the live
+    annotation, so upstream changes to defaults / limits / callbacks survive
+    a core upgrade without touching this patch."""
+    from ._wwmi_core.addon.modules.ini_toggles import props as _tprops
+
+    prop_texts = {"VTWW_Settings": _ui_l10n.WWMI_PROPERTY_TEXTS,
+                  **_ui_l10n.INI_TOGGLE_PROPERTY_TEXTS}
+    owners = {"VTWW_Settings": _wsettings.VTWW_Settings}
+    for cls_name in _ui_l10n.INI_TOGGLE_PROPERTY_TEXTS:
+        owners[cls_name] = getattr(_tprops, cls_name, None)
+
+    for cls_name, texts in prop_texts.items():
+        cls = owners.get(cls_name)
+        if cls is None:
+            continue
+        ann_map = cls.__annotations__
+        for prop_name, (name_text, desc_text) in texts.items():
+            ann = ann_map.get(prop_name)
+            if ann is None or not hasattr(ann, "function") or not hasattr(ann, "keywords"):
+                continue
+            kwargs = dict(ann.keywords)
+            if name_text is not None:
+                kwargs["name"] = _zh(name_text)
+            if desc_text is not None:
+                kwargs["description"] = _zh(desc_text)
+            enum_texts = _ui_l10n.WWMI_ENUM_TEXTS.get((cls_name, prop_name))
+            if enum_texts and isinstance(kwargs.get("items"), (list, tuple)):
+                kwargs["items"] = _translated_enum_items(kwargs["items"], enum_texts)
+            _l10n_orig_annotations.append((cls, prop_name, ann))
+            ann_map[prop_name] = ann.function(**kwargs)
+
+
+def _restore_l10n():
+    global _l10n_patched_classes, _l10n_orig_annotations
+    for cls, prop_name, ann in reversed(_l10n_orig_annotations):
+        try:
+            cls.__annotations__[prop_name] = ann
+        except Exception:
+            pass
+    _l10n_orig_annotations = []
+    for cls, store in reversed(_l10n_patched_classes):
+        for attr, old in store.items():
+            try:
+                if old is _MISSING:
+                    if attr in cls.__dict__:
+                        delattr(cls, attr)
+                else:
+                    setattr(cls, attr, old)
+            except Exception:
+                pass
+    _l10n_patched_classes = []
+
+
 def _patch_tool_mode():
     """Redefine WWMI_Settings.tool_mode, deleting the Toolbox item to hide the vertex group / multi-object sculpt / Utility sections."""
     global _orig_tool_mode_annotation
     _orig_tool_mode_annotation = _wsettings.VTWW_Settings.__annotations__.get("tool_mode", _MISSING)
     _wsettings.VTWW_Settings.__annotations__["tool_mode"] = bpy.props.EnumProperty(
-        name="Mode",
-        description="Defines list of available actions",
-        items=list(_TOOL_MODE_ITEMS),
+        name=_zh("模式"),
+        description=_zh("切换当前鸣潮 WWMI/Velo 工具功能。"),
+        items=[(i, _zh(label), _zh(desc)) for i, label, desc in _TOOL_MODE_ITEMS],
         update=lambda self, context: _wsettings.clear_error(self),
         default='EXTRACT_FRAME_DATA',
     )
@@ -167,17 +274,18 @@ def _patch_mod_skeleton_type():
     validation), then runs a stock COMPONENT export. The original 2 items keep their exact labels/descs."""
     global _orig_mod_skeleton_type_annotation
     _orig_mod_skeleton_type_annotation = _wsettings.VTWW_Settings.__annotations__.get("mod_skeleton_type", _MISSING)
+    # Item labels stay in English on purpose (Merged / Per-Component are
+    # technical terms by project convention); descriptions are localized.
     _wsettings.VTWW_Settings.__annotations__["mod_skeleton_type"] = bpy.props.EnumProperty(
-        name="Skeleton",
-        description="Select the same skeleton type that was used for import! Defines logic of exported mod.ini.",
+        name=_zh("骨架"),
+        description=_zh("请选择与导入时一致的骨架类型！决定导出 mod.ini 的逻辑。"),
         items=[
-            ('MERGED', 'Merged', 'Mesh with this skeleton should have unified list of Vertex Groups'),
-            ('COMPONENT', 'Per-Component', 'Mesh with this skeleton should have its Vertex Groups split into per-component lists.'),
+            ('MERGED', 'Merged', _zh('该骨架的网格使用统一顶点组列表。')),
+            ('COMPONENT', 'Per-Component', _zh('该骨架的网格按组件拆分顶点组列表。')),
             ('COMPONENT_FROM_MERGED', 'Per-Component (from Merged)',
-             'Edit with a Merged (unified) skeleton, export a Per-Component mod: unified vertex-group '
-             'numbers are auto-translated back to each component local numbering. Avoids the Merged '
-             'runtime pause when several of the same object are on screen. Weights painted onto a bone '
-             "outside the vertex group's own component will block export with an error."),
+             _zh('按 Merged（统一）骨架编辑、导出 Per-Component mod：统一顶点组编号自动回译为'
+                 '各组件局部编号。避免 Merged 模式同屏多个相同对象时的运行期暂停。把权重刷到'
+                 '顶点组所属组件之外的骨骼会报错并阻止导出。')),
         ],
         default=0,
     )
@@ -197,12 +305,12 @@ def _neutralize_updater():
         _orig_pref_draw = getattr(pref, "draw", None)
         _orig_pref_auto_check = pref.__annotations__.get("auto_check_update", _MISSING)
         pref.__annotations__["auto_check_update"] = bpy.props.BoolProperty(
-            name="Auto-check for Update",
-            description="Disabled: Velo Tools 内置 WWMI core 不使用在线更新器。",
+            name=_zh("自动检查更新"),
+            description=_zh("已禁用：Velo Tools 内置 WWMI core 不使用在线更新器。"),
             default=False,
         )
         pref.draw = lambda self, context: self.layout.label(
-            text="WWMI updater is disabled inside Velo Tools."
+            text=_zh("Velo Tools 内置 WWMI core 已禁用在线更新器。")
         )
 
 
@@ -219,6 +327,10 @@ def register():
     except Exception:
         import traceback
         traceback.print_exc()
+    # Localization runs after every annotation re-definition above and before
+    # _al.register() (labels/annotations are baked at class registration).
+    _patch_l10n_class_texts()
+    _patch_l10n_properties()
     _strip_unwanted_vendor_panels()
     _patch_panels_for_velo_tools()
     _al.register()
@@ -376,6 +488,9 @@ def unregister():
             except Exception:
                 pass
     _patched_panels = []
+
+    # Restore localized class texts and property annotations.
+    _restore_l10n()
 
     # Restore the tool_mode annotation.
     global _orig_tool_mode_annotation

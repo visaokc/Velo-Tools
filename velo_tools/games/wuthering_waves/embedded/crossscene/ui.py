@@ -14,9 +14,9 @@ from pathlib import Path
 import bpy
 
 _ROLES = [
-    ('fold', 'Fold into base',
+    ('fold', '折入基底',
      '该 IB 折入基底：编辑基底即覆盖它（格式兼容则重定向到基底 buffer，骨数等不兼容则出独立 buffer，自动判定）'),
-    ('editable', 'Editable',
+    ('editable', '独立可编辑',
      '独立可编辑：几何不属于基底（如另一形态），作为新 component 单独导入编辑、单独导出'),
 ]
 
@@ -103,7 +103,7 @@ class VTWW_OT_xscene_merge(bpy.types.Operator):
 
 class VELO_PT_xscene(bpy.types.Panel):
     bl_idname = "VELO_PT_xscene"
-    bl_label = "跨场景折叠合并 (Cross-Scene)"
+    bl_label = "跨场景折叠合并"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Velo Tools"
@@ -136,7 +136,7 @@ class VELO_PT_xscene(bpy.types.Panel):
         layout.operator("vtww.xscene_merge", icon='AUTOMERGE_ON')
         layout.separator()
         col2 = layout.column(align=True)
-        col2.label(text="2) 用上方「导入 Object」导入合并文件夹")
+        col2.label(text="2) 用上方「导入对象」导入合并文件夹")
         col2.label(text="3) 编辑一份网格")
         col2.label(text="4) 点「导出 Mod」→ 自动折叠出多场景 mod")
 
