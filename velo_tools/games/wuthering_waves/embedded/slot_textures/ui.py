@@ -88,6 +88,16 @@ def _restore_export_menu():
 
 # ------------------------------------------------------- form merge UI ------
 
+class VTWW_AnchorCandidateItem(bpy.types.PropertyGroup):
+    """One recommended form-anchor candidate (display only)."""
+    vb0: bpy.props.StringProperty(default='')
+    form_label: bpy.props.StringProperty(default='')
+    shared_textures: bpy.props.IntProperty(default=0)
+    shares_character_ps: bpy.props.BoolProperty(default=False)
+    min_call_distance: bpy.props.IntProperty(default=0)
+    hits: bpy.props.StringProperty(default='')
+
+
 class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
 
     form_dump_folder: bpy.props.StringProperty(
@@ -105,6 +115,9 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
                     "hash（缩短形态切换的检测延迟）；填 base 表示收割进基础提取数据",
         default='',
     )
+
+    anchor_candidates: bpy.props.CollectionProperty(type=VTWW_AnchorCandidateItem)
+    anchor_status: bpy.props.StringProperty(default='')
 
     form_anchors: bpy.props.StringProperty(
         name="形态锚点 (Form Anchors)",
@@ -158,6 +171,91 @@ class VTWW_OT_merge_form_textures(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class VTWW_OT_find_form_anchors(bpy.types.Operator):
+    bl_idname = "vtww.find_form_anchors"
+    bl_label = "查找形态锚点 (Find Form Anchors)"
+    bl_description = ("对比基础形态 dump（提取页的 Frame Dump 目录）与上方的形态 "
+                      "Frame Dump，给出 top5 形态独占 vb0 锚点候选：按角色贴图"
+                      "亲和度排序（新鲜绑定证据加权，场景道具的陈旧继承不计入），"
+                      "点行尾「采用」自动填入导出页的形态锚点字段")
+
+    def execute(self, context):
+        cfg = context.scene.VTWW_settings
+        slot_cfg = context.scene.vtww_slot_settings
+        try:
+            import json
+            from ..._wwmi_core.migoto_io.blender_interface.utility import resolve_path
+            from . import anchors
+
+            base_dump = resolve_path(cfg.frame_dump_folder)
+            form_dump = resolve_path(slot_cfg.form_dump_folder)
+            meta_path = resolve_path(cfg.object_source_folder) / 'Metadata.json'
+            if not meta_path.is_file():
+                raise ValueError("对象文件夹缺少 Metadata.json（先完成提取）")
+            with open(meta_path, encoding='utf-8') as f:
+                object_hash = json.load(f).get('vb0_hash') or ''
+            if not object_hash:
+                raise ValueError("Metadata.json 没有 vb0_hash")
+            label = slot_cfg.form_label.strip() or 'form2'
+            if label.lower() == 'base':
+                raise ValueError("形态标签 base 是基础形态自身，请填另一形态的标签")
+
+            loaded_base = anchors.load_dump_calls(base_dump)
+            loaded_form = anchors.load_dump_calls(form_dump)
+            candidates = anchors.recommend_anchors(
+                {1: [loaded_base], 2: [loaded_form]},
+                {1: 'base', 2: label}, object_hash, top_n=5)
+        except Exception as exc:
+            traceback.print_exc()
+            slot_cfg.anchor_status = f"查找失败：{exc}"
+            self.report({'ERROR'}, f"锚点查找失败：{exc}")
+            return {'CANCELLED'}
+
+        slot_cfg.anchor_candidates.clear()
+        for cand in candidates:
+            item = slot_cfg.anchor_candidates.add()
+            item.vb0 = cand.vb0
+            item.form_label = cand.form_label
+            item.shared_textures = cand.shared_textures
+            item.shares_character_ps = cand.shares_character_ps
+            item.min_call_distance = cand.min_call_distance
+            item.hits = ", ".join(f"{n}: {c}" for n, c in cand.hits.items())
+        if candidates:
+            slot_cfg.anchor_status = (
+                f"top{len(candidates)} 候选（亲和度排序）；单 dump 场景噪音"
+                f"未收缩，独占性以列表为参考、用户拍板")
+            self.report({'INFO'}, f"找到 {len(candidates)} 个形态锚点候选")
+        else:
+            slot_cfg.anchor_status = (
+                "没有候选：两份 dump 没有形态独占且与角色相关的 vb0"
+                "（确认两份 dump 分属两个形态、角色都在画面内）")
+            self.report({'WARNING'}, "没有找到形态锚点候选")
+        return {'FINISHED'}
+
+
+class VTWW_OT_apply_form_anchor(bpy.types.Operator):
+    bl_idname = "vtww.apply_form_anchor"
+    bl_label = "采用"
+    bl_description = "把该候选以 hash:形态标签 追加进导出页的形态锚点字段"
+
+    index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        slot_cfg = context.scene.vtww_slot_settings
+        if not (0 <= self.index < len(slot_cfg.anchor_candidates)):
+            self.report({'ERROR'}, "候选索引无效，请重新查找")
+            return {'CANCELLED'}
+        item = slot_cfg.anchor_candidates[self.index]
+        token = f"{item.vb0}:{item.form_label}"
+        existing = slot_cfg.form_anchors.strip()
+        if item.vb0 in existing:
+            self.report({'WARNING'}, f"{item.vb0} 已在形态锚点字段里")
+            return {'CANCELLED'}
+        slot_cfg.form_anchors = f"{existing}, {token}" if existing else token
+        self.report({'INFO'}, f"已采用形态锚点 {token}")
+        return {'FINISHED'}
+
+
 class VELO_PT_wwmi_slot_forms(bpy.types.Panel):
     bl_idname = "VELO_PT_wwmi_slot_forms"
     bl_label = "形态贴图合并 (Merge Form Textures)"
@@ -191,10 +289,29 @@ class VELO_PT_wwmi_slot_forms(bpy.types.Panel):
         layout.separator()
         layout.row().operator(VTWW_OT_merge_form_textures.bl_idname, icon='TEXTURE')
 
+        layout.separator()
+        layout.row().operator(VTWW_OT_find_form_anchors.bl_idname, icon='VIEWZOOM')
+        if cfg.anchor_status:
+            layout.row().label(text=cfg.anchor_status)
+        if len(cfg.anchor_candidates):
+            box = layout.box()
+            for index, item in enumerate(cfg.anchor_candidates):
+                row = box.row(align=True)
+                ps_mark = " ps" if item.shares_character_ps else ""
+                row.label(text=(f"{item.vb0}  {item.form_label}  "
+                                f"贴图×{item.shared_textures}{ps_mark}  "
+                                f"距{item.min_call_distance}  ({item.hits})"))
+                op = row.operator(VTWW_OT_apply_form_anchor.bl_idname,
+                                  text="采用", icon='IMPORT')
+                op.index = index
+
 
 _CLASSES = (
+    VTWW_AnchorCandidateItem,
     VTWW_SlotTextureSettings,
     VTWW_OT_merge_form_textures,
+    VTWW_OT_find_form_anchors,
+    VTWW_OT_apply_form_anchor,
     VELO_PT_wwmi_slot_forms,
 )
 
