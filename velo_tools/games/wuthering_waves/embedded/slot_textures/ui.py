@@ -137,14 +137,9 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
 
     anchor_candidates: bpy.props.CollectionProperty(type=VTWW_AnchorCandidateItem)
     anchor_status: bpy.props.StringProperty(default='')
-
-    anchor_base_dump_folder: bpy.props.StringProperty(
-        name="基础形态 Dump",
-        description="基础形态的原始帧转储目录。留空时点「查找」会自动取"
-                    "提取页的 Frame Dump 目录（单向同步，本 blend 内可改）",
-        default='',
-        subtype="DIR_PATH",
-    )
+    # Base-form dump has NO property of its own: the finder renders the
+    # extraction page's frame_dump_folder directly (one fact, one property -
+    # the same pattern as object_source_folder on the import/export pages).
     anchor_form_dumps: bpy.props.CollectionProperty(type=VTWW_AnchorFormDump)
 
     form_anchors: bpy.props.StringProperty(
@@ -235,14 +230,10 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
         cfg = context.scene.VTWW_settings
         slot_cfg = context.scene.vtww_slot_settings
 
-        # One-way defaults: the extraction blend and the mod-making blend are
-        # different files, so the finder owns its paths; the extraction page
-        # and the merge panel only seed them when the finder's are blank
-        # (operator-time, never in draw - writing properties there is
-        # forbidden by Blender).
-        if not slot_cfg.anchor_base_dump_folder.strip() \
-                and cfg.frame_dump_folder.strip():
-            slot_cfg.anchor_base_dump_folder = cfg.frame_dump_folder
+        # The base dump IS the extraction page's frame_dump_folder (shared
+        # property, rendered in the finder box too). Form rows seed from the
+        # merge panel when blank (operator-time, never in draw - writing
+        # properties there is forbidden by Blender).
         if not slot_cfg.anchor_form_dumps:
             slot_cfg.anchor_form_dumps.add()
         first = slot_cfg.anchor_form_dumps[0]
@@ -256,9 +247,10 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
             from ..._wwmi_core.migoto_io.blender_interface.utility import resolve_path
             from . import anchors
 
-            if not slot_cfg.anchor_base_dump_folder.strip():
-                raise ValueError("基础形态 dump 未指定（在上方框选择目录，"
-                                 "或先在提取页填 Frame Dump 目录）")
+            if not cfg.frame_dump_folder.strip():
+                raise ValueError("基础形态 dump 未指定——就是提取页的 "
+                                 "Frame Dump 目录（与查找区第一个框同值，"
+                                 "两处任填一处）")
             meta_path = resolve_path(cfg.object_source_folder) / 'Metadata.json'
             if not meta_path.is_file():
                 raise ValueError("对象文件夹缺少 Metadata.json（先完成提取）")
@@ -274,7 +266,7 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
             form_labels = {1: 'base'}
             try:
                 dumps_by_form[1] = [anchors.load_dump_calls(
-                    resolve_path(slot_cfg.anchor_base_dump_folder))]
+                    resolve_path(cfg.frame_dump_folder))]
             except ValueError as exc:
                 raise ValueError(f"基础形态 dump：{exc}")
             for offset, (label, folder) in enumerate(form_rows, start=2):
@@ -340,21 +332,20 @@ class VTWW_OT_apply_form_anchor(bpy.types.Operator):
 def _draw_anchor_finder(layout, slot_cfg, wwmi_cfg):
     """Anchor finder UI, drawn inside the export page's Velo compatibility
     box right under the form-anchors field (anchors are filled right before
-    exporting - keeping the whole flow in one place). Carries its own dump
-    paths: the extraction blend and the mod-making blend are different
-    files, the extraction page / merge panel values only seed blanks."""
+    exporting - keeping the whole flow in one place). The base-form dump
+    field renders the extraction page's frame_dump_folder DIRECTLY (one
+    fact, one property - the object_source_folder pattern), so both pages
+    always show the same value with zero sync code."""
     box = layout.box()
     box.label(text="形态锚点查找 (Find Form Anchors)", icon='VIEWZOOM')
-    box.row().prop(slot_cfg, 'anchor_base_dump_folder')
-    if (not slot_cfg.anchor_base_dump_folder.strip()
-            and wwmi_cfg.frame_dump_folder.strip()):
-        box.row().label(text=f"空 → 自动用提取页: {wwmi_cfg.frame_dump_folder}",
-                        icon='INFO')
+    box.row().prop(wwmi_cfg, 'frame_dump_folder', text="基础形态 Dump")
     for index, row_item in enumerate(slot_cfg.anchor_form_dumps):
-        row = box.row(align=True)
-        row.prop(row_item, 'dump_folder')
-        row.prop(row_item, 'form_label', text='')
-        op = row.operator(VTWW_OT_anchor_form_dump_remove.bl_idname,
+        split = box.row(align=True).split(factor=0.62, align=True)
+        split.prop(row_item, 'dump_folder', text='',
+                   placeholder="形态 Dump 目录")
+        sub = split.row(align=True)
+        sub.prop(row_item, 'form_label', text='', placeholder="标签")
+        op = sub.operator(VTWW_OT_anchor_form_dump_remove.bl_idname,
                           text='', icon='X')
         op.index = index
     if (not any(r.dump_folder.strip() for r in slot_cfg.anchor_form_dumps)
