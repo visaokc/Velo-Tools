@@ -313,7 +313,12 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
             item.shared_textures = cand.shared_textures
             item.shares_character_ps = cand.shares_character_ps
             item.min_call_distance = cand.min_call_distance
-            item.hits = ", ".join(f"{n}: {c}" for n, c in cand.hits.items())
+            # Compact row text; the full per-dump evidence goes to the
+            # console (the row would carry whole dump folder names).
+            item.hits = f"{sum(cand.hits.values())} draws"
+            print(f"[SlotTextures] anchor candidate {cand.vb0} "
+                  f"({cand.form_label}): "
+                  + ", ".join(f"{n}: {c}" for n, c in cand.hits.items()))
         prefix = f"{detect_note}；" if detect_note else ""
         if candidates:
             slot_cfg.anchor_status = (
@@ -385,8 +390,13 @@ def _draw_anchor_finder(layout, slot_cfg, wwmi_cfg):
         ps_mark = " ps" if item.shares_character_ps else ""
         row.label(text=(f"{item.vb0}  {item.form_label}  "
                         f"贴图×{item.shared_textures}{ps_mark}  "
-                        f"距{item.min_call_distance}  ({item.hits})"))
-        op = row.operator(VTWW_OT_apply_form_anchor.bl_idname,
+                        f"距{item.min_call_distance}  {item.hits}"))
+        # Fixed-width apply button: the label gets every extra pixel when
+        # the sidebar is widened (an evenly-split row let the button grow
+        # without bound while the data got truncated).
+        btn = row.row(align=True)
+        btn.ui_units_x = 4
+        op = btn.operator(VTWW_OT_apply_form_anchor.bl_idname,
                           text="采用", icon='IMPORT')
         op.index = index
 
