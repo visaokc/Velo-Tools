@@ -196,6 +196,65 @@ def object_texture_hashes(loaded, object_hash: str, evidence) -> Set[str]:
     return out
 
 
+@dataclass
+class ObjectCandidate:
+    """One character-object candidate from dump auto-detection."""
+    vb0: str
+    components: int      # min across dumps of distinct StartIndexLocation count
+    draws: int           # total draw count across dumps
+    skinned: bool        # some draw binds vertex buffers beyond vb0
+
+
+def detect_object_hash(loaded_dumps: List[object]) -> List[ObjectCandidate]:
+    """Character-object auto-detection from RAW dumps alone (no extraction
+    folder anywhere): the character is present in EVERY dump (forms swap
+    outfits, not the person), skinned (binds vertex buffers beyond vb0 -
+    scene props don't), and multi-component (several distinct
+    StartIndexLocation draws on one vb0). Candidates are ranked by
+    (components desc, draws desc); empty list = nothing plausible."""
+    per_dump: List[Dict[str, dict]] = []
+    for loaded in loaded_dumps:
+        stats: Dict[str, dict] = {}
+        for call in loaded.calls.values():
+            params = call_draw_params(call)
+            if params is None:
+                continue
+            vb0 = call_vb0_hash(call)
+            if not vb0:
+                continue
+            entry = stats.setdefault(vb0, {"starts": set(), "draws": 0,
+                                           "skinned": False})
+            entry["starts"].add(params.StartIndexLocation)
+            entry["draws"] += 1
+            if not entry["skinned"]:
+                for descriptor in call.resources.values():
+                    if (_slot_kind(descriptor) == "vb"
+                            and (descriptor.slot_id or 0) >= 1):
+                        entry["skinned"] = True
+                        break
+        per_dump.append(stats)
+    if not per_dump:
+        return []
+
+    present = set(per_dump[0])
+    for stats in per_dump[1:]:
+        present &= set(stats)
+
+    candidates: List[ObjectCandidate] = []
+    for vb0 in sorted(present):
+        entries = [stats[vb0] for stats in per_dump]
+        skinned = any(e["skinned"] for e in entries)
+        if not skinned:
+            continue  # static scene prop
+        candidates.append(ObjectCandidate(
+            vb0=vb0,
+            components=min(len(e["starts"]) for e in entries),
+            draws=sum(e["draws"] for e in entries),
+            skinned=skinned))
+    candidates.sort(key=lambda c: (-c.components, -c.draws, c.vb0))
+    return candidates
+
+
 def resolve_form_rows(rows: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     """Normalizes the anchor finder's extra-form dump rows (UI order):
     rows = [(dump_folder, form_label), ...]. Blank rows are skipped, blank

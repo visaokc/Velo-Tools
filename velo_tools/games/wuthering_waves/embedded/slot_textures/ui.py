@@ -251,13 +251,6 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
                 raise ValueError("基础形态 dump 未指定——就是提取页的 "
                                  "Frame Dump 目录（与查找区第一个框同值，"
                                  "两处任填一处）")
-            meta_path = resolve_path(cfg.object_source_folder) / 'Metadata.json'
-            if not meta_path.is_file():
-                raise ValueError("对象文件夹缺少 Metadata.json（先完成提取）")
-            with open(meta_path, encoding='utf-8') as f:
-                object_hash = json.load(f).get('vb0_hash') or ''
-            if not object_hash:
-                raise ValueError("Metadata.json 没有 vb0_hash")
             form_rows = anchors.resolve_form_rows(
                 [(row.dump_folder, row.form_label)
                  for row in slot_cfg.anchor_form_dumps])
@@ -276,6 +269,34 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
                 except ValueError as exc:
                     raise ValueError(f"形态「{label}」dump：{exc}")
                 form_labels[offset] = label
+
+            # Character object: the user-set extraction folder (anywhere on
+            # disk) is the precise override; otherwise auto-detect from the
+            # RAW dumps alone - no dump is ever required to contain an
+            # extraction folder.
+            object_hash = ''
+            detect_note = ''
+            if cfg.object_source_folder.strip():
+                meta_path = (resolve_path(cfg.object_source_folder)
+                             / 'Metadata.json')
+                if meta_path.is_file():
+                    with open(meta_path, encoding='utf-8') as f:
+                        object_hash = json.load(f).get('vb0_hash') or ''
+            if not object_hash:
+                all_loaded = [d for dumps in dumps_by_form.values()
+                              for d in dumps]
+                detected = anchors.detect_object_hash(all_loaded)
+                if not detected:
+                    raise ValueError(
+                        "dump 里找不到跨全部形态出现的蒙皮多组件对象——"
+                        "确认各 dump 抓帧时角色都在画面内（或在对象文件夹"
+                        "字段指定提取文件夹精确指定）")
+                top = detected[0]
+                object_hash = top.vb0
+                detect_note = (f"自动识别角色: {top.vb0}"
+                               f"（{top.components} 组件/{top.draws} draws"
+                               f"，候选 {len(detected)} 个）")
+
             candidates = anchors.recommend_anchors(
                 dumps_by_form, form_labels, object_hash, top_n=5)
         except Exception as exc:
@@ -293,15 +314,16 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
             item.shares_character_ps = cand.shares_character_ps
             item.min_call_distance = cand.min_call_distance
             item.hits = ", ".join(f"{n}: {c}" for n, c in cand.hits.items())
+        prefix = f"{detect_note}；" if detect_note else ""
         if candidates:
             slot_cfg.anchor_status = (
-                f"top{len(candidates)} 候选（亲和度排序）；单 dump 场景噪音"
-                f"未收缩，独占性以列表为参考、用户拍板")
+                f"{prefix}top{len(candidates)} 候选（亲和度排序）；独占性"
+                f"以列表为参考、用户拍板")
             self.report({'INFO'}, f"找到 {len(candidates)} 个形态锚点候选")
         else:
             slot_cfg.anchor_status = (
-                "没有候选：两份 dump 没有形态独占且与角色相关的 vb0"
-                "（确认两份 dump 分属两个形态、角色都在画面内）")
+                f"{prefix}没有候选：dump 之间没有形态独占且与角色相关的 vb0"
+                f"（确认各 dump 分属不同形态、角色都在画面内）")
             self.report({'WARNING'}, "没有找到形态锚点候选")
         return {'FINISHED'}
 
