@@ -189,14 +189,17 @@ def _patch_import_menu():
 
         layout.row().prop(cfg, 'color_storage')
         layout.row().prop(cfg, 'import_skeleton_type')
-        if cfg.import_skeleton_type == 'MERGED':
-            layout.row().prop(cfg, 'skip_empty_vertex_groups')
-        layout.row().prop(cfg, 'mirror_mesh')
 
+        # EFMI layout parity: the velo box sits right under the skeleton
+        # dropdown, before the remaining import toggles.
         if hasattr(cfg, "import_as_component_collections"):
             box = layout.box()
             box.label(text=_zh("Velo 兼容选项"), icon="TOOL_SETTINGS")
             box.prop(cfg, "import_as_component_collections")
+
+        if cfg.import_skeleton_type == 'MERGED':
+            layout.row().prop(cfg, 'skip_empty_vertex_groups')
+        layout.row().prop(cfg, 'mirror_mesh')
 
         if hasattr(cfg, "import_texture"):
             layout.row().prop(cfg, "import_texture")
