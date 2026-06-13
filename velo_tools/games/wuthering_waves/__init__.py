@@ -327,6 +327,14 @@ def register():
     except Exception:
         import traceback
         traceback.print_exc()
+    # Velo import extras settings (component sub-collections + texture assign):
+    # injected before _al.register() like the slot-style option above.
+    try:
+        from .embedded import velo_import as _vimport
+        _vimport.inject_settings()
+    except Exception:
+        import traceback
+        traceback.print_exc()
     # Localization runs after every annotation re-definition above and before
     # _al.register() (labels/annotations are baked at class registration).
     _patch_l10n_class_texts()
@@ -354,6 +362,16 @@ def register():
         from .embedded.crossscene import patch as _xspatch
         _xspatch.install()
         _xspatch.install_import()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    # Velo import extras: execute wrap (component sub-collection reorg +
+    # texture auto-assign) installed AFTER the cross-scene import fix so it
+    # wraps outermost; also replaces draw_menu_import_object for the
+    # EFMI-style layout (options above the import button).
+    try:
+        from .embedded import velo_import as _vimport
+        _vimport.install()
     except Exception:
         import traceback
         traceback.print_exc()
@@ -448,6 +466,12 @@ def unregister():
         _pfm.remove()
     except Exception:
         pass
+    # Velo import extras before the cross-scene import fix (LIFO: installed after it).
+    try:
+        from .embedded import velo_import as _vimport
+        _vimport.remove()
+    except Exception:
+        pass
     try:
         from .embedded.crossscene import patch as _xspatch
         _xspatch.remove_import()
@@ -495,7 +519,7 @@ def unregister():
     # Restore the tool_mode annotation.
     global _orig_tool_mode_annotation
     if _orig_tool_mode_annotation is not _MISSING and _orig_tool_mode_annotation is not None:
-        _wsettings.WWMI_Settings.__annotations__["tool_mode"] = _orig_tool_mode_annotation
+        _wsettings.VTWW_Settings.__annotations__["tool_mode"] = _orig_tool_mode_annotation
     _orig_tool_mode_annotation = None
 
     # Restore the mod_skeleton_type annotation.
@@ -508,6 +532,13 @@ def unregister():
     try:
         from .embedded import slot_textures as _slott
         _slott.restore_settings()
+    except Exception:
+        pass
+
+    # Restore the velo import extras annotations.
+    try:
+        from .embedded import velo_import as _vimport
+        _vimport.restore_settings()
     except Exception:
         pass
 
