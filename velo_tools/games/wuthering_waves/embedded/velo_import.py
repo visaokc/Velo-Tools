@@ -144,8 +144,13 @@ def install():
                     traceback.print_exc()
                     self.report({'WARNING'}, _zh(f"导入贴图失败：{exc}"))
                     return result
+                parts = []
                 if summary.assigned:
-                    self.report({'INFO'}, _zh(f"已为 {summary.assigned} 个导入网格指定贴图"))
+                    parts.append(f"已为 {summary.assigned} 个导入网格指定贴图")
+                if summary.bare:
+                    parts.append(f"{summary.bare} 个仅创建材质（漫反射贴图不在文件夹）")
+                if parts:
+                    self.report({'INFO'}, _zh("，".join(parts)))
             return result
 
         _wui.VTWW_Import.execute = execute_with_velo_extras
