@@ -177,6 +177,39 @@ def same_prefix_formats(format_name: str) -> list:
     return [n for n in DXGI_FORMAT_NAMES if n.startswith(prefix)]
 
 
+# Most WuWa textures present as <prefix>_TYPELESS at match time, so a single
+# _TYPELESS section per family covers the whole streaming-residency family and
+# the other typed members never match a live resource. Emitting the full family
+# (same_prefix_formats) only inflates the fuzzy match_format section count,
+# which drops frames in-game. A few prefixes instead present as a concrete
+# TYPED member: seeded with R8 -- proven by frame dumps (legacy L8 -> R8_UNORM,
+# a DDS header path structurally incompatible with TYPELESS) and by the XQFA
+# author's own rule ("most formats match as their _TYPELESS; a few don't, e.g.
+# R8"). The set is empirical and extensible, and is NOT derivable from the
+# dds_meta legacy-mask path: B8G8R8A8 also comes through that path yet still
+# normalizes to B8G8R8A8_TYPELESS at match, so add a prefix here only on field
+# evidence that its live resource keeps a typed format.
+TYPED_AT_MATCH_PREFIXES = frozenset({'R8'})
+
+
+def emitted_format_members(format_name: str) -> list:
+    """The match_format member(s) to emit for one recorded format -- a single
+    member, versus same_prefix_formats' full family. Default: <prefix>_TYPELESS
+    (covers the family and every streaming mip level). A TYPED_AT_MATCH_PREFIXES
+    format keeps its recorded typed member instead; a format whose family has no
+    _TYPELESS variant (A8, R1, B5G6R5, ...) also falls back to the recorded
+    member. The family filter_index is unchanged either way, so this only drops
+    dead sections and never alters a tag value (XQFA cross-mod contract intact).
+    Empty/unrecognised format -> [] (same as same_prefix_formats(''))."""
+    if not format_name:
+        return []
+    prefix = format_prefix(format_name)
+    if prefix in TYPED_AT_MATCH_PREFIXES:
+        return [format_name]
+    typeless = prefix + '_TYPELESS'
+    return [typeless] if typeless in DXGI_FORMAT_NAMES else [format_name]
+
+
 # --------------------------------------------------- classification ---------
 
 # A pair is material-class when its slot map carries ALL of MAIN_SLOTS — a

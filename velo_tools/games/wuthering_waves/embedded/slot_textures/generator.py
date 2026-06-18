@@ -1303,12 +1303,16 @@ def build_plan(forms: List[Tuple[str, FormData]],
         out.append(f'    {backup} = null')
         out.append('endif')
 
-    # Fuzzy format-family tag sections (XQFA-compatible: one section per
-    # family member format per component, scoped to the component index range,
-    # all members of one family sharing the same filter_index). LOD object
-    # draws use the LOD component index ranges, so every section gets a twin
-    # per LOD level — without them the conditions go blind exactly at LOD
-    # distance (field-proven: the LOD texture reversion of the v3 test mod).
+    # Fuzzy format-family tag sections (XQFA-compatible). One section per family
+    # per component, scoped to the component index range, carrying the family
+    # filter_index. We emit only the member each resource presents as at match
+    # time (emitted_format_members: <prefix>_TYPELESS for most families, the
+    # recorded typed member for TYPED_AT_MATCH_PREFIXES like R8) -- the other
+    # family members never match a live resource and only inflate the fuzzy
+    # section count, which drops frames in-game. LOD object draws use the LOD
+    # component index ranges, so every section gets a twin per LOD level --
+    # without them the conditions go blind exactly at LOD distance (field-proven:
+    # the LOD texture reversion of the v3 test mod).
     format_section_count = 0
     out.append('')
     out.append('; -- Format-family tags (filter_index identical to XQFA-fork exports:')
@@ -1326,7 +1330,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
         for key in sorted(used_families[comp_id]):
             for prefix in sorted(group_families.get(key, {})):
                 name, text = group_families[key][prefix]
-                for member in constants.same_prefix_formats(name):
+                for member in constants.emitted_format_members(name):
                     for template, level, (first, count) in ranges:
                         out.append('')
                         out.append('[' + template.format(component_id=comp_id,
