@@ -177,18 +177,33 @@ def same_prefix_formats(format_name: str) -> list:
     return [n for n in DXGI_FORMAT_NAMES if n.startswith(prefix)]
 
 
-# Most WuWa textures present as <prefix>_TYPELESS at match time, so a single
-# _TYPELESS section per family covers the whole streaming-residency family and
-# the other typed members never match a live resource. Emitting the full family
-# (same_prefix_formats) only inflates the fuzzy match_format section count,
-# which drops frames in-game. A few prefixes instead present as a concrete
-# TYPED member: seeded with R8 -- proven by frame dumps (legacy L8 -> R8_UNORM,
-# a DDS header path structurally incompatible with TYPELESS) and by the XQFA
-# author's own rule ("most formats match as their _TYPELESS; a few don't, e.g.
-# R8"). The set is empirical and extensible, and is NOT derivable from the
-# dds_meta legacy-mask path: B8G8R8A8 also comes through that path yet still
-# normalizes to B8G8R8A8_TYPELESS at match, so add a prefix here only on field
-# evidence that its live resource keeps a typed format.
+# emitted_format_members() below mirrors the XQFA fork's
+# DXGIFormat.to_typeless() VERBATIM (wwmi-tools/migoto_io/data_model/
+# dxgi_format.py on the xqfa branch, confirmed against source 2026-06-17):
+#
+#     def to_typeless(self):
+#         prefix = self.name.split('_', 1)[0]
+#         if prefix == 'R8':
+#             return self
+#         typeless_name = f'{prefix}_TYPELESS'
+#         try:
+#             return DXGIFormatIndex[typeless_name]
+#         except KeyError:
+#             return self
+#
+# R8 is the ONE hardcoded exception: WuWa binds R8 as a concrete typed format
+# (legacy L8 -> R8_UNORM, structurally non-typeless), so R8_TYPELESS would
+# never match it. Every other family normalizes to <prefix>_TYPELESS when that
+# variant exists, else keeps its recorded member (A8/R1/B5G6R5 have no TYPELESS
+# sibling). The dropped typed members never match a live resource and only
+# inflate the fuzzy match_format section count (in-game frame drops).
+#
+# This set is a CROSS-MOD CONTRACT, not a local heuristic: the format-family
+# filter_index values are shared with XQFA-exported mods, so the exception set
+# must MIRROR upstream to_typeless. Keep it == the xqfa fork's set (currently
+# R8-only). Do NOT add prefixes on local guesses -- B8G8R8A8 / R16 / R8G8 are
+# NOT excepted upstream (they normalize to *_TYPELESS); extend only in lockstep
+# with the xqfa fork.
 TYPED_AT_MATCH_PREFIXES = frozenset({'R8'})
 
 
