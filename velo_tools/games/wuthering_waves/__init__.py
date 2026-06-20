@@ -429,9 +429,23 @@ def register():
     # VELO_PT_game and gate by active_game. Must be called after all this game's sub-panels are registered
     # (by this point the vtww sub-panels have already been registered by _al.register).
     _a2.gate("VTWW_PT_SIDEBAR", _GAME_VALUE, _wui.VTWW_PT_SIDEBAR)
+    # Velo raw-mesh tool (extract/import/export VFX & scene meshes by hash):
+    # self-contained panel under VELO_PT_game, gated to WUTHERING. Registered
+    # after the container exists; fully isolated from VTWW_* (gate() never sees it).
+    try:
+        from .embedded import raw_mesh as _rawmesh
+        _rawmesh.register()
+    except Exception:
+        import traceback
+        traceback.print_exc()
 
 
 def unregister():
+    try:
+        from .embedded import raw_mesh as _rawmesh
+        _rawmesh.unregister()
+    except Exception:
+        pass
     try:
         _a2.ungate("VTWW_PT_SIDEBAR")
     except Exception:
