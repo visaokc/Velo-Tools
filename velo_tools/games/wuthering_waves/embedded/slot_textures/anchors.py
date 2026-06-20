@@ -66,6 +66,12 @@ class AnchorCandidate:
     shared_textures: int          # character textures bound by its draws
     shares_character_ps: bool
     min_call_distance: int
+    # Display-only signals (not part of the ranking key): let a human tell a
+    # real rigged character part from an incidental buffer at a glance.
+    skinned: bool = False         # binds a vertex buffer beyond vb0 (rigged
+                                  # part, not a static scene prop)
+    index_count: int = 0          # largest DrawIndexed IndexCount over its
+                                  # draws - a mesh-size proxy
     hits: Dict[str, int] = field(default_factory=dict)
 
 
@@ -162,6 +168,16 @@ def call_ps_textures(call, max_slot: int = 8) -> List[object]:
             if _slot_kind(d) == "t"
             and getattr(d.slot_shader_type, "value", None) == "ps"
             and d.hash and d.slot_id is not None and d.slot_id <= max_slot]
+
+
+def call_is_skinned(call) -> bool:
+    """True when the draw binds any vertex buffer beyond vb0 (slot >= 1): a
+    rigged character part. Static scene props bind vb0 only. Mirrors the inline
+    test in detect_object_hash."""
+    for descriptor in call.resources.values():
+        if _slot_kind(descriptor) == "vb" and (descriptor.slot_id or 0) >= 1:
+            return True
+    return False
 
 
 def object_draw_calls(loaded, object_hash: str):
@@ -357,6 +373,8 @@ def recommend_anchors(dumps_by_form: Dict[int, List[object]],
             shares_ps = False
             shared_tex: Set[str] = set()
             min_distance = None
+            skinned = False
+            index_count = 0
             hits: Dict[str, int] = {}
             for loaded, vb0_index in indexed:
                 entries = vb0_index[vb0]
@@ -365,6 +383,11 @@ def recommend_anchors(dumps_by_form: Dict[int, List[object]],
                 obj_calls = sorted(int(c.id) for c, _ in
                                    object_draw_calls(loaded, object_hash))
                 for call_id, call in entries:
+                    if call_is_skinned(call):
+                        skinned = True
+                    params = call_draw_params(call)
+                    if params is not None and params.IndexCount > index_count:
+                        index_count = params.IndexCount
                     if call_ps_key(call) in char_ps:
                         shares_ps = True
                     # Candidate-side bindings deliberately count STALE
@@ -388,7 +411,8 @@ def recommend_anchors(dumps_by_form: Dict[int, List[object]],
                     vb0=vb0, form_id=form_id, form_label=form_labels[form_id],
                     shared_textures=len(shared_tex),
                     shares_character_ps=shares_ps,
-                    min_call_distance=min_distance, hits=hits))
+                    min_call_distance=min_distance,
+                    skinned=skinned, index_count=index_count, hits=hits))
 
     candidates.sort(key=lambda c: (-c.shared_textures,
                                    not c.shares_character_ps,

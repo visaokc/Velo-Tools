@@ -96,6 +96,8 @@ class VTWW_AnchorCandidateItem(bpy.types.PropertyGroup):
     shared_textures: bpy.props.IntProperty(default=0)
     shares_character_ps: bpy.props.BoolProperty(default=False)
     min_call_distance: bpy.props.IntProperty(default=0)
+    skinned: bpy.props.BoolProperty(default=False)
+    index_count: bpy.props.IntProperty(default=0)
     hits: bpy.props.StringProperty(default='')
 
 
@@ -224,7 +226,9 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
     bl_description = ("对比基础形态 dump 与全部已填的形态 dump 行（跨全部形态做"
                       "独占交集），给出 top5 形态独占 vb0 锚点候选：按角色贴图"
                       "亲和度排序（新鲜绑定证据加权），点行尾「采用」自动填入"
-                      "导出页的形态锚点字段")
+                      "导出页的形态锚点字段。行内「骨」=skinned 蒙皮件（更像"
+                      "角色专属件、比场景道具/特效更可靠）、「规模」=draw 索引数"
+                      "（网格大小参考）")
 
     def execute(self, context):
         cfg = context.scene.VTWW_settings
@@ -313,6 +317,8 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
             item.shared_textures = cand.shared_textures
             item.shares_character_ps = cand.shares_character_ps
             item.min_call_distance = cand.min_call_distance
+            item.skinned = cand.skinned
+            item.index_count = cand.index_count
             # Compact row text; the full per-dump evidence goes to the
             # console (the row would carry whole dump folder names).
             item.hits = f"{sum(cand.hits.values())} draws"
@@ -388,9 +394,11 @@ def _draw_anchor_finder(layout, slot_cfg, wwmi_cfg):
     for index, item in enumerate(slot_cfg.anchor_candidates):
         row = box.row(align=True)
         ps_mark = " ps" if item.shares_character_ps else ""
+        skin_mark = " 骨" if item.skinned else ""
         row.label(text=(f"{item.vb0}  {item.form_label}  "
-                        f"贴图×{item.shared_textures}{ps_mark}  "
-                        f"距{item.min_call_distance}  {item.hits}"))
+                        f"贴图×{item.shared_textures}{ps_mark}{skin_mark}  "
+                        f"距{item.min_call_distance}  规模{item.index_count}  "
+                        f"{item.hits}"))
         # Fixed-width apply button: the label gets every extra pixel when
         # the sidebar is widened (an evenly-split row let the button grow
         # without bound while the data got truncated).
