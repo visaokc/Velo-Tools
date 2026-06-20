@@ -36,6 +36,10 @@ _DRAW_RE = re.compile(r'^(?:DrawIndexedInstancedIndirect|DrawInstancedIndirect|'
 # (depth views use a 'D:' prefix and are intentionally not matched here).
 _SUB_SLOT_RE = re.compile(r'^\s+(\d+): ')
 _SUB_HASH_RE = re.compile(r'hash=([0-9a-f]+)')
+# vs constant-buffer set events: the character's bone/skin cbs live at
+# vs-cb3/cb4 and so does the view cb; the anchor finder needs the FRESH
+# binding (dump state at these slots is inheritance, same problem as textures).
+_VSCB_RE = re.compile(r'^VSSetConstantBuffers\(StartSlot:(\d+), NumBuffers:(\d+)')
 # Deferred-context execution makes prefix-scoped freshness unsound -> bail.
 _BAIL_RE = re.compile(r'^(?:ExecuteCommandList|FinishCommandList)\(')
 
@@ -172,6 +176,44 @@ def parse_log_freshness(dump_path) -> Optional[LogEvidence]:
     if evidence.ps_event_count == 0:
         return None  # unsupported log variant: no set events -> no evidence
     return evidence
+
+
+def parse_fresh_vs_cb(dump_path) -> Dict[str, Dict[int, str]]:
+    """Per call id, the vs constant-buffer slots FRESHLY bound via
+    ``VSSetConstantBuffers`` under that call's prefix -> ``{slot: hash}``.
+
+    Same rationale as ``parse_log_freshness``: a frame dump records every
+    inherited cb slot, so the dumped vs-cb3/cb4 of a scene prop drawn after the
+    character carries the character's skin cb by inheritance. Only the log's
+    API stream shows the ACTUAL fresh binding. Returns ``{}`` (never raises) on
+    a missing/unreadable log so callers degrade to no cb signal.
+    """
+    out: Dict[str, Dict[int, str]] = {}
+    try:
+        path = Path(dump_path)
+        if path.is_dir():
+            path = path / 'log.txt'
+        if not path.is_file():
+            return out
+        with open(path, encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+    except OSError:
+        return out
+
+    current: Optional[str] = None  # call id while inside a VSSetConstantBuffers
+    for line in lines:
+        if line[:6].isdigit() and line[6:7] == ' ':
+            current = line[:6] if _VSCB_RE.match(line[7:]) else None
+            continue
+        if current is None:
+            continue
+        slot_m = _SUB_SLOT_RE.match(line)
+        if slot_m is None:
+            continue
+        hash_m = _SUB_HASH_RE.search(line)
+        if hash_m is not None:
+            out.setdefault(current, {})[int(slot_m.group(1))] = hash_m.group(1)
+    return out
 
 
 def slot_is_fresh(evidence: LogEvidence, call_id, slot_id: int,

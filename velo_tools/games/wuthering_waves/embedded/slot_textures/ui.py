@@ -302,7 +302,7 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
                                f"，候选 {len(detected)} 个）")
 
             candidates = anchors.recommend_anchors(
-                dumps_by_form, form_labels, object_hash, top_n=5)
+                dumps_by_form, form_labels, object_hash, top_n=12)
         except Exception as exc:
             traceback.print_exc()
             slot_cfg.anchor_status = f"查找失败：{exc}"
@@ -328,14 +328,15 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
         prefix = f"{detect_note}；" if detect_note else ""
         if candidates:
             slot_cfg.anchor_status = (
-                f"{prefix}top{len(candidates)} 候选（亲和度排序）；独占性"
-                f"以列表为参考、用户拍板")
-            self.report({'INFO'}, f"找到 {len(candidates)} 个形态锚点候选")
+                f"{prefix}已确认 {len(candidates)} 个角色形态件（cb 与主体比对）；"
+                f"特效/UI 不自动列出，如需作锚点请在游戏确认 vb0 后手动填入")
+            self.report({'INFO'}, f"确认 {len(candidates)} 个角色形态锚点")
         else:
             slot_cfg.anchor_status = (
-                f"{prefix}没有候选：dump 之间没有形态独占且与角色相关的 vb0"
-                f"（确认各 dump 分属不同形态、角色都在画面内）")
-            self.report({'WARNING'}, "没有找到形态锚点候选")
+                f"{prefix}没有 cb 确认的角色形态件；特效/UI 不自动推荐，"
+                f"请在游戏确认 vb0 后手动填入形态锚点字段（确认各 dump 分属"
+                f"不同形态、角色都在画面内）")
+            self.report({'WARNING'}, "没有 cb 确认的角色形态锚点")
         return {'FINISHED'}
 
 
@@ -389,6 +390,8 @@ def _draw_anchor_finder(layout, slot_cfg, wwmi_cfg):
     box.row().operator(VTWW_OT_anchor_form_dump_add.bl_idname,
                        text="添加形态 Dump 行", icon='ADD')
     box.row().operator(VTWW_OT_find_form_anchors.bl_idname, icon='VIEWZOOM')
+    box.row().label(text="只列出 cb 与主体确认的角色形态件；特效/UI 需"
+                         "在游戏确认 vb0 后手动填入上方字段", icon='INFO')
     if slot_cfg.anchor_status:
         box.row().label(text=slot_cfg.anchor_status)
     for index, item in enumerate(slot_cfg.anchor_candidates):
