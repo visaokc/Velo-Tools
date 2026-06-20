@@ -29,9 +29,9 @@ class VELO_PT_raw_mesh(bpy.types.Panel):
         if cfg.tool_mode == 'EXTRACT':
             self._draw_extract(layout, cfg)
         elif cfg.tool_mode == 'IMPORT':
-            layout.label(text="导入（下一阶段）", icon='INFO')
+            self._draw_import(layout, cfg)
         else:
-            layout.label(text="导出（下一阶段）", icon='INFO')
+            self._draw_export(layout, cfg)
 
     def _draw_extract(self, layout, cfg):
         layout.prop(cfg, "frame_dump_folder")
@@ -49,6 +49,18 @@ class VELO_PT_raw_mesh(bpy.types.Panel):
 
         layout.separator()
         layout.operator("vtww_raw.extract", icon='IMPORT')
+
+    def _draw_import(self, layout, cfg):
+        layout.prop(cfg, "import_folder")
+        layout.separator()
+        layout.operator("vtww_raw.import_mesh", icon='IMPORT')
+
+    def _draw_export(self, layout, cfg):
+        layout.prop(cfg, "export_collection")
+        layout.prop(cfg, "mod_output_folder")
+        layout.prop(cfg, "export_mode")
+        layout.separator()
+        layout.operator("vtww_raw.export", icon='EXPORT')
 
 
 def register():

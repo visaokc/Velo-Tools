@@ -62,6 +62,11 @@ class VELO_RawMesh_Settings(bpy.types.PropertyGroup):
     )
 
     # --- Export (Phase 3) ---
+    export_collection: bpy.props.PointerProperty(
+        name="导出集合",
+        description="包含本工具导入的 raw-mesh 对象的集合",
+        type=bpy.types.Collection,
+    )
     mod_output_folder: bpy.props.StringProperty(
         name="Mod 输出目录",
         description="导出生成的 mod 文件夹",

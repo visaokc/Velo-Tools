@@ -40,6 +40,10 @@ def build_metadata_json(components_meta: List[dict]) -> str:
             'source_vb0_hash': cm['source_vb0_hash'],
             'source_ib_hash': cm['source_ib_hash'],
             'source_call_id': cm['source_call_id'],
+            # Original draw range (the in-game draw the export override must match).
+            'source_start_index': cm['source_start_index'],
+            'source_index_count': cm['source_index_count'],
+            'source_base_vertex': cm['source_base_vertex'],
             'position_element': cm['position_element'],
             'ib_format': cm['ib_format'],
             'input_slots': cm['input_slots'],
