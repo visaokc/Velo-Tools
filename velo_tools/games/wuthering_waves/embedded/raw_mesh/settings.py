@@ -9,9 +9,9 @@ class VELO_RawMesh_Settings(bpy.types.PropertyGroup):
     tool_mode: bpy.props.EnumProperty(
         name="模式",
         items=[
-            ('EXTRACT', "提取", "按 Hash 从 Dump 提取特效/场景网格到整合文件夹"),
-            ('IMPORT', "导入", "把整合文件夹导入 Blender 编辑（保留全部顶点属性）"),
-            ('EXPORT', "导出", "把编辑后的网格导出为可用 mod（per-component）"),
+            ('EXTRACT', "提取帧数据", "按 Hash 从 Frame Dump 提取特效/场景网格到整合文件夹。"),
+            ('IMPORT', "导入对象", "把整合文件夹导入 Blender 编辑，保留全部顶点属性。"),
+            ('EXPORT', "导出 Mod", "把编辑后的网格导出为可用 mod（per-component 独立覆盖）。"),
         ],
         default='EXTRACT',
     )
@@ -19,7 +19,7 @@ class VELO_RawMesh_Settings(bpy.types.PropertyGroup):
     # --- Extract ---
     frame_dump_folder: bpy.props.StringProperty(
         name="Frame Dump 目录",
-        description="包含 Frame Dump 文件和 log.txt 的目录",
+        description="包含 Frame Dump 文件和 log.txt 的目录。",
         default='', subtype='DIR_PATH',
     )
     output_folder: bpy.props.StringProperty(
@@ -45,26 +45,26 @@ class VELO_RawMesh_Settings(bpy.types.PropertyGroup):
         default='',
     )
     skip_jpg: bpy.props.BoolProperty(
-        name="跳过 .jpg 贴图", description="提取时忽略 .jpg 扩展名的贴图", default=False,
+        name="贴图过滤：跳过 .jpg", description="跳过 .jpg 贴图；这类文件通常是渐变图或遮罩。", default=False,
     )
     skip_small: bpy.props.BoolProperty(
-        name="跳过小贴图", description="提取时忽略小于指定大小的贴图", default=False,
+        name="贴图过滤：跳过小贴图", description="跳过低于指定大小的贴图文件。", default=False,
     )
     skip_small_kb: bpy.props.IntProperty(
-        name="小贴图阈值 (KB)", description="低于该 KB 的贴图被跳过", default=256, min=0,
+        name="最小大小 KB", description="贴图文件小于该 KB 数时会被跳过；默认 256KB。", default=256, min=0,
     )
 
     # --- Import (Phase 2) ---
     import_folder: bpy.props.StringProperty(
-        name="整合文件夹",
-        description="要导入的、由本工具提取出的整合网格文件夹",
+        name="对象源目录",
+        description="要导入的、由本工具提取出的整合网格文件夹。",
         default='', subtype='DIR_PATH',
     )
 
     # --- Export (Phase 3) ---
     export_collection: bpy.props.PointerProperty(
-        name="导出集合",
-        description="包含本工具导入的 raw-mesh 对象的集合",
+        name="组件集合",
+        description="包含本工具导入的 raw-mesh 对象的集合。",
         type=bpy.types.Collection,
     )
     mod_output_folder: bpy.props.StringProperty(
