@@ -222,6 +222,17 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     # collapse). Aligning sub-IB import to the export mode is generic (no asset-specific logic).
     saved_import_type = cfg.import_skeleton_type
     cfg.import_skeleton_type = cfg.mod_skeleton_type
+    # Cross-scene textures are namespace-merged + deduped into ONE global per-hash override (assembler),
+    # which is architecturally incompatible with per-IB slot-style rebinding: slot-style emits per-IB
+    # `ResourceTextureN` refs that the assembler's texture-section collapse leaves dangling. The slot
+    # hook's own guard only catches the body export (whose source folder has CrossSceneRouting.json); the
+    # sub-IB exports run against scene_ibs/<hash> (no json) and would still slot-style. Force hash-style
+    # for the WHOLE cross-scene build (body + every sub-IB); restored in finally.
+    saved_slot_style = getattr(cfg, "velo_slot_style_textures", None)
+    if saved_slot_style:
+        cfg.velo_slot_style_textures = False
+        print("[velo.xscene] slot-style textures bypassed for cross-scene export "
+              "(the namespace merge requires hash-style textures)")
     temp_cols = []
     try:
         # 1) body: (punch-hole) all meshes of the base (including extra IB components, each punched separately); the body export takes only the showcase group
@@ -367,12 +378,15 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         report = assembler.assemble(str(out_folder), mods)
         report["ib_count"] = len(mods)
         report["roles"] = ["body"] + [s["ib_hash"] for s in own_ibs] + eib_roles
+        report["slot_style_bypassed"] = bool(saved_slot_style)
         if own_legacy:
             report["own_buffer_legacy"] = own_legacy
         return report
     finally:
         cfg.object_source_folder, cfg.mod_output_folder, cfg.mod_name = saved[0], saved[2], saved[3]
         cfg.import_skeleton_type = saved_import_type
+        if saved_slot_style is not None:
+            cfg.velo_slot_style_textures = saved_slot_style
         if saved[1] is not None:
             cfg.component_collection = saved[1]
         for col in temp_cols:

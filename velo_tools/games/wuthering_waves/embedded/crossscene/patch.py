@@ -77,7 +77,17 @@ def _make_patched(orig_execute):
         finally:
             _IN_XSCENE[0] = False
         try:
-            self.report({'INFO'}, "Cross-scene mod exported to %s | roles=%s" % (out, rep.get("roles")))
+            msg = "Cross-scene mod exported to %s | roles=%s" % (out, rep.get("roles"))
+            if rep.get("slot_style_bypassed"):
+                msg += " | slot-style textures bypassed (cross-scene uses hash-style)"
+            if not rep.get("sound", True):
+                # The assembler self-check failed (dangling refs / missing files / texture or skeleton
+                # mismatch): the mod was written but may not work -- never report this as a clean success.
+                msg += (" | self-check FAILED: %d dangling ref(s), %d missing file(s)"
+                        % (len(rep.get("dangling") or []), len(rep.get("missing") or [])))
+                self.report({'WARNING'}, msg)
+            else:
+                self.report({'INFO'}, msg)
         except Exception:
             pass
         return {'FINISHED'}
