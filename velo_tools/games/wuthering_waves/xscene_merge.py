@@ -652,6 +652,14 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         for f in d.iterdir():
             if f.is_file():
                 shutil.copy2(f, dst / f.name)
+        # Lift this fold IB's own textures to the merge root (deduped by hash). Hash-style
+        # cross-scene texture emission is file-driven from the merge root (the body export's
+        # source); fold IBs are NOT in the assembler's mods list (their export is geometry-only,
+        # then discarded), so otherwise their textures reach the mod only if the showcase base
+        # happened to capture them. Lifting carries form-merged alternate-form textures (placed
+        # into the IB folder, e.g. a dual-form clothing IB) into the mod and completes any
+        # textures the showcase did not capture. The author still prunes unwanted ones at the root.
+        _copy_textures(d, out)
 
     # 3.5) editable_ibs (independently editable extra IBs, e.g. form2 face 4e4dc18e): copy whole into scene_ibs/<hash>/
     #      + rename their Component 0..M and copy into the merge root as Component <next..> (after the base C0..N-1).

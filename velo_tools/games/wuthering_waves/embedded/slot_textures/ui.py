@@ -204,6 +204,16 @@ class VTWW_OT_merge_form_textures(bpy.types.Operator):
             self.report({'ERROR'}, f"形态合并失败：{exc}")
             return {'CANCELLED'}
 
+        if summary.get('mode') == 'cross_scene':
+            # Source folder is a cross-scene merged root: lifted the form's per-IB textures to
+            # the root (hash-style; no per-object match / extra_forms). Re-export to emit them.
+            self.report(
+                {'INFO'},
+                f"跨场景模式：已把形态「{summary['form_label']}」的贴图抬入合并根"
+                f"（覆盖 IB {', '.join(summary['lifted_ibs']) or '（无匹配）'}，"
+                f"拷入 {summary['textures_copied']} 张）。重新导出 Mod 即生效。")
+            return {'FINISHED'}
+
         action = "覆盖" if summary['replaced'] else "新增"
         harvest = (f"，收割 {summary['variants_added']} 个残留度变体"
                    if summary.get('variants_added') else "")

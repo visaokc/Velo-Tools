@@ -387,6 +387,32 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
     base_components = metadata.get('components') or []
 
     mesh_objects, surviving = collect_mesh_objects(dump_path, texture_filter)
+
+    # Cross-scene merged root (hash-style): a multi-IB merged object has no single vb0 to match
+    # and no equal component count, so the normal per-object match/gate path does not apply. Just
+    # LIFT every merged IB's form textures into the root (deduped) -- hash-style emission is file-
+    # driven from the root (the body export's source), and the game binds whichever form's hashes
+    # are live, so both forms' overrides coexist with no conflict. The merged IBs = the scene_ibs/
+    # subfolders; filter the dump's objects to those vb0s so effects / other entities are excluded.
+    # No per-object match / component-count gate / extra_forms (those are slot-style, per-object;
+    # cross-scene is forced hash-style). Restores form2's same-vb0 clothing textures etc.
+    if (object_source_folder / 'CrossSceneRouting.json').is_file():
+        scene_dir = object_source_folder / 'scene_ibs'
+        ib_hashes = ({p.name for p in scene_dir.iterdir() if p.is_dir()}
+                     if scene_dir.is_dir() else set())
+        combined = {}
+        lifted = []
+        for vb0, obj in mesh_objects.items():
+            if ib_hashes and vb0 not in ib_hashes:
+                continue
+            _unused, src = _build_components_usage(obj, surviving.get(vb0), evidence)
+            for tex_hash, entry in src.items():
+                combined.setdefault(tex_hash, entry)
+            lifted.append(vb0)
+        copied = _copy_form_textures(object_source_folder, combined)
+        return {'mode': 'cross_scene', 'lifted_ibs': sorted(lifted),
+                'textures_copied': copied, 'form_label': form_label.strip()}
+
     mesh_object, matched_by = _match_object(mesh_objects, vb0_hash, cb4_hash)
 
     if base_components and len(mesh_object.components_data) != len(base_components):
