@@ -11,19 +11,25 @@ class VELO_PT_raw_mesh(bpy.types.Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "Velo Tools"
-    bl_parent_id = "VELO_PT_game"
+    bl_parent_id = "VELO_PT_main"
     bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
-        s = getattr(context.scene, "velo_tools", None)
-        return s is not None and getattr(s, "active_game", "") == "WUTHERING"
+        # Peer of the LOD / cross-scene panels (child of VELO_PT_main, sibling of
+        # the WWMI container), shown on the Game tab with WWMI active. Mirrors
+        # VELO_PT_wwmi_lod.poll; we gate the tab ourselves since VELO_PT_main does
+        # not (it no longer goes through the VELO_PT_game container).
+        vt = getattr(context.scene, "velo_tools", None)
+        return (vt is not None
+                and getattr(vt, "active_tab", "") == 'GAME'
+                and getattr(vt, "active_game", "") == 'WUTHERING')
 
     def draw(self, context):
         layout = self.layout
         cfg = context.scene.velo_raw_mesh_settings
 
-        layout.row().prop(cfg, "tool_mode", expand=True)
+        layout.prop(cfg, "tool_mode")
         layout.separator()
 
         if cfg.tool_mode == 'EXTRACT':
