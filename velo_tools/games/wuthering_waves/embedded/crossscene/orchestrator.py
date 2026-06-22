@@ -15,11 +15,32 @@ Folded parts no longer distinguish clothing/face: the producer auto-determines f
 (fold morph along with geometry if shape keys exist, otherwise fold geometry only), non-foldable ones go own-buffer. Each IB uses its vb0 hash as the tag.
 """
 import json
+import re
 import shutil
 from pathlib import Path
 
 import bpy
 import bmesh
+
+
+def _relabel_draw_comments(mod_ini, index_to_label):
+    """Rewrite the stock '; Draw Component {N}[.001]' comments of a sub-IB mod.ini to the
+    merged/Blender component labels (index_to_label: {export-local component index -> label str}).
+    The WWMI template emits '; Draw {obj.name}', so a cross-scene sub-IB export -- whose temp objects
+    are renamed to export-local 'Component N' and collide with the body's same-named objects (Blender
+    appends '.001') -- otherwise annotates the draw with the export-local number plus a '.001' artifact
+    instead of the real component the user edited. Comment-only: functional lines and the export-local
+    section indices (required for the draw-range matching) are untouched."""
+    p = Path(mod_ini)
+    if not p.is_file() or not index_to_label:
+        return
+
+    def _sub(m):
+        label = index_to_label.get(int(m.group(2)))
+        return f"{m.group(1)}Component {label}" if label is not None else m.group(0)
+
+    p.write_text(re.sub(r'(;\s*Draw )Component (\d+)(?:\.\d+)?', _sub,
+                        p.read_text(encoding="utf-8")), encoding="utf-8")
 
 
 def _dhash(x, y, z):
@@ -291,6 +312,13 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     if hole:
                         _pos_hole(cp)
                     _export_col(cfg, own_col, str(work / tag), "om_" + tag, src)
+                    # Annotate the own-buffer draw with the split's real (Blender) name (e.g.
+                    # Component 5.001) instead of the export-local 'Component 0.001' artifact.
+                    _m_idx = re.search(r'(\d+)', cp.name)
+                    if _m_idx:
+                        _relabel_draw_comments(
+                            work / tag / "mod.ini",
+                            {int(_m_idx.group(1)): sp["split_object"].split("Component ", 1)[-1]})
                 finally:
                     mesh = cp.data
                     bpy.data.objects.remove(cp, do_unlink=True)
@@ -363,6 +391,11 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                             vg.name = str(int(vg.name) - base_off)
             eib_src = str(merged_folder / rec["source_folder"])
             _export_col(cfg, eib_col, str(work / tag), "om_" + tag, eib_src)
+            # Annotate the editable draws with the merged (Blender) component numbers (e.g. 8-11)
+            # instead of the export-local 'Component 0-3.001' artifacts.
+            _relabel_draw_comments(
+                work / tag / "mod.ini",
+                {li: str(mi) for li, mi in zip(rec["local_components"], rec["merged_components"])})
             mods.append(str(work / tag))
             eib_roles.append(tag)
             for cp in temp_objs:
