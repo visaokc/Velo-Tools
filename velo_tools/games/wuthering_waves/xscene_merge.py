@@ -26,6 +26,7 @@ from ._wwmi_core.migoto_io.data_model.byte_buffer import (
     MigotoFormat, NumpyBuffer, Semantic, AbstractSemantic,
 )
 from .embedded.lod import cross_scene as lod_cross_scene
+from .xscene_textures import copy_textures_remapped, remap_editable_stu
 
 GRID = 0.001
 TOL = 0.0015
@@ -656,6 +657,8 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     #      + rename their Component 0..M and copy into the merge root as Component <next..> (after the base C0..N-1).
     #      .fmt/.vb/.ib as-is (with inline shapekey SHAPEKEY elements, keeping the high stride) -> import carries each one's own shapekeys.
     editable_ib_records = []
+    editable_warnings = []
+    editable_stu_additions = {}
     next_idx = len(base_comps)
     for eib in (editable_ibs or []):
         h = eib["hash"]
@@ -672,15 +675,43 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
             for ext in (".fmt", ".vb", ".ib"):
                 shutil.copy2(src / f"{lname}{ext}", out / f"Component {mi}{ext}")
             merged_comps.append(mi)
+        # local extraction index -> merged component index (e.g. {0: 8, 1: 9})
+        id_map = {li: merged_comps[li] for li in range(len(merged_comps))}
         eib_meta = json.loads((src / "Metadata.json").read_text()) if (src / "Metadata.json").exists() else {}
         sk = eib_meta.get("shapekeys", {}) or {}
-        _copy_textures(src, out)  # also gather the extra IB's textures into the merge root (deduplicated)
+        # Gather the extra IB's textures into the merge root (deduplicated), re-basing their
+        # Components-{ids} prefix from the IB's own 0-based numbering to the merged numbering.
+        copy_textures_remapped(src, out, id_map)
+        # Re-base the editable IB's ShaderTextureUsage entries (Component {local} -> {merged}) so a MERGED
+        # import of the merge root auto-assigns these components their textures (the root STU otherwise
+        # carries the base components only, leaving the editable ones with bare materials).
+        eib_stu_path = src / "ShaderTextureUsage.json"
+        if eib_stu_path.exists():
+            try:
+                editable_stu_additions.update(
+                    remap_editable_stu(json.loads(eib_stu_path.read_text(encoding="utf-8")), id_map))
+            except (OSError, ValueError):
+                editable_warnings.append(
+                    "editable IB %s 的 ShaderTextureUsage.json 解析失败——其组件（%s）的编辑期自动贴图绑定已跳过。"
+                    % (h, ", ".join(map(str, merged_comps))))
+        else:
+            editable_warnings.append(
+                "editable IB %s 缺少 ShaderTextureUsage.json——其组件（%s）的编辑期自动贴图绑定已跳过（贴图已改名）。"
+                % (h, ", ".join(map(str, merged_comps))))
         editable_ib_records.append({
             "ib_hash": h, "role": eib.get("role", ""), "source_folder": f"scene_ibs/{h}",
             "merged_components": merged_comps, "local_components": list(range(len(local_names))),
             "has_shapekeys": bool(sk.get("offsets_hash")), "offsets_hash": sk.get("offsets_hash", ""),
         })
         next_idx += len(local_names)
+
+    # 3.5b) Merge the re-based editable STU entries into the merge-root ShaderTextureUsage.json so the
+    #       import-time texture assignment (keyed by 'Component N') covers the editable components too.
+    if editable_stu_additions:
+        root_stu_path = out / "ShaderTextureUsage.json"
+        root_stu = json.loads(root_stu_path.read_text(encoding="utf-8")) if root_stu_path.exists() else {}
+        root_stu.update(editable_stu_additions)  # Component 8/9.. keys, no collision with base 0..N-1
+        root_stu_path.write_text(json.dumps(root_stu, indent=4, ensure_ascii=False), encoding="utf-8")
 
     # 3.6) Extend the merged Metadata.json with the editable IBs' component entries so that MERGED import
     #      resolves Components 8..N. blender_import reads extracted_object.components[id].vg_map by component
@@ -791,7 +822,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     # an independent morph (e.g. another form's face); mis-setting it as Fold would fold it into the base buffer and break it.
     # Overlap ratio = analyze's matched/total (measured: normal fold parts=1.0, form2≈0.05). Shapekey hashes can't tell them
     # apart (form1/form2 faces share the numbering range); geometric overlap is the criterion.
-    warnings = list(split_warnings)
+    warnings = list(split_warnings) + list(editable_warnings)
     for spec, meta in zip(dungeon_specs, info):
         ratio = meta["matched"] / max(1, meta["total"])
         if ratio < _OVERLAP_WARN:
