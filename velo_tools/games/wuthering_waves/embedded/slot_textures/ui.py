@@ -72,6 +72,7 @@ def _patch_export_menu():
             box.prop(cfg, "velo_slot_style_textures")
             slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
             if (slot_cfg is not None and cfg.velo_slot_style_textures):
+                _draw_slot_components(box, slot_cfg)
                 box.prop(slot_cfg, "form_anchors")
                 _draw_anchor_finder(box, slot_cfg, cfg)
 
@@ -119,6 +120,20 @@ class VTWW_AnchorFormDump(bpy.types.PropertyGroup):
     )
 
 
+class VTWW_SlotComponentRule(bpy.types.PropertyGroup):
+    """One component's slot-style eligibility (per-component opt-out). Default checked =
+    that component's textures go slot-style; unchecked = it falls back to hash. Populated
+    from the source folder's ShaderTextureUsage.json by VTWW_OT_slot_populate_components."""
+    component_id: bpy.props.IntProperty(default=0)
+    use_slot: bpy.props.BoolProperty(
+        name="插槽",
+        description="勾选=该组件贴图走插槽风格；取消=该组件改走 hash 风格"
+                    "（提前删掉的贴图仍由游戏接管）",
+        default=True,
+    )
+    texture_count: bpy.props.IntProperty(default=0)
+
+
 class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
 
     form_dump_folder: bpy.props.StringProperty(
@@ -156,6 +171,12 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
                     "锚点因版本更新失效后自动退回贴图锁存（有流送延迟）",
         default='',
     )
+
+    # Per-component slot eligibility (UI opt-out). Empty = never populated = all components
+    # slot-style (backward compatible). Populate from the source folder, then uncheck the
+    # components you want exported hash-style instead.
+    slot_component_rules: bpy.props.CollectionProperty(type=VTWW_SlotComponentRule)
+    slot_component_rules_index: bpy.props.IntProperty(default=0)
 
 
 class VTWW_OT_merge_form_textures(bpy.types.Operator):
@@ -447,15 +468,91 @@ class VELO_PT_wwmi_slot_forms(bpy.types.Panel):
         layout.row().operator(VTWW_OT_merge_form_textures.bl_idname, icon='TEXTURE')
 
 
+class VTWW_UL_slot_components(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon,
+                  active_data, active_prop, index=0):
+        row = layout.row(align=True)
+        row.prop(item, "use_slot", text="")
+        row.label(text=f"Component {item.component_id}")
+        row.label(text=f"{item.texture_count} 贴图")
+
+
+class VTWW_OT_slot_populate_components(bpy.types.Operator):
+    bl_idname = "vtww.slot_populate_components"
+    bl_label = "列出组件"
+    bl_description = ("从对象源文件夹的 ShaderTextureUsage.json 列出所有组件供逐个勾选；"
+                      "默认全部勾选（= 全部走插槽风格）。取消勾选的组件改走 hash 风格，"
+                      "提前删掉的贴图仍由游戏接管。改了源文件夹后请重新列出")
+
+    def execute(self, context):
+        cfg = context.scene.VTWW_settings
+        slot_cfg = context.scene.vtww_slot_settings
+        try:
+            from ..._wwmi_core.migoto_io.blender_interface.utility import resolve_path
+            from . import generator
+            if not cfg.object_source_folder.strip():
+                raise ValueError("未指定对象源文件夹")
+            forms, _info, _warn = generator.load_forms(
+                resolve_path(cfg.object_source_folder))
+        except Exception as exc:
+            traceback.print_exc()
+            self.report({'ERROR'}, f"列出组件失败：{exc}")
+            return {'CANCELLED'}
+
+        # distinct texture hashes per component, across base + extra forms
+        per_comp = {}
+        for _label, form_data in forms:
+            for comp_id, comp_pairs in form_data.items():
+                bucket = per_comp.setdefault(comp_id, set())
+                for pair_map in comp_pairs.values():
+                    for h in pair_map.values():
+                        if h:
+                            bucket.add(h)
+        if not per_comp:
+            self.report({'WARNING'}, "ShaderTextureUsage.json 里没有组件贴图记录")
+            return {'CANCELLED'}
+
+        # Preserve the user's prior checked state on refresh; new components default checked.
+        prev = {r.component_id: r.use_slot for r in slot_cfg.slot_component_rules}
+        slot_cfg.slot_component_rules.clear()
+        for comp_id in sorted(per_comp):
+            item = slot_cfg.slot_component_rules.add()
+            item.component_id = comp_id
+            item.use_slot = prev.get(comp_id, True)
+            item.texture_count = len(per_comp[comp_id])
+        self.report({'INFO'},
+                    f"列出 {len(per_comp)} 个组件（默认全部走插槽，取消勾选改走 hash）")
+        return {'FINISHED'}
+
+
+def _draw_slot_components(box, slot_cfg):
+    sub = box.box()
+    sub.label(text="按组件选插槽风格", icon="TEXTURE")
+    row = sub.row()
+    row.template_list("VTWW_UL_slot_components", "", slot_cfg,
+                      "slot_component_rules", slot_cfg,
+                      "slot_component_rules_index", rows=4)
+    col = row.column(align=True)
+    col.operator("vtww.slot_populate_components", text="", icon='FILE_REFRESH')
+    if not len(slot_cfg.slot_component_rules):
+        sub.label(text="未列出：默认全部走插槽。点刷新从源文件夹列出后可逐组件取消",
+                  icon='INFO')
+    else:
+        sub.label(text="取消勾选的组件改走 hash；提前删掉的贴图归游戏", icon='INFO')
+
+
 _CLASSES = (
     VTWW_AnchorCandidateItem,
     VTWW_AnchorFormDump,
+    VTWW_SlotComponentRule,
     VTWW_SlotTextureSettings,
     VTWW_OT_merge_form_textures,
     VTWW_OT_anchor_form_dump_add,
     VTWW_OT_anchor_form_dump_remove,
     VTWW_OT_find_form_anchors,
     VTWW_OT_apply_form_anchor,
+    VTWW_UL_slot_components,
+    VTWW_OT_slot_populate_components,
     VELO_PT_wwmi_slot_forms,
 )
 

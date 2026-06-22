@@ -81,7 +81,8 @@ def install():
                 component_ranges=transform.extract_component_ranges(result),
                 lod_ranges=_read_lod_ranges(source_folder),
                 manual_anchors=manual_anchors,
-                freshness=form_freshness)
+                freshness=form_freshness,
+                slot_eligible_components=_read_slot_eligible(context))
             result = transform.apply(result, plan)
             for anchor_hash, form_id in manual_anchors:
                 kind = 'shader (ps)' if len(anchor_hash) == 16 else 'resource (vb0)'
@@ -182,3 +183,16 @@ def _read_lod_ranges(source_folder):
 def _report(message: str):
     print(message)
     last_report.append(message)
+
+
+def _read_slot_eligible(context):
+    """Per-component slot eligibility from the UI rules. Empty list (never populated by
+    the user) -> None = all components eligible (backward compatible / 默认全选). Otherwise
+    the set of component ids the user left checked; unchecked components fall back to hash."""
+    try:
+        rules = context.scene.vtww_slot_settings.slot_component_rules
+    except Exception:
+        return None
+    if not len(rules):
+        return None
+    return {r.component_id for r in rules if r.use_slot}

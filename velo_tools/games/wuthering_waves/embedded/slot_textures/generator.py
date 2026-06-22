@@ -361,7 +361,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                multi_state_seats: Optional[Dict[Tuple[int, int], Set[str]]] = None,
                live_seed: Optional[Set[str]] = None,
                trusted_hashes: Optional[Set[str]] = None,
-               freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None) -> SlotPlan:
+               freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+               slot_eligible_components: Optional[Set[int]] = None) -> SlotPlan:
     """textures: (texture hash, resource section name) in template order.
     texture_info: hash -> format/size of the ORIGINAL game textures.
     component_ranges: comp_id -> (match_first_index, match_index_count) of the
@@ -611,6 +612,24 @@ def build_plan(forms: List[Tuple[str, FormData]],
             f'{", ".join(missing_formats)} - they cannot join the combination '
             f'conditions (re-extract with a current build to record formats)')
 
+    # Per-component slot eligibility (UI opt-out). When a whitelist is given, components NOT
+    # in it emit no slot branches (skipped in the branch loop below); textures used ONLY by
+    # excluded components are routed to live hash fallback so their stock [TextureOverride-
+    # TextureN] sections survive (the "unselected component -> hash" case). Textures also used
+    # by an eligible component stay covered (eligible wins). None = all eligible (legacy/全选).
+    if slot_eligible_components is not None:
+        eligible_seen: Set[str] = set()
+        for _, form_data in forms:
+            for comp_id, comp_pairs in form_data.items():
+                if comp_id not in slot_eligible_components:
+                    continue
+                for pair_map in comp_pairs.values():
+                    for h in pair_map.values():
+                        if h is not None:
+                            eligible_seen.add(h)
+        for h in sorted(seen_hashes - eligible_seen):
+            _route_live(h, 'component excluded from slot layer')
+
     # ---------------------------------------------------- per-PS bookkeeping --
     ps_components: Dict[str, Set[int]] = {}
     for _, form_data in forms:
@@ -761,6 +780,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
     comp_records: Dict[int, List[Tuple[dict, Dict[int, Optional[str]], bool]]] = {}
     conflict_count = 0
     for comp_id in all_comp_ids:
+        if slot_eligible_components is not None and comp_id not in slot_eligible_components:
+            continue  # per-component opt-out: excluded components emit no slot branches
         seeds: List[_Branch] = []
         ps_union = sorted({ps for _, fd in forms for ps in fd.get(comp_id, {})})
         for ps in ps_union:
