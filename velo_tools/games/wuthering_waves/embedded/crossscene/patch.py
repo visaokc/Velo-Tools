@@ -87,6 +87,13 @@ def _make_patched(orig_execute):
                 msg += " | final mod.ini skipped (write_ini off / partial export)"
             if rep.get("final_textures_written") is False:
                 msg += " | final Textures/ skipped (copy textures off / partial export)"
+            gated = rep.get("tex_gated_out") or []
+            if rep.get("texture_gate") and gated:
+                # The merge-root allowlist dropped these referenced hashes (absent from the root);
+                # surface the count in the status line and the full hash list on the console.
+                msg += " | pruned %d texture(s) not at merge root" % len(gated)
+                print("[velo.xscene] merge-root texture allowlist pruned %d hash(es): %s"
+                      % (len(gated), ", ".join(gated)))
             if not rep.get("sound", True):
                 # The assembler self-check failed (dangling refs / missing files / texture or skeleton
                 # mismatch): the mod was written but may not work -- never report this as a clean success.
