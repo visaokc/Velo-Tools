@@ -39,9 +39,16 @@ def _parse_sections(text):
     return sections
 
 
-def assemble(out, mods, texture_root=None):
+def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True, partial_export=False):
     """mods: ordered list of per-IB mod folders (each contains mod.ini + Meshes/ + Textures/).
     Writes the merged mod to out, returns a report dict.
+
+    write_ini / copy_textures / partial_export: the user's stock file-output toggles, applied to THIS
+    final assembled mod exactly as a single-IB export applies them -- ``Meshes/`` is always written,
+    ``mod.ini`` only when ``not partial_export and write_ini``, ``Textures/`` only when
+    ``not partial_export and copy_textures``. (The sub-IB exports always wrote everything; the
+    orchestrator forces that so the merge can read them.) ``out`` is the user's mod folder, so only
+    our own products (Meshes/ Textures/ mod.ini) are cleaned -- never the whole ``out``.
 
     texture_root: when given, the merged root is the single authoritative texture allowlist --
     only hashes whose ``t=<hash>.dds`` still exists directly at the merged root (root-only scan,
@@ -49,10 +56,18 @@ def assemble(out, mods, texture_root=None):
     and each shipped file is copied FROM the merged root (a root edit wins over the per-IB copy).
     Sub-IB folders (scene_ibs/<hash>/) no longer re-supply a hash the author pruned from the root.
     texture_root=None keeps the legacy behavior (union of every per-IB referenced texture)."""
-    if os.path.exists(out):
-        shutil.rmtree(out)
-    os.makedirs(os.path.join(out, "Meshes"), exist_ok=True)
-    os.makedirs(os.path.join(out, "Textures"), exist_ok=True)
+    write_textures = (not partial_export) and copy_textures
+    write_final_ini = (not partial_export) and write_ini
+    # Clean ONLY our own products (out is the user's mod folder now; never rmtree the whole thing).
+    os.makedirs(out, exist_ok=True)
+    meshes_dir = os.path.join(out, "Meshes")
+    textures_dir = os.path.join(out, "Textures")
+    for _p in (meshes_dir, textures_dir):
+        if os.path.exists(_p):
+            shutil.rmtree(_p)
+    os.makedirs(meshes_dir, exist_ok=True)
+    if write_textures:
+        os.makedirs(textures_dir, exist_ok=True)
 
     # Root-only allowlist + hash -> merged-root file path (the authoritative copy source).
     allowed = None
@@ -141,12 +156,13 @@ def assemble(out, mods, texture_root=None):
                 shutil.copy(os.path.join(mesh_src, fn), os.path.join(out, "Meshes", f'ib{k}_{fn}'))
 
     shipped = {hv for hv in tex if allowed is None or hv in allowed}
-    for hv in tex:
-        if hv not in shipped:
-            continue
-        # When gating, copy the authoritative merged-root file; otherwise the per-IB copy.
-        src = root_file_by_hash[hv] if allowed is not None else tex[hv]
-        shutil.copy(src, os.path.join(out, "Textures", f't={hv}.dds'))
+    if write_textures:
+        for hv in tex:
+            if hv not in shipped:
+                continue
+            # When gating, copy the authoritative merged-root file; otherwise the per-IB copy.
+            src = root_file_by_hash[hv] if allowed is not None else tex[hv]
+            shutil.copy(src, os.path.join(textures_dir, f't={hv}.dds'))
 
     gate = ' || '.join(f'$object_detected_ib{k}' for k in range(len(mods)))
 
@@ -168,7 +184,10 @@ def assemble(out, mods, texture_root=None):
     refs = set(re.findall(r'(?:ref|run\s*=|this\s*=)\s+(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)', text))
     dangling = sorted(r for r in refs if r not in sections_set)
     missing = [m.group(1).strip() for m in re.finditer(r'^\s*filename\s*=\s*(.+)$', text, re.M)
-               if not os.path.exists(os.path.join(out, m.group(1).strip()))]
+               if not os.path.exists(os.path.join(out, m.group(1).strip()))
+               # textures are intentionally absent when the final output omits them (copy_textures off
+               # / partial_export); don't flag those as a broken mod.
+               and (write_textures or not m.group(1).strip().replace('\\', '/').startswith('Textures/'))]
     all_in = set().union(*tex_hash_per_mod) if tex_hash_per_mod else set()
     global_hashes = set(re.findall(r'\[TextureOverride_Texture_([0-9a-f]+)\]', text))
     # MERGED self-check: after collapse there must be EXACTLY one MarkBoneDataCB (or zero for COMPONENT),
@@ -184,11 +203,20 @@ def assemble(out, mods, texture_root=None):
         "texture_gate": allowed is not None,
         "tex_root_allowed": (len(allowed) if allowed is not None else None),
         "tex_gated_out": sorted(all_in - shipped),
-        "textures_files": len(os.listdir(os.path.join(out, "Textures"))),
+        "textures_files": (len(os.listdir(textures_dir)) if os.path.isdir(textures_dir) else 0),
         "meshes_files": len(os.listdir(os.path.join(out, "Meshes"))),
         "ini_size": len(text), "gate": gate,
         "mark_bone_collapsed_from": mark_bone_count, "mark_bone_emitted": mark_bone_emitted,
         "mark_bone_mismatch": mark_bone_mismatch, "skeleton_ok": skeleton_ok,
         "sound": not dangling and not missing and (global_hashes == shipped) and skeleton_ok,
+        "final_ini_written": write_final_ini,
+        "final_textures_written": write_textures,
     }
+    # The ini was written above so the self-check could validate the merged build; honor the user's
+    # file-output toggles on the FINAL mod by dropping it if they asked for no ini / partial export.
+    if not write_final_ini:
+        try:
+            os.remove(os.path.join(out, "mod.ini"))
+        except OSError:
+            pass
     return report

@@ -60,7 +60,10 @@ def _make_patched(orig_execute):
         if not (routing and routing.is_file()) or base_col is None:
             return orig_execute(self, context)  # not cross-scene -> stock export as-is
         from . import orchestrator
-        out = str(Path(bpy.path.abspath(cfg.mod_output_folder)) / "cross_scene_velo")
+        # Write the merged mod DIRECTLY into the user's output folder (like a stock single-IB export),
+        # not a hardcoded `cross_scene_velo` subfolder. The assembler cleans only its own products
+        # (Meshes/ Textures/ mod.ini), so sibling files in the output folder are left intact.
+        out = str(Path(bpy.path.abspath(cfg.mod_output_folder)))
         _IN_XSCENE[0] = True
         try:
             rep = orchestrator.build_cross_scene_mod(
@@ -80,6 +83,10 @@ def _make_patched(orig_execute):
             msg = "Cross-scene mod exported to %s | roles=%s" % (out, rep.get("roles"))
             if rep.get("slot_style_bypassed"):
                 msg += " | slot-style textures bypassed (cross-scene uses hash-style)"
+            if rep.get("final_ini_written") is False:
+                msg += " | final mod.ini skipped (write_ini off / partial export)"
+            if rep.get("final_textures_written") is False:
+                msg += " | final Textures/ skipped (copy textures off / partial export)"
             if not rep.get("sound", True):
                 # The assembler self-check failed (dangling refs / missing files / texture or skeleton
                 # mismatch): the mod was written but may not work -- never report this as a clean success.

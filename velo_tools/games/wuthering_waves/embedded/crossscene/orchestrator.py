@@ -17,6 +17,7 @@ Folded parts no longer distinguish clothing/face: the producer auto-determines f
 import json
 import re
 import shutil
+import tempfile
 from pathlib import Path
 
 import bpy
@@ -244,10 +245,16 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     merged_folder: the merged folder produced by the producer (contains CrossSceneRouting.json + scene_ibs/)."""
     merged_folder = Path(merged_folder)
     routing = json.loads((merged_folder / "CrossSceneRouting.json").read_text(encoding="utf-8"))
-    work = Path(workdir) if workdir else (Path(out_folder).parent / "_xscene_work")
-    if work.exists():
-        shutil.rmtree(work)
-    work.mkdir(parents=True)
+    # Transient per-IB sub-exports live here, deleted in finally. Use a real temp dir (not a sibling
+    # of the output folder) so flattening the output to mod_output_folder doesn't leave a _xscene_work
+    # next to the user's other mods.
+    if workdir:
+        work = Path(workdir)
+        if work.exists():
+            shutil.rmtree(work)
+        work.mkdir(parents=True)
+    else:
+        work = Path(tempfile.mkdtemp(prefix="velo_xscene_work_"))
 
     # Foldable IB (clothing/face, fully .fmt-layout compatible) folds into the base buffer (fold.py); non-foldable (the bear, bone count 4!=8) gets its own buffer.
     foldable_ibs = [s for s in routing["scene_ibs"] if s.get("foldable")]
@@ -277,6 +284,27 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         cfg.velo_slot_style_textures = False
         print("[velo.xscene] slot-style textures bypassed for cross-scene export "
               "(the namespace merge requires hash-style textures)")
+    # The build runs N stock sub-exports into `work` and the assembler reads each one's mod.ini +
+    # Meshes + Textures to merge them -- so every sub-export MUST write ini + textures + buffers
+    # regardless of the user's file-output toggles (write_ini=off / partial_export=on /
+    # custom_template_live_update=on would leave the assembler with no mod.ini -> FileNotFoundError).
+    # Force the safe values for the whole build; the user's ORIGINAL flags are applied to the FINAL
+    # assembled mod instead (the assembler honors the same stock gating on its output). Restored in finally.
+    saved_gating = {
+        "write_ini": cfg.write_ini,
+        "partial_export": cfg.partial_export,
+        "copy_textures": getattr(cfg, "copy_textures", True),
+        "custom_template_live_update": getattr(cfg, "custom_template_live_update", False),
+    }
+    if saved_gating["custom_template_live_update"]:
+        print("[velo.xscene] custom_template_live_update (a live single-IB mode) has no batch-merge "
+              "output meaning -- disabled for the cross-scene build.")
+    cfg.write_ini = True
+    cfg.partial_export = False
+    if hasattr(cfg, "copy_textures"):
+        cfg.copy_textures = True
+    if hasattr(cfg, "custom_template_live_update"):
+        cfg.custom_template_live_update = False
     temp_cols = []
     try:
         # 1) body: gather the base's Component meshes once, honoring the stock collection settings
@@ -462,7 +490,11 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         # The merged root is the single authoritative texture allowlist: only hashes still present
         # at merged_folder root ship (sub-IB scene_ibs/<hash>/ no longer re-supply a pruned hash).
         from . import assembler
-        report = assembler.assemble(str(out_folder), mods, texture_root=str(merged_folder))
+        report = assembler.assemble(
+            str(out_folder), mods, texture_root=str(merged_folder),
+            write_ini=saved_gating["write_ini"],
+            partial_export=saved_gating["partial_export"],
+            copy_textures=saved_gating["copy_textures"])
         report["ib_count"] = len(mods)
         report["roles"] = ["body"] + [s["ib_hash"] for s in own_ibs] + eib_roles
         report["slot_style_bypassed"] = bool(saved_slot_style)
@@ -480,6 +512,12 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         cfg.import_skeleton_type = saved_import_type
         if saved_slot_style is not None:
             cfg.velo_slot_style_textures = saved_slot_style
+        cfg.write_ini = saved_gating["write_ini"]
+        cfg.partial_export = saved_gating["partial_export"]
+        if hasattr(cfg, "copy_textures"):
+            cfg.copy_textures = saved_gating["copy_textures"]
+        if hasattr(cfg, "custom_template_live_update"):
+            cfg.custom_template_live_update = saved_gating["custom_template_live_update"]
         if saved[1] is not None:
             cfg.component_collection = saved[1]
         for col in temp_cols:
