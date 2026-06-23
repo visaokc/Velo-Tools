@@ -415,7 +415,7 @@ def _build_morph_sections(face_text, tag):
     return "".join(s)
 
 
-def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match, batch_counts, tag, has_morph=True):
+def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match, batch_counts, tag, has_morph=True, comp_map=None):
     """Inject the ini sections needed for folding, return the modified body_text:
       1) constants: per-batch $shapekey_vertex_offset/count_batch{N}_<tag> (inserted after the body's last batch constant) -- only when has_morph;
       2) FoldHost: each dungeon component's draw bound to the buffer range of the corresponding base component (those with mismatched VG go through the _remap CommandList);
@@ -423,7 +423,8 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
       4) morph CS section transplant (_build_morph_sections) -- only when has_morph (skipped for fold pieces without shapekeys such as clothing).
     """
     fh = fold_entry["ib_hash"]
-    comp_map = {int(k): v for k, v in fold_entry["fold"]["comp_map"].items()}
+    if comp_map is None:
+        comp_map = {int(k): v for k, v in fold_entry["fold"]["comp_map"].items()}
     # MERGED body carries the merged-skeleton machinery; COMPONENT body has none.
     is_merged = "ResourceMergedSkeleton" in body_text
     vg_remap_all = fold_entry["fold"].get("vg_remap", {})
@@ -432,8 +433,9 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
     # needed nor correct; instead the same remap is folded into the FoldHost's merge vg_offset (see
     # _merge_offset_shift) so the dungeon cb4 lands where the base surviving geometry reads. So the _c{N}remap
     # machinery is COMPONENT-only.
+    _fold_targets = set(comp_map.values())
     remap_cmd = {} if is_merged else {int(k): ("CommandListOverrideSharedResources_c%dremap" % int(k), "c%dremap" % int(k))
-                                      for k in vg_remap_all}
+                                      for k in vg_remap_all if int(k) in _fold_targets}
 
     if has_morph and batch_counts:
         consts, off = "", 0
@@ -496,6 +498,14 @@ def apply_fold(work, fold_entry, tag, morph_ref=None):
     is_merged = "ResourceMergedSkeleton" in body_text
     bd, fd, fm = parse_draws(body_text), parse_draws(face_text), parse_match(face_text)
     comp_map = {int(k): v for k, v in fold_entry["fold"]["comp_map"].items()}
+    # A fold target whose base component was excluded from the body export (Ignore Hidden Objects /
+    # Ignore Nested Collections, or the object deleted) has no draw range to redirect onto -> drop it,
+    # so that dungeon piece simply isn't folded (stays empty), matching "excluded component = empty
+    # draw". If every target is gone, skip the whole fold piece. Returns the excluded base comps.
+    excluded = sorted({bc for bc in comp_map.values() if not bd.get(bc)})
+    comp_map = {fc: bc for fc, bc in comp_map.items() if bd.get(bc)}
+    if not comp_map:
+        return excluded
     vg_remap = {} if is_merged else fold_entry["fold"].get("vg_remap", {})
     has_morph = (face / "Meshes" / "ShapeKeyOffset.buf").exists()
     if has_morph:
@@ -510,6 +520,9 @@ def apply_fold(work, fold_entry, tag, morph_ref=None):
     else:
         batch_counts = []
     for k, table in vg_remap.items():
-        apply_blend_remap(body / "Meshes", table, bd[int(k)][0], "c%dremap" % int(k))
-    new_body = emit_fold_sections(body_text, face_text, fold_entry, bd, fm, batch_counts, tag, has_morph=has_morph)
+        if bd.get(int(k)):
+            apply_blend_remap(body / "Meshes", table, bd[int(k)][0], "c%dremap" % int(k))
+    new_body = emit_fold_sections(body_text, face_text, fold_entry, bd, fm, batch_counts, tag,
+                                  has_morph=has_morph, comp_map=comp_map)
     (body / "mod.ini").write_text(new_body, encoding="utf-8")
+    return excluded

@@ -215,14 +215,27 @@ def _copy_body(work: Path):
     return body
 
 
-def _base_meshes(collection):
-    """Component mesh objects of the base collection, whether flat or nested in C{n} sub-collections.
+def _base_meshes(cfg, collection):
+    """Component mesh objects of the base collection, honoring the stock WWMI export settings
+    (Ignore Nested Collections / Ignore Hidden Collections / Ignore Hidden Objects) EXACTLY as a
+    normal single-IB export does -- it reuses the vendored core's own ``get_collection_objects`` +
+    ``object_is_hidden``, so the gathering semantics cannot drift from stock ("checked = really
+    ignored").
 
-    The velo import "create component sub-collections" option nests each Component inside a C{n}
-    child collection, leaving ``collection.objects`` (direct children only) empty. ``all_objects``
-    recurses into the children -- and equals ``.objects`` for a flat collection, so the legacy
-    (non-sub-collection) path is byte-for-byte unchanged."""
-    return [o for o in collection.all_objects if o.type == 'MESH']
+    The velo "create component sub-collections" import lowers ``ignore_nested_collections`` so the
+    C{n} children are still traversed (recursive); a flat import keeps the default, where the
+    recursive gather equals ``collection.objects``."""
+    # Lazy import: keep this module importable without a full bpy (the vendored core's
+    # collections/objects pull in bpy at import time; pure-function unit tests must not need it).
+    from ..._wwmi_core.migoto_io.blender_interface.collections import get_collection_objects
+    from ..._wwmi_core.migoto_io.blender_interface.objects import object_is_hidden
+    objs = get_collection_objects(
+        collection,
+        recursive=not cfg.ignore_nested_collections,
+        skip_hidden_collections=cfg.ignore_hidden_collections)
+    return [o for o in objs
+            if o.type == 'MESH'
+            and not (cfg.ignore_hidden_objects and object_is_hidden(o))]
 
 
 def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_folder, hole=True, workdir=None):
@@ -266,22 +279,29 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
               "(the namespace merge requires hash-style textures)")
     temp_cols = []
     try:
-        # 1) body: (punch-hole) all meshes of the base (including extra IB components, each punched separately); the body export takes only the showcase group
+        # 1) body: gather the base's Component meshes once, honoring the stock collection settings
+        #    (Ignore Nested / Hidden Collections / Hidden Objects), exactly like a single-IB export.
+        base_meshes = _base_meshes(cfg, base_collection)
+        if (not base_meshes and cfg.ignore_nested_collections
+                and any(o.type == 'MESH' for o in base_collection.all_objects)):
+            raise RuntimeError(
+                "跨场景导出：基底集合『%s』的组件网格都在子集合里，但当前勾选了"
+                "「忽略嵌套集合」(Ignore Nested Collections)，导致一个组件都取不到。"
+                "请取消勾选该选项后重试。" % base_collection.name)
+        base_by_name = {o.name: o for o in base_meshes}
         if hole:
-            for o in _base_meshes(base_collection):
+            for o in base_meshes:
                 _pos_hole(o)
-        if eib_comp_names:
-            body_col = bpy.data.collections.new("xs_body")
-            bpy.context.scene.collection.children.link(body_col)
-            temp_cols.append(body_col)
-            for o in _base_meshes(base_collection):
-                if o.name not in eib_comp_names:
-                    body_col.objects.link(o)
-            body_export_col = body_col
-        else:
-            body_export_col = base_collection
+        # Always export the body from a flat temp collection (identical whether or not there are
+        # editable IBs to exclude), so the body path no longer depends on ignore_nested_collections.
+        body_col = bpy.data.collections.new("xs_body")
+        bpy.context.scene.collection.children.link(body_col)
+        temp_cols.append(body_col)
+        for o in base_meshes:
+            if o.name not in eib_comp_names:
+                body_col.objects.link(o)
         _export_body_with_trimmed_metadata(
-            cfg, body_export_col, work, merged_folder, routing["base"]["component_count"])
+            cfg, body_col, work, merged_folder, routing["base"]["component_count"])
 
         # body = showcase shared buffer mod (base export copied verbatim into body); all foldable IBs fold into it.
         mods = [str(_copy_body(work))]
@@ -294,12 +314,22 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         #    pristine reimport when the table is missing (old routing JSON / table build failed /
         #    split object not found) -- edits don't propagate there.
         own_legacy = []
+        own_excluded = []
         splits_by_ib = {sp.get("ib_hash"): sp for sp in routing["base"].get("splits", [])}
         for s in own_ibs:
             src = str(merged_folder / s["source_folder"])
             tag = s["ib_hash"]
             sp = splits_by_ib.get(tag)
-            split_obj = base_collection.all_objects.get(sp["split_object"]) if sp else None
+            split_obj = base_by_name.get(sp["split_object"]) if sp else None
+            if sp is not None and split_obj is None \
+                    and base_collection.all_objects.get(sp["split_object"]) is not None:
+                # The split part IS in the base collection but the stock settings excluded it
+                # (hidden / Ignore Hidden Objects) -> honor that: skip the whole own-buffer sub-IB
+                # (that accessory just isn't in the mod; the IB is left to the game).
+                own_excluded.append("%s (%s)" % (tag, sp["split_object"]))
+                print("[velo.xscene] own-buffer IB %s 的拆件 %s 被忽略（隐藏/排除），跳过该子 IB。"
+                      % (tag, sp["split_object"]))
+                continue
             if sp is not None and "host_vg_remap" in sp and split_obj is not None \
                     and cfg.mod_skeleton_type in ('COMPONENT', 'MERGED'):
                 own_col = bpy.data.collections.new("xs_own_" + tag)
@@ -359,6 +389,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         # the dungeon face; morph vid = the real row number of the edited body, naturally aligned with the body -> topology-changing edits like geometry deletion are also correct.
         # (There used to be a morph_ref unedited-reference hack assuming identical topology, where deleting vertices caused row-number misalignment and welding; removed. reproject_morph's
         #   ref defaults to body_meshes, so we don't pass morph_ref. When vertices are moved far from their original position, moved vertices are approximated by nearest-neighbor -- a known limitation.)
+        fold_skipped = []
         for s in foldable_ibs:
             src = str(merged_folder / s["source_folder"])
             col = _import_one(cfg, src, s["ib_hash"])
@@ -368,11 +399,16 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             tag = s["ib_hash"]
             _export_col(cfg, col, str(work / tag), "om_" + tag, src)
             _purge_collection(col)
-            fold.apply_fold(work, s, tag)
+            skipped = fold.apply_fold(work, s, tag)
+            if skipped:
+                fold_skipped.append("%s: base components %s" % (tag, skipped))
+                print("[velo.xscene] foldable IB %s：折叠目标组件 %s 被排除，已跳过对应 fold 片。"
+                      % (tag, skipped))
 
         # 4) editable_ibs (form2 face etc.): copy C8-11 -> temporary Component 0-3 -> export against their own source
         #    (shape keys are per-object and must be exported separately; mesh.copy() carries the form2 shape keys -> export re-emits them automatically).
         eib_roles = []
+        eib_excluded = []
         for rec in editable_ibs:
             tag = rec["ib_hash"]
             eib_col = bpy.data.collections.new("xs_eib_" + rec["ib_hash"])
@@ -380,7 +416,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             temp_cols.append(eib_col)
             temp_objs = []
             for li, mi in zip(rec["local_components"], rec["merged_components"]):
-                src_obj = base_collection.all_objects.get(f"Component {mi}")
+                src_obj = base_by_name.get(f"Component {mi}")
                 if src_obj is None:
                     continue
                 cp = src_obj.copy()
@@ -388,6 +424,12 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 cp.name = f"Component {li}"
                 eib_col.objects.link(cp)
                 temp_objs.append(cp)
+            if not temp_objs:
+                # every component of this editable IB was excluded (hidden / Ignore Hidden Objects)
+                # or absent -> skip the whole editable sub-IB (that form just isn't in the mod).
+                eib_excluded.append(tag)
+                print("[velo.xscene] editable IB %s 的所有组件都被忽略（隐藏/排除/缺失），跳过该子 IB。" % tag)
+                continue
             # MERGED: the editable IB was imported with UNIFIED VG names (vg_base_offset + its own 0-based
             # numbering). Its export runs against the IB's own 0-based source, where object_merger fills VG
             # gaps by name and then drops VGs whose collection index >= the source's total_vg_count; unified
@@ -424,6 +466,12 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         report["slot_style_bypassed"] = bool(saved_slot_style)
         if own_legacy:
             report["own_buffer_legacy"] = own_legacy
+        if own_excluded:
+            report["own_buffer_excluded"] = own_excluded
+        if eib_excluded:
+            report["editable_excluded"] = eib_excluded
+        if fold_skipped:
+            report["fold_skipped"] = fold_skipped
         return report
     finally:
         cfg.object_source_folder, cfg.mod_output_folder, cfg.mod_name = saved[0], saved[2], saved[3]

@@ -161,12 +161,27 @@ def _make_patched(orig_execute):
         tmp_objs, renamed = [], []   # renamed: [(orig_obj, orig_name)] to restore in finally
         saved_col, saved_mode = cfg.component_collection, cfg.mod_skeleton_type
         try:
-            # all_objects (not .objects) so the "create component sub-collections" import -- which
-            # nests each Component in a C{n} child collection -- is also handled; equals .objects for
-            # a flat collection, so the legacy path is unchanged.
-            for o in base_col.all_objects:
-                if o.type != 'MESH':
-                    continue
+            # Honor the stock collection settings (Ignore Nested / Hidden Collections / Hidden
+            # Objects) exactly like a single-IB export, reusing the vendored core's gatherer so the
+            # semantics can't drift ("checked = really ignored"). The "create component sub-
+            # collections" import lowers ignore_nested_collections so the C{n} children are still
+            # traversed; a flat import keeps the default (recursive gather == .objects).
+            # Lazy import: keep this module importable without a full bpy (pure-function unit tests).
+            from .._wwmi_core.migoto_io.blender_interface.collections import get_collection_objects
+            from .._wwmi_core.migoto_io.blender_interface.objects import object_is_hidden
+            base_meshes = get_collection_objects(
+                base_col,
+                recursive=not cfg.ignore_nested_collections,
+                skip_hidden_collections=cfg.ignore_hidden_collections)
+            base_meshes = [o for o in base_meshes if o.type == 'MESH'
+                           and not (cfg.ignore_hidden_objects and object_is_hidden(o))]
+            if (not base_meshes and cfg.ignore_nested_collections
+                    and any(o.type == 'MESH' for o in base_col.all_objects)):
+                self.report({'ERROR'},
+                            "Per-Component (from Merged)：组件网格都在子集合里，但勾选了"
+                            "「忽略嵌套集合」(Ignore Nested Collections)，一个都取不到。请取消勾选后重试。")
+                return {'CANCELLED'}
+            for o in base_meshes:
                 orig_name = o.name
                 cp = o.copy()
                 cp.data = o.data.copy()
