@@ -173,23 +173,42 @@ def _purge_collection(col):
         pass
 
 
-def _export_col(cfg, col, modout, name, src):
+_KEEP = object()  # _export_col sentinel: leave the slot-style eligibility override untouched.
+
+
+def _export_col(cfg, col, modout, name, src, eligible=_KEEP):
     Path(modout).mkdir(parents=True, exist_ok=True)
     cfg.object_source_folder = src
     cfg.component_collection = col
     cfg.mod_output_folder = modout
     cfg.mod_name = name
-    bpy.ops.vtww.export_mod()
+    if eligible is _KEEP:
+        bpy.ops.vtww.export_mod()
+        return
+    # Cross-scene: this sub-export's components use a DIFFERENT local numbering than the user's
+    # merged-numbered slot rules, so inject the translated per-component eligibility for the slot
+    # hook (set of eligible LOCAL component ids, or None = all eligible). Cleared right after so it
+    # never leaks to the next sub-export.
+    from ..slot_textures import hook as slot_hook
+    slot_hook.set_eligible_override(eligible)
+    try:
+        bpy.ops.vtww.export_mod()
+    finally:
+        slot_hook.clear_eligible_override()
 
 
-def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_count):
+def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_count, eligible=_KEEP):
     """Body export must see ONLY the body components [0, keep_count). The producer appends the editable
-    form2 components (8-11) to Metadata.json for MERGED *import*; if the body export saw them it would emit
-    spurious empty Component 8+ sections (COMPONENT) or inflate the unified skeleton vg_count sum
-    (MERGED, object_merger.py). Trim Metadata to the body components for the export, restore afterwards.
-    The full Metadata (incl. 8-11) is only needed at import time, which has already happened."""
+    form2 components (8-11) to Metadata.json AND ShaderTextureUsage.json for MERGED *import*; if the body
+    export saw them it would emit spurious empty Component 8+ sections (COMPONENT) / inflate the unified
+    skeleton vg_count (MERGED, object_merger.py), and -- under slot-style -- the slot generator would hit
+    components carrying textures but no draw range and degrade the WHOLE body slot layer (it raises on an
+    unranged used component). Trim BOTH inputs to the body components for the export, restore afterwards.
+    The full files (incl. 8-11) are only needed at import time, which has already happened."""
     meta_p = Path(merged_folder) / "Metadata.json"
+    stu_p = Path(merged_folder) / "ShaderTextureUsage.json"
     meta_full = meta_p.read_text(encoding="utf-8") if meta_p.is_file() else None
+    stu_full = stu_p.read_text(encoding="utf-8") if stu_p.is_file() else None
     try:
         if meta_full is not None:
             m = json.loads(meta_full)
@@ -197,10 +216,22 @@ def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_
             if len(comps) > keep_count:
                 m["components"] = comps[:keep_count]
                 meta_p.write_text(json.dumps(m, indent=4, ensure_ascii=False), encoding="utf-8")
-        _export_col(cfg, body_col, str(work / "sc"), "om_sc", str(merged_folder))
+        if stu_full is not None:
+            s = json.loads(stu_full)
+            trimmed = {}
+            for k, v in s.items():
+                mm = re.match(r'Component (\d+)', k)
+                if mm and int(mm.group(1)) >= keep_count:
+                    continue  # editable form2 (8-11) belong to their own sub-export
+                trimmed[k] = v
+            if len(trimmed) != len(s):
+                stu_p.write_text(json.dumps(trimmed, indent=4, ensure_ascii=False), encoding="utf-8")
+        _export_col(cfg, body_col, str(work / "sc"), "om_sc", str(merged_folder), eligible=eligible)
     finally:
         if meta_full is not None:
             meta_p.write_text(meta_full, encoding="utf-8")
+        if stu_full is not None:
+            stu_p.write_text(stu_full, encoding="utf-8")
 
 
 def _copy_body(work: Path):
@@ -245,6 +276,12 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     merged_folder: the merged folder produced by the producer (contains CrossSceneRouting.json + scene_ibs/)."""
     merged_folder = Path(merged_folder)
     routing = json.loads((merged_folder / "CrossSceneRouting.json").read_text(encoding="utf-8"))
+    from ..slot_textures import hook as slot_hook
+    # Per-component slot eligibility is chosen by the user in MERGED component numbers (the merged root
+    # STU lists Component 0..N); each sub-export below translates it to its own LOCAL numbering (None =
+    # all eligible). Cross-scene now KEEPS slot-style: textures bind per-IB by ps-t slot (the assembler
+    # keeps per-IB slot resources; fold replays the base maps onto the dungeon draws).
+    merged_eligible = slot_hook.read_global_eligible(context)
     # Transient per-IB sub-exports live here, deleted in finally. Use a real temp dir (not a sibling
     # of the output folder) so flattening the output to mod_output_folder doesn't leave a _xscene_work
     # next to the user's other mods.
@@ -273,17 +310,11 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     # collapse). Aligning sub-IB import to the export mode is generic (no asset-specific logic).
     saved_import_type = cfg.import_skeleton_type
     cfg.import_skeleton_type = cfg.mod_skeleton_type
-    # Cross-scene textures are namespace-merged + deduped into ONE global per-hash override (assembler),
-    # which is architecturally incompatible with per-IB slot-style rebinding: slot-style emits per-IB
-    # `ResourceTextureN` refs that the assembler's texture-section collapse leaves dangling. The slot
-    # hook's own guard only catches the body export (whose source folder has CrossSceneRouting.json); the
-    # sub-IB exports run against scene_ibs/<hash> (no json) and would still slot-style. Force hash-style
-    # for the WHOLE cross-scene build (body + every sub-IB); restored in finally.
-    saved_slot_style = getattr(cfg, "velo_slot_style_textures", None)
-    if saved_slot_style:
-        cfg.velo_slot_style_textures = False
-        print("[velo.xscene] slot-style textures bypassed for cross-scene export "
-              "(the namespace merge requires hash-style textures)")
+    # Cross-scene now supports slot-style textures: each independently-exported IB (body / own-buffer /
+    # editable) emits its own slot layer (the assembler keeps per-IB slot resources), and the fold
+    # replays the base component maps onto the dungeon draws (fold.py). Just record the setting for the
+    # report -- no global force-off.
+    slot_style_on = bool(getattr(cfg, "velo_slot_style_textures", False))
     # The build runs N stock sub-exports into `work` and the assembler reads each one's mod.ini +
     # Meshes + Textures to merge them -- so every sub-export MUST write ini + textures + buffers
     # regardless of the user's file-output toggles (write_ini=off / partial_export=on /
@@ -328,8 +359,11 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         for o in base_meshes:
             if o.name not in eib_comp_names:
                 body_col.objects.link(o)
+        keep_count = routing["base"]["component_count"]
+        body_elig = (None if merged_eligible is None
+                     else {c for c in merged_eligible if c < keep_count})
         _export_body_with_trimmed_metadata(
-            cfg, body_col, work, merged_folder, routing["base"]["component_count"])
+            cfg, body_col, work, merged_folder, keep_count, eligible=body_elig)
 
         # body = showcase shared buffer mod (base export copied verbatim into body); all foldable IBs fold into it.
         mods = [str(_copy_body(work))]
@@ -347,6 +381,12 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         for s in own_ibs:
             src = str(merged_folder / s["source_folder"])
             tag = s["ib_hash"]
+            # Slot eligibility: the own-buffer host renumbers to its local components, but it is the
+            # split of base component(s) derive.base_components -> slot iff any of those is checked
+            # (None = all eligible; empty set = all hash).
+            own_base = (s.get("derive") or {}).get("base_components") or []
+            own_elig = (None if (merged_eligible is None or not own_base
+                                 or any(b in merged_eligible for b in own_base)) else set())
             sp = splits_by_ib.get(tag)
             split_obj = base_by_name.get(sp["split_object"]) if sp else None
             if sp is not None and split_obj is None \
@@ -379,7 +419,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     _translate_host_vgs(cp, sp, tag)
                     if hole:
                         _pos_hole(cp)
-                    _export_col(cfg, own_col, str(work / tag), "om_" + tag, src)
+                    _export_col(cfg, own_col, str(work / tag), "om_" + tag, src, eligible=own_elig)
                     # Annotate the own-buffer draw with the split's real (Blender) name (e.g.
                     # Component 5.001) instead of the export-local 'Component 0.001' artifact.
                     _m_idx = re.search(r'(\d+)', cp.name)
@@ -406,7 +446,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 if hole:
                     for o in [o for o in col.objects if o.type == 'MESH']:
                         _pos_hole(o)
-                _export_col(cfg, col, str(work / tag), "om_" + tag, src)
+                _export_col(cfg, col, str(work / tag), "om_" + tag, src, eligible=own_elig)
                 _purge_collection(col)
             mods.append(str(work / tag))
 
@@ -425,7 +465,9 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 for o in [o for o in col.objects if o.type == 'MESH']:
                     _pos_hole(o)
             tag = s["ib_hash"]
-            _export_col(cfg, col, str(work / tag), "om_" + tag, src)
+            # Foldable host: its slot layer is discarded (fold replays the BASE maps onto the dungeon
+            # draw); export full slot harmlessly (eligible=None) -> never reads the merged-numbered rules.
+            _export_col(cfg, col, str(work / tag), "om_" + tag, src, eligible=None)
             _purge_collection(col)
             skipped = fold.apply_fold(work, s, tag)
             if skipped:
@@ -470,7 +512,10 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                         if vg.name.lstrip("-").isdigit():
                             vg.name = str(int(vg.name) - base_off)
             eib_src = str(merged_folder / rec["source_folder"])
-            _export_col(cfg, eib_col, str(work / tag), "om_" + tag, eib_src)
+            eib_elig = (None if merged_eligible is None
+                        else {li for li, mi in zip(rec["local_components"], rec["merged_components"])
+                              if mi in merged_eligible})
+            _export_col(cfg, eib_col, str(work / tag), "om_" + tag, eib_src, eligible=eib_elig)
             # Annotate the editable draws with the merged (Blender) component numbers (e.g. 8-11)
             # instead of the export-local 'Component 0-3.001' artifacts.
             _relabel_draw_comments(
@@ -497,7 +542,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             copy_textures=saved_gating["copy_textures"])
         report["ib_count"] = len(mods)
         report["roles"] = ["body"] + [s["ib_hash"] for s in own_ibs] + eib_roles
-        report["slot_style_bypassed"] = bool(saved_slot_style)
+        report["slot_style"] = slot_style_on
         if own_legacy:
             report["own_buffer_legacy"] = own_legacy
         if own_excluded:
@@ -510,8 +555,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     finally:
         cfg.object_source_folder, cfg.mod_output_folder, cfg.mod_name = saved[0], saved[2], saved[3]
         cfg.import_skeleton_type = saved_import_type
-        if saved_slot_style is not None:
-            cfg.velo_slot_style_textures = saved_slot_style
+        slot_hook.clear_eligible_override()
         cfg.write_ini = saved_gating["write_ini"]
         cfg.partial_export = saved_gating["partial_export"]
         if hasattr(cfg, "copy_textures"):

@@ -2,9 +2,19 @@
 
 Ported from the standalone, game-verified prototype ``merge_inis.py`` (in-process, no subprocess):
 for each IB k, non-texture sections become ``[X]->[X_ibK]``, ``$v->$v_ibK``, ``Resource*/CommandList*->*_ibK``
-(the ``\\WWMIv1\\`` framework references are preserved), ``Meshes/->Meshes/ibK_`` (flattened); texture sections
-collapse into one global ``[Resource_Texture_<hash>]``/``[TextureOverride_Texture_<hash>]`` per unique hash
-(gate = OR over each IB's ``$object_detected``); ``[Constants]``/``[Present]`` each merged into one section. Returns a self-check report.
+(the ``\\WWMIv1\\`` framework references are preserved), ``Meshes/->Meshes/ibK_`` (flattened).
+
+Textures take one of two paths per IB:
+  * Slot-style (velo): textures rebound inside the component draw scope as ``ps-t{n} = ref
+    ResourceTexture{i}`` are kept PER-IB (``[ResourceTexture{i}]`` -> ``[ResourceTexture{i}_ibK]``,
+    filename normalised to the deduped ``Textures/t=<hash>.dds``), so the namespaced slot command
+    lists resolve. They carry NO texture-hash matching -> immune to streaming.
+  * Hash-style (stock / slot blind-zone fallback): ``[TextureOverrideTexture{i}]`` hash overrides
+    collapse into one global ``[Resource_Texture_<hash>]``/``[TextureOverride_Texture_<hash>]`` per
+    unique hash (gate = OR over each IB's ``$object_detected``), as before.
+
+``[Constants]``/``[Present]`` each merged into one section. Returns a self-check report (the
+``tex_blindzone`` field lists residual hash-style textures -> empty == a pure 0-texture-hash mod).
 """
 import os
 import re
@@ -15,6 +25,9 @@ _RE_RESCMD = re.compile(r'\b(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)\b')
 _RE_RESTEX = re.compile(r'ResourceTexture\d+$')
 _RE_OVRTEX = re.compile(r'TextureOverrideTexture\d+$')
 _RE_TEXHASH = re.compile(r't=([0-9a-fA-F]+)')
+# Slot-style binds: `ps-t{n} = ref ResourceTexture{i}` (the trailing \b keeps ResourceTextureBackupT*
+# -- the per-slot backup resources -- out; those are namespaced via the generic Resource* path).
+_RE_PST_REF = re.compile(r'ps-t\d+\s*=\s*ref\s+(ResourceTexture\d+)\b')
 
 
 def _ns_line(line, k):
@@ -50,12 +63,13 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     orchestrator forces that so the merge can read them.) ``out`` is the user's mod folder, so only
     our own products (Meshes/ Textures/ mod.ini) are cleaned -- never the whole ``out``.
 
-    texture_root: when given, the merged root is the single authoritative texture allowlist --
-    only hashes whose ``t=<hash>.dds`` still exists directly at the merged root (root-only scan,
-    so a ``123/`` trash subfolder counts as deleted, matching stock ``get_textures``) are shipped,
-    and each shipped file is copied FROM the merged root (a root edit wins over the per-IB copy).
-    Sub-IB folders (scene_ibs/<hash>/) no longer re-supply a hash the author pruned from the root.
-    texture_root=None keeps the legacy behavior (union of every per-IB referenced texture)."""
+    texture_root: when given, the merged root is the single authoritative HASH-style allowlist --
+    only blind-zone hashes whose ``t=<hash>.dds`` still exists directly at the merged root (root-only
+    scan, so a ``123/`` trash subfolder counts as deleted, matching stock ``get_textures``) are
+    shipped, and each shipped file is copied FROM the merged root (a root edit wins over the per-IB
+    copy). Slot-style textures are bound by ps-t slot and ALWAYS ship (pruning one would dangle its
+    slot binding); the root edit still wins as the copy source when present. texture_root=None keeps
+    the legacy behavior (union of every per-IB referenced texture)."""
     write_textures = (not partial_export) and copy_textures
     write_final_ini = (not partial_export) and write_ini
     # Clean ONLY our own products (out is the user's mod folder now; never rmtree the whole thing).
@@ -85,7 +99,10 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             root_file_by_hash.setdefault(h, os.path.join(texture_root, name))
 
     constants, present, others = [], [], []
-    tex = {}                # hash -> source .dds absolute path (deduped)
+    tex = {}                # hash -> source .dds absolute path (deduped; slot + blind-zone)
+    blindzone = set()       # hashes still bound hash-style (no slot map covered them) -> one global
+                            # [TextureOverride_Texture_<hash>] each, gated by $object_detected.
+    slot_hashes = set()     # hashes bound by ps-t slot -> per-IB resources, NO global hash override.
     tex_hash_per_mod = []
     # MERGED skeleton: every IB emits an identical [TextureOverrideMarkBoneDataCB] (hash = shared cb4,
     # filter_index = 3381.7777) -- a pure global registration of the bone-data CB. Per-IB duplicates would
@@ -98,7 +115,14 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     mark_bone_mismatch = False
 
     for k, mod in enumerate(mods):
-        sections = _parse_sections(open(os.path.join(mod, "mod.ini"), encoding="utf-8").read())
+        mod_text = open(os.path.join(mod, "mod.ini"), encoding="utf-8").read()
+        sections = _parse_sections(mod_text)
+
+        # Slot-style textures are rebound inside the component draw scope as
+        # `ps-t{n} = ref ResourceTexture{i}`; those resources must be namespaced PER-IB like every
+        # other Resource* (the namespaced slot command lists reference ResourceTexture{i}_ib{k}).
+        # Hash-style mods have no such refs -> slot_covered empty -> the legacy global collapse below.
+        slot_covered = set(_RE_PST_REF.findall(mod_text))
 
         res_filename, ov_pairs = {}, []
         for h, b in sections:
@@ -119,17 +143,52 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                 if hv and tgt:
                     ov_pairs.append((hv, tgt))
         mod_hashes = set()
+        # Blind-zone hash overrides: a slot-covered texture had its TextureOverrideTexture section
+        # removed by the slot transform, so anything still carrying a hash override is a fallback.
         for hv, tgt in ov_pairs:
+            if tgt in slot_covered:
+                continue
             fn = res_filename.get(tgt)
             if not fn:
                 continue
             mod_hashes.add(hv)
+            blindzone.add(hv)
+            if hv not in tex:
+                tex[hv] = os.path.join(mod, fn)
+        # Slot-covered resources: dedup their .dds by hash (file level) so multiple IBs binding the
+        # same texture ship one t=<hash>.dds; the hash is parsed from the filename.
+        slot_hash_by_res = {}
+        for name in sorted(slot_covered):
+            fn = res_filename.get(name)
+            if not fn:
+                continue
+            m = _RE_TEXHASH.search(fn)
+            if not m:
+                continue
+            hv = m.group(1).lower()
+            slot_hash_by_res[name] = hv
+            mod_hashes.add(hv)
+            slot_hashes.add(hv)
             if hv not in tex:
                 tex[hv] = os.path.join(mod, fn)
         tex_hash_per_mod.append(mod_hashes)
 
         for h, b in sections:
-            if _RE_RESTEX.match(h) or _RE_OVRTEX.match(h):
+            if _RE_OVRTEX.match(h):
+                continue  # blind-zone hash override -> emitted once globally below
+            if _RE_RESTEX.match(h):
+                if h in slot_covered:
+                    # Keep per-IB (the slot command lists ref ResourceTexture{i}_ib{k}); normalise
+                    # the filename to the deduped shipped name so all IBs share one t=<hash>.dds.
+                    hv = slot_hash_by_res.get(h)
+                    nb = []
+                    for l in b:
+                        if hv and re.match(r'\s*filename\s*=', l, re.I):
+                            nb.append(f'filename = Textures/t={hv}.dds')
+                        else:
+                            nb.append(l)
+                    others.append((f'{h}_ib{k}', nb))
+                # else: blind-zone resource -> collapsed into a global Resource_Texture_<hash>, skip
                 continue
             if h == _MARK_BONE:
                 # IB-agnostic (hash + filter_index only): keep ONE shared copy, never namespace per-IB.
@@ -155,28 +214,33 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             for fn in os.listdir(mesh_src):
                 shutil.copy(os.path.join(mesh_src, fn), os.path.join(out, "Meshes", f'ib{k}_{fn}'))
 
-    shipped = {hv for hv in tex if allowed is None or hv in allowed}
+    # Slot textures always ship (their slot binding would dangle otherwise); blind-zone (hash-style)
+    # textures are gated by the root allowlist (ADR 0013). The root file wins as the copy source.
+    shipped = {hv for hv in tex
+               if hv in slot_hashes or allowed is None or hv in allowed}
     if write_textures:
         for hv in tex:
             if hv not in shipped:
                 continue
-            # When gating, copy the authoritative merged-root file; otherwise the per-IB copy.
-            src = root_file_by_hash[hv] if allowed is not None else tex[hv]
+            src = root_file_by_hash[hv] if (allowed is not None and hv in root_file_by_hash) else tex[hv]
             shutil.copy(src, os.path.join(textures_dir, f't={hv}.dds'))
 
     gate = ' || '.join(f'$object_detected_ib{k}' for k in range(len(mods)))
+    blindzone_shipped = sorted(hv for hv in blindzone if hv in shipped)
 
     with open(os.path.join(out, "mod.ini"), "w", encoding="utf-8") as f:
-        f.write("; WWMI cross-scene multi-IB (namespace-merged, textures deduped by hash)\n\n")
+        f.write("; WWMI cross-scene multi-IB (namespace-merged; slot-style textures per-IB, "
+                "hash-style textures deduped by hash)\n\n")
         f.write("[Constants]\n" + "\n".join(constants))
         f.write("\n\n[Present]\n" + "\n".join(present) + "\n\n")
         for h, b in others:
             f.write(f"[{h}]\n" + "\n".join(b) + "\n\n")
-        f.write("; --- Shared textures (deduped by hash, global overrides) ---\n\n")
-        for hv in sorted(shipped):
-            f.write(f"[Resource_Texture_{hv}]\nfilename = Textures/t={hv}.dds\n\n")
-            f.write(f"[TextureOverride_Texture_{hv}]\nhash = {hv}\nmatch_priority = 0\n")
-            f.write(f"if {gate}\n    this = Resource_Texture_{hv}\nendif\n\n")
+        if blindzone_shipped:
+            f.write("; --- Shared hash-style textures (blind-zone fallback, deduped by hash) ---\n\n")
+            for hv in blindzone_shipped:
+                f.write(f"[Resource_Texture_{hv}]\nfilename = Textures/t={hv}.dds\n\n")
+                f.write(f"[TextureOverride_Texture_{hv}]\nhash = {hv}\nmatch_priority = 0\n")
+                f.write(f"if {gate}\n    this = Resource_Texture_{hv}\nendif\n\n")
 
     # ---- self-check ----
     text = open(os.path.join(out, "mod.ini"), encoding="utf-8").read()
@@ -194,12 +258,17 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     # and every IB must have agreed on its body (same cb4 / filter_index).
     mark_bone_emitted = len(re.findall(r'^\[' + _MARK_BONE + r'(?:_ib\d+)?\]', text, re.M))
     skeleton_ok = (not mark_bone_mismatch) and mark_bone_emitted <= 1
+    # The only remaining texture-hash overrides are the blind-zone fallbacks; for a pure slot-style
+    # mod this set is empty (= 0 texture-hash). They must match exactly what we emitted.
+    tex_conserved = global_hashes == set(blindzone_shipped)
     report = {
         "out": out, "sections": len(sections_set), "refs": len(refs),
         "dangling": dangling, "missing": missing,
-        "tex_conserved": global_hashes == shipped,
+        "tex_conserved": tex_conserved,
         "tex_union": len(all_in), "tex_global": len(global_hashes),
         "tex_shipped": len(shipped),
+        "tex_slot": sorted(hv for hv in slot_hashes if hv in shipped),
+        "tex_blindzone": blindzone_shipped,  # residual hash-style textures (empty == 0-texture-hash)
         "texture_gate": allowed is not None,
         "tex_root_allowed": (len(allowed) if allowed is not None else None),
         "tex_gated_out": sorted(all_in - shipped),
@@ -208,7 +277,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
         "ini_size": len(text), "gate": gate,
         "mark_bone_collapsed_from": mark_bone_count, "mark_bone_emitted": mark_bone_emitted,
         "mark_bone_mismatch": mark_bone_mismatch, "skeleton_ok": skeleton_ok,
-        "sound": not dangling and not missing and (global_hashes == shipped) and skeleton_ok,
+        "sound": not dangling and not missing and tex_conserved and skeleton_ok,
         "final_ini_written": write_final_ini,
         "final_textures_written": write_textures,
     }

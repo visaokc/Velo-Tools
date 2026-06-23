@@ -81,8 +81,9 @@ def _make_patched(orig_execute):
             _IN_XSCENE[0] = False
         try:
             msg = "Cross-scene mod exported to %s | roles=%s" % (out, rep.get("roles"))
-            if rep.get("slot_style_bypassed"):
-                msg += " | slot-style textures bypassed (cross-scene uses hash-style)"
+            if rep.get("slot_style"):
+                msg += " | slot-style textures (%d slot, %d hash-fallback)" % (
+                    len(rep.get("tex_slot") or []), len(rep.get("tex_blindzone") or []))
             if rep.get("final_ini_written") is False:
                 msg += " | final mod.ini skipped (write_ini off / partial export)"
             if rep.get("final_textures_written") is False:

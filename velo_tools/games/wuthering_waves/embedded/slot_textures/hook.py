@@ -52,9 +52,9 @@ def install():
         del last_report[:]
         try:
             source_folder = resolve_path(cfg.object_source_folder)
-            if (source_folder / 'CrossSceneRouting.json').is_file():
-                raise generator.SlotStyleDegrade(
-                    'cross-scene exports are not supported yet')
+            # Cross-scene (CrossSceneRouting.json present) is now supported: the body export reads the
+            # merged root STU (orchestrator trims it to the base components first) and each sub-IB
+            # exports its own slot layer; the assembler keeps them per-IB. No degrade here anymore.
             form_freshness = []
             forms, texture_info, load_warnings = generator.load_forms(
                 source_folder, freshness_out=form_freshness)
@@ -185,10 +185,30 @@ def _report(message: str):
     last_report.append(message)
 
 
-def _read_slot_eligible(context):
-    """Per-component slot eligibility from the UI rules. Empty list (never populated by
-    the user) -> None = all components eligible (backward compatible / 默认全选). Otherwise
-    the set of component ids the user left checked; unchecked components fall back to hash."""
+# Per-export slot-eligibility override (cross-scene). The cross-scene orchestrator runs N sub-exports,
+# each with a DIFFERENT local component numbering, so the global UI rules (chosen in MERGED numbering)
+# must be translated and injected per sub-export. cfg is a Blender PropertyGroup (no arbitrary
+# attributes), so the channel is module-level: set_eligible_override(value) makes the next
+# build_from_template use `value` verbatim (a set of eligible LOCAL component ids, or None = all
+# eligible); clear_eligible_override() restores the global-UI-rules behavior.
+_eligible_override = None
+_eligible_override_active = False
+
+
+def set_eligible_override(value):
+    global _eligible_override, _eligible_override_active
+    _eligible_override, _eligible_override_active = value, True
+
+
+def clear_eligible_override():
+    global _eligible_override_active
+    _eligible_override_active = False
+
+
+def read_global_eligible(context):
+    """Per-component slot eligibility from the UI rules (MERGED numbering under cross-scene). Empty
+    list (never populated by the user) -> None = all components eligible (backward compatible /
+    默认全选). Otherwise the set of component ids the user left checked; unchecked -> hash fallback."""
     try:
         rules = context.scene.vtww_slot_settings.slot_component_rules
     except Exception:
@@ -196,3 +216,11 @@ def _read_slot_eligible(context):
     if not len(rules):
         return None
     return {r.component_id for r in rules if r.use_slot}
+
+
+def _read_slot_eligible(context):
+    """The eligibility the generator should use for THIS export: the per-export override the
+    cross-scene orchestrator set (if any), else the global UI rules."""
+    if _eligible_override_active:
+        return _eligible_override
+    return read_global_eligible(context)

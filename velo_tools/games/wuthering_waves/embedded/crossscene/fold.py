@@ -27,6 +27,14 @@ GRID = 0.001
 TOL2 = 0.0015 ** 2
 _NB = [(x, y, z) for x in (-1, 0, 1) for y in (-1, 0, 1) for z in (-1, 0, 1)]
 
+# Slot-style section names -- mirror velo_tools/.../slot_textures/constants.py (CMDLIST_SET_TEXTURES /
+# CMDLIST_PROBE / CMDLIST_RESTORE / SEC_FORMAT_TAG). fold.py must stay standalone-importable (the
+# headless tests load it by file path, with no package context, so a relative import of that module
+# would fail) -- keep these literals in sync with constants.py by hand.
+_SLOT_SET = "CommandListSetTexturesComponent%d"
+_SLOT_PROBE = "CommandListProbeComponent%d"
+_SLOT_RESTORE = "CommandListRestoreTextures"
+
 
 def _qk(p):
     return (int(round(p[0] / GRID)), int(round(p[1] / GRID)), int(round(p[2] / GRID)))
@@ -263,6 +271,62 @@ def _section(text, header):
     return m.group(1) if m else None
 
 
+def _slot_active(body_text, bc):
+    """True when the body was exported slot-style for base component ``bc`` (its per-draw rebind
+    list exists). Hash-style bodies have no such list -> the fold stays byte-identical to before."""
+    return ('[%s]' % (_SLOT_SET % bc)) in body_text
+
+
+def _fold_slot_runs(body_text, bc):
+    """The slot command-list ``run`` lines a folded dungeon draw must execute so its textures are
+    rebound to the BASE component's slot maps (= master content, streaming-immune): probe BEFORE the
+    resource-override trigger, SetTextures AFTER it, Restore BEFORE cleanup -- mirroring how
+    transform.apply wires them into the body draw. Returns (before_trigger, after_trigger,
+    before_cleanup); all empty for a hash-style body."""
+    if not _slot_active(body_text, bc):
+        return [], [], []
+    before_trigger, after_trigger, before_cleanup = [], [], []
+    if ('[%s]' % (_SLOT_PROBE % bc)) in body_text:
+        before_trigger.append('run = %s' % (_SLOT_PROBE % bc))
+    after_trigger.append('run = %s' % (_SLOT_SET % bc))
+    if ('[%s]' % _SLOT_RESTORE) in body_text:
+        before_cleanup.append('run = %s' % _SLOT_RESTORE)
+    return before_trigger, after_trigger, before_cleanup
+
+
+def _fold_format_tag_twins(body_text, bc, fc, tag, mfi, mic):
+    """Replicate the base component's format-family tag sections (``[TextureOverrideComponent{bc}{fmt}]``)
+    at the folded dungeon draw's index range so the base SetTextures conditions fire there too.
+
+    Format tags match by (format-family + index range) with NO hash; the base tags are scoped to the
+    base draw range, so without a twin at the dungeon range the slot conditions go blind on the
+    dungeon draw (same field-proven reason LOD draws need per-level twins). filter_index/match_format
+    are copied verbatim (the family value is what the SetTextures list reads); only the match window
+    is swapped. The bare ``[TextureOverrideComponent{bc}]`` draw section (no format suffix) and the
+    ``TextureOverrideLod*`` twins are excluded. Empty for a hash-style body."""
+    if not _slot_active(body_text, bc):
+        return []
+    twins = []
+    pat = re.compile(r'^\[TextureOverrideComponent%d([A-Za-z][^\]]*)\]\s*$' % bc, re.M)
+    for m in pat.finditer(body_text):
+        fmt = m.group(1)
+        sec = _section(body_text, 'TextureOverrideComponent%d%s' % (bc, fmt))
+        if not sec:
+            continue
+        lines = sec.rstrip('\n').split('\n')
+        new = ['[TextureOverride_FoldHost_%s_C%d_%s]' % (tag, fc, fmt)]
+        for ln in lines[1:]:
+            s = ln.strip()
+            if s.startswith('match_first_index'):
+                new.append('match_first_index = %d' % mfi)
+            elif s.startswith('match_index_count'):
+                new.append('match_index_count = %d' % mic)
+            else:
+                new.append(ln)
+        twins.append('\n'.join(new))
+    return twins
+
+
 def _merge_offset_shift(remap_table):
     """For a NON-identity fold's vg_remap (base-component-local VG -> dungeon-IB-local VG), return
     ``(shift, count)`` so the MERGED FoldHost merges the dungeon cb4 at ``base_vg_offset + shift`` for
@@ -342,13 +406,20 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             # drop subsequent draws (e.g. the .001 sub-component, drawn by its own IB)
         elif s.startswith("run = CommandListDrawComponent"):
             # LOD-fork shape: replace the shared-list delegation with the stock inline
-            # sequence, primary draw only (see docstring).
+            # sequence, primary draw only (see docstring). Slot-style: weave in the base
+            # component's per-draw texture rebind (probe/set/restore) so the dungeon draw
+            # rebinds to master textures -- the shared draw list's slot runs aren't reachable
+            # from this inlined sequence. No-ops for a hash-style body.
             if primary is None:
                 raise ValueError("LOD-fork body ini shape requires the primary draw of C%d" % bc)
             indent = ln[:len(ln) - len(ln.lstrip())]
+            bt, at, bcl = _fold_slot_runs(body_text, bc)
+            out.extend("%s%s" % (indent, r) for r in bt)
             out.append("%srun = CommandListTriggerResourceOverrides" % indent)
+            out.extend("%s%s" % (indent, r) for r in at)
             out.append("%srun = CommandListOverrideSharedResources" % indent)
             out.append("%sdrawindexed = %d, %d, 0" % (indent, primary[0], primary[1]))
+            out.extend("%s%s" % (indent, r) for r in bcl)
             out.append("%srun = CommandListCleanupSharedResources" % indent)
             seen_draw = True
         elif s.startswith("; Draw "):
@@ -459,6 +530,8 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             # remapped blend/skeleton -- which the old hand-built FoldHost failed to do (C4 mis-weighted).
             # Non-identity fold (e.g. C5, whose bear C5.001 was split off): shift the merge vg_offset by the
             # dungeon's missing-leading-bone count so its cb4 lands where the base surviving geometry reads.
+            # (Slot-style: the non-LOD-fork replica inherits the body override's probe/set/restore runs
+            # verbatim; the LOD-fork inlined sequence gets them re-woven in _build_merged_foldhost.)
             rt = vg_remap_all.get(str(bc))
             vg_shift, vg_count_override = _merge_offset_shift(rt) if rt else (0, None)
             out.append(_build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift, vg_count_override,
@@ -466,11 +539,29 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
         else:
             cnt, offd = body_draws[bc][0]
             ovr = remap_cmd[bc][0] if bc in remap_cmd else "CommandListOverrideSharedResources"
-            out.append("[TextureOverride_FoldHost_%s_C%d]\nhash = %s\n"
-                       "match_first_index = %d\nmatch_index_count = %d\n$object_detected = 1\n"
-                       "if $mod_enabled\n    handling = skip\n    run = CommandListTriggerResourceOverrides\n"
-                       "    run = %s\n    drawindexed = %d, %d, 0\n    run = CommandListCleanupSharedResources\nendif\n"
-                       % (tag, fc, fh, mfi, mic, ovr, cnt, offd))
+            # Slot-style: rebind the dungeon draw's textures to the BASE component's slot maps (master
+            # content, streaming-immune). Empty for a hash-style body -> output byte-identical to before.
+            bt, at, bcl = _fold_slot_runs(body_text, bc)
+            lines = ["[TextureOverride_FoldHost_%s_C%d]" % (tag, fc),
+                     "hash = %s" % fh,
+                     "match_first_index = %d" % mfi,
+                     "match_index_count = %d" % mic,
+                     "$object_detected = 1",
+                     "if $mod_enabled",
+                     "    handling = skip"]
+            lines += ["    %s" % r for r in bt]
+            lines.append("    run = CommandListTriggerResourceOverrides")
+            lines += ["    %s" % r for r in at]
+            lines.append("    run = %s" % ovr)
+            lines.append("    drawindexed = %d, %d, 0" % (cnt, offd))
+            lines += ["    %s" % r for r in bcl]
+            lines.append("    run = CommandListCleanupSharedResources")
+            lines.append("endif")
+            out.append("\n".join(lines) + "\n")
+        # Slot-style: format-family tag twins at the dungeon draw's index range so the base
+        # SetTextures conditions fire on it (no-op for a hash-style body).
+        for twin in _fold_format_tag_twins(body_text, bc, fc, tag, mfi, mic):
+            out.append("\n" + twin + "\n")
     base_cmd = _section(body_text, "CommandListOverrideSharedResources")
     for bc, (cmdname, btag) in remap_cmd.items():  # empty in MERGED (vg_remap dropped above)
         blk = base_cmd.replace("[CommandListOverrideSharedResources]", "[%s]" % cmdname, 1)
