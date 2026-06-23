@@ -458,9 +458,11 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 except Exception:
                     pass
 
-        # 5) Namespace merge + texture dedup + self-check
+        # 5) Namespace merge + texture dedup + self-check.
+        # The merged root is the single authoritative texture allowlist: only hashes still present
+        # at merged_folder root ship (sub-IB scene_ibs/<hash>/ no longer re-supply a pruned hash).
         from . import assembler
-        report = assembler.assemble(str(out_folder), mods)
+        report = assembler.assemble(str(out_folder), mods, texture_root=str(merged_folder))
         report["ib_count"] = len(mods)
         report["roles"] = ["body"] + [s["ib_hash"] for s in own_ibs] + eib_roles
         report["slot_style_bypassed"] = bool(saved_slot_style)

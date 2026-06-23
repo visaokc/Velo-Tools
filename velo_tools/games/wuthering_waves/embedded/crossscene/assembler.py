@@ -14,6 +14,7 @@ _RE_GLOBAL = re.compile(r'\$([A-Za-z]\w*)')
 _RE_RESCMD = re.compile(r'\b(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)\b')
 _RE_RESTEX = re.compile(r'ResourceTexture\d+$')
 _RE_OVRTEX = re.compile(r'TextureOverrideTexture\d+$')
+_RE_TEXHASH = re.compile(r't=([0-9a-fA-F]+)')
 
 
 def _ns_line(line, k):
@@ -38,13 +39,35 @@ def _parse_sections(text):
     return sections
 
 
-def assemble(out, mods):
+def assemble(out, mods, texture_root=None):
     """mods: ordered list of per-IB mod folders (each contains mod.ini + Meshes/ + Textures/).
-    Writes the merged mod to out, returns a report dict."""
+    Writes the merged mod to out, returns a report dict.
+
+    texture_root: when given, the merged root is the single authoritative texture allowlist --
+    only hashes whose ``t=<hash>.dds`` still exists directly at the merged root (root-only scan,
+    so a ``123/`` trash subfolder counts as deleted, matching stock ``get_textures``) are shipped,
+    and each shipped file is copied FROM the merged root (a root edit wins over the per-IB copy).
+    Sub-IB folders (scene_ibs/<hash>/) no longer re-supply a hash the author pruned from the root.
+    texture_root=None keeps the legacy behavior (union of every per-IB referenced texture)."""
     if os.path.exists(out):
         shutil.rmtree(out)
     os.makedirs(os.path.join(out, "Meshes"), exist_ok=True)
     os.makedirs(os.path.join(out, "Textures"), exist_ok=True)
+
+    # Root-only allowlist + hash -> merged-root file path (the authoritative copy source).
+    allowed = None
+    root_file_by_hash = {}
+    if texture_root is not None:
+        allowed = set()
+        for name in sorted(os.listdir(texture_root)):
+            if not name.lower().endswith(".dds"):
+                continue
+            m = _RE_TEXHASH.search(name)
+            if not m:
+                continue
+            h = m.group(1).lower()
+            allowed.add(h)
+            root_file_by_hash.setdefault(h, os.path.join(texture_root, name))
 
     constants, present, others = [], [], []
     tex = {}                # hash -> source .dds absolute path (deduped)
@@ -117,7 +140,12 @@ def assemble(out, mods):
             for fn in os.listdir(mesh_src):
                 shutil.copy(os.path.join(mesh_src, fn), os.path.join(out, "Meshes", f'ib{k}_{fn}'))
 
-    for hv, src in tex.items():
+    shipped = {hv for hv in tex if allowed is None or hv in allowed}
+    for hv in tex:
+        if hv not in shipped:
+            continue
+        # When gating, copy the authoritative merged-root file; otherwise the per-IB copy.
+        src = root_file_by_hash[hv] if allowed is not None else tex[hv]
         shutil.copy(src, os.path.join(out, "Textures", f't={hv}.dds'))
 
     gate = ' || '.join(f'$object_detected_ib{k}' for k in range(len(mods)))
@@ -129,7 +157,7 @@ def assemble(out, mods):
         for h, b in others:
             f.write(f"[{h}]\n" + "\n".join(b) + "\n\n")
         f.write("; --- Shared textures (deduped by hash, global overrides) ---\n\n")
-        for hv in sorted(tex.keys()):
+        for hv in sorted(shipped):
             f.write(f"[Resource_Texture_{hv}]\nfilename = Textures/t={hv}.dds\n\n")
             f.write(f"[TextureOverride_Texture_{hv}]\nhash = {hv}\nmatch_priority = 0\n")
             f.write(f"if {gate}\n    this = Resource_Texture_{hv}\nendif\n\n")
@@ -150,13 +178,17 @@ def assemble(out, mods):
     report = {
         "out": out, "sections": len(sections_set), "refs": len(refs),
         "dangling": dangling, "missing": missing,
-        "tex_conserved": all_in == global_hashes,
+        "tex_conserved": global_hashes == shipped,
         "tex_union": len(all_in), "tex_global": len(global_hashes),
+        "tex_shipped": len(shipped),
+        "texture_gate": allowed is not None,
+        "tex_root_allowed": (len(allowed) if allowed is not None else None),
+        "tex_gated_out": sorted(all_in - shipped),
         "textures_files": len(os.listdir(os.path.join(out, "Textures"))),
         "meshes_files": len(os.listdir(os.path.join(out, "Meshes"))),
         "ini_size": len(text), "gate": gate,
         "mark_bone_collapsed_from": mark_bone_count, "mark_bone_emitted": mark_bone_emitted,
         "mark_bone_mismatch": mark_bone_mismatch, "skeleton_ok": skeleton_ok,
-        "sound": not dangling and not missing and (all_in == global_hashes) and skeleton_ok,
+        "sound": not dangling and not missing and (global_hashes == shipped) and skeleton_ok,
     }
     return report
