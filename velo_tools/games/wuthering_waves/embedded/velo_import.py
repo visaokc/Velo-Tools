@@ -89,21 +89,25 @@ def _find_main_collection(existing_col_names, new_objects):
 
 
 def _reorganize_into_component_collections(main_col, new_objects):
-    sub_cols = {}
+    # Group objects by component id first, then create the C{n} sub-collections
+    # in numeric order. The child-link order is what the outliner shows (link
+    # order, not alphabetical), so sorting here yields C0, C1, ... C9, C10, C11
+    # instead of the lexicographic C0, C1, C10, C11, C2 ... that the import's
+    # os.listdir iteration order would otherwise produce.
+    groups = {}
     for obj in new_objects:
         match = _COMPONENT_RE.search(obj.name)
         if not match:
             continue  # unparseable name stays in the main collection
-        component_id = int(match.group(1))
-        sub = sub_cols.get(component_id)
-        if sub is None:
-            sub = bpy.data.collections.new(f"C{component_id}")
-            main_col.children.link(sub)
-            sub_cols[component_id] = sub
-        if obj.name in main_col.objects:
-            main_col.objects.unlink(obj)
-        if obj.name not in sub.objects:
-            sub.objects.link(obj)
+        groups.setdefault(int(match.group(1)), []).append(obj)
+    for component_id in sorted(groups):
+        sub = bpy.data.collections.new(f"C{component_id}")
+        main_col.children.link(sub)
+        for obj in groups[component_id]:
+            if obj.name in main_col.objects:
+                main_col.objects.unlink(obj)
+            if obj.name not in sub.objects:
+                sub.objects.link(obj)
 
 
 def install():

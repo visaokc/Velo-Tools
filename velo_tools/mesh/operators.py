@@ -750,7 +750,16 @@ def refresh_material_route_items(scene, *, route_pairs=None, actual_targets=None
     active_index = 0
     for component_id, material_name in route_pairs:
         if component_id >= 0:
-            _ensure_component_collection(root, component_id)
+            # Only adopt/mark an already-existing component sub-collection here;
+            # do NOT create empty C{n} collections on the auto-refresh. This
+            # handler runs from depsgraph_update_post after any import that set
+            # component_collection, and eager creation littered freshly imported
+            # models with a pile of empty C0..Cn collections. Target collections
+            # are created lazily when a route is actually applied (via
+            # _get_effective_target_collection(create=True)).
+            existing = _find_component_collection(root, component_id)
+            if existing is not None:
+                _mark_component_collection(existing, component_id)
         item = route_settings.route_items.add()
         item.component_id = int(component_id)
         item.material_name = material_name
