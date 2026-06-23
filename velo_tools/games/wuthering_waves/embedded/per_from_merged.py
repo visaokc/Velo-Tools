@@ -161,7 +161,10 @@ def _make_patched(orig_execute):
         tmp_objs, renamed = [], []   # renamed: [(orig_obj, orig_name)] to restore in finally
         saved_col, saved_mode = cfg.component_collection, cfg.mod_skeleton_type
         try:
-            for o in base_col.objects:
+            # all_objects (not .objects) so the "create component sub-collections" import -- which
+            # nests each Component in a C{n} child collection -- is also handled; equals .objects for
+            # a flat collection, so the legacy path is unchanged.
+            for o in base_col.all_objects:
                 if o.type != 'MESH':
                     continue
                 orig_name = o.name

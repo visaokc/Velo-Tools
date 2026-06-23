@@ -215,6 +215,16 @@ def _copy_body(work: Path):
     return body
 
 
+def _base_meshes(collection):
+    """Component mesh objects of the base collection, whether flat or nested in C{n} sub-collections.
+
+    The velo import "create component sub-collections" option nests each Component inside a C{n}
+    child collection, leaving ``collection.objects`` (direct children only) empty. ``all_objects``
+    recurses into the children -- and equals ``.objects`` for a flat collection, so the legacy
+    (non-sub-collection) path is byte-for-byte unchanged."""
+    return [o for o in collection.all_objects if o.type == 'MESH']
+
+
 def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_folder, hole=True, workdir=None):
     """Main entry: derive + merge into a single cross-scene mod. Returns the assembler's self-check report.
     base_collection: the imported (and possibly edited) merged base collection (Component 0-7 + 5.001).
@@ -258,14 +268,14 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     try:
         # 1) body: (punch-hole) all meshes of the base (including extra IB components, each punched separately); the body export takes only the showcase group
         if hole:
-            for o in [o for o in base_collection.objects if o.type == 'MESH']:
+            for o in _base_meshes(base_collection):
                 _pos_hole(o)
         if eib_comp_names:
             body_col = bpy.data.collections.new("xs_body")
             bpy.context.scene.collection.children.link(body_col)
             temp_cols.append(body_col)
-            for o in base_collection.objects:
-                if o.type == 'MESH' and o.name not in eib_comp_names:
+            for o in _base_meshes(base_collection):
+                if o.name not in eib_comp_names:
                     body_col.objects.link(o)
             body_export_col = body_col
         else:
@@ -289,7 +299,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             src = str(merged_folder / s["source_folder"])
             tag = s["ib_hash"]
             sp = splits_by_ib.get(tag)
-            split_obj = base_collection.objects.get(sp["split_object"]) if sp else None
+            split_obj = base_collection.all_objects.get(sp["split_object"]) if sp else None
             if sp is not None and "host_vg_remap" in sp and split_obj is not None \
                     and cfg.mod_skeleton_type in ('COMPONENT', 'MERGED'):
                 own_col = bpy.data.collections.new("xs_own_" + tag)
@@ -370,7 +380,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             temp_cols.append(eib_col)
             temp_objs = []
             for li, mi in zip(rec["local_components"], rec["merged_components"]):
-                src_obj = base_collection.objects.get(f"Component {mi}")
+                src_obj = base_collection.all_objects.get(f"Component {mi}")
                 if src_obj is None:
                     continue
                 cp = src_obj.copy()
