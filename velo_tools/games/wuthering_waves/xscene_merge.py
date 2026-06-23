@@ -851,6 +851,20 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     }
 
 
+def _fold_for_routing(fold):
+    """Drop the bulky per-vertex ``corr`` table before serialization.
+
+    ``corr`` (base->IB per-vertex correspondence) is a build-time intermediate only: it is
+    consumed in-memory to vote ``vg_remap`` (``_vote_vg_remap``) and ``morph_id_map``
+    (``_vote_morph_id_map``), both of which run before this routing dict is built. The export
+    consumer never reads ``corr`` back, and its per-component coverage is already summarized in
+    ``selfcheck`` -- so persisting it only bloated the JSON (it was the dominant size term).
+    Everything else (comp_map / vg_remap / selfcheck / morph_id_map / morph_selfcheck) is kept."""
+    if not fold:
+        return fold
+    return {k: v for k, v in fold.items() if k != "corr"}
+
+
 def _build_routing(base, base_comps, info, splits, editable_ib_records=None, fold_data=None):
     base_meta = {}
     mp = base / "Metadata.json"
@@ -887,9 +901,10 @@ def _build_routing(base, base_comps, info, splits, editable_ib_records=None, fol
                 "source_object": (s["split_object"] if s else None),
                 "correspondence": "position_grid",
             },
-            # fold correspondence (foldable only): comp_map + base->IB per-vertex correspondence + VG remap + selfcheck.
-            # the consumer uses it to reproject morph / relabel blend / emit redirect sections; None for non-foldable.
-            "fold": (fold_data or {}).get(h),
+            # fold correspondence (foldable only): comp_map + VG remap + selfcheck + voted morph_id_map.
+            # the consumer uses these to reproject morph / relabel blend / emit redirect sections; None for non-foldable.
+            # The bulky per-vertex `corr` table is build-time only and stripped here (see _fold_for_routing).
+            "fold": _fold_for_routing((fold_data or {}).get(h)),
             "object_detected_var": f"$object_detected_{h}",
         })
 
