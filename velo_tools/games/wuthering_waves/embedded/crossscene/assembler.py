@@ -72,11 +72,9 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     slot binding); the root edit still wins as the copy source when present. texture_root=None keeps
     the legacy behavior (union of every per-IB referenced texture).
 
-    suppress_body_hashes: fold-local texture hashes copied into the merged root for historical
-    hash-style cross-scene exports. In slot-style, fold draws replay the base component slot maps, so
-    the body export's stock hash fallback for these fold-local copies is redundant and must not be
-    emitted as a second hash-style binding. Only mod 0 (body) is suppressed; own/editable sub-IBs can
-    still keep a real hash fallback for the same hash."""
+    suppress_body_hashes: hashes whose BODY stock hash fallback is known redundant (mapping
+    hash -> reason, or a legacy iterable treated as ``fold-local``). Only mod 0 (body) is
+    suppressed; own/editable sub-IBs can still keep a real hash fallback for the same hash."""
     write_textures = (not partial_export) and copy_textures
     write_final_ini = (not partial_export) and write_ini
     # Clean ONLY our own products (out is the user's mod folder now; never rmtree the whole thing).
@@ -111,7 +109,17 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                             # [TextureOverride_Texture_<hash>] each, gated by $object_detected.
     blindzone_mods = {}     # hash -> mod indexes that still need the hash-style fallback
     slot_hashes = set()     # hashes bound by ps-t slot -> per-IB resources, NO global hash override.
-    suppress_body_hashes = {h.lower() for h in (suppress_body_hashes or set())}
+    if isinstance(suppress_body_hashes, dict):
+        suppress_body_reasons = {
+            str(h).lower(): str(reason or "body")
+            for h, reason in suppress_body_hashes.items()
+        }
+    else:
+        suppress_body_reasons = {
+            str(h).lower(): "fold-local"
+            for h in (suppress_body_hashes or set())
+        }
+    suppress_body_hashes = set(suppress_body_reasons)
     suppressed_body = set()
     tex_hash_per_mod = []
     # MERGED skeleton: every IB emits an identical [TextureOverrideMarkBoneDataCB] (hash = shared cb4,
@@ -279,6 +287,14 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     # The only remaining texture-hash overrides are the blind-zone fallbacks; for a pure slot-style
     # mod this set is empty (= 0 texture-hash). They must match exactly what we emitted.
     tex_conserved = global_hashes == set(blindzone_shipped)
+    suppressed_body_reasons = {
+        hv: suppress_body_reasons.get(hv, "body")
+        for hv in sorted(suppressed_body)
+    }
+    suppressed_fold = sorted(
+        hv for hv, reason in suppressed_body_reasons.items()
+        if "fold-local" in reason.split("+")
+    )
     report = {
         "out": out, "sections": len(sections_set), "refs": len(refs),
         "dangling": dangling, "missing": missing,
@@ -287,7 +303,9 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
         "tex_shipped": len(shipped),
         "tex_slot": sorted(hv for hv in slot_hashes if hv in shipped),
         "tex_blindzone": blindzone_shipped,  # residual hash-style textures (empty == 0-texture-hash)
-        "tex_suppressed_fold": sorted(suppressed_body),
+        "tex_suppressed_body": sorted(suppressed_body),
+        "tex_suppressed_body_reasons": suppressed_body_reasons,
+        "tex_suppressed_fold": suppressed_fold,
         "texture_gate": allowed is not None,
         "tex_root_allowed": (len(allowed) if allowed is not None else None),
         "tex_gated_out": sorted(all_in - shipped),

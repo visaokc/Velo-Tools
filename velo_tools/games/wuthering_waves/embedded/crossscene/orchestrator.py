@@ -339,6 +339,52 @@ def _fold_redundant_hashes(merged_folder, routing, keep_count, eligible):
     return redundant - root_hashes
 
 
+def _root_non_body_hashes(merged_folder, keep_count):
+    """Root DDS hashes that belong only to merged non-body components (editable IBs, etc.)."""
+    root_path = Path(merged_folder) / "ShaderTextureUsage.json"
+    if not root_path.is_file():
+        return set()
+    try:
+        root_stu = json.loads(root_path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    body_hashes = set()
+    non_body_hashes = set()
+    component_sets = [root_stu]
+    component_sets.extend((entry.get("components") or {}) for entry in root_stu.get("extra_forms") or []
+                          if isinstance(entry, dict))
+    for components in component_sets:
+        for comp_name, comp_pairs in (components or {}).items():
+            cid = _component_id(comp_name)
+            if cid is None:
+                continue
+            hashes = set(_iter_usage_hashes({comp_name: comp_pairs}))
+            if cid < keep_count:
+                body_hashes.update(hashes)
+            else:
+                non_body_hashes.update(hashes)
+    return non_body_hashes - body_hashes
+
+
+def _add_suppression_reason(reasons, tex_hash, reason):
+    current = reasons.get(tex_hash)
+    if not current:
+        reasons[tex_hash] = reason
+        return
+    parts = set(current.split("+"))
+    parts.add(reason)
+    reasons[tex_hash] = "+".join(sorted(parts))
+
+
+def _body_hash_suppressions(merged_folder, routing, keep_count, eligible):
+    reasons = {}
+    for h in _fold_redundant_hashes(merged_folder, routing, keep_count, eligible):
+        _add_suppression_reason(reasons, h, "fold-local")
+    for h in _root_non_body_hashes(merged_folder, keep_count):
+        _add_suppression_reason(reasons, h, "non-body-root")
+    return reasons
+
+
 def _export_col(cfg, col, modout, name, src, eligible=_KEEP):
     Path(modout).mkdir(parents=True, exist_ok=True)
     cfg.object_source_folder = src
@@ -522,8 +568,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         keep_count = routing["base"]["component_count"]
         body_elig = (None if merged_eligible is None
                      else {c for c in merged_eligible if c < keep_count})
-        fold_suppressed_hashes = (_fold_redundant_hashes(merged_folder, routing, keep_count, body_elig)
-                                  if slot_style_on else set())
+        body_hash_suppressions = (_body_hash_suppressions(merged_folder, routing, keep_count, body_elig)
+                                  if slot_style_on else {})
         _export_body_with_trimmed_metadata(
             cfg, body_col, work, merged_folder, keep_count, routing, eligible=body_elig)
 
@@ -705,7 +751,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             write_ini=saved_gating["write_ini"],
             partial_export=saved_gating["partial_export"],
             copy_textures=saved_gating["copy_textures"],
-            suppress_body_hashes=fold_suppressed_hashes)
+            suppress_body_hashes=body_hash_suppressions)
         report["ib_count"] = len(mods)
         report["roles"] = ["body"] + [s["ib_hash"] for s in own_ibs] + eib_roles
         report["slot_style"] = slot_style_on
