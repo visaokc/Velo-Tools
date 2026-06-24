@@ -176,6 +176,169 @@ def _purge_collection(col):
 _KEEP = object()  # _export_col sentinel: leave the slot-style eligibility override untouched.
 
 
+def _component_id(name):
+    m = re.match(r'Component (\d+)', str(name))
+    return int(m.group(1)) if m else None
+
+
+def _iter_usage_hashes(components):
+    """Hashes referenced by a ShaderTextureUsage component map."""
+    for _comp, comp_pairs in (components or {}).items():
+        if not isinstance(comp_pairs, dict):
+            continue
+        for _vs, ps_map in comp_pairs.items():
+            if not isinstance(ps_map, dict):
+                continue
+            for _ps, pair_map in ps_map.items():
+                if not isinstance(pair_map, dict):
+                    continue
+                for _slot, rec in pair_map.items():
+                    if isinstance(rec, dict):
+                        h = rec.get("hash")
+                    else:
+                        h = rec
+                    if h:
+                        yield str(h).lower()
+
+
+def _merge_component_usage(dst, src):
+    """Merge STU component maps (Component -> vs -> ps -> slot)."""
+    for comp_name, comp_pairs in (src or {}).items():
+        comp_dst = dst.setdefault(comp_name, {})
+        if not isinstance(comp_pairs, dict) or not isinstance(comp_dst, dict):
+            dst[comp_name] = comp_pairs
+            continue
+        for vs_key, ps_map in comp_pairs.items():
+            vs_dst = comp_dst.setdefault(vs_key, {})
+            if not isinstance(ps_map, dict) or not isinstance(vs_dst, dict):
+                comp_dst[vs_key] = ps_map
+                continue
+            for ps_key, slot_map in ps_map.items():
+                ps_dst = vs_dst.setdefault(ps_key, {})
+                if isinstance(slot_map, dict) and isinstance(ps_dst, dict):
+                    ps_dst.update(slot_map)
+                else:
+                    vs_dst[ps_key] = slot_map
+
+
+def _remap_stu_components(components, comp_map, keep_count):
+    """Remap a scene-IB-local STU component map to merged base component ids."""
+    out = {}
+    comp_map = {int(k): int(v) for k, v in (comp_map or {}).items()}
+    for comp_name, comp_pairs in (components or {}).items():
+        local = _component_id(comp_name)
+        if local is None or local not in comp_map:
+            continue
+        base = comp_map[local]
+        if base < 0 or base >= keep_count:
+            continue
+        _merge_component_usage(out, {f"Component {base}": comp_pairs})
+    return out
+
+
+def _body_stu_for_export(root_stu, merged_folder, routing, keep_count):
+    """Body export STU: base components plus foldable scene-IB extra_forms remapped to base ids."""
+    trimmed = {}
+    for k, v in (root_stu or {}).items():
+        cid = _component_id(k)
+        if cid is not None:
+            if cid < keep_count:
+                trimmed[k] = v
+            continue
+        if k != "extra_forms":
+            trimmed[k] = v
+
+    extra_by_label = {}
+    for entry in (root_stu or {}).get("extra_forms") or []:
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("label") or entry.get("source") or f"form{len(extra_by_label) + 2}"
+        target = extra_by_label.setdefault(label, dict(entry, components={}))
+        _merge_component_usage(target["components"], {
+            k: v for k, v in (entry.get("components") or {}).items()
+            if (_component_id(k) is not None and _component_id(k) < keep_count)
+        })
+
+    for scene in routing.get("scene_ibs") or []:
+        fold = scene.get("fold") or {}
+        if not scene.get("foldable") or not fold.get("comp_map"):
+            continue
+        stu_path = Path(merged_folder) / scene.get("source_folder", "") / "ShaderTextureUsage.json"
+        if not stu_path.is_file():
+            continue
+        try:
+            scene_stu = json.loads(stu_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for entry in scene_stu.get("extra_forms") or []:
+            if not isinstance(entry, dict):
+                continue
+            remapped = _remap_stu_components(entry.get("components") or {},
+                                             fold.get("comp_map") or {}, keep_count)
+            if not remapped:
+                continue
+            label = entry.get("label") or entry.get("source") or f"form{len(extra_by_label) + 2}"
+            target = extra_by_label.setdefault(
+                label,
+                {
+                    "label": label,
+                    "source": entry.get("source"),
+                    "matched_by": entry.get("matched_by"),
+                    "vb0_hash": entry.get("vb0_hash"),
+                    "components": {},
+                })
+            _merge_component_usage(target["components"], remapped)
+
+    if extra_by_label:
+        trimmed["extra_forms"] = list(extra_by_label.values())
+    return trimmed
+
+
+def _fold_redundant_hashes(merged_folder, routing, keep_count, eligible):
+    """Fold-local texture hashes whose draws are replayed through eligible base slot maps."""
+    if eligible is not None and not eligible:
+        return set()
+    root_path = Path(merged_folder) / "ShaderTextureUsage.json"
+    root_hashes = set()
+    if root_path.is_file():
+        try:
+            root_stu = json.loads(root_path.read_text(encoding="utf-8"))
+            root_hashes = set(_iter_usage_hashes({
+                k: v for k, v in root_stu.items()
+                if (_component_id(k) is not None and _component_id(k) < keep_count)
+            }))
+        except Exception:
+            root_hashes = set()
+    redundant = set()
+    for scene in routing.get("scene_ibs") or []:
+        fold = scene.get("fold") or {}
+        if not scene.get("foldable") or not fold.get("comp_map"):
+            continue
+        comp_map = {int(k): int(v) for k, v in (fold.get("comp_map") or {}).items()}
+        stu_path = Path(merged_folder) / scene.get("source_folder", "") / "ShaderTextureUsage.json"
+        if not stu_path.is_file():
+            continue
+        try:
+            scene_stu = json.loads(stu_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        component_sets = [scene_stu]
+        component_sets.extend((entry.get("components") or {}) for entry in scene_stu.get("extra_forms") or []
+                              if isinstance(entry, dict))
+        for components in component_sets:
+            for comp_name, comp_pairs in (components or {}).items():
+                local = _component_id(comp_name)
+                if local is None or local not in comp_map:
+                    continue
+                base = comp_map[local]
+                if base < 0 or base >= keep_count:
+                    continue
+                if eligible is not None and base not in eligible:
+                    continue
+                redundant.update(_iter_usage_hashes({comp_name: comp_pairs}))
+    return redundant - root_hashes
+
+
 def _export_col(cfg, col, modout, name, src, eligible=_KEEP):
     Path(modout).mkdir(parents=True, exist_ok=True)
     cfg.object_source_folder = src
@@ -197,7 +360,8 @@ def _export_col(cfg, col, modout, name, src, eligible=_KEEP):
         slot_hook.clear_eligible_override()
 
 
-def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_count, eligible=_KEEP):
+def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_count,
+                                       routing, eligible=_KEEP):
     """Body export must see ONLY the body components [0, keep_count). The producer appends the editable
     form2 components (8-11) to Metadata.json AND ShaderTextureUsage.json for MERGED *import*; if the body
     export saw them it would emit spurious empty Component 8+ sections (COMPONENT) / inflate the unified
@@ -218,13 +382,8 @@ def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_
                 meta_p.write_text(json.dumps(m, indent=4, ensure_ascii=False), encoding="utf-8")
         if stu_full is not None:
             s = json.loads(stu_full)
-            trimmed = {}
-            for k, v in s.items():
-                mm = re.match(r'Component (\d+)', k)
-                if mm and int(mm.group(1)) >= keep_count:
-                    continue  # editable form2 (8-11) belong to their own sub-export
-                trimmed[k] = v
-            if len(trimmed) != len(s):
+            trimmed = _body_stu_for_export(s, merged_folder, routing, keep_count)
+            if trimmed != s:
                 stu_p.write_text(json.dumps(trimmed, indent=4, ensure_ascii=False), encoding="utf-8")
         _export_col(cfg, body_col, str(work / "sc"), "om_sc", str(merged_folder), eligible=eligible)
     finally:
@@ -362,8 +521,10 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         keep_count = routing["base"]["component_count"]
         body_elig = (None if merged_eligible is None
                      else {c for c in merged_eligible if c < keep_count})
+        fold_suppressed_hashes = (_fold_redundant_hashes(merged_folder, routing, keep_count, body_elig)
+                                  if slot_style_on else set())
         _export_body_with_trimmed_metadata(
-            cfg, body_col, work, merged_folder, keep_count, eligible=body_elig)
+            cfg, body_col, work, merged_folder, keep_count, routing, eligible=body_elig)
 
         # body = showcase shared buffer mod (base export copied verbatim into body); all foldable IBs fold into it.
         mods = [str(_copy_body(work))]
@@ -539,7 +700,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             str(out_folder), mods, texture_root=str(merged_folder),
             write_ini=saved_gating["write_ini"],
             partial_export=saved_gating["partial_export"],
-            copy_textures=saved_gating["copy_textures"])
+            copy_textures=saved_gating["copy_textures"],
+            suppress_body_hashes=fold_suppressed_hashes)
         report["ib_count"] = len(mods)
         report["roles"] = ["body"] + [s["ib_hash"] for s in own_ibs] + eib_roles
         report["slot_style"] = slot_style_on

@@ -296,6 +296,34 @@ def detect_object_hash(loaded_dumps: List[object]) -> List[ObjectCandidate]:
     return candidates
 
 
+def choose_cross_scene_object_hash(detected: List[ObjectCandidate], routing: dict):
+    """Pick the shared scene-IB object for cross-scene form-anchor search.
+
+    A merged SceneIB root has the showcase vb0 in Metadata.json, but an
+    alternate-form raw dump may not draw that showcase object. The anchor
+    finder must instead use the object that appears across the compared raw
+    dumps and is known to the cross-scene routing (for the current test case:
+    89d30421, not the root 8287b2f2).
+    """
+    scene_hashes = set()
+    for scene in (routing or {}).get("scene_ibs") or []:
+        for key in ("vb0_hash", "ib_hash"):
+            h = scene.get(key)
+            if h:
+                scene_hashes.add(str(h).lower())
+    for cand in detected or []:
+        if cand.vb0.lower() in scene_hashes:
+            return cand.vb0, (
+                f"cross-scene object: {cand.vb0}"
+                f" ({cand.components} components/{cand.draws} draws)")
+    if detected:
+        top = detected[0]
+        return top.vb0, (
+            f"auto-detected object: {top.vb0}"
+            f" ({top.components} components/{top.draws} draws)")
+    return "", ""
+
+
 def resolve_form_rows(rows: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     """Normalizes the anchor finder's extra-form dump rows (UI order):
     rows = [(dump_folder, form_label), ...]. Blank rows are skipped, blank

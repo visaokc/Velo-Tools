@@ -305,21 +305,36 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
                     raise ValueError(f"形态「{label}」dump：{exc}")
                 form_labels[offset] = label
 
-            # Character object: the user-set extraction folder (anywhere on
-            # disk) is the precise override; otherwise auto-detect from the
-            # RAW dumps alone - no dump is ever required to contain an
-            # extraction folder.
+            # Character object: ordinary single-IB exports can use Metadata.vb0_hash directly.
+            # Cross-scene merged roots cannot: root metadata points at the showcase object,
+            # while alternate-form raw dumps may share a routed scene IB instead.
             object_hash = ''
             detect_note = ''
+            all_loaded = [d for dumps in dumps_by_form.values()
+                          for d in dumps]
             if cfg.object_source_folder.strip():
-                meta_path = (resolve_path(cfg.object_source_folder)
-                             / 'Metadata.json')
-                if meta_path.is_file():
-                    with open(meta_path, encoding='utf-8') as f:
-                        object_hash = json.load(f).get('vb0_hash') or ''
+                source_folder = resolve_path(cfg.object_source_folder)
+                routing_path = source_folder / 'CrossSceneRouting.json'
+                if routing_path.is_file():
+                    detected = anchors.detect_object_hash(all_loaded)
+                    if not detected:
+                        raise ValueError(
+                            "dump 里找不到跨全部形态出现的蒙皮多组件对象——"
+                            "确认各 dump 抓帧时角色都在画面内（或在对象文件夹"
+                            "字段指定提取文件夹精确指定）")
+                    with open(routing_path, encoding='utf-8') as f:
+                        routing = json.load(f)
+                    object_hash, note = anchors.choose_cross_scene_object_hash(
+                        detected, routing)
+                    detect_note = (
+                        f"跨场景识别角色: {object_hash}"
+                        f"（候选 {len(detected)} 个）") if object_hash else note
+                else:
+                    meta_path = source_folder / 'Metadata.json'
+                    if meta_path.is_file():
+                        with open(meta_path, encoding='utf-8') as f:
+                            object_hash = json.load(f).get('vb0_hash') or ''
             if not object_hash:
-                all_loaded = [d for dumps in dumps_by_form.values()
-                              for d in dumps]
                 detected = anchors.detect_object_hash(all_loaded)
                 if not detected:
                     raise ValueError(

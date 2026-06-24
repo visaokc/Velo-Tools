@@ -353,6 +353,43 @@ def _merge_variant_records(dst_components, src_components):
     return variants_added, records_added, conflicts_marked
 
 
+def _upsert_extra_form(usage, components_usage, form_label, source,
+                       matched_by, vb0_hash):
+    """Insert or merge one extra-form entry inside ShaderTextureUsage.json."""
+    extra_forms = usage.get(constants.EXTRA_FORMS_KEY)
+    if not isinstance(extra_forms, list):
+        extra_forms = []
+
+    label = form_label.strip()
+    entry = {
+        'label': label or f'form{len(extra_forms) + 2}',
+        'source': source,
+        'matched_by': matched_by,
+        'vb0_hash': vb0_hash,
+        'components': components_usage,
+    }
+
+    replaced = False
+    variants_added = 0
+    for index, existing in enumerate(extra_forms):
+        if existing.get('source') == source:
+            entry['label'] = label or existing.get('label') or entry['label']
+            extra_forms[index] = entry
+            replaced = True
+            break
+        if label and existing.get('label') == label:
+            variants_added, _, _ = _merge_variant_records(
+                existing['components'], components_usage)
+            entry = existing
+            replaced = True
+            break
+    if not replaced:
+        extra_forms.append(entry)
+
+    usage[constants.EXTRA_FORMS_KEY] = extra_forms
+    return entry, replaced, variants_added
+
+
 def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
                     texture_filter: TextureFilter = None) -> dict:
     """Parses one extra-form RAW dump and merges it into ShaderTextureUsage.json.
@@ -388,30 +425,66 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
 
     mesh_objects, surviving = collect_mesh_objects(dump_path, texture_filter)
 
-    # Cross-scene merged root (hash-style): a multi-IB merged object has no single vb0 to match
-    # and no equal component count, so the normal per-object match/gate path does not apply. Just
-    # LIFT every merged IB's form textures into the root (deduped) -- hash-style emission is file-
-    # driven from the root (the body export's source), and the game binds whichever form's hashes
-    # are live, so both forms' overrides coexist with no conflict. The merged IBs = the scene_ibs/
-    # subfolders; filter the dump's objects to those vb0s so effects / other entities are excluded.
-    # No per-object match / component-count gate / extra_forms (those are slot-style, per-object;
-    # cross-scene is forced hash-style). Restores form2's same-vb0 clothing textures etc.
-    if (object_source_folder / 'CrossSceneRouting.json').is_file():
+    # Cross-scene merged root: still lift every routed form texture into the root for legacy
+    # hash-style compatibility, but preserve foldable scene-IB extra_forms locally. The export
+    # orchestrator remaps those local form records back onto body/base component ids for slot-style
+    # form switching.
+    routing_path = object_source_folder / 'CrossSceneRouting.json'
+    if routing_path.is_file():
+        with open(routing_path, encoding='utf-8') as f:
+            routing = json.load(f)
+        routes_by_ib = {str(s.get('ib_hash') or s.get('vb0_hash')).lower(): s
+                        for s in (routing.get('scene_ibs') or [])
+                        if s.get('ib_hash') or s.get('vb0_hash')}
         scene_dir = object_source_folder / 'scene_ibs'
         ib_hashes = ({p.name for p in scene_dir.iterdir() if p.is_dir()}
                      if scene_dir.is_dir() else set())
+        ib_hashes.update(routes_by_ib)
+        ib_hashes_lower = {h.lower() for h in ib_hashes}
         combined = {}
         lifted = []
+        fold_forms_written = []
+        fold_forms_missing = []
         for vb0, obj in mesh_objects.items():
-            if ib_hashes and vb0 not in ib_hashes:
+            key = vb0.lower()
+            if ib_hashes_lower and key not in ib_hashes_lower:
                 continue
-            _unused, src = _build_components_usage(obj, surviving.get(vb0), evidence)
+            components_usage, src = _build_components_usage(
+                obj, surviving.get(vb0), evidence)
             for tex_hash, entry in src.items():
                 combined.setdefault(tex_hash, entry)
             lifted.append(vb0)
+            route = routes_by_ib.get(key)
+            if not route or not route.get('foldable'):
+                continue
+            if not ((route.get('fold') or {}).get('comp_map')):
+                continue
+            usage_path = (object_source_folder
+                          / (route.get('source_folder') or '')
+                          / constants.BASE_USAGE_FILENAME)
+            if not usage_path.is_file():
+                fold_forms_missing.append(vb0)
+                continue
+            with open(usage_path, encoding='utf-8') as f:
+                usage = json.load(f)
+            entry, replaced, variants_added = _upsert_extra_form(
+                usage, components_usage, form_label, dump_path.name,
+                'vb0', route.get('vb0_hash') or vb0)
+            with open(usage_path, 'w', encoding='utf-8') as f:
+                f.write(json.dumps(usage, indent=4))
+            fold_forms_written.append({
+                'ib_hash': vb0,
+                'usage_file': str(usage_path),
+                'label': entry['label'],
+                'replaced': replaced,
+                'variants_added': variants_added,
+                'components': len(components_usage),
+            })
         copied = _copy_form_textures(object_source_folder, combined)
         return {'mode': 'cross_scene', 'lifted_ibs': sorted(lifted),
-                'textures_copied': copied, 'form_label': form_label.strip()}
+                'textures_copied': copied, 'form_label': form_label.strip(),
+                'fold_extra_forms': fold_forms_written,
+                'fold_extra_forms_missing': sorted(fold_forms_missing)}
 
     mesh_object, matched_by = _match_object(mesh_objects, vb0_hash, cb4_hash)
 

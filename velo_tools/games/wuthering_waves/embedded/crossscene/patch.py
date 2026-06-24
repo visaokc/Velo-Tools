@@ -95,6 +95,11 @@ def _make_patched(orig_execute):
                 msg += " | pruned %d texture(s) not at merge root" % len(gated)
                 print("[velo.xscene] merge-root texture allowlist pruned %d hash(es): %s"
                       % (len(gated), ", ".join(gated)))
+            suppressed = rep.get("tex_suppressed_fold") or []
+            if suppressed:
+                msg += " | suppressed %d fold-local hash duplicate(s)" % len(suppressed)
+                print("[velo.xscene] fold-local body hash fallback suppressed %d hash(es): %s"
+                      % (len(suppressed), ", ".join(suppressed)))
             if not rep.get("sound", True):
                 # The assembler self-check failed (dangling refs / missing files / texture or skeleton
                 # mismatch): the mod was written but may not work -- never report this as a clean success.
