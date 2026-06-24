@@ -19,6 +19,19 @@ Textures take one of two paths per IB:
 import os
 import re
 import shutil
+import importlib.util
+
+
+def _load_format_tags():
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                        "slot_textures", "format_tags.py")
+    spec = importlib.util.spec_from_file_location("_velo_wwmi_format_tags", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_format_tags = _load_format_tags()
 
 _RE_GLOBAL = re.compile(r'\$([A-Za-z]\w*)')
 _RE_RESCMD = re.compile(r'\b(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)\b')
@@ -271,7 +284,12 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                 f.write(f"if {hv_gate}\n    this = Resource_Texture_{hv}\nendif\n\n")
 
     # ---- self-check ----
-    text = open(os.path.join(out, "mod.ini"), encoding="utf-8").read()
+    ini_path = os.path.join(out, "mod.ini")
+    text = open(ini_path, encoding="utf-8").read()
+    text, format_stats = _format_tags.dedupe_format_tag_sections(text)
+    if format_stats.get("format_sections_removed"):
+        with open(ini_path, "w", encoding="utf-8") as f:
+            f.write(text)
     sections_set = set(re.findall(r'^\[([^\]]+)\]', text, re.M))
     refs = set(re.findall(r'(?:ref|run\s*=|this\s*=)\s+(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)', text))
     dangling = sorted(r for r in refs if r not in sections_set)
@@ -318,6 +336,10 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
         "textures_files": (len(os.listdir(textures_dir)) if os.path.isdir(textures_dir) else 0),
         "meshes_files": len(os.listdir(os.path.join(out, "Meshes"))),
         "ini_size": len(text), "gate": gate,
+        "format_sections_raw": format_stats["format_sections_raw"],
+        "format_sections_unique": format_stats["format_sections_unique"],
+        "format_sections_removed": format_stats["format_sections_removed"],
+        "format_sections_summary": format_stats["format_sections_summary"],
         "mark_bone_collapsed_from": mark_bone_count, "mark_bone_emitted": mark_bone_emitted,
         "mark_bone_mismatch": mark_bone_mismatch, "skeleton_ok": skeleton_ok,
         "sound": not dangling and not missing and tex_conserved and skeleton_ok,

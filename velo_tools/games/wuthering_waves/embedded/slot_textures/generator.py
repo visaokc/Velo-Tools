@@ -300,7 +300,8 @@ class SlotPlan:
     # surface new conflicts).
     live_fallback: Dict[str, str] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
-    stats: Dict[str, int] = field(default_factory=dict)
+    stats: Dict[str, object] = field(default_factory=dict)
+    format_diagnostics: Dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(eq=False)  # identity semantics: branches are mutated and filtered by id
@@ -1431,6 +1432,9 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'probes': len(probe_effects),
             'live_fallback': len(live_fallback),
             'format_sections': format_section_count,
+            'format_sections_raw': format_section_count,
+            'format_sections_unique': format_section_count,
+            'format_sections_removed': 0,
             'covered_textures': len(covered_resource_indices),
             'blind_zone_textures': len(blind_zone),
             'phantom_suppressed_textures': len(phantom_only_resource_indices),

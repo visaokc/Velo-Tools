@@ -102,6 +102,18 @@ def install():
                 _report(f'[SlotTextures] WARNING: texture {tex_hash} only appears in '
                         f'stale-inherited phantom pairs - stock hash section '
                         f'[{section}] suppressed')
+            if plan.format_diagnostics:
+                fmt = plan.format_diagnostics
+                _report(
+                    '[SlotTextures] Format tag sections: '
+                    f'raw={fmt.get("format_sections_raw", 0)}, '
+                    f'unique={fmt.get("format_sections_unique", 0)}, '
+                    f'removed={fmt.get("format_sections_removed", 0)} '
+                    '(single emitted format member kept; remaining copies are '
+                    'component/LOD/FoldHost range scope)')
+                _report('[SlotTextures] Format tag summary: ' + json.dumps(
+                    fmt.get('format_sections_summary', {}),
+                    sort_keys=True))
             _report(f'[SlotTextures] Slot-style texture layer applied: {plan.stats}')
         except generator.SlotStyleDegrade as e:
             _report(f'[SlotTextures] Falling back to hash-style textures: {e}')
