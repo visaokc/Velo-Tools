@@ -98,6 +98,10 @@ def install():
             for tex_hash, section in plan.blind_zone:
                 _report(f'[SlotTextures] WARNING: texture {tex_hash} not present in any '
                         f'form map - stock hash section [{section}] kept as fallback')
+            for tex_hash, section in plan.phantom_suppressed:
+                _report(f'[SlotTextures] WARNING: texture {tex_hash} only appears in '
+                        f'stale-inherited phantom pairs - stock hash section '
+                        f'[{section}] suppressed')
             _report(f'[SlotTextures] Slot-style texture layer applied: {plan.stats}')
         except generator.SlotStyleDegrade as e:
             _report(f'[SlotTextures] Falling back to hash-style textures: {e}')

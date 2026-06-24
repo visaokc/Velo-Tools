@@ -278,6 +278,8 @@ class SlotPlan:
     blind_zone: List[Tuple[str, str]]  # (texture hash, kept stock section name)
     multi_form: bool
     used_slots: List[int]
+    phantom_only_resource_indices: Set[int] = field(default_factory=set)
+    phantom_suppressed: List[Tuple[str, str]] = field(default_factory=list)
     # comp -> probe command list name, injected BEFORE the trigger anchor.
     probe_list_names: Dict[int, str] = field(default_factory=dict)
     # ini variables the transform must declare global in [Constants].
@@ -417,6 +419,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
     # signature/conflict/latch/M1 evidence.
     service_seats: Set[Tuple[int, int, str, int]] = set()  # (form, comp, ps, slot)
     phantom_pairs = 0
+    phantom_hashes: Set[str] = set()
     if freshness is not None and any(freshness):
         variant_canon: Dict[str, str] = {}
         for canon, info in texture_info.items():
@@ -439,6 +442,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                         # Phantom pair: every evidenced seat is stale-
                         # inherited - the pair is another draw's leftover
                         # state, not this component's material.
+                        phantom_hashes.update(h for h in pair_map.values()
+                                              if h is not None)
                         del comp_pairs[ps]
                         phantom_pairs += 1
                         warnings.append(
@@ -595,9 +600,15 @@ def build_plan(forms: List[Tuple[str, FormData]],
                         seen_hashes.add(h)
     covered_resource_indices: Set[int] = set()
     blind_zone: List[Tuple[str, str]] = []
+    phantom_only_resource_indices: Set[int] = set()
+    phantom_suppressed: List[Tuple[str, str]] = []
     for index, (h, _res) in enumerate(textures):
         if h in seen_hashes:
             covered_resource_indices.add(index)
+        elif h in phantom_hashes:
+            section = f'TextureOverrideTexture{index}'
+            phantom_only_resource_indices.add(index)
+            phantom_suppressed.append((h, section))
         else:
             blind_zone.append((h, f'TextureOverrideTexture{index}'))
     if not covered_resource_indices:
@@ -1398,6 +1409,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
         component_list_names=component_list_names,
         covered_resource_indices=covered_resource_indices,
         blind_zone=blind_zone,
+        phantom_only_resource_indices=phantom_only_resource_indices,
+        phantom_suppressed=phantom_suppressed,
         multi_form=multi_form,
         used_slots=sorted(used_slots),
         probe_list_names=probe_list_names,
@@ -1420,6 +1433,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'format_sections': format_section_count,
             'covered_textures': len(covered_resource_indices),
             'blind_zone_textures': len(blind_zone),
+            'phantom_suppressed_textures': len(phantom_only_resource_indices),
             'phantom_pairs': phantom_pairs,
             'service_slots': len(service_seats),
             'suppressed_latches': suppressed_latches,

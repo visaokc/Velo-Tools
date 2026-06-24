@@ -429,7 +429,8 @@ def _base_meshes(cfg, collection):
             and not (cfg.ignore_hidden_objects and object_is_hidden(o))]
 
 
-def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_folder, hole=True, workdir=None):
+def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_folder,
+                          hole=True, workdir=None, hole_frac=35):
     """Main entry: derive + merge into a single cross-scene mod. Returns the assembler's self-check report.
     base_collection: the imported (and possibly edited) merged base collection (Component 0-7 + 5.001).
     merged_folder: the merged folder produced by the producer (contains CrossSceneRouting.json + scene_ibs/)."""
@@ -509,7 +510,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         base_by_name = {o.name: o for o in base_meshes}
         if hole:
             for o in base_meshes:
-                _pos_hole(o)
+                _pos_hole(o, frac=hole_frac)
         # Always export the body from a flat temp collection (identical whether or not there are
         # editable IBs to exclude), so the body path no longer depends on ignore_nested_collections.
         body_col = bpy.data.collections.new("xs_body")
@@ -579,7 +580,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                                                     sp["split_object"], tag)
                     _translate_host_vgs(cp, sp, tag)
                     if hole:
-                        _pos_hole(cp)
+                        _pos_hole(cp, frac=hole_frac)
                     _export_col(cfg, own_col, str(work / tag), "om_" + tag, src, eligible=own_elig)
                     # Annotate the own-buffer draw with the split's real (Blender) name (e.g.
                     # Component 5.001) instead of the export-local 'Component 0.001' artifact.
@@ -606,7 +607,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 col = _import_one(cfg, src, tag)
                 if hole:
                     for o in [o for o in col.objects if o.type == 'MESH']:
-                        _pos_hole(o)
+                        _pos_hole(o, frac=hole_frac)
                 _export_col(cfg, col, str(work / tag), "om_" + tag, src, eligible=own_elig)
                 _purge_collection(col)
             mods.append(str(work / tag))
@@ -624,7 +625,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             col = _import_one(cfg, src, s["ib_hash"])
             if hole:
                 for o in [o for o in col.objects if o.type == 'MESH']:
-                    _pos_hole(o)
+                    _pos_hole(o, frac=hole_frac)
             tag = s["ib_hash"]
             # Foldable host: its slot layer is discarded (fold replays the BASE maps onto the dungeon
             # draw); export full slot harmlessly (eligible=None) -> never reads the merged-numbered rules.
@@ -672,6 +673,9 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     for vg in cp.vertex_groups:
                         if vg.name.lstrip("-").isdigit():
                             vg.name = str(int(vg.name) - base_off)
+            if hole:
+                for cp in temp_objs:
+                    _pos_hole(cp, frac=hole_frac)
             eib_src = str(merged_folder / rec["source_folder"])
             eib_elig = (None if merged_eligible is None
                         else {li for li, mi in zip(rec["local_components"], rec["merged_components"])

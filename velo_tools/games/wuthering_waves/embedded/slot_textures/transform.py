@@ -7,8 +7,9 @@
 # and future templates are all covered without forking any of them:
 #
 #   1. [TextureOverrideTexture{i}] hash sections whose texture is covered by
-#      the slot maps are removed ([ResourceTexture{i}] filename sections stay;
-#      blind-zone textures keep their stock hash section as a fallback).
+#      the slot maps, or only came from stale-inherited phantom pairs, are
+#      removed ([ResourceTexture{i}] filename sections stay; blind-zone
+#      textures keep their stock hash section as a fallback).
 #      The per-slot `CheckTextureOverride = ps-tN` trigger lines always stay:
 #      v3 conditions read the filter_index of bound slots, which is exactly
 #      what those checks resolve.
@@ -89,8 +90,9 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
     if not spans:
         raise SlotStyleDegrade('rendered ini has no sections')
 
-    drop_sections = {f'textureoverridetexture{i}'
-                     for i in plan.covered_resource_indices}
+    drop_indices = (set(plan.covered_resource_indices)
+                    | set(getattr(plan, 'phantom_only_resource_indices', set())))
+    drop_sections = {f'textureoverridetexture{i}' for i in drop_indices}
 
     deleted: Set[int] = set()
     # after-insertions keyed by line index -> list of new lines, before- likewise.
