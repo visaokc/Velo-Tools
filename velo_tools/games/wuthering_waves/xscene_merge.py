@@ -26,7 +26,7 @@ from ._wwmi_core.migoto_io.data_model.byte_buffer import (
     MigotoFormat, NumpyBuffer, Semantic, AbstractSemantic,
 )
 from .embedded.lod import cross_scene as lod_cross_scene
-from .xscene_textures import copy_textures_remapped, remap_editable_stu
+from .xscene_textures import copy_textures_remapped, prune_cross_scene_root_textures, remap_editable_stu
 
 GRID = 0.001
 TOL = 0.0015
@@ -826,6 +826,11 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         if lod_entries_merged:
             meta_path.write_text(json.dumps(merged_meta, indent=4, ensure_ascii=False))
 
+    texture_prune = prune_cross_scene_root_textures(out, routing)
+    if texture_prune.get("root_textures_pruned"):
+        print("[velo.xscene] pruned redundant merge-root texture hash(es): %s"
+              % ", ".join(texture_prune["root_textures_pruned"]))
+
     # Foolproof: if a fold(dungeon) IB's overlap ratio with the base mesh is too low (barely the same mesh) -> likely
     # an independent morph (e.g. another form's face); mis-setting it as Fold would fold it into the base buffer and break it.
     # Overlap ratio = analyze's matched/total (measured: normal fold parts=1.0, form2≈0.05). Shapekey hashes can't tell them
@@ -844,6 +849,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         "splits": splits, "scene_ibs": [s["hash"] for s in dungeon_specs],
         "editable_ibs": editable_ib_records, "warnings": warnings,
         "lod_entries_merged": lod_entries_merged,
+        **texture_prune,
         "base_textures": base_tex, "analyze": [
             {k: (sorted(v) if isinstance(v, set) else v) for k, v in m.items() if k != "member_in_comp"}
             for m in info

@@ -95,9 +95,13 @@ class VTWW_OT_xscene_merge(bpy.types.Operator):
         # Sanity hints: producer detected IBs that "look like an independent form but were not set to Editable" -> emit one WARNING each.
         for w in rep.get("warnings", []):
             self.report({'WARNING'}, w)
-        self.report({'INFO'}, "合并完成 → %s | components=%d splits=%d fold=%d editable=%d" % (
+        pruned = rep.get("root_textures_pruned") or []
+        msg = "合并完成 → %s | components=%d splits=%d fold=%d editable=%d" % (
             out, rep.get("base_components", 0), len(rep.get("splits", [])),
-            len(specs), len(editable)))
+            len(specs), len(editable))
+        if pruned:
+            msg += " | pruned %d redundant root texture(s)" % len(pruned)
+        self.report({'INFO'}, msg)
         return {'FINISHED'}
 
 

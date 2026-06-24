@@ -22,12 +22,14 @@ import shutil
 
 _RE_GLOBAL = re.compile(r'\$([A-Za-z]\w*)')
 _RE_RESCMD = re.compile(r'\b(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)\b')
-_RE_RESTEX = re.compile(r'ResourceTexture\d+$')
-_RE_OVRTEX = re.compile(r'TextureOverrideTexture\d+$')
+_RE_RESTEX = re.compile(r'ResourceTexture\d+(?:_ib\d+)*$')
+_RE_OVRTEX = re.compile(r'TextureOverrideTexture\d+(?:_ib\d+)*$')
 _RE_TEXHASH = re.compile(r't=([0-9a-fA-F]+)')
 # Slot-style binds: `ps-t{n} = ref ResourceTexture{i}` (the trailing \b keeps ResourceTextureBackupT*
-# -- the per-slot backup resources -- out; those are namespaced via the generic Resource* path).
-_RE_PST_REF = re.compile(r'ps-t\d+\s*=\s*ref\s+(ResourceTexture\d+)\b')
+# -- the per-slot backup resources -- out; suffixes cover fold-merged resources that are already
+# namespaced once before the final assembler pass).
+_RE_PST_REF = re.compile(r'ps-t\d+\s*=\s*ref\s+(ResourceTexture\d+(?:_ib\d+)*)\b')
+_RE_TEXTURE_REF = re.compile(r'\s*this\s*=\s*(ResourceTexture\d+(?:_ib\d+)*)\b', re.I)
 
 
 def _ns_line(line, k):
@@ -155,7 +157,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                     mm = re.match(r'\s*hash\s*=\s*([0-9a-fA-F]+)', l, re.I)
                     if mm:
                         hv = mm.group(1).lower()
-                    mm = re.match(r'\s*this\s*=\s*(ResourceTexture\d+)', l, re.I)
+                    mm = _RE_TEXTURE_REF.match(l)
                     if mm:
                         tgt = mm.group(1)
                 if hv and tgt:
