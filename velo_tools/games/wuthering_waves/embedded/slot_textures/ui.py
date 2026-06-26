@@ -4,10 +4,10 @@
 #   - VTWW_Settings gains `velo_slot_style_textures` (annotation injection,
 #     EFMI-style; restored on unregister) shown in a "Velo 兼容选项" box
 #     appended to the stock Export Mod menu (method wrap, original restored).
-#   - A standalone sub-panel in EXTRACT_FRAME_DATA mode merges extra-form RAW
-#     frame dumps into ShaderTextureUsage.json's "extra_forms" key and copies
-#     the form's textures into the object folder (multi-form characters need
-#     one dump per form; see ADR 0006/0007).
+#   - A standalone helper sub-panel merges extra-form RAW frame dumps into
+#     ShaderTextureUsage.json's "extra_forms" key and copies the form's
+#     textures into the object folder (multi-form characters need one dump per
+#     form; see ADR 0006/0007).
 
 import traceback
 
@@ -469,16 +469,15 @@ class VELO_PT_wwmi_slot_forms(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        # Same gating as the LOD extraction panel: WWMI game tab, extraction
-        # mode (reads as the next step of the extraction workflow). The
-        # anchor finder lives on the EXPORT page's Velo compatibility box.
+        # Same gate as the other velo-owned WWMI helper panels. The anchor
+        # finder lives on the EXPORT page's Velo compatibility box.
         vt = getattr(context.scene, "velo_tools", None)
         if (vt is None
                 or getattr(vt, "active_tab", "") != 'GAME'
                 or getattr(vt, "active_game", "") != 'WUTHERING'):
             return False
         wwmi_cfg = getattr(context.scene, "VTWW_settings", None)
-        return wwmi_cfg is not None and wwmi_cfg.tool_mode == 'EXTRACT_FRAME_DATA'
+        return wwmi_cfg is not None
 
     def draw(self, context):
         layout = self.layout

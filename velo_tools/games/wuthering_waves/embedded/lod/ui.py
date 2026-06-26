@@ -1,10 +1,9 @@
 # "Extract LOD Data" UI for WWMI (velo-owned, registered like crossscene/ui.py;
 # nothing added to _wwmi_core's auto_load or tool_mode enum).
 #
-# The panel shows up only while the WWMI section is in the
-# "Extract Objects From Dump" mode, so it reads as the follow-up step of the
-# extraction workflow (per user decision: standalone sub-panel, no extra
-# tool_mode switch). Settings mirror EFMI's Extract LOD Data panel.
+# The panel is shown whenever the Velo Game tab is active for WWMI, matching
+# the other velo-owned WWMI helper panels. Settings mirror EFMI's Extract LOD
+# Data panel.
 
 import traceback
 
@@ -191,15 +190,15 @@ class VELO_PT_wwmi_lod(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        # Shown on the Game tab with WWMI active, only while the WWMI section is in
-        # "Extract Objects From Dump" mode (reads as the next step of that workflow).
+        # Shown on the Game tab with WWMI active; independent of the stock WWMI
+        # tool mode so helper panels stay available across workflows.
         vt = getattr(context.scene, "velo_tools", None)
         if (vt is None
                 or getattr(vt, "active_tab", "") != 'GAME'
                 or getattr(vt, "active_game", "") != 'WUTHERING'):
             return False
         wwmi_cfg = getattr(context.scene, "VTWW_settings", None)
-        return wwmi_cfg is not None and wwmi_cfg.tool_mode == 'EXTRACT_FRAME_DATA'
+        return wwmi_cfg is not None
 
     def draw(self, context):
         layout = self.layout
