@@ -95,7 +95,12 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
             block = _section(text, header)
             body_draws = _body_draw_entries(text, bc)
             if not body_draws:
-                if block and "drawindexed" in block:
+                if not block:
+                    errors.append("%s missing empty skip for excluded base Component %d" % (header, bc))
+                    continue
+                if "handling = skip" not in block:
+                    errors.append("%s does not skip excluded base Component %d" % (header, bc))
+                if "drawindexed" in block:
                     errors.append("%s draws even though base Component %d has no draw" % (header, bc))
                 continue
             if not block:

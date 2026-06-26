@@ -549,6 +549,33 @@ def _build_morph_sections(face_text, tag):
     return "".join(s)
 
 
+def _build_empty_foldhost(fc, tag, fh, mfi, mic, reason):
+    lines = [
+        "[TextureOverride_FoldHost_%s_C%d]" % (tag, fc),
+        "hash = %s" % fh,
+        "match_first_index = %d" % mfi,
+        "match_index_count = %d" % mic,
+        "$object_detected = 1",
+        "if $mod_enabled",
+        "    handling = skip",
+        "    ; Draw skipped: %s" % reason,
+        "endif",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def emit_empty_fold_sections(body_text, fold_entry, face_match, tag, comp_map, reason):
+    """Append FoldHost skip-only sections for scene draws whose mapped base component is excluded."""
+    if not comp_map:
+        return body_text
+    fh = fold_entry["ib_hash"]
+    out = ["\n; ==== fold %s (%s) skipped excluded base buffer ranges ====\n" % (tag, fh)]
+    for fc in sorted(comp_map):
+        mfi, mic = face_match[fc]
+        out.append(_build_empty_foldhost(fc, tag, fh, mfi, mic, reason))
+    return body_text + "".join(out)
+
+
 def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match, batch_counts, tag,
                        has_morph=True, comp_map=None, draw_excludes=None):
     """Inject the ini sections needed for folding, return the modified body_text:
@@ -662,18 +689,16 @@ def apply_fold(work, fold_entry, tag, morph_ref=None, draw_excludes=None):
     is_merged = "ResourceMergedSkeleton" in body_text
     body_plan = parse_draw_plan(body_text)
     bd, fd, fm = parse_draws(body_text), parse_draws(face_text), parse_match(face_text)
-    comp_map = {int(k): v for k, v in fold_entry["fold"]["comp_map"].items()}
+    comp_map_all = {int(k): v for k, v in fold_entry["fold"]["comp_map"].items()}
     # A fold target whose base component was excluded from the body export (Ignore Hidden Objects /
-    # Ignore Nested Collections, or the object deleted) has no draw range to redirect onto -> drop it,
-    # so that dungeon piece simply isn't folded (stays empty), matching "excluded component = empty
-    # draw". If every target is gone, skip the whole fold piece. Returns the excluded base comps.
-    excluded = sorted({bc for bc in comp_map.values() if not bd.get(bc)})
-    comp_map = {fc: bc for fc, bc in comp_map.items() if bd.get(bc)}
-    if not comp_map:
-        return excluded
+    # Ignore Nested Collections, or the object deleted) still needs to match and skip the dungeon
+    # native draw. Otherwise the game's original component remains visible under the modded body.
+    excluded_map = {fc: bc for fc, bc in comp_map_all.items() if not bd.get(bc)}
+    excluded = sorted(set(excluded_map.values()))
+    comp_map = {fc: bc for fc, bc in comp_map_all.items() if bd.get(bc)}
     vg_remap = {} if is_merged else fold_entry["fold"].get("vg_remap", {})
     has_morph = (face / "Meshes" / "ShapeKeyOffset.buf").exists()
-    if has_morph:
+    if has_morph and comp_map:
         body_segs = {bc: bd[bc][0] for bc in comp_map.values()}
         seg_comp = [(comp_map[fc], fc) for fc in sorted(comp_map)]
         face_draws = {fc: fd[fc][0] for fc in comp_map}
@@ -687,8 +712,14 @@ def apply_fold(work, fold_entry, tag, morph_ref=None, draw_excludes=None):
     for k, table in vg_remap.items():
         if bd.get(int(k)):
             apply_blend_remap(body / "Meshes", table, bd[int(k)][0], "c%dremap" % int(k))
-    new_body = emit_fold_sections(body_text, face_text, fold_entry, body_plan, fm, batch_counts, tag,
-                                  has_morph=has_morph, comp_map=comp_map,
-                                  draw_excludes=draw_excludes)
+    if comp_map:
+        new_body = emit_fold_sections(body_text, face_text, fold_entry, body_plan, fm, batch_counts, tag,
+                                      has_morph=has_morph, comp_map=comp_map,
+                                      draw_excludes=draw_excludes)
+    else:
+        new_body = body_text
+    new_body = emit_empty_fold_sections(
+        new_body, fold_entry, fm, tag, excluded_map,
+        "mapped base component hidden/excluded from body export")
     (body / "mod.ini").write_text(new_body, encoding="utf-8")
     return excluded
