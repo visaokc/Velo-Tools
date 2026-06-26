@@ -1300,7 +1300,121 @@ def _select_spatial_fallback_donors(obj, target_group, target_mask, candidate_gr
     return [obj.vertex_groups[index] for _bucket, _side, _mean_distance, _center_distance, _neg_total, index in candidates[:count]]
 
 
-def select_auto_donors(obj, target_group, count, *, exclude_group_names=None, preferred_names=None, strict_preferred=False):
+def _weights_center_world(obj, weights, np, *, threshold=0.00001):
+    if weights is None or len(weights) != len(obj.data.vertices):
+        return None
+    indices = np.flatnonzero(weights > threshold)
+    if len(indices) == 0:
+        return None
+    total = 0.0
+    center = Vector((0.0, 0.0, 0.0))
+    for index in indices:
+        weight = float(weights[int(index)])
+        center += (obj.matrix_world @ obj.data.vertices[int(index)].co) * weight
+        total += weight
+    if total <= threshold:
+        return None
+    return center / total
+
+
+def infer_donor_side(obj, target_group=None, *, focus_weights=None, candidate_groups=None):
+    if obj is None or getattr(obj, "type", None) != 'MESH':
+        return ""
+    side_from_name = _name_side_suffix(getattr(target_group, "name", ""))
+    ok, _error = _rwt.ensure_available()
+    np = _rwt.np_module() if ok else None
+    reference_center = _weights_center_world(obj, focus_weights, np) if np is not None else None
+    if reference_center is None and target_group is not None and getattr(target_group, "index", -1) >= 0:
+        reference_center, _normal = group_weighted_centroid_world(obj, target_group.name)
+    if reference_center is None:
+        return side_from_name
+
+    groups = list(candidate_groups) if candidate_groups is not None else list(getattr(obj, "vertex_groups", ()))
+    side_centers = {"L": [], "R": []}
+    for group in groups:
+        side = _name_side_suffix(group.name)
+        if side not in side_centers:
+            continue
+        center, _normal = group_weighted_centroid_world(obj, group.name)
+        if center is not None:
+            side_centers[side].append(center)
+    if side_centers["L"] and side_centers["R"]:
+        means = {}
+        for side, centers in side_centers.items():
+            total = Vector((0.0, 0.0, 0.0))
+            for center in centers:
+                total += center
+            means[side] = total / len(centers)
+        distances = {side: float((reference_center - center).length) for side, center in means.items()}
+        if abs(distances["L"] - distances["R"]) > 1e-6:
+            return "L" if distances["L"] < distances["R"] else "R"
+    return side_from_name
+
+
+def source_group_target_focus_weights(context, settings, source_group_name, *, threshold=0.00001):
+    ok, error = _rwt.ensure_available()
+    if not ok:
+        raise RuntimeError(f"供体来源覆盖范围不可用: {error}")
+    source = getattr(settings, "source_object", None)
+    target = getattr(settings, "target_object", None)
+    if source is None or target is None:
+        return None
+    depsgraph = context.evaluated_depsgraph_get()
+    source_eval = source.evaluated_get(depsgraph) if getattr(settings, "use_deformed_source", True) else source
+    target_eval = target.evaluated_get(depsgraph) if getattr(settings, "use_deformed_target", True) else target
+    source_verts, source_faces, source_normals = _rwt.get_obj_arrs_world(source_eval)
+    target_verts, target_faces, target_normals = _rwt.get_obj_arrs_world(target_eval)
+    if len(target_verts) != len(target.data.vertices) or len(source_faces) == 0 or len(target_faces) == 0:
+        return None
+    source_weights = _rwt.get_group_arr(source_eval, source_group_name)
+    matched, weights = _rwt.find_matches_closest_surface(
+        source_verts,
+        source_faces,
+        source_normals,
+        target_verts,
+        target_normals,
+        source_weights,
+        float(getattr(settings, "robust_max_distance", 0.05)) ** 2,
+        _rwt.degrees(float(getattr(settings, "robust_normal_angle", 1.0471975511965976))),
+        bool(getattr(settings, "robust_flip_normals", True)),
+    )
+    np = _rwt.np_module()
+    flat_weights = _weight_values(weights)
+    focus_weights = np.zeros(len(target.data.vertices), dtype=float)
+    mask = (matched == True) & (flat_weights > threshold)
+    if int(np.count_nonzero(mask)) <= 0:
+        return None
+    focus_weights[mask] = flat_weights[mask]
+    return focus_weights
+
+
+def _side_filtered_groups(groups, preferred_side, count):
+    if preferred_side not in {"L", "R"}:
+        return list(groups)
+    matching = [group for group in groups if _name_side_suffix(group.name) == preferred_side]
+    allow_unsided = len(matching) < count
+    result = []
+    for group in groups:
+        side = _name_side_suffix(group.name)
+        if side and side != preferred_side:
+            continue
+        if not side and not allow_unsided:
+            continue
+        result.append(group)
+    return result
+
+
+def select_auto_donors(
+    obj,
+    target_group,
+    count,
+    *,
+    exclude_group_names=None,
+    preferred_names=None,
+    strict_preferred=False,
+    focus_weights=None,
+    preferred_side=None,
+):
     ok, error = _rwt.ensure_available()
     if not ok:
         raise RuntimeError(f"供体选择不可用: {error}")
@@ -1309,6 +1423,20 @@ def select_auto_donors(obj, target_group, count, *, exclude_group_names=None, pr
     if count == 0:
         return []
     exclude_group_names = {_clean_name(name) for name in (exclude_group_names or ()) if _clean_name(name)}
+    raw_candidate_groups = []
+    for vg in obj.vertex_groups:
+        if vg.index == target_group.index:
+            continue
+        if vg.lock_weight:
+            continue
+        if _clean_name(vg.name) in exclude_group_names:
+            continue
+        if is_special_vg_name(vg.name):
+            continue
+        raw_candidate_groups.append(vg)
+    if preferred_side not in {"L", "R"}:
+        preferred_side = _name_side_suffix(getattr(target_group, "name", ""))
+    candidate_groups = _side_filtered_groups(raw_candidate_groups, preferred_side, count)
     preferred = []
     seen_preferred = set()
     for name in preferred_names or ():
@@ -1320,6 +1448,8 @@ def select_auto_donors(obj, target_group, count, *, exclude_group_names=None, pr
             continue
         if group.lock_weight or is_special_vg_name(group.name):
             continue
+        if group not in candidate_groups:
+            continue
         if count_group_weights(obj, group) <= 0:
             continue
         preferred.append(group)
@@ -1328,21 +1458,13 @@ def select_auto_donors(obj, target_group, count, *, exclude_group_names=None, pr
             break
     if preferred and strict_preferred:
         return preferred
-    target_weights = read_group_weights(obj, target_group)
+    target_weights = focus_weights if focus_weights is not None else read_group_weights(obj, target_group)
+    target_weights = np.asarray(target_weights, dtype=float).reshape(-1)
+    if len(target_weights) != len(obj.data.vertices):
+        return preferred
     target_mask = target_weights > 0.00001
     if int(np.count_nonzero(target_mask)) <= 0:
         return preferred
-    candidate_groups = []
-    for vg in obj.vertex_groups:
-        if vg.index == target_group.index:
-            continue
-        if vg.lock_weight:
-            continue
-        if _clean_name(vg.name) in exclude_group_names:
-            continue
-        if is_special_vg_name(vg.name):
-            continue
-        candidate_groups.append(vg)
     if not candidate_groups:
         return preferred
     candidates = []
@@ -1373,13 +1495,14 @@ def select_auto_donors(obj, target_group, count, *, exclude_group_names=None, pr
             # Prefer donors that share real weighted mass with the target group.
             # Raw covered-vertex count can otherwise bias the result toward large,
             # unrelated rigid groups that merely blanket the same region.
-            candidates.append((overlap, focus_ratio, focus_sum, shared_vertices, -total, vg.index))
-    candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4]), reverse=True)
+            side_score = 1 if preferred_side in {"L", "R"} and _name_side_suffix(vg.name) == preferred_side else 0
+            candidates.append((side_score, overlap, focus_ratio, focus_sum, shared_vertices, -total, vg.index))
+    candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5]), reverse=True)
     selected_indices = [group.index for group in preferred]
     remaining_count = max(0, count - len(selected_indices))
     selected_indices.extend(
         index
-        for _overlap, _focus_ratio, _focus_sum, _shared, _neg_total, index in candidates
+        for _side, _overlap, _focus_ratio, _focus_sum, _shared, _neg_total, index in candidates
         if index not in selected_indices
     )
     selected_indices = selected_indices[:count]

@@ -130,15 +130,12 @@ def preview_donor_names(settings, context):
         if not target_name:
             return []
         target_group = target.vertex_groups.get(target_name)
+        try:
+            focus_weights = _algo.source_group_target_focus_weights(context, settings, source_name)
+        except Exception:
+            focus_weights = None
         if target_group is None:
             target_group = _PreviewTargetGroup(target_name)
-            return _algo.semantic_auto_donor_names(
-                context,
-                settings,
-                source_name,
-                target_group,
-                count=donor_count_value(settings),
-            )
         semantic_names = _algo.semantic_auto_donor_names(
             context,
             settings,
@@ -146,12 +143,22 @@ def preview_donor_names(settings, context):
             target_group,
             count=donor_count_value(settings),
         )
+        semantic_groups = [target.vertex_groups.get(name) for name in semantic_names]
+        semantic_groups = [group for group in semantic_groups if group is not None]
+        preferred_side = _algo.infer_donor_side(
+            target,
+            target_group,
+            focus_weights=focus_weights,
+            candidate_groups=semantic_groups,
+        )
         donors = _algo.select_auto_donors(
             target,
             target_group,
             donor_count_value(settings),
             preferred_names=semantic_names,
             strict_preferred=False,
+            focus_weights=focus_weights,
+            preferred_side=preferred_side,
         )
         return [vg.name for vg in donors]
     except Exception:

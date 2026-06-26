@@ -573,12 +573,23 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                             target_group,
                             count=donor_count,
                         )
+                        focus_weights = _algo.read_group_weights(target, target_group)
+                        semantic_groups = [target.vertex_groups.get(name) for name in preferred_donors]
+                        semantic_groups = [group for group in semantic_groups if group is not None]
+                        preferred_side = _algo.infer_donor_side(
+                            target,
+                            target_group,
+                            focus_weights=focus_weights,
+                            candidate_groups=semantic_groups,
+                        )
                         donors = _algo.select_auto_donors(
                             target,
                             target_group,
                             donor_count,
                             preferred_names=preferred_donors,
                             strict_preferred=False,
+                            focus_weights=focus_weights,
+                            preferred_side=preferred_side,
                         )
                     report.donors = [vg.name for vg in donors]
                     if donors:
