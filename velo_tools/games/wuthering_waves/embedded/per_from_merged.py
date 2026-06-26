@@ -5,6 +5,8 @@ weighting) and export a PER-COMPONENT mod -- sidestepping the MERGED runtime's d
 (*mod pauses while more than one of the same object is on screen*). On export the unified VG names are
 translated back to each component's local 0-based numbering via the inverse of that component's
 ``vg_map`` (from ``Metadata.json``); a stock COMPONENT export then runs on temp copies.
+If a temp copy still carries MMD vertex-group names, the current Velo MMD profile is applied first
+so the local remap always sees unified numeric names.
 
 Mirrors the EFMI ``_translate_global_vg_names_to_local`` pattern, but lives entirely in the velo driver
 layer: ``VTWW_Export.execute`` is monkey-patched, the remap runs on temporary duplicates, and the core
@@ -114,6 +116,26 @@ def _remap_object(obj, vg_map):
     return drop_with_weight
 
 
+def _preprocess_mmd_vertex_groups(obj, profile, preexport_module=None):
+    """Apply Velo's MMD->unified pre-export pass to one temp copy."""
+    if profile is None:
+        return {}
+    if preexport_module is None:
+        from ....core.export import preexport as preexport_module
+    return preexport_module.apply_mmd_pre_export(
+        obj,
+        profile,
+        drop_special=True,
+        drop_empty=True,
+        rename_to_unified=True,
+    )
+
+
+def _prepare_object_for_component_export(obj, vg_map, profile, preexport_module=None):
+    _preprocess_mmd_vertex_groups(obj, profile, preexport_module=preexport_module)
+    return _remap_object(obj, vg_map)
+
+
 # ----------------------------------------------------------------- export hook (monkey-patch)
 
 _PATCHED = {}
@@ -160,6 +182,8 @@ def _make_patched(orig_execute):
         context.scene.collection.children.link(tmp_col)
         tmp_objs, renamed = [], []   # renamed: [(orig_obj, orig_name)] to restore in finally
         saved_col, saved_mode = cfg.component_collection, cfg.mod_skeleton_type
+        velo_settings = getattr(context.scene, "velo_endfield", None)
+        mmd_profile = getattr(velo_settings, "mmd_profile", None) if velo_settings is not None else None
         try:
             # Honor the stock collection settings (Ignore Nested / Hidden Collections / Hidden
             # Objects) exactly like a single-IB export, reusing the vendored core's gatherer so the
@@ -196,7 +220,7 @@ def _make_patched(orig_execute):
                 tmp_objs.append(cp)
                 cid = _component_id(orig_name)
                 if cid is not None and vg_maps.get(cid):
-                    stray = _remap_object(cp, vg_maps[cid])
+                    stray = _prepare_object_for_component_export(cp, vg_maps[cid], mmd_profile)
                     if stray:
                         self.report({'ERROR'},
                                     "导出失败：物体 `%s` (Component %s) 的顶点组 %s 权重越界——它们对应的统一骨不在"
