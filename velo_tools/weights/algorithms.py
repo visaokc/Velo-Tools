@@ -41,6 +41,15 @@ class TargetGroupResolution:
     claimed: bool = False
 
 
+@dataclass
+class MirrorGroupResolution:
+    source_name: str = ""
+    mirror_name: str = ""
+    reason: str = ""
+    confidence: float = 0.0
+    automatic: bool = False
+
+
 def _object_label(obj):
     if obj is None:
         return "<未选择>"
@@ -61,6 +70,80 @@ def _unique_names(*names):
         result.append(cleaned)
         seen.add(cleaned)
     return result
+
+
+def _collection_is_descendant_or_same(root, collection):
+    if root is None or collection is None:
+        return False
+    if root == collection:
+        return True
+    try:
+        return collection in getattr(root, "children_recursive", ())
+    except Exception:
+        return False
+
+
+def active_component_collection(scene):
+    if scene is None:
+        return None
+    try:
+        from ..games import registry as _registry
+        desc = _registry.get_active_descriptor(scene)
+    except Exception:
+        desc = None
+    if desc is None:
+        return None
+    return desc.component_collection(scene)
+
+
+def active_game_display_name(scene):
+    try:
+        from ..games import registry as _registry
+        desc = _registry.get_active_descriptor(scene)
+    except Exception:
+        desc = None
+    return getattr(desc, "display_name", "") or "当前游戏"
+
+
+def is_component_export_object(scene, obj):
+    if obj is None or getattr(obj, "type", None) != 'MESH':
+        return False, "当前对象不是 Mesh"
+    if not getattr(obj, "name", "").startswith("Component"):
+        return False, "当前对象不是 Component 前缀"
+    root = active_component_collection(scene)
+    if root is None:
+        return False, f"请先在{active_game_display_name(scene)} Export Mod 中指定部件集合"
+    for collection in getattr(obj, "users_collection", ()):
+        if _collection_is_descendant_or_same(root, collection):
+            return True, f"接管范围: {root.name}"
+    return False, f"当前对象不在 {root.name} 导出集合内"
+
+
+def validate_velo_mirror_scope(context, obj):
+    scene = getattr(context, "scene", None)
+    ok, reason = is_component_export_object(scene, obj)
+    if not ok:
+        raise ValueError(f"Velo 镜像只接管当前游戏导出集合内的 Component 物体；{reason}")
+    return True
+
+
+def validate_native_mirror_disabled(obj):
+    mesh = getattr(obj, "data", None)
+    enabled = []
+    for attr, label in (
+        ("use_mirror_vertex_groups", "Mirror Vertex Groups"),
+        ("use_mirror_topology", "Topology Mirror"),
+        ("use_mirror_x", "X Mirror"),
+        ("use_mirror_y", "Y Mirror"),
+        ("use_mirror_z", "Z Mirror"),
+    ):
+        if bool(getattr(mesh, attr, False)):
+            enabled.append(label)
+    if enabled:
+        raise ValueError(
+            "当前对象已进入 Velo 镜像接管范围，请先关闭 Blender 自带镜像选项: "
+            + ", ".join(enabled)
+        )
 
 
 def _mmd_profile(context):
@@ -287,7 +370,7 @@ def group_weighted_centroid_world(obj, group_name, *, threshold=0.00001):
     group = obj.vertex_groups.get(group_name)
     if group is None:
         return obj.matrix_world.translation.copy(), None
-    weights = read_group_weights(obj, group)
+    weights = _plain_group_weights(obj, group)
     if len(weights) != len(obj.data.vertices):
         return obj.matrix_world.translation.copy(), None
 
@@ -993,6 +1076,204 @@ def write_groups_by_indices(obj, group_indices, weights):
         write_group_weights(obj, group, weights[:, column])
 
 
+def _plain_group_weights(obj, group):
+    weights = [0.0] * len(obj.data.vertices)
+    group_index = group.index
+    for vertex in obj.data.vertices:
+        for item in vertex.groups:
+            if item.group == group_index:
+                weights[vertex.index] = float(item.weight)
+                break
+    return weights
+
+
+def _coord_bucket_key(co, tolerance):
+    return (
+        int(round(float(co.x) / tolerance)),
+        int(round(float(co.y) / tolerance)),
+        int(round(float(co.z) / tolerance)),
+    )
+
+
+def _coord_tuple(co):
+    return (float(co.x), float(co.y), float(co.z))
+
+
+def _bucket_vertices_by_coordinate(obj, tolerance):
+    buckets = {}
+    for vertex in obj.data.vertices:
+        key = _coord_bucket_key(vertex.co, tolerance)
+        buckets.setdefault(key, []).append(vertex.index)
+    return buckets
+
+
+def mirror_group_weights(obj, source_group, mirror_group, *, tolerance=None, threshold=0.00001):
+    if obj is None or getattr(obj, "type", None) != 'MESH':
+        raise ValueError("镜像权重需要 Mesh 对象")
+    if source_group is None or mirror_group is None:
+        raise ValueError("镜像权重缺少来源组或镜像组")
+    if mirror_group.lock_weight:
+        raise ValueError(f"镜像顶点组 '{obj.name}/{mirror_group.name}' 已锁定，不能写入")
+    diagonal = _bbox_diagonal_local(obj)
+    if diagonal <= 1e-12:
+        raise ValueError(f"当前对象 '{obj.name}' 没有有效包围盒，无法镜像权重")
+    if tolerance is None:
+        tolerance = max(diagonal * 0.0001, 0.000001)
+    source_weights = _plain_group_weights(obj, source_group)
+    source_buckets = _bucket_vertices_by_coordinate(obj, tolerance)
+    bucket_centers = []
+    bucket_weights = []
+    for indices in source_buckets.values():
+        if not indices:
+            continue
+        x = y = z = weight_sum = 0.0
+        for index in indices:
+            co = obj.data.vertices[index].co
+            x += float(co.x)
+            y += float(co.y)
+            z += float(co.z)
+            weight_sum += float(source_weights[index])
+        scale = 1.0 / len(indices)
+        bucket_centers.append((x * scale, y * scale, z * scale))
+        bucket_weights.append(weight_sum * scale)
+    if not bucket_centers:
+        write_group_weights(obj, mirror_group, [0.0] * len(obj.data.vertices))
+        return {"matched_buckets": 0, "matched_vertices": 0, "coincident_buckets": 0, "tolerance": tolerance}
+
+    tree = kdtree.KDTree(len(bucket_centers))
+    for index, center in enumerate(bucket_centers):
+        tree.insert(Vector(center), index)
+    tree.balance()
+
+    target_buckets = _bucket_vertices_by_coordinate(obj, tolerance)
+    mirrored_weights = [0.0] * len(obj.data.vertices)
+    matched_buckets = 0
+    matched_vertices = 0
+    coincident_buckets = 0
+    for indices in target_buckets.values():
+        if not indices:
+            continue
+        x = y = z = 0.0
+        for index in indices:
+            co = obj.data.vertices[index].co
+            x += float(co.x)
+            y += float(co.y)
+            z += float(co.z)
+        scale = 1.0 / len(indices)
+        center = (x * scale, y * scale, z * scale)
+        mirror_center = Vector((-center[0], center[1], center[2]))
+        _co, source_bucket_index, distance = tree.find(mirror_center)
+        if source_bucket_index is None or distance is None or float(distance) > tolerance:
+            continue
+        value = float(bucket_weights[int(source_bucket_index)])
+        if value <= threshold:
+            continue
+        matched_buckets += 1
+        if len(indices) > 1:
+            coincident_buckets += 1
+        for index in indices:
+            mirrored_weights[index] = value
+            matched_vertices += 1
+    write_group_weights(obj, mirror_group, mirrored_weights, threshold=threshold)
+    return {
+        "matched_buckets": matched_buckets,
+        "matched_vertices": matched_vertices,
+        "coincident_buckets": coincident_buckets,
+        "tolerance": tolerance,
+    }
+
+
+def mirrored_donor_groups(context, settings, obj, donor_groups, *, exclude_names=None):
+    exclude = {_clean_name(name) for name in (exclude_names or ()) if _clean_name(name)}
+    result = []
+    seen = set()
+    for donor in donor_groups:
+        if donor is None:
+            continue
+        resolution = resolve_mirror_group(context, settings, obj, donor.name)
+        if not resolution.mirror_name:
+            raise ValueError(f"供体 '{donor.name}' 未找到镜像供体，无法执行镜像规格化")
+        if resolution.mirror_name in exclude:
+            raise ValueError(f"供体 '{donor.name}' 的镜像组 '{resolution.mirror_name}' 是本次权威组，不能作为供体")
+        mirror_group = obj.vertex_groups.get(resolution.mirror_name)
+        if mirror_group is None:
+            raise ValueError(f"供体 '{donor.name}' 的镜像组 '{resolution.mirror_name}' 不存在")
+        if mirror_group.lock_weight:
+            raise ValueError(f"镜像供体 '{obj.name}/{mirror_group.name}' 已锁定，请先解锁后再执行")
+        if is_special_vg_name(mirror_group.name):
+            raise ValueError(f"镜像供体 '{obj.name}/{mirror_group.name}' 是 Velo 特殊组，不能参与规格化")
+        if count_group_weights(obj, mirror_group) <= 0:
+            raise ValueError(f"镜像供体 '{obj.name}/{mirror_group.name}' 没有非零权重，不能参与规格化")
+        if mirror_group.index in seen:
+            continue
+        seen.add(mirror_group.index)
+        result.append(mirror_group)
+    return result
+
+
+def normalize_authority_groups_with_donors(obj, authority_groups, donor_groups):
+    ok, error = _rwt.ensure_available()
+    if not ok:
+        raise RuntimeError(f"规格化不可用: {error}")
+    np = _rwt.np_module()
+    authorities = []
+    donors = []
+    seen = set()
+    for group in authority_groups:
+        if group is None or is_special_vg_name(group.name) or group.index in seen:
+            continue
+        authorities.append(group)
+        seen.add(group.index)
+    for group in donor_groups:
+        if group is None or is_special_vg_name(group.name) or group.index in seen:
+            continue
+        donors.append(group)
+        seen.add(group.index)
+    participant = authorities + donors
+    if not participant:
+        return False
+    authority_count = len(authorities)
+    participant_indices = [group.index for group in participant]
+    participant_weights = _rwt.get_groups_arr(obj, participant_indices)
+    protected_indices = [
+        vg.index
+        for vg in obj.vertex_groups
+        if vg.index not in participant_indices and not is_special_vg_name(vg.name)
+    ]
+    if protected_indices:
+        protected_sum = _rwt.get_groups_arr(obj, protected_indices).sum(axis=1)
+    else:
+        protected_sum = np.zeros(len(obj.data.vertices), dtype=np.float32)
+    available = np.maximum(0.0, 1.0 - protected_sum)
+    normalized = np.zeros_like(participant_weights)
+    if authority_count > 0:
+        authority_weights = participant_weights[:, :authority_count]
+        authority_totals = authority_weights.sum(axis=1)
+        authority_scale = np.divide(
+            available,
+            authority_totals,
+            out=np.ones_like(available),
+            where=authority_totals > available,
+        )
+        authority_scale = np.minimum(authority_scale, 1.0)
+        normalized[:, :authority_count] = authority_weights * authority_scale.reshape(-1, 1)
+    donor_start = authority_count
+    if participant_weights.shape[1] > donor_start:
+        donor_weights = participant_weights[:, donor_start:]
+        used = normalized[:, :authority_count].sum(axis=1) if authority_count > 0 else np.zeros_like(available)
+        donor_available = np.maximum(0.0, available - used)
+        donor_totals = donor_weights.sum(axis=1)
+        donor_scale = np.divide(
+            donor_available,
+            donor_totals,
+            out=np.zeros_like(donor_available),
+            where=donor_totals > 1e-8,
+        )
+        normalized[:, donor_start:] = donor_weights * donor_scale.reshape(-1, 1)
+    _write_groups_preserving_locks(obj, participant, normalized)
+    return True
+
+
 def _name_side_suffix(name):
     lowered = _clean_name(name).lower()
     if lowered.endswith((".l", "_l", "-l")):
@@ -1017,6 +1298,232 @@ def _name_without_side(name):
         if lowered.endswith(suffix):
             return cleaned[:-len(suffix)]
     return cleaned
+
+
+def mirror_name_candidates(name):
+    cleaned = _clean_name(name)
+    if not cleaned:
+        return []
+    candidates = []
+    lowered = cleaned.lower()
+    suffix_pairs = (
+        (".l", ".R"),
+        (".r", ".L"),
+        ("_l", "_R"),
+        ("_r", "_L"),
+        ("-l", "-R"),
+        ("-r", "-L"),
+    )
+    for suffix, replacement in suffix_pairs:
+        if lowered.endswith(suffix):
+            candidates.append(cleaned[:-len(suffix)] + replacement)
+            candidates.append(cleaned[:-len(suffix)] + replacement.lower())
+            break
+    token_pairs = (
+        ("左", "右"),
+        ("右", "左"),
+        ("Left", "Right"),
+        ("Right", "Left"),
+        ("left", "right"),
+        ("right", "left"),
+        ("LEFT", "RIGHT"),
+        ("RIGHT", "LEFT"),
+    )
+    for left, right in token_pairs:
+        if left in cleaned:
+            candidates.append(cleaned.replace(left, right, 1))
+            break
+    return _unique_names(*candidates)
+
+
+def _existing_mirror_name_from_alias(obj, name):
+    for candidate in mirror_name_candidates(name):
+        group = obj.vertex_groups.get(candidate)
+        if group is not None and group.name != name:
+            return group.name
+    return ""
+
+
+def _manual_mirror_name(settings, group_name):
+    cleaned = _clean_name(group_name)
+    if not cleaned:
+        return ""
+    for row in getattr(settings, "mirror_mappings", ()):
+        left = _clean_name(getattr(row, "left_group", ""))
+        right = _clean_name(getattr(row, "right_group", ""))
+        if not left or not right or left == right:
+            continue
+        if cleaned == left:
+            return right
+        if cleaned == right:
+            return left
+    return ""
+
+
+def add_mirror_mapping(settings, left_name, right_name):
+    left = _clean_name(left_name)
+    right = _clean_name(right_name)
+    if not left or not right or left == right:
+        return False
+    for row in getattr(settings, "mirror_mappings", ()):
+        a = _clean_name(getattr(row, "left_group", ""))
+        b = _clean_name(getattr(row, "right_group", ""))
+        if {a, b} == {left, right}:
+            row.left_group = left
+            row.right_group = right
+            return False
+    row = settings.mirror_mappings.add()
+    row.left_group = left
+    row.right_group = right
+    settings.active_mirror_mapping_index = len(settings.mirror_mappings) - 1
+    return True
+
+
+def _mmd_profile_mirror_name(context, obj, name):
+    ef, profile = _mmd_profile(context)
+    if profile is None or obj is None:
+        return ""
+    rows = []
+    for row in getattr(profile, "rows", ()):
+        names = _row_names(row)
+        values = _unique_names(names["current"], names["mmd"], names["unified"])
+        if not values:
+            continue
+        rows.append(values)
+    wanted = set(mirror_name_candidates(name))
+    if not wanted:
+        return ""
+    for values in rows:
+        if not wanted.intersection(values):
+            continue
+        existing = _first_existing_group_name(obj, values)
+        if existing and existing != name:
+            return existing
+    return ""
+
+
+def _bbox_diagonal_local(obj):
+    vertices = getattr(getattr(obj, "data", None), "vertices", ())
+    if not vertices:
+        return 0.0
+    mins = [float("inf"), float("inf"), float("inf")]
+    maxs = [float("-inf"), float("-inf"), float("-inf")]
+    for vertex in vertices:
+        co = vertex.co
+        for axis, value in enumerate((co.x, co.y, co.z)):
+            value = float(value)
+            mins[axis] = min(mins[axis], value)
+            maxs[axis] = max(maxs[axis], value)
+    if mins[0] == float("inf"):
+        return 0.0
+    dx = maxs[0] - mins[0]
+    dy = maxs[1] - mins[1]
+    dz = maxs[2] - mins[2]
+    return (dx * dx + dy * dy + dz * dz) ** 0.5
+
+
+def _group_centroid_local(obj, group, *, threshold=0.00001):
+    total = 0.0
+    x = 0.0
+    y = 0.0
+    z = 0.0
+    group_index = group.index
+    for vertex in obj.data.vertices:
+        weight = 0.0
+        for item in vertex.groups:
+            if item.group == group_index:
+                weight = float(item.weight)
+                break
+        if weight <= threshold:
+            continue
+        co = vertex.co
+        x += float(co.x) * weight
+        y += float(co.y) * weight
+        z += float(co.z) * weight
+        total += weight
+    if total <= threshold:
+        return None, 0.0
+    return (x / total, y / total, z / total), total
+
+
+def _mirror_centroid_error(source_center, candidate_center, diagonal):
+    if diagonal <= 1e-12:
+        diagonal = 1.0
+    dx = -float(source_center[0]) - float(candidate_center[0])
+    dy = float(source_center[1]) - float(candidate_center[1])
+    dz = float(source_center[2]) - float(candidate_center[2])
+    return ((dx * dx + dy * dy + dz * dz) ** 0.5) / diagonal
+
+
+def _auto_numeric_mirror_name(obj, group_name, *, max_error=0.001, min_side_ratio=0.005):
+    if obj is None or getattr(obj, "type", None) != 'MESH' or not _clean_name(group_name).isdigit():
+        return "", 0.0
+    source_group = obj.vertex_groups.get(_clean_name(group_name))
+    if source_group is None:
+        return "", 0.0
+    source_center, source_total = _group_centroid_local(obj, source_group)
+    if source_center is None:
+        return "", 0.0
+    diagonal = _bbox_diagonal_local(obj)
+    if diagonal <= 1e-12:
+        return "", 0.0
+    min_side = diagonal * min_side_ratio
+    if abs(float(source_center[0])) <= min_side:
+        return "", 0.0
+    best = None
+    for group in obj.vertex_groups:
+        if group.index == source_group.index:
+            continue
+        if not _clean_name(group.name).isdigit():
+            continue
+        if group.lock_weight or is_special_vg_name(group.name):
+            continue
+        candidate_center, candidate_total = _group_centroid_local(obj, group)
+        if candidate_center is None:
+            continue
+        if abs(float(candidate_center[0])) <= min_side:
+            continue
+        if float(source_center[0]) * float(candidate_center[0]) >= 0.0:
+            continue
+        total_ratio = min(source_total, candidate_total) / max(source_total, candidate_total, 1e-12)
+        if total_ratio < 0.25:
+            continue
+        error = _mirror_centroid_error(source_center, candidate_center, diagonal)
+        if error > max_error:
+            continue
+        score = (error, -total_ratio, group.index)
+        if best is None or score < best[0]:
+            best = (score, group.name, error)
+    if best is None:
+        return "", 0.0
+    return best[1], max(0.0, 1.0 - float(best[2]))
+
+
+def resolve_mirror_group(context, settings, obj, group_name):
+    cleaned = _clean_name(group_name)
+    if obj is None or getattr(obj, "type", None) != 'MESH' or not cleaned:
+        return MirrorGroupResolution(source_name=cleaned, reason="缺少可解析的网格或顶点组")
+    group = obj.vertex_groups.get(cleaned)
+    if group is None:
+        return MirrorGroupResolution(source_name=cleaned, reason=f"当前网格不存在顶点组 '{cleaned}'")
+
+    manual = _manual_mirror_name(settings, cleaned)
+    if manual and obj.vertex_groups.get(manual) is not None:
+        return MirrorGroupResolution(cleaned, manual, "手动镜像映射", 1.0, False)
+
+    alias = _existing_mirror_name_from_alias(obj, cleaned)
+    if alias:
+        return MirrorGroupResolution(cleaned, alias, "命名镜像匹配", 0.95, True)
+
+    mapped = _mmd_profile_mirror_name(context, obj, cleaned)
+    if mapped:
+        return MirrorGroupResolution(cleaned, mapped, "MMD 映射镜像匹配", 0.9, True)
+
+    numeric, confidence = _auto_numeric_mirror_name(obj, cleaned)
+    if numeric:
+        return MirrorGroupResolution(cleaned, numeric, "数字组权重重心镜像匹配", confidence, True)
+
+    return MirrorGroupResolution(source_name=cleaned, reason="未找到可信镜像顶点组")
 
 
 def _is_control_bone_name(name):

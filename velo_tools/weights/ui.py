@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import bpy
 
+from . import algorithms as _algo
+
 
 def _report_summary(text, limit=84):
     cleaned = (text or "").replace("\n", " ").strip()
@@ -43,8 +45,67 @@ class VELO_PT_weight_objects(bpy.types.Panel):
         row = col.row(align=True)
         row.prop_search(settings, "source_group", settings, "available_source_vgs", text="来源顶点组")
         row.operator("velo.weight_refresh_groups", text="", icon='FILE_REFRESH')
+        mirror_row = col.row(align=True)
+        mirror_row.prop_search(settings, "mirror_group", settings, "available_mirror_vgs", text="镜像顶点组")
+        if settings.mirror_status:
+            icon = 'INFO' if settings.mirror_group else 'ERROR'
+            col.label(text=settings.mirror_status, icon=icon)
         col.prop(settings, "target_object")
         col.prop(settings, "armature_object")
+
+
+class VELO_PT_weight_mirror_mapping(bpy.types.Panel):
+    bl_label = "镜像映射组"
+    bl_idname = "VELO_PT_weight_mirror_mapping"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Velo Tools'
+    bl_parent_id = 'VELO_PT_main'
+    bl_order = 1
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _is_weight_tab(context)
+
+    def draw(self, context):
+        layout = self.layout
+        settings = context.scene.velo_weight_tools
+        root = _algo.active_component_collection(context.scene)
+        game_name = _algo.active_game_display_name(context.scene)
+        if root is None:
+            layout.label(text=f"{game_name}: 未选择导出集合", icon='ERROR')
+        else:
+            layout.label(text=f"{game_name}: {root.name}", icon='OUTLINER_COLLECTION')
+
+        active = getattr(context, "active_object", None)
+        ok, reason = _algo.is_component_export_object(context.scene, active)
+        icon = 'CHECKMARK' if ok else 'INFO'
+        layout.label(text=reason, icon=icon)
+
+        mapping_box = layout.box()
+        header = mapping_box.row(align=True)
+        header.label(text="手动映射")
+        add_op = header.operator("velo.weight_mirror_mapping_add", text="", icon='ADD')
+        add_op.left_group = settings.source_group
+        add_op.right_group = settings.mirror_group
+        if len(settings.mirror_mappings) <= 0:
+            mapping_box.label(text="暂无手动镜像映射", icon='INFO')
+        for index, item in enumerate(settings.mirror_mappings):
+            row = mapping_box.row(align=True)
+            if active is not None and active.type == 'MESH':
+                row.prop_search(item, "left_group", active, "vertex_groups", text="")
+                row.prop_search(item, "right_group", active, "vertex_groups", text="")
+            else:
+                row.prop(item, "left_group", text="")
+                row.prop(item, "right_group", text="")
+            remove = row.operator("velo.weight_mirror_mapping_remove", text="", icon='REMOVE')
+            remove.index = index
+
+        layout.separator()
+        action = layout.row(align=True)
+        action.enabled = ok
+        action.operator("velo.weight_mirror_active_group", icon='MOD_MIRROR')
 
 
 class VELO_PT_weight_transfer(bpy.types.Panel):
@@ -54,7 +115,7 @@ class VELO_PT_weight_transfer(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = 'Velo Tools'
     bl_parent_id = 'VELO_PT_main'
-    bl_order = 1
+    bl_order = 2
 
     @classmethod
     def poll(cls, context):
@@ -85,7 +146,15 @@ class VELO_PT_weight_transfer(bpy.types.Panel):
             donor_box.label(text="当前没有可选供体组", icon='INFO')
         else:
             for slot_index, prop_name in enumerate(("donor_slot_1", "donor_slot_2", "donor_slot_3", "donor_slot_4")[:_donor_slot_count(settings)], start=1):
-                donor_box.prop_search(settings, prop_name, settings, "available_donor_vgs", text=f"供体 {slot_index}")
+                row = donor_box.row(align=True)
+                row.prop_search(settings, prop_name, settings, "available_donor_vgs", text=f"供体 {slot_index}")
+                mirror_prop = f"mirror_donor_slot_{slot_index}"
+                mirror = row.row(align=True)
+                mirror.enabled = False
+                mirror.prop(settings, mirror_prop, text=f"镜像 {slot_index}")
+        if settings.mirror_donor_status:
+            icon = 'ERROR' if "锁定" in settings.mirror_donor_status or "未找到" in settings.mirror_donor_status else 'INFO'
+            donor_box.label(text=settings.mirror_donor_status, icon=icon)
         layout.operator("velo.weight_transfer", icon='MOD_DATA_TRANSFER')
         if settings.last_report:
             box = layout.box()
@@ -102,7 +171,7 @@ class VELO_PT_weight_group_merge(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = 'Velo Tools'
     bl_parent_id = 'VELO_PT_main'
-    bl_order = 1
+    bl_order = 3
     bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
@@ -136,7 +205,7 @@ class VELO_PT_weight_postprocess(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = 'Velo Tools'
     bl_parent_id = 'VELO_PT_main'
-    bl_order = 2
+    bl_order = 4
 
     @classmethod
     def poll(cls, context):
@@ -166,7 +235,7 @@ class VELO_PT_weight_advanced(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = 'Velo Tools'
     bl_parent_id = 'VELO_PT_main'
-    bl_order = 3
+    bl_order = 5
     bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
@@ -188,6 +257,7 @@ class VELO_PT_weight_advanced(bpy.types.Panel):
 
 _classes = (
     VELO_PT_weight_objects,
+    VELO_PT_weight_mirror_mapping,
     VELO_PT_weight_group_merge,
     VELO_PT_weight_transfer,
     VELO_PT_weight_postprocess,

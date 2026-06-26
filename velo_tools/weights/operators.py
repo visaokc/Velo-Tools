@@ -3,7 +3,7 @@ from __future__ import annotations
 import textwrap
 
 import bpy
-from bpy.props import EnumProperty
+from bpy.props import EnumProperty, IntProperty, StringProperty
 
 from . import algorithms as _algo
 from . import props as _props
@@ -107,6 +107,121 @@ def _remove_group_if_empty(obj, group):
         return False
     obj.vertex_groups.remove(current)
     return True
+
+
+def _snapshot_group(snapshots, obj, group):
+    if obj is None or group is None:
+        return
+    key = group.name
+    if key in snapshots:
+        return
+    snapshots[key] = list(_algo._plain_group_weights(obj, group))
+
+
+def _restore_group_snapshots(obj, snapshots):
+    if obj is None:
+        return
+    for group_name, weights in snapshots.items():
+        group = obj.vertex_groups.get(group_name)
+        if group is None:
+            continue
+        try:
+            _algo.write_group_weights(obj, group, weights)
+        except Exception:
+            pass
+
+
+def _remove_created_groups(obj, group_names):
+    if obj is None:
+        return
+    for group_name in reversed(list(group_names)):
+        group = obj.vertex_groups.get(group_name)
+        if group is None:
+            continue
+        try:
+            obj.vertex_groups.remove(group)
+        except Exception:
+            pass
+
+
+def _snapshot_editable_groups(snapshots, obj):
+    if obj is None or getattr(obj, "type", None) != 'MESH':
+        return
+    for group in obj.vertex_groups:
+        if group.lock_weight or _algo.is_special_vg_name(group.name):
+            continue
+        _snapshot_group(snapshots, obj, group)
+
+
+def _ensure_editable_group(obj, group_name):
+    cleaned = (group_name or "").strip()
+    if not cleaned:
+        raise ValueError("顶点组名为空")
+    group = obj.vertex_groups.get(cleaned)
+    created = False
+    if group is None:
+        group = obj.vertex_groups.new(name=cleaned)
+        created = True
+    if group is None:
+        raise RuntimeError(f"无法在 '{obj.name}' 上创建顶点组 '{cleaned}'")
+    if group.lock_weight:
+        raise ValueError(f"顶点组 '{obj.name}/{group.name}' 已锁定，不能写入")
+    return group, created
+
+
+def _select_donors_for_group(context, settings, target, group, source_name, *, configured_names=None, focus_weights=None, exclude_names=None):
+    donor_count = int(settings.donor_count)
+    configured_names = list(configured_names or [])
+    if configured_names:
+        return _algo.select_auto_donors(
+            target,
+            group,
+            donor_count,
+            exclude_group_names=exclude_names,
+            preferred_names=configured_names,
+            strict_preferred=True,
+        )
+    preferred_donors = _algo.semantic_auto_donor_names(
+        context,
+        settings,
+        source_name,
+        group,
+        count=donor_count,
+    )
+    semantic_groups = [target.vertex_groups.get(name) for name in preferred_donors]
+    semantic_groups = [candidate for candidate in semantic_groups if candidate is not None]
+    preferred_side = _algo.infer_donor_side(
+        target,
+        group,
+        focus_weights=focus_weights,
+        candidate_groups=semantic_groups,
+    )
+    return _algo.select_auto_donors(
+        target,
+        group,
+        donor_count,
+        exclude_group_names=exclude_names,
+        preferred_names=preferred_donors,
+        strict_preferred=False,
+        focus_weights=focus_weights,
+        preferred_side=preferred_side,
+    )
+
+
+def _select_activity_donors(context, settings, obj, group, *, exclude_names=None):
+    donor_count = int(settings.donor_count)
+    focus_weights = _algo.read_group_weights(obj, group)
+    preferred_side = _algo.infer_donor_side(obj, group, focus_weights=focus_weights)
+    return _algo.select_auto_donors(
+        obj,
+        group,
+        donor_count,
+        exclude_group_names=exclude_names,
+        preferred_names=[],
+        strict_preferred=False,
+        focus_weights=focus_weights,
+        preferred_side=preferred_side,
+    )
 
 
 def _row_source_names(row, mode):
@@ -299,6 +414,181 @@ class VELO_OT_weight_cycle_donor_count(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class VELO_OT_weight_mirror_mapping_add(bpy.types.Operator):
+    bl_idname = "velo.weight_mirror_mapping_add"
+    bl_label = "新增镜像映射"
+    bl_description = "把一对顶点组加入场景级手动镜像映射表"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    left_group: StringProperty(default="")
+    right_group: StringProperty(default="")
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(getattr(context, "scene", None), "velo_weight_tools", None) is not None
+
+    def execute(self, context):
+        settings = context.scene.velo_weight_tools
+        left = (self.left_group or getattr(settings, "source_group", "") or "").strip()
+        right = (self.right_group or getattr(settings, "mirror_group", "") or "").strip()
+        try:
+            if not left or not right:
+                raise ValueError("请先指定左右两个镜像顶点组")
+            if left == right:
+                raise ValueError("镜像映射两侧不能是同一个顶点组")
+            created = _algo.add_mirror_mapping(settings, left, right)
+            _props.sync_mirror_group(settings, context)
+            _props.sync_donor_preview(settings, context)
+            settings.last_report = f"镜像映射 {'新增' if created else '已存在'}: {left} ↔ {right}"
+            self.report({'INFO'}, settings.last_report)
+            return {'FINISHED'}
+        except Exception as exc:
+            settings.last_report = str(exc)
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+
+class VELO_OT_weight_mirror_mapping_remove(bpy.types.Operator):
+    bl_idname = "velo.weight_mirror_mapping_remove"
+    bl_label = "移除镜像映射"
+    bl_description = "从场景级手动镜像映射表移除一对顶点组"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    index: IntProperty(default=-1)
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(getattr(context, "scene", None), "velo_weight_tools", None) is not None
+
+    def execute(self, context):
+        settings = context.scene.velo_weight_tools
+        if self.index < 0 or self.index >= len(settings.mirror_mappings):
+            self.report({'ERROR'}, "镜像映射索引无效")
+            return {'CANCELLED'}
+        settings.mirror_mappings.remove(self.index)
+        settings.active_mirror_mapping_index = max(0, min(settings.active_mirror_mapping_index, len(settings.mirror_mappings) - 1))
+        _props.sync_mirror_group(settings, context)
+        _props.sync_donor_preview(settings, context)
+        settings.last_report = "已移除镜像映射"
+        self.report({'INFO'}, settings.last_report)
+        return {'FINISHED'}
+
+
+class VELO_OT_weight_mirror_active_group(bpy.types.Operator):
+    bl_idname = "velo.weight_mirror_active_group"
+    bl_label = "镜像权重"
+    bl_description = "以当前活动顶点组为权威侧，把权重镜像覆盖到另一侧并执行规格化"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        settings = getattr(getattr(context, "scene", None), "velo_weight_tools", None)
+        active = getattr(context, "active_object", None)
+        return settings is not None and active is not None and active.type == 'MESH'
+
+    def execute(self, context):
+        _runtime.reset_overlay_pick_runtime(context)
+        settings = context.scene.velo_weight_tools
+        obj = context.active_object
+        snapshots = {}
+        created_groups = []
+        created_bones = []
+        try:
+            _algo.validate_velo_mirror_scope(context, obj)
+            _algo.validate_native_mirror_disabled(obj)
+            active_group = obj.vertex_groups.active
+            if active_group is None:
+                raise ValueError("请先在活动对象上选择一个活动顶点组")
+            if active_group.lock_weight:
+                raise ValueError(f"当前活动顶点组 '{obj.name}/{active_group.name}' 已锁定，不能作为权威侧")
+            if _algo.is_special_vg_name(active_group.name):
+                raise ValueError(f"当前活动顶点组 '{obj.name}/{active_group.name}' 是 Velo 特殊组，不能镜像")
+            resolution = _algo.resolve_mirror_group(context, settings, obj, active_group.name)
+            if not resolution.mirror_name:
+                raise ValueError(resolution.reason or f"未找到 '{active_group.name}' 的镜像顶点组")
+            mirror_group, mirror_created = _ensure_editable_group(obj, resolution.mirror_name)
+            if mirror_group.index == active_group.index:
+                raise ValueError("镜像顶点组不能与权威顶点组相同")
+            if mirror_created:
+                created_groups.append(mirror_group.name)
+            else:
+                _snapshot_group(snapshots, obj, mirror_group)
+            _snapshot_group(snapshots, obj, active_group)
+
+            donors = []
+            mirror_donors = []
+            if settings.normalize_after:
+                donors = _select_activity_donors(
+                    context,
+                    settings,
+                    obj,
+                    active_group,
+                    exclude_names=[mirror_group.name],
+                )
+                if len(donors) < int(settings.donor_count):
+                    raise ValueError(f"镜像规格化需要 {int(settings.donor_count)} 个供体，但只找到 {len(donors)} 个")
+                mirror_donors = _algo.mirrored_donor_groups(
+                    context,
+                    settings,
+                    obj,
+                    donors,
+                    exclude_names=[active_group.name, mirror_group.name],
+                )
+                for group in donors + mirror_donors:
+                    _snapshot_group(snapshots, obj, group)
+
+            mirror_stats = _algo.mirror_group_weights(obj, active_group, mirror_group)
+            if settings.limit_groups_enable:
+                _snapshot_editable_groups(snapshots, obj)
+                _algo.apply_limit_groups(obj, settings)
+            normalized = False
+            if settings.normalize_after:
+                normalized = _algo.normalize_authority_groups_with_donors(
+                    obj,
+                    [active_group, mirror_group],
+                    donors + mirror_donors,
+                )
+            if settings.create_bone_if_missing:
+                if _algo.ensure_group_bone(context, settings, obj, mirror_group.name):
+                    created_bones.append(mirror_group.name)
+            _algo.ensure_numeric_export_compatible(obj, active_group.name)
+            _algo.ensure_numeric_export_compatible(obj, mirror_group.name)
+            _algo.add_mirror_mapping(settings, active_group.name, mirror_group.name)
+            _props.sync_mirror_group(settings, context)
+            _props.sync_donor_preview(settings, context)
+        except Exception as exc:
+            _restore_group_snapshots(obj, snapshots)
+            _remove_created_groups(obj, created_groups)
+            for bone_name in created_bones:
+                try:
+                    _algo.remove_armature_bone(context, _algo.resolve_armature_object(settings), bone_name)
+                except Exception:
+                    pass
+            settings.last_report = str(exc)
+            self.report({'ERROR'}, str(exc))
+            _invalidate_weight_overlay_caches(context)
+            return {'CANCELLED'}
+
+        bits = [
+            f"镜像权重 {active_group.name} -> {mirror_group.name}",
+            f"匹配 {mirror_stats.get('matched_vertices', 0)} 点",
+        ]
+        if mirror_stats.get("coincident_buckets", 0):
+            bits.append(f"重合点组 {mirror_stats['coincident_buckets']}")
+        if settings.limit_groups_enable:
+            bits.append("limit")
+        if normalized:
+            bits.append("normalize")
+        if donors:
+            bits.append("供体 " + ", ".join(group.name for group in donors))
+        if mirror_donors:
+            bits.append("镜像供体 " + ", ".join(group.name for group in mirror_donors))
+        settings.last_report = "；".join(bits)
+        self.report({'INFO'}, settings.last_report)
+        _invalidate_weight_overlay_caches(context)
+        return {'FINISHED'}
+
+
 class VELO_OT_weight_merge_groups(bpy.types.Operator):
     bl_idname = "velo.weight_merge_groups"
     bl_label = "执行权重组转移"
@@ -486,11 +776,16 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
         target = None
         target_group = None
         target_group_name = ""
-        original_weights = None
+        mirror_group = None
+        mirror_group_name = ""
+        snapshots = {}
+        created_groups = []
+        created_bones = []
         created_group = False
         created_bone = False
         try:
             _props.sync_target_group_name(settings, context)
+            _props.sync_mirror_group(settings, context)
             source = settings.source_object
             target = settings.target_object
             if source is None or source.type != 'MESH':
@@ -506,7 +801,10 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 resolution,
             )
             target_group_name = target_group.name
-            original_weights = _algo.read_group_weights(target, target_group)
+            if created_group:
+                created_groups.append(target_group_name)
+            else:
+                _snapshot_group(snapshots, target, target_group)
             if source is target and source_name == target_group.name:
                 raise ValueError(
                     f"来源和目标是同一个网格 '{source.name}'，且来源组与承接组同为 '{source_name}'；"
@@ -515,6 +813,23 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             report.target_group = target_group.name
             report.created_group = created_group
             report.created_bone = created_bone
+            if created_bone:
+                created_bones.append(target_group_name)
+
+            mirror_enabled = False
+            mirror_stats = None
+            scope_ok, _scope_reason = _algo.is_component_export_object(context.scene, target)
+            if scope_ok and (getattr(settings, "mirror_group", "") or "").strip():
+                _algo.validate_native_mirror_disabled(target)
+                mirror_resolution = _algo.resolve_mirror_group(context, settings, target, target_group.name)
+                mirror_group_name = mirror_resolution.mirror_name or (getattr(settings, "mirror_group", "") or "").strip()
+                if mirror_group_name and mirror_group_name != target_group.name:
+                    mirror_group, mirror_created = _ensure_editable_group(target, mirror_group_name)
+                    if mirror_created:
+                        created_groups.append(mirror_group.name)
+                    else:
+                        _snapshot_group(snapshots, target, mirror_group)
+                    mirror_enabled = True
 
             matched = None
             if settings.engine == 'ROBUST':
@@ -546,10 +861,13 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             if settings.smoothing_enable and settings.smoothing_repeat > 0 and settings.smoothing_factor > 0.0:
                 report.smoothed = _algo.apply_seam_safe_smoothing(target, target_group, settings, matched, topology_cache=topology_cache)
                 report.smoothing_skipped = not report.smoothed
+            if mirror_enabled:
+                mirror_stats = _algo.mirror_group_weights(target, target_group, mirror_group)
             if settings.limit_groups_enable:
                 if source is target:
                     report.limit_skipped_same_object = True
                 else:
+                    _snapshot_editable_groups(snapshots, target)
                     report.limited = _algo.apply_limit_groups(target, settings, topology_cache=topology_cache)
             if settings.normalize_after:
                 if source is target:
@@ -557,44 +875,45 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 else:
                     configured_donors = _props.selected_donor_names(settings)
                     donor_count = int(settings.donor_count)
-                    if configured_donors:
-                        donors = _algo.select_auto_donors(
-                            target,
-                            target_group,
-                            donor_count,
-                            preferred_names=configured_donors,
-                            strict_preferred=True,
-                        )
-                    else:
-                        preferred_donors = _algo.semantic_auto_donor_names(
-                            context,
-                            settings,
-                            source_name,
-                            target_group,
-                            count=donor_count,
-                        )
-                        focus_weights = _algo.read_group_weights(target, target_group)
-                        semantic_groups = [target.vertex_groups.get(name) for name in preferred_donors]
-                        semantic_groups = [group for group in semantic_groups if group is not None]
-                        preferred_side = _algo.infer_donor_side(
-                            target,
-                            target_group,
-                            focus_weights=focus_weights,
-                            candidate_groups=semantic_groups,
-                        )
-                        donors = _algo.select_auto_donors(
-                            target,
-                            target_group,
-                            donor_count,
-                            preferred_names=preferred_donors,
-                            strict_preferred=False,
-                            focus_weights=focus_weights,
-                            preferred_side=preferred_side,
-                        )
+                    focus_weights = _algo.read_group_weights(target, target_group)
+                    exclude_names = [mirror_group.name] if mirror_enabled and mirror_group is not None else []
+                    donors = _select_donors_for_group(
+                        context,
+                        settings,
+                        target,
+                        target_group,
+                        source_name,
+                        configured_names=configured_donors,
+                        focus_weights=focus_weights,
+                        exclude_names=exclude_names,
+                    )
                     report.donors = [vg.name for vg in donors]
                     if donors:
-                        report.normalized = _algo.normalize_with_donors(target, target_group, donors)
+                        for group in donors:
+                            _snapshot_group(snapshots, target, group)
+                        if mirror_enabled and mirror_group is not None:
+                            if len(donors) < donor_count:
+                                raise ValueError(f"镜像规格化需要 {donor_count} 个来源供体，但只找到 {len(donors)} 个")
+                            mirror_donors = _algo.mirrored_donor_groups(
+                                context,
+                                settings,
+                                target,
+                                donors,
+                                exclude_names=[target_group.name, mirror_group.name],
+                            )
+                            for group in mirror_donors:
+                                _snapshot_group(snapshots, target, group)
+                            report.donors = [vg.name for vg in donors] + [f"镜像:{vg.name}" for vg in mirror_donors]
+                            report.normalized = _algo.normalize_authority_groups_with_donors(
+                                target,
+                                [target_group, mirror_group],
+                                donors + mirror_donors,
+                            )
+                        else:
+                            report.normalized = _algo.normalize_with_donors(target, target_group, donors)
             _algo.ensure_numeric_export_compatible(target, target_group_name)
+            if mirror_enabled and mirror_group is not None:
+                _algo.ensure_numeric_export_compatible(target, mirror_group.name)
             current_group = target.vertex_groups.get(target_group_name)
             current_nonzero = 0 if current_group is None else _algo.count_group_weights(target, current_group)
             if current_nonzero <= 0:
@@ -606,25 +925,24 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 )
             if current_group is not None:
                 report.created_bone = _algo.ensure_group_bone(context, settings, target, current_group.name)
+                if report.created_bone and current_group.name not in created_bones:
+                    created_bones.append(current_group.name)
+            if mirror_enabled and mirror_group is not None:
+                current_mirror = target.vertex_groups.get(mirror_group.name)
+                mirror_nonzero = 0 if current_mirror is None else _algo.count_group_weights(target, current_mirror)
+                if mirror_nonzero <= 0:
+                    raise RuntimeError(f"镜像权重结果为空：'{target.name}/{mirror_group.name}' 当前没有任何非零权重。")
+                if settings.create_bone_if_missing and _algo.ensure_group_bone(context, settings, target, current_mirror.name):
+                    created_bones.append(current_mirror.name)
+                _algo.add_mirror_mapping(settings, target_group.name, current_mirror.name)
         except Exception as exc:
-            if created_bone:
+            for bone_name in created_bones:
                 try:
-                    _algo.remove_armature_bone(context, _algo.resolve_armature_object(settings), target_group_name)
+                    _algo.remove_armature_bone(context, _algo.resolve_armature_object(settings), bone_name)
                 except Exception:
                     pass
-            if target is not None and target_group_name:
-                current_group = target.vertex_groups.get(target_group_name)
-                if created_group:
-                    if current_group is not None:
-                        try:
-                            target.vertex_groups.remove(current_group)
-                        except Exception:
-                            pass
-                elif original_weights is not None and current_group is not None:
-                    try:
-                        _algo.write_group_weights(target, current_group, original_weights)
-                    except Exception:
-                        pass
+            _restore_group_snapshots(target, snapshots)
+            _remove_created_groups(target, created_groups)
             settings.last_report = str(exc)
             self.report({'ERROR'}, str(exc))
             _invalidate_weight_overlay_caches(context)
@@ -659,6 +977,10 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append("同对象跳过 normalize")
         if report.donors:
             bits.append("供体 " + ", ".join(report.donors))
+        if mirror_stats is not None and mirror_group is not None:
+            bits.append(f"镜像 {mirror_group.name} {mirror_stats.get('matched_vertices', 0)} 点")
+            if mirror_stats.get("coincident_buckets", 0):
+                bits.append(f"重合点组 {mirror_stats['coincident_buckets']}")
         settings.last_report = "；".join(bits)
         self.report({'INFO'}, settings.last_report)
         return {'FINISHED'}
@@ -669,6 +991,9 @@ _classes = (
     VELO_OT_weight_show_last_report,
     VELO_OT_weight_copy_last_report,
     VELO_OT_weight_cycle_donor_count,
+    VELO_OT_weight_mirror_mapping_add,
+    VELO_OT_weight_mirror_mapping_remove,
+    VELO_OT_weight_mirror_active_group,
     VELO_OT_weight_merge_groups,
     VELO_OT_weight_merge_mapping_families,
     VELO_OT_weight_transfer,
