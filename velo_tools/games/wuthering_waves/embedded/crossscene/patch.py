@@ -107,6 +107,10 @@ def _make_patched(orig_execute):
                 # mismatch): the mod was written but may not work -- never report this as a clean success.
                 msg += (" | self-check FAILED: %d dangling ref(s), %d missing file(s)"
                         % (len(rep.get("dangling") or []), len(rep.get("missing") or [])))
+                audit_errors = rep.get("static_audit_errors") or []
+                if audit_errors:
+                    msg += " | static audit %d error(s)" % len(audit_errors)
+                    print("[velo.xscene] static audit errors: %s" % " | ".join(audit_errors))
                 self.report({'WARNING'}, msg)
             else:
                 self.report({'INFO'}, msg)

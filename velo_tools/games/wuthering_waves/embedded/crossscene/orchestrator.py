@@ -452,6 +452,65 @@ def _copy_body(work: Path):
     return body
 
 
+def _component_index_count(component):
+    return int(component.get("index_count") or component.get("indexCount") or 0)
+
+
+def _write_empty_skip_mod(modout, tag, src, label):
+    """Create a minimal sub-mod that matches a hidden/excluded own-buffer IB and draws nothing."""
+    modout = Path(modout)
+    if modout.exists():
+        shutil.rmtree(modout)
+    (modout / "Meshes").mkdir(parents=True, exist_ok=True)
+    (modout / "Textures").mkdir(parents=True, exist_ok=True)
+    meta_path = Path(src) / "Metadata.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    source_hash = meta.get("vb0_hash") or tag
+    lines = [
+        "; Velo cross-scene empty own-buffer stub for hidden/excluded source object %s" % label,
+        "",
+        "[Constants]",
+        "global $mod_enabled = 1",
+        "global $object_detected = 0",
+        "",
+    ]
+    first_index = 0
+    for cid, component in enumerate(meta.get("components") or [{"index_count": 0}]):
+        index_count = _component_index_count(component)
+        if index_count > 0:
+            lines += [
+                "[TextureOverrideComponent%d]" % cid,
+                "hash = %s" % source_hash,
+                "match_first_index = %d" % first_index,
+                "match_index_count = %d" % index_count,
+                "$object_detected = 1",
+                "if $mod_enabled",
+                "    handling = skip",
+                "    ; Draw skipped: hidden/excluded source object %s" % label,
+                "endif",
+                "",
+            ]
+        for lod_index, lod in enumerate(component.get("lods") or [], start=1):
+            lod_hash = lod.get("vb0_hash") or lod.get("lod_object_name")
+            lod_count = int(lod.get("index_count") or 0)
+            if not lod_hash or lod_count <= 0:
+                continue
+            lines += [
+                "[TextureOverrideComponent%dLOD%d]" % (cid, lod_index),
+                "hash = %s" % lod_hash,
+                "match_first_index = %d" % int(lod.get("index_offset") or 0),
+                "match_index_count = %d" % lod_count,
+                "$object_detected = 1",
+                "if $mod_enabled",
+                "    handling = skip",
+                "    ; Draw skipped: hidden/excluded source object %s" % label,
+                "endif",
+                "",
+            ]
+        first_index += index_count
+    (modout / "mod.ini").write_text("\n".join(lines), encoding="utf-8")
+
+
 def _base_meshes(cfg, collection):
     """Component mesh objects of the base collection, honoring the stock WWMI export settings
     (Ignore Nested Collections / Ignore Hidden Collections / Ignore Hidden Objects) EXACTLY as a
@@ -585,7 +644,23 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         #    split object not found) -- edits don't propagate there.
         own_legacy = []
         own_excluded = []
+        own_excluded_tags = {}
         splits_by_ib = {sp.get("ib_hash"): sp for sp in routing["base"].get("splits", [])}
+        source_mesh_names = {o.name for o in base_collection.all_objects if o.type == 'MESH'}
+        try:
+            from .. import per_from_merged
+            source_mesh_names.update(per_from_merged.current_excluded_object_names())
+        except Exception:
+            pass
+        fold_draw_excludes = {}
+        for sp in routing["base"].get("splits", []):
+            try:
+                bc = int(sp.get("base_component"))
+            except Exception:
+                continue
+            split_name = sp.get("split_object")
+            if split_name:
+                fold_draw_excludes.setdefault(bc, set()).add(split_name)
         for s in own_ibs:
             src = str(merged_folder / s["source_folder"])
             tag = s["ib_hash"]
@@ -597,16 +672,17 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                                  or any(b in merged_eligible for b in own_base)) else set())
             sp = splits_by_ib.get(tag)
             split_obj = base_by_name.get(sp["split_object"]) if sp else None
-            if sp is not None and split_obj is None \
-                    and base_collection.all_objects.get(sp["split_object"]) is not None:
+            split_name = sp.get("split_object") if sp else None
+            if sp is not None and split_obj is None and split_name in source_mesh_names:
                 # The split part IS in the base collection but the stock settings excluded it
-                # (hidden / Ignore Hidden Objects) -> honor that: skip the whole own-buffer sub-IB
-                # (that accessory just isn't in the mod; the IB is left to the game).
+                # (hidden / Ignore Hidden Objects / PFM temp filtering) -> still match the IB but draw
+                # nothing, so excluded means empty draw rather than falling back to the game's original.
                 own_excluded.append("%s (%s)" % (tag, sp["split_object"]))
-                print("[velo.xscene] own-buffer IB %s 的拆件 %s 被忽略（隐藏/排除），跳过该子 IB。"
+                own_excluded_tags[tag] = sp["split_object"]
+                print("[velo.xscene] own-buffer IB %s 的拆件 %s 被忽略（隐藏/排除），生成空 skip 子 IB。"
                       % (tag, sp["split_object"]))
-                continue
-            if sp is not None and "host_vg_remap" in sp and split_obj is not None \
+                _write_empty_skip_mod(work / tag, tag, src, sp["split_object"])
+            elif sp is not None and "host_vg_remap" in sp and split_obj is not None \
                     and cfg.mod_skeleton_type in ('COMPONENT', 'MERGED'):
                 own_col = bpy.data.collections.new("xs_own_" + tag)
                 bpy.context.scene.collection.children.link(own_col)
@@ -677,7 +753,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             # draw); export full slot harmlessly (eligible=None) -> never reads the merged-numbered rules.
             _export_col(cfg, col, str(work / tag), "om_" + tag, src, eligible=None)
             _purge_collection(col)
-            skipped = fold.apply_fold(work, s, tag)
+            skipped = fold.apply_fold(work, s, tag, draw_excludes=fold_draw_excludes)
             if skipped:
                 fold_skipped.append("%s: base components %s" % (tag, skipped))
                 print("[velo.xscene] foldable IB %s：折叠目标组件 %s 被排除，已跳过对应 fold 片。"
@@ -763,6 +839,18 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             report["editable_excluded"] = eib_excluded
         if fold_skipped:
             report["fold_skipped"] = fold_skipped
+        try:
+            from . import audit
+            static_audit = audit.audit_cross_scene_ini(
+                Path(out_folder) / "mod.ini", routing, report["roles"],
+                own_excluded=own_excluded_tags,
+                draw_excludes=fold_draw_excludes)
+            report["static_audit"] = static_audit
+            if static_audit.get("errors"):
+                report["static_audit_errors"] = static_audit["errors"]
+                report["sound"] = False
+        except Exception as e:
+            report["static_audit"] = {"skipped": True, "reason": str(e), "errors": []}
         return report
     finally:
         cfg.object_source_folder, cfg.mod_output_folder, cfg.mod_name = saved[0], saved[2], saved[3]

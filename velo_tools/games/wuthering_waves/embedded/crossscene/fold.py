@@ -46,22 +46,75 @@ def _rd(path, dt):
 
 # ----------------------------------------------------------------- ini parsing
 
+def _draw_entries(block):
+    entries = []
+    label = None
+    for ln in (block or "").splitlines():
+        s = ln.strip()
+        if s.startswith("; Draw "):
+            label = s.split("; Draw ", 1)[1].strip()
+            continue
+        m = re.match(r'drawindexed = (\d+), (\d+)', s)
+        if not m:
+            continue
+        entries.append((int(m.group(1)), int(m.group(2)), label))
+        label = None
+    return entries
+
+
+def parse_draw_plan(text):
+    """{component_id: [(index_count, first_index, label), ...]} following LOD-fork draw lists."""
+    d = {}
+    for m in re.finditer(r'\[TextureOverrideComponent(\d+)\][^\[]*', text):
+        cid = int(m.group(1))
+        draws = _draw_entries(m.group(0))
+        if not draws and re.search(r'run = CommandListDrawComponent%d\b' % cid, m.group(0)):
+            blk = _section(text, 'CommandListDrawComponent%d' % cid)
+            if blk:
+                draws = _draw_entries(blk)
+        d[cid] = draws
+    return d
+
+
 def parse_draws(text):
     """{component_id: [(index_count, first_index), ...]} (one component may have multiple draws, e.g. C5 = c5-face + the little bear).
 
     LOD-fork inis factor the inline draws into shared [CommandListDrawComponent{c}]
     lists (the component section just runs them); follow that indirection so both
     ini shapes parse identically."""
-    d = {}
-    for m in re.finditer(r'\[TextureOverrideComponent(\d+)\][^\[]*', text):
-        cid = int(m.group(1))
-        draws = [(int(c), int(o)) for c, o in re.findall(r'drawindexed = (\d+), (\d+)', m.group(0))]
-        if not draws and re.search(r'run = CommandListDrawComponent%d\b' % cid, m.group(0)):
-            blk = _section(text, 'CommandListDrawComponent%d' % cid)
-            if blk:
-                draws = [(int(c), int(o)) for c, o in re.findall(r'drawindexed = (\d+), (\d+)', blk)]
-        d[cid] = draws
-    return d
+    return {
+        cid: [(cnt, off) for cnt, off, _label in entries]
+        for cid, entries in parse_draw_plan(text).items()
+    }
+
+
+def _normalise_draw_entries(draws):
+    out = []
+    for entry in draws or []:
+        if len(entry) >= 3:
+            out.append((int(entry[0]), int(entry[1]), entry[2]))
+        else:
+            out.append((int(entry[0]), int(entry[1]), None))
+    return out
+
+
+def select_fold_draws(draws, excluded_labels=None):
+    """Return draw entries a FoldHost may replay for one base component.
+
+    Own-buffer split draws are excluded by their ``; Draw`` label. If an old/custom ini
+    has no matching labels for a known split, keep legacy primary-only behavior rather
+    than risk drawing the split part through the fold.
+    """
+    entries = _normalise_draw_entries(draws)
+    if not entries:
+        return []
+    excluded = {str(label) for label in (excluded_labels or set())}
+    if not excluded:
+        return entries
+    labelled = [entry for entry in entries if entry[2] in excluded]
+    if not labelled:
+        return entries[:1]
+    return [entry for entry in entries if entry[2] not in excluded]
 
 
 def parse_match(text):
@@ -350,7 +403,7 @@ def _merge_offset_shift(remap_table):
 
 
 def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_count_override=None,
-                           primary=None):
+                           draws=None):
     """MERGED FoldHost = the native body ``[TextureOverrideComponent<bc>]`` override replicated verbatim,
     so it inherits everything that component needs to draw correctly: the ``if $merge_status_id != 2``
     skeleton-build block, the ``if ResourceMergedSkeleton !== null`` draw block, and -- crucially for
@@ -360,8 +413,9 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
     components carry no such refs in the native override, so they are naturally omitted.
 
     Only the section header, hash, and match window are swapped (so the dungeon draw triggers it), and the
-    draws are trimmed to the base component's PRIMARY range -- any ``.001`` sub-draw (e.g. the bear C5.001)
-    is drawn by its own IB, not the fold. Indentation (incl. the merge block's tabs) is preserved verbatim.
+    draws are filtered to the base component's fold draw plan -- any own-buffer split sub-draw (e.g. the
+    bear C5.001) is drawn by its own IB, not the fold. Other visible sub-draws of the same component must
+    remain in the plan. Indentation (incl. the merge block's tabs) is preserved verbatim.
     The per-component remapped buffers are filled every frame by InitializeBlendRemaps + RemapMergedSkeleton
     (from [Present], gated by $object_detected, which this section sets), so they are populated in pure-
     dungeon scenes too.
@@ -372,21 +426,24 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
     the dungeon cb4 lands at ``base_offset + vg_shift`` (where the base surviving geometry reads), not at the
     bear-inclusive base offset. Identity folds pass ``vg_shift=0`` (no rewrite, byte-identical).
 
-    ``primary`` = (index_count, first_index) of the base component's primary draw. Needed for the
+    ``draws`` = fold draw plan entries ``(index_count, first_index, label)``. Needed for the
     LOD-fork ini shape, where the native section carries no inline draws but delegates to the shared
-    ``[CommandListDrawComponent{N}]`` list -- that list holds ALL objects' draws (incl. ``.001``
-    sub-draws) plus the ``$lod_level`` dispatch, so running it from the FoldHost would also draw the
-    split sub-part with shifted (wrong) bones in the dungeon scene. The delegation line is replaced
-    with the stock inline sequence (trigger / shared-resources bind / primary draw / cleanup)."""
+    ``[CommandListDrawComponent{N}]`` list -- that list may hold own-buffer split sub-draws plus the
+    ``$lod_level`` dispatch, so running it from the FoldHost would also draw the split part with shifted
+    (wrong) bones in the dungeon scene. The delegation line is replaced with the stock inline sequence
+    (trigger / shared-resources bind / selected draws / cleanup)."""
     native = _section(body_text, "TextureOverrideComponent%d" % bc)
     if not native:
         return ""
-    out, seen_draw, header_done = [], False, False
+    selected = _normalise_draw_entries(draws)
+    selected_pairs = {(cnt, off) for cnt, off, _label in selected}
+    out, seen_draw, header_done, pending_comment = [], False, False, None
     for ln in native.rstrip("\n").split("\n"):
         s = ln.strip()
         if not header_done and s.startswith("[TextureOverrideComponent"):
             out.append("[TextureOverride_FoldHost_%s_C%d]" % (tag, fc))
             header_done = True
+            pending_comment = None
         elif s.startswith("hash ="):
             out.append("hash = %s" % fh)
         elif s.startswith("match_first_index ="):
@@ -400,32 +457,38 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             indent = ln[:len(ln) - len(ln.lstrip())]
             out.append("%s$\\WWMIv1\\vg_count = %d" % (indent, vg_count_override))
         elif s.startswith("drawindexed"):
-            if not seen_draw:
-                out.append(ln)            # keep the primary draw verbatim
+            m = re.match(r'drawindexed = (\d+), (\d+)', s)
+            if m and (int(m.group(1)), int(m.group(2))) in selected_pairs:
+                if pending_comment:
+                    out.append(pending_comment)
+                out.append(ln)
                 seen_draw = True
-            # drop subsequent draws (e.g. the .001 sub-component, drawn by its own IB)
+            pending_comment = None
         elif s.startswith("run = CommandListDrawComponent"):
             # LOD-fork shape: replace the shared-list delegation with the stock inline
-            # sequence, primary draw only (see docstring). Slot-style: weave in the base
+            # sequence, selected draws only (see docstring). Slot-style: weave in the base
             # component's per-draw texture rebind (probe/set/restore) so the dungeon draw
             # rebinds to master textures -- the shared draw list's slot runs aren't reachable
             # from this inlined sequence. No-ops for a hash-style body.
-            if primary is None:
-                raise ValueError("LOD-fork body ini shape requires the primary draw of C%d" % bc)
+            if not selected:
+                raise ValueError("LOD-fork body ini shape requires at least one fold draw of C%d" % bc)
             indent = ln[:len(ln) - len(ln.lstrip())]
             bt, at, bcl = _fold_slot_runs(body_text, bc)
             out.extend("%s%s" % (indent, r) for r in bt)
             out.append("%srun = CommandListTriggerResourceOverrides" % indent)
             out.extend("%s%s" % (indent, r) for r in at)
             out.append("%srun = CommandListOverrideSharedResources" % indent)
-            out.append("%sdrawindexed = %d, %d, 0" % (indent, primary[0], primary[1]))
+            for cnt, off, label in selected:
+                if label:
+                    out.append("%s; Draw %s" % (indent, label))
+                out.append("%sdrawindexed = %d, %d, 0" % (indent, cnt, off))
             out.extend("%s%s" % (indent, r) for r in bcl)
             out.append("%srun = CommandListCleanupSharedResources" % indent)
             seen_draw = True
         elif s.startswith("; Draw "):
-            if not seen_draw:
-                out.append(ln)            # keep only the primary draw's comment
+            pending_comment = ln
         else:
+            pending_comment = None
             out.append(ln)
     return "\n".join(out) + "\n"
 
@@ -486,7 +549,8 @@ def _build_morph_sections(face_text, tag):
     return "".join(s)
 
 
-def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match, batch_counts, tag, has_morph=True, comp_map=None):
+def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match, batch_counts, tag,
+                       has_morph=True, comp_map=None, draw_excludes=None):
     """Inject the ini sections needed for folding, return the modified body_text:
       1) constants: per-batch $shapekey_vertex_offset/count_batch{N}_<tag> (inserted after the body's last batch constant) -- only when has_morph;
       2) FoldHost: each dungeon component's draw bound to the buffer range of the corresponding base component (those with mismatched VG go through the _remap CommandList);
@@ -499,6 +563,11 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
     # MERGED body carries the merged-skeleton machinery; COMPONENT body has none.
     is_merged = "ResourceMergedSkeleton" in body_text
     vg_remap_all = fold_entry["fold"].get("vg_remap", {})
+    body_draw_plan = {
+        int(cid): _normalise_draw_entries(draws)
+        for cid, draws in (body_draws or {}).items()
+    }
+    draw_excludes = {int(k): set(v or set()) for k, v in (draw_excludes or {}).items()}
     # The producer vg_remap maps base-component-local VG -> dungeon-IB-local VG. In COMPONENT it drives an
     # 8-bit Blend relabel (_c{N}remap CommandList + Blend_c{N}remap.buf). In MERGED that relabel is neither
     # needed nor correct; instead the same remap is folded into the FoldHost's merge vg_offset (see
@@ -534,10 +603,11 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             # verbatim; the LOD-fork inlined sequence gets them re-woven in _build_merged_foldhost.)
             rt = vg_remap_all.get(str(bc))
             vg_shift, vg_count_override = _merge_offset_shift(rt) if rt else (0, None)
+            selected = select_fold_draws(body_draw_plan.get(bc), draw_excludes.get(bc))
             out.append(_build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift, vg_count_override,
-                                              primary=(body_draws.get(bc) or [None])[0]))
+                                              draws=selected))
         else:
-            cnt, offd = body_draws[bc][0]
+            selected = select_fold_draws(body_draw_plan.get(bc), draw_excludes.get(bc))
             ovr = remap_cmd[bc][0] if bc in remap_cmd else "CommandListOverrideSharedResources"
             # Slot-style: rebind the dungeon draw's textures to the BASE component's slot maps (master
             # content, streaming-immune). Empty for a hash-style body -> output byte-identical to before.
@@ -553,7 +623,10 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             lines.append("    run = CommandListTriggerResourceOverrides")
             lines += ["    %s" % r for r in at]
             lines.append("    run = %s" % ovr)
-            lines.append("    drawindexed = %d, %d, 0" % (cnt, offd))
+            for cnt, offd, label in selected:
+                if label:
+                    lines.append("    ; Draw %s" % label)
+                lines.append("    drawindexed = %d, %d, 0" % (cnt, offd))
             lines += ["    %s" % r for r in bcl]
             lines.append("    run = CommandListCleanupSharedResources")
             lines.append("endif")
@@ -574,7 +647,7 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
     return body_text + "".join(out)
 
 
-def apply_fold(work, fold_entry, tag, morph_ref=None):
+def apply_fold(work, fold_entry, tag, morph_ref=None, draw_excludes=None):
     """For one foldable IB: on the already stock-exported ``work/body`` and ``work/<tag>``, reproject morph (if any) + apply blend remap
     + inject ini sections, **modifying work/body in place** (geometry fold, morph reprojection, VG remap all merged into the base buffer mod).
 
@@ -587,6 +660,7 @@ def apply_fold(work, fold_entry, tag, morph_ref=None):
     # MERGED replicates the native component override (handles >=256 via runtime RemappedBlend); the
     # COMPONENT-mode producer vg_remap (8-bit Blend relabel) is neither needed nor consumed there.
     is_merged = "ResourceMergedSkeleton" in body_text
+    body_plan = parse_draw_plan(body_text)
     bd, fd, fm = parse_draws(body_text), parse_draws(face_text), parse_match(face_text)
     comp_map = {int(k): v for k, v in fold_entry["fold"]["comp_map"].items()}
     # A fold target whose base component was excluded from the body export (Ignore Hidden Objects /
@@ -613,7 +687,8 @@ def apply_fold(work, fold_entry, tag, morph_ref=None):
     for k, table in vg_remap.items():
         if bd.get(int(k)):
             apply_blend_remap(body / "Meshes", table, bd[int(k)][0], "c%dremap" % int(k))
-    new_body = emit_fold_sections(body_text, face_text, fold_entry, bd, fm, batch_counts, tag,
-                                  has_morph=has_morph, comp_map=comp_map)
+    new_body = emit_fold_sections(body_text, face_text, fold_entry, body_plan, fm, batch_counts, tag,
+                                  has_morph=has_morph, comp_map=comp_map,
+                                  draw_excludes=draw_excludes)
     (body / "mod.ini").write_text(new_body, encoding="utf-8")
     return excluded

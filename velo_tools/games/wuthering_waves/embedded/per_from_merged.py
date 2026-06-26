@@ -31,6 +31,7 @@ import bpy
 MODE_VALUE = 'COMPONENT_FROM_MERGED'
 _TMP_PREFIX = '__vpfm_tmp_local_'
 _COMPONENT_RE = re.compile(r'component[ _-]*([0-9]+)', re.I)
+_EXCLUDED_OBJECT_NAMES_STACK = []
 
 
 # ----------------------------------------------------------------- pure core (no bpy, unit-testable)
@@ -71,6 +72,17 @@ def plan_vg_remap(vg_map, vg_entries):
         else:
             renames[name] = str(local)
     return renames, drop_with_weight
+
+
+def plan_excluded_object_names(all_mesh_names, exported_mesh_names):
+    """Names present in the source collection but removed by stock export collection settings."""
+    exported = {str(name) for name in exported_mesh_names}
+    return sorted({str(name) for name in all_mesh_names} - exported)
+
+
+def current_excluded_object_names():
+    """Names excluded by the active Per-Component(from Merged) temp-copy export, if any."""
+    return set(_EXCLUDED_OBJECT_NAMES_STACK[-1]) if _EXCLUDED_OBJECT_NAMES_STACK else set()
 
 
 # ----------------------------------------------------------------- bpy helpers
@@ -193,12 +205,18 @@ def _make_patched(orig_execute):
             # Lazy import: keep this module importable without a full bpy (pure-function unit tests).
             from .._wwmi_core.migoto_io.blender_interface.collections import get_collection_objects
             from .._wwmi_core.migoto_io.blender_interface.objects import object_is_hidden
-            base_meshes = get_collection_objects(
+            gathered = get_collection_objects(
                 base_col,
                 recursive=not cfg.ignore_nested_collections,
                 skip_hidden_collections=cfg.ignore_hidden_collections)
-            base_meshes = [o for o in base_meshes if o.type == 'MESH'
-                           and not (cfg.ignore_hidden_objects and object_is_hidden(o))]
+            gathered_meshes = [o for o in gathered if o.type == 'MESH']
+            all_source_mesh_names = [o.name for o in base_col.all_objects if o.type == 'MESH']
+            base_meshes = [o for o in gathered_meshes
+                           if not (cfg.ignore_hidden_objects and object_is_hidden(o))]
+            excluded_names = plan_excluded_object_names(
+                all_source_mesh_names,
+                [o.name for o in base_meshes],
+            )
             if (not base_meshes and cfg.ignore_nested_collections
                     and any(o.type == 'MESH' for o in base_col.all_objects)):
                 self.report({'ERROR'},
@@ -229,7 +247,11 @@ def _make_patched(orig_execute):
                         return {'CANCELLED'}
             cfg.component_collection = tmp_col
             cfg.mod_skeleton_type = 'COMPONENT'
-            return orig_execute(self, context)
+            _EXCLUDED_OBJECT_NAMES_STACK.append(tuple(excluded_names))
+            try:
+                return orig_execute(self, context)
+            finally:
+                _EXCLUDED_OBJECT_NAMES_STACK.pop()
         finally:
             cfg.component_collection = saved_col
             cfg.mod_skeleton_type = saved_mode
