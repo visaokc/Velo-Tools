@@ -523,6 +523,10 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 report.matched_count = matched_count
                 report.rescued_components = int(rescue_info.get("rescued_components", 0))
                 report.rescued_vertices = int(rescue_info.get("rescued_vertices", 0))
+                report.zero_anchor_components = int(rescue_info.get("zero_anchor_components", 0))
+                report.zero_anchor_vertices = int(rescue_info.get("zero_anchor_vertices", 0))
+                report.evidence_blocked_components = int(rescue_info.get("evidence_blocked_components", 0))
+                report.evidence_blocked_vertices = int(rescue_info.get("evidence_blocked_vertices", 0))
                 report.inpaint_fallback = str(rescue_info.get("inpaint_fallback", "") or "")
             elif settings.engine == 'DATA_TRANSFER_SURFACE':
                 weights = _algo.transfer_with_data_transfer(context, settings, source_name, target_group.name)
@@ -574,7 +578,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                             target_group,
                             donor_count,
                             preferred_names=preferred_donors,
-                            strict_preferred=bool(preferred_donors),
+                            strict_preferred=False,
                         )
                     report.donors = [vg.name for vg in donors]
                     if donors:
@@ -624,8 +628,10 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append("新骨")
         elif settings.create_bone_if_missing and _algo.resolve_armature_object(settings) is None:
             bits.append("未建骨: 未找到目标骨架")
-        if report.rescued_components > 0:
-            bits.append(f"孤岛补种 {report.rescued_components} 域/{report.rescued_vertices} 点")
+        if report.zero_anchor_components > 0:
+            bits.append(f"零锚点 {report.zero_anchor_components} 域/{report.zero_anchor_vertices} 点")
+        if report.evidence_blocked_components > 0:
+            bits.append(f"无来源正权重 {report.evidence_blocked_components} 域/{report.evidence_blocked_vertices} 点")
         if report.inpaint_fallback:
             bits.append(f"{report.inpaint_fallback.lower()} inpaint 回退")
         if report.smoothed:

@@ -18,6 +18,10 @@ class WeightTransferReport:
     matched_count: int = 0
     rescued_components: int = 0
     rescued_vertices: int = 0
+    zero_anchor_components: int = 0
+    zero_anchor_vertices: int = 0
+    evidence_blocked_components: int = 0
+    evidence_blocked_vertices: int = 0
     inpaint_fallback: str = ""
     smoothed: bool = False
     smoothing_skipped: bool = False
@@ -488,17 +492,19 @@ def transfer_with_robust(context, settings, source_group_name):
         "rescued_components": 0,
         "rescued_vertices": 0,
         "filled_unmatched_vertices": 0,
+        "zero_anchor_components": 0,
+        "zero_anchor_vertices": 0,
+        "evidence_blocked_components": 0,
+        "evidence_blocked_vertices": 0,
         "inpaint_fallback": "",
     }
-    if component_stats is not None and component_stats.get("unseeded_components", 0) > 0:
+    if component_stats is not None:
         weights_for_inpaint, matched_for_inpaint, rescue_info = promote_unseeded_component_matches(
             target_verts,
             matched,
             weights,
             component_stats,
         )
-        if int(_rwt.np_module().count_nonzero(matched_for_inpaint)) == len(target_verts):
-            return _weight_values(weights_for_inpaint), matched_for_inpaint, matched_count, rescue_info
     result, weights = _rwt.inpaint(
         target_verts,
         target_faces,
@@ -517,11 +523,25 @@ def transfer_with_robust(context, settings, source_group_name):
         if fallback_result:
             rescue_info = dict(rescue_info)
             rescue_info["inpaint_fallback"] = "MESH"
+            fallback_weights, gate_info = _apply_source_positive_component_gate(
+                fallback_weights,
+                matched,
+                weights_for_inpaint,
+                component_stats,
+            )
+            rescue_info.update(gate_info)
             return _weight_values(fallback_weights), matched_for_inpaint, matched_count, rescue_info
         rescue_info = dict(rescue_info)
         rescue_info["inpaint_fallback_failed"] = "MESH"
     if not result:
         raise RuntimeError(describe_robust_inpaint_failure(target, matched, settings, component_stats, rescue_info))
+    weights, gate_info = _apply_source_positive_component_gate(
+        weights,
+        matched,
+        weights_for_inpaint,
+        component_stats,
+    )
+    rescue_info.update(gate_info)
     return _weight_values(weights), matched_for_inpaint, matched_count, rescue_info
 
 
@@ -543,6 +563,7 @@ def _matched_component_stats(obj, matched):
     largest_unseeded = 0
     isolated_unseeded = 0
     unseeded_vertex_count = 0
+    component_lists = []
     unseeded_lists = []
     for start in range(total):
         if seen[start]:
@@ -564,6 +585,7 @@ def _matched_component_stats(obj, matched):
                     continue
                 seen[neighbor] = True
                 stack.append(neighbor)
+        component_lists.append(component_vertices)
         if seeded:
             continue
         unseeded_components += 1
@@ -578,53 +600,96 @@ def _matched_component_stats(obj, matched):
         "largest_unseeded": largest_unseeded,
         "isolated_unseeded": isolated_unseeded,
         "unseeded_vertex_count": unseeded_vertex_count,
+        "component_lists": component_lists,
         "unseeded_lists": unseeded_lists,
     }
 
 
 def promote_unseeded_component_matches(target_verts, matched, weights, component_stats, *, threshold=0.00001):
     if component_stats is None:
-        return weights, matched, {"rescued_components": 0, "rescued_vertices": 0, "filled_unmatched_vertices": 0}
-    unseeded_lists = component_stats.get("unseeded_lists") or []
-    if not unseeded_lists:
-        return weights, matched, {"rescued_components": 0, "rescued_vertices": 0, "filled_unmatched_vertices": 0}
+        return weights, matched, _empty_component_rescue_info()
+    component_lists = component_stats.get("component_lists") or []
+    if not component_lists:
+        return weights, matched, _empty_component_rescue_info()
     flat_weights = _weight_values(weights)
-    positive_seed_indices = [
-        index
-        for index, is_matched in enumerate(matched.tolist())
-        if is_matched and float(flat_weights[index]) > threshold
-    ]
-    if not positive_seed_indices:
-        return weights, matched, {
-            "rescued_components": len(unseeded_lists),
-            "rescued_vertices": sum(len(component) for component in unseeded_lists),
-            "filled_unmatched_vertices": 0,
-        }
-    nearest_seed = kdtree.KDTree(len(positive_seed_indices))
-    for index in positive_seed_indices:
-        co = target_verts[index]
-        nearest_seed.insert((float(co[0]), float(co[1]), float(co[2])), index)
-    nearest_seed.balance()
-
-    rescued_weights = weights.copy()
-    rescued = matched.copy()
-    rescued_vertices = 0
-    filled_unmatched_vertices = 0
-    for vertex_index, is_matched in enumerate(matched.tolist()):
-        if is_matched:
+    prepared_weights = weights.copy()
+    prepared_matched = matched.copy()
+    zero_anchor_components = 0
+    zero_anchor_vertices = 0
+    evidence_blocked_components = 0
+    evidence_blocked_vertices = 0
+    for component in component_lists:
+        if not component:
             continue
-        co = target_verts[vertex_index]
-        _co, source_index, _distance = nearest_seed.find((float(co[0]), float(co[1]), float(co[2])))
-        rescued_weights[vertex_index] = weights[source_index]
-        rescued[vertex_index] = True
-        filled_unmatched_vertices += 1
+        has_match = any(bool(matched[index]) for index in component)
+        has_positive_seed = any(
+            bool(matched[index]) and float(flat_weights[index]) > threshold
+            for index in component
+        )
+        if not has_match:
+            anchor_index = component[0]
+            prepared_weights[anchor_index] = 0.0
+            prepared_matched[anchor_index] = True
+            zero_anchor_components += 1
+            zero_anchor_vertices += 1
+        if not has_positive_seed:
+            evidence_blocked_components += 1
+            evidence_blocked_vertices += len(component)
+    return prepared_weights, prepared_matched, {
+        "rescued_components": 0,
+        "rescued_vertices": 0,
+        "filled_unmatched_vertices": 0,
+        "zero_anchor_components": zero_anchor_components,
+        "zero_anchor_vertices": zero_anchor_vertices,
+        "evidence_blocked_components": evidence_blocked_components,
+        "evidence_blocked_vertices": evidence_blocked_vertices,
+        "inpaint_fallback": "",
+    }
 
-    for component in unseeded_lists:
-        rescued_vertices += len(component)
-    return rescued_weights, rescued, {
-        "rescued_components": len(unseeded_lists),
-        "rescued_vertices": rescued_vertices,
-        "filled_unmatched_vertices": filled_unmatched_vertices,
+
+def _empty_component_rescue_info():
+    return {
+        "rescued_components": 0,
+        "rescued_vertices": 0,
+        "filled_unmatched_vertices": 0,
+        "zero_anchor_components": 0,
+        "zero_anchor_vertices": 0,
+        "evidence_blocked_components": 0,
+        "evidence_blocked_vertices": 0,
+        "inpaint_fallback": "",
+    }
+
+
+def _apply_source_positive_component_gate(weights, matched, seed_weights, component_stats, *, threshold=0.00001):
+    if component_stats is None:
+        return weights, {
+            "evidence_blocked_components": 0,
+            "evidence_blocked_vertices": 0,
+        }
+    component_lists = component_stats.get("component_lists") or []
+    if not component_lists:
+        return weights, {
+            "evidence_blocked_components": 0,
+            "evidence_blocked_vertices": 0,
+        }
+    flat_seed_weights = _weight_values(seed_weights)
+    gated_weights = weights.copy()
+    evidence_blocked_components = 0
+    evidence_blocked_vertices = 0
+    for component in component_lists:
+        has_positive_seed = any(
+            bool(matched[index]) and float(flat_seed_weights[index]) > threshold
+            for index in component
+        )
+        if has_positive_seed:
+            continue
+        evidence_blocked_components += 1
+        evidence_blocked_vertices += len(component)
+        for vertex_index in component:
+            gated_weights[vertex_index] = 0.0
+    return gated_weights, {
+        "evidence_blocked_components": evidence_blocked_components,
+        "evidence_blocked_vertices": evidence_blocked_vertices,
     }
 
 
@@ -644,10 +709,13 @@ def describe_robust_inpaint_failure(target, matched, settings, component_stats=N
             parts.append(f"最大无命中连通域顶点数={component_stats['largest_unseeded']}")
         if component_stats["isolated_unseeded"] > 0:
             parts.append(f"孤立无命中顶点={component_stats['isolated_unseeded']}")
-    rescue_info = rescue_info or {"rescued_components": 0, "rescued_vertices": 0}
-    if rescue_info.get("rescued_components", 0) > 0:
-        parts.append(f"自动补种连通域={rescue_info['rescued_components']}")
-        parts.append(f"自动补种顶点={rescue_info['rescued_vertices']}")
+    rescue_info = rescue_info or _empty_component_rescue_info()
+    if rescue_info.get("zero_anchor_components", 0) > 0:
+        parts.append(f"零权重锚点连通域={rescue_info['zero_anchor_components']}")
+        parts.append(f"零权重锚点={rescue_info['zero_anchor_vertices']}")
+    if rescue_info.get("evidence_blocked_components", 0) > 0:
+        parts.append(f"无来源正权重证据连通域={rescue_info['evidence_blocked_components']}")
+        parts.append(f"无来源正权重证据顶点={rescue_info['evidence_blocked_vertices']}")
     if rescue_info.get("inpaint_fallback_failed"):
         parts.append(f"自动回退={rescue_info['inpaint_fallback_failed']}(失败)")
     detail = "；".join(parts)
