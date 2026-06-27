@@ -1123,7 +1123,13 @@ def apply_limit_groups(obj, settings, *, topology_cache=None):
     return True
 
 
-def _unique_editable_groups(groups):
+def _group_label(obj, group):
+    obj_name = getattr(obj, "name", "") or "Mesh"
+    group_name = getattr(group, "name", "") or "<unnamed>"
+    return f"{obj_name}/{group_name}"
+
+
+def _unique_editable_groups(groups, *, obj=None, action="写入"):
     result = []
     seen = set()
     for group in groups or ():
@@ -1131,11 +1137,20 @@ def _unique_editable_groups(groups):
             continue
         if getattr(group, "index", None) in seen:
             continue
-        if getattr(group, "lock_weight", False) or is_special_vg_name(group.name):
+        if getattr(group, "lock_weight", False):
+            raise ValueError(f"{action}顶点组 '{_group_label(obj, group)}' 已锁定，请先解锁后再执行")
+        if is_special_vg_name(group.name):
             continue
         result.append(group)
         seen.add(group.index)
     return result
+
+
+def _blocked_by_protected_limit_error(max_groups):
+    return (
+        f"集合外权重已占满或超出每顶点 {max_groups} 组限制，"
+        "无法安全保留本次权重；请解锁并纳入相关镜像组/供体，或暂时关闭限制后再执行。"
+    )
 
 
 def apply_limit_groups_scoped(obj, settings, authority_groups):
@@ -1143,7 +1158,7 @@ def apply_limit_groups_scoped(obj, settings, authority_groups):
     if not ok:
         raise RuntimeError(f"Robust limit 不可用: {error}")
     np = _rwt.np_module()
-    authorities = _unique_editable_groups(authority_groups)
+    authorities = _unique_editable_groups(authority_groups, obj=obj, action="限制")
     if not authorities:
         return ScopedLimitReport()
     authority_indices = [group.index for group in authorities]
@@ -1167,6 +1182,9 @@ def apply_limit_groups_scoped(obj, settings, authority_groups):
     else:
         protected_counts = np.zeros(len(obj.data.vertices), dtype=np.int64)
     slots = np.maximum(0, max_groups - protected_counts).astype(int)
+    authority_has_weight = np.any(authority_weights > 0.0001, axis=1)
+    if bool(np.any((slots <= 0) & authority_has_weight)):
+        raise ValueError(_blocked_by_protected_limit_error(max_groups))
     limited = np.zeros_like(authority_weights)
     row_count = authority_weights.shape[0]
     changed_rows = 0
@@ -1362,11 +1380,15 @@ def normalize_authority_groups_with_donors(obj, authority_groups, donor_groups):
     for group in authority_groups:
         if group is None or is_special_vg_name(group.name) or group.index in seen:
             continue
+        if group.lock_weight:
+            raise ValueError(f"规格化顶点组 '{_group_label(obj, group)}' 已锁定，请先解锁后再执行")
         authorities.append(group)
         seen.add(group.index)
     for group in donor_groups:
         if group is None or is_special_vg_name(group.name) or group.index in seen:
             continue
+        if group.lock_weight:
+            raise ValueError(f"规格化顶点组 '{_group_label(obj, group)}' 已锁定，请先解锁后再执行")
         donors.append(group)
         seen.add(group.index)
     participant = authorities + donors
@@ -1389,6 +1411,11 @@ def normalize_authority_groups_with_donors(obj, authority_groups, donor_groups):
     if authority_count > 0:
         authority_weights = participant_weights[:, :authority_count]
         authority_totals = authority_weights.sum(axis=1)
+        if bool(np.any(authority_totals > (available + 1e-6))):
+            raise ValueError(
+                "集合外权重已占用本次承接组需要的权重空间，无法安全规格化；"
+                "请解锁并纳入相关镜像组/供体，或暂时关闭规格化后再执行。"
+            )
         authority_scale = np.divide(
             available,
             authority_totals,
@@ -1516,6 +1543,17 @@ def add_mirror_mapping(settings, left_name, right_name):
     row.left_group = left
     row.right_group = right
     settings.active_mirror_mapping_index = len(settings.mirror_mappings) - 1
+    return True
+
+
+def should_persist_transfer_mirror_mapping(context, settings, obj, left_name, right_name):
+    left = _clean_name(left_name)
+    right = _clean_name(right_name)
+    if not left or not right or left == right:
+        return False
+    resolution = resolve_mirror_group(context, settings, obj, left)
+    if resolution.mirror_name == right and resolution.reason in {"命名镜像匹配", "MMD 映射镜像匹配"}:
+        return False
     return True
 
 
@@ -2311,19 +2349,11 @@ def select_auto_donors(
 
 
 def _write_groups_preserving_locks(obj, groups, weights):
-    original_locks = []
-    try:
-        for group in groups:
-            original_locks.append((group, bool(group.lock_weight)))
-            if group.lock_weight:
-                group.lock_weight = False
-        write_groups_by_indices(obj, [group.index for group in groups], weights)
-    finally:
-        for group, lock_weight in original_locks:
-            try:
-                group.lock_weight = lock_weight
-            except Exception:
-                pass
+    locked = [group for group in groups if getattr(group, "lock_weight", False)]
+    if locked:
+        names = ", ".join(_group_label(obj, group) for group in locked)
+        raise ValueError(f"顶点组已锁定，不能写入: {names}")
+    write_groups_by_indices(obj, [group.index for group in groups], weights)
 
 
 def normalize_with_donors(obj, target_group, donor_groups):
@@ -2336,6 +2366,8 @@ def normalize_with_donors(obj, target_group, donor_groups):
     for vg in [target_group] + list(donor_groups):
         if vg is None or is_special_vg_name(vg.name) or vg.index in seen:
             continue
+        if vg.lock_weight:
+            raise ValueError(f"规格化顶点组 '{_group_label(obj, vg)}' 已锁定，请先解锁后再执行")
         participant.append(vg)
         seen.add(vg.index)
     if not participant:
@@ -2353,6 +2385,11 @@ def normalize_with_donors(obj, target_group, donor_groups):
         protected_sum = np.zeros(len(obj.data.vertices), dtype=np.float32)
     available = np.maximum(0.0, 1.0 - protected_sum)
     target_weights = participant_weights[:, 0]
+    if bool(np.any(target_weights > (available + 1e-6))):
+        raise ValueError(
+            "集合外权重已占用本次承接组需要的权重空间，无法安全规格化；"
+            "请解锁并纳入相关镜像组/供体，或暂时关闭规格化后再执行。"
+        )
     normalized = np.zeros_like(participant_weights)
     normalized[:, 0] = np.minimum(target_weights, available)
     if participant_weights.shape[1] > 1:

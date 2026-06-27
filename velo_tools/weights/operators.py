@@ -976,7 +976,14 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                     raise RuntimeError(f"镜像权重结果为空：'{target.name}/{mirror_group.name}' 当前没有任何非零权重。")
                 if settings.create_bone_if_missing and _algo.ensure_group_bone(context, settings, target, current_mirror.name):
                     created_bones.append(current_mirror.name)
-                _algo.add_mirror_mapping(settings, target_group.name, current_mirror.name)
+                if _algo.should_persist_transfer_mirror_mapping(
+                    context,
+                    settings,
+                    target,
+                    target_group.name,
+                    current_mirror.name,
+                ):
+                    _algo.add_mirror_mapping(settings, target_group.name, current_mirror.name)
             if getattr(settings, "auto_lock_target_groups", True):
                 locked_groups = _algo.lock_transfer_target_groups(
                     [group for group in (current_group, mirror_group if mirror_enabled else None) if group is not None]

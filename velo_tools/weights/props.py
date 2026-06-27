@@ -69,6 +69,16 @@ _MIRROR_DONOR_SLOT_PROPS = (
 )
 
 
+_DONOR_SLOT_MANUAL_PROPS = (
+    "donor_slot_1_manual",
+    "donor_slot_2_manual",
+    "donor_slot_3_manual",
+    "donor_slot_4_manual",
+    "donor_slot_5_manual",
+    "donor_slot_6_manual",
+)
+
+
 _SYNCING_DONOR_PREVIEW = False
 
 
@@ -91,7 +101,13 @@ def selected_donor_pairs(settings, count=None):
     limit = donor_count_value(settings) if count is None else max(0, min(int(count), len(_DONOR_SLOT_PROPS)))
     pairs = []
     seen = set()
-    for donor_prop, mirror_prop in zip(_DONOR_SLOT_PROPS[:limit], _MIRROR_DONOR_SLOT_PROPS[:limit]):
+    for donor_prop, mirror_prop, manual_prop in zip(
+        _DONOR_SLOT_PROPS[:limit],
+        _MIRROR_DONOR_SLOT_PROPS[:limit],
+        _DONOR_SLOT_MANUAL_PROPS[:limit],
+    ):
+        if not bool(getattr(settings, manual_prop, False)):
+            continue
         cleaned = (getattr(settings, donor_prop, "") or "").strip()
         if not cleaned or cleaned in seen:
             continue
@@ -245,6 +261,20 @@ def _set_donor_slot_value(settings, prop_name, value):
         setattr(settings, prop_name, value)
 
 
+def _set_donor_slot_manual(settings, slot_index, value):
+    if slot_index is None or slot_index < 0 or slot_index >= len(_DONOR_SLOT_MANUAL_PROPS):
+        return
+    prop_name = _DONOR_SLOT_MANUAL_PROPS[slot_index]
+    if getattr(settings, prop_name, False) != bool(value):
+        setattr(settings, prop_name, bool(value))
+
+
+def _clear_donor_slot_manual_flags(settings):
+    for prop_name in _DONOR_SLOT_MANUAL_PROPS:
+        if getattr(settings, prop_name, False):
+            setattr(settings, prop_name, False)
+
+
 def _refresh_mirror_donor_status(settings, context, donor_names=None):
     settings.mirror_donor_status = ""
     target = getattr(settings, "target_object", None)
@@ -371,6 +401,7 @@ def sync_donor_preview(settings, context):
     previous = _SYNCING_DONOR_PREVIEW
     _SYNCING_DONOR_PREVIEW = True
     try:
+        _clear_donor_slot_manual_flags(settings)
         refresh_donor_vg_names(settings)
         preview_names = preview_donor_names(settings, context)
         for prop_name, donor_name in zip(_DONOR_SLOT_PROPS, preview_names):
@@ -428,16 +459,66 @@ def _on_donor_count_update(self, context):
     sync_donor_preview(self, context)
 
 
-def _on_donor_slot_update(self, context):
+def _on_donor_slot_update(self, context, slot_index=None):
     if _SYNCING_DONOR_PREVIEW:
         return
+    _set_donor_slot_manual(self, slot_index, True)
     sync_mirror_donor_preview(self, context)
 
 
-def _on_mirror_donor_slot_update(self, context):
+def _on_mirror_donor_slot_update(self, context, slot_index=None):
     if _SYNCING_DONOR_PREVIEW:
         return
+    _set_donor_slot_manual(self, slot_index, True)
     _refresh_mirror_donor_status(self, context)
+
+
+def _on_donor_slot_1_update(self, context):
+    _on_donor_slot_update(self, context, 0)
+
+
+def _on_donor_slot_2_update(self, context):
+    _on_donor_slot_update(self, context, 1)
+
+
+def _on_donor_slot_3_update(self, context):
+    _on_donor_slot_update(self, context, 2)
+
+
+def _on_donor_slot_4_update(self, context):
+    _on_donor_slot_update(self, context, 3)
+
+
+def _on_donor_slot_5_update(self, context):
+    _on_donor_slot_update(self, context, 4)
+
+
+def _on_donor_slot_6_update(self, context):
+    _on_donor_slot_update(self, context, 5)
+
+
+def _on_mirror_donor_slot_1_update(self, context):
+    _on_mirror_donor_slot_update(self, context, 0)
+
+
+def _on_mirror_donor_slot_2_update(self, context):
+    _on_mirror_donor_slot_update(self, context, 1)
+
+
+def _on_mirror_donor_slot_3_update(self, context):
+    _on_mirror_donor_slot_update(self, context, 2)
+
+
+def _on_mirror_donor_slot_4_update(self, context):
+    _on_mirror_donor_slot_update(self, context, 3)
+
+
+def _on_mirror_donor_slot_5_update(self, context):
+    _on_mirror_donor_slot_update(self, context, 4)
+
+
+def _on_mirror_donor_slot_6_update(self, context):
+    _on_mirror_donor_slot_update(self, context, 5)
 
 
 def _on_manual_mirror_target_group_update(self, context):
@@ -585,73 +666,97 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
         name="供体 1",
         default="",
         description="规格化时优先使用的第 1 个供体；来源组切换时会自动预填",
-        update=_on_donor_slot_update,
+        update=_on_donor_slot_1_update,
     )
     donor_slot_2: StringProperty(
         name="供体 2",
         default="",
         description="规格化时优先使用的第 2 个供体；来源组切换时会自动预填",
-        update=_on_donor_slot_update,
+        update=_on_donor_slot_2_update,
     )
     donor_slot_3: StringProperty(
         name="供体 3",
         default="",
         description="规格化时优先使用的第 3 个供体；来源组切换时会自动预填",
-        update=_on_donor_slot_update,
+        update=_on_donor_slot_3_update,
     )
     donor_slot_4: StringProperty(
         name="供体 4",
         default="",
         description="规格化时优先使用的第 4 个供体；来源组切换时会自动预填",
-        update=_on_donor_slot_update,
+        update=_on_donor_slot_4_update,
     )
     donor_slot_5: StringProperty(
         name="供体 5",
         default="",
         description="规格化时优先使用的第 5 个供体；来源组切换时会自动预填",
-        update=_on_donor_slot_update,
+        update=_on_donor_slot_5_update,
     )
     donor_slot_6: StringProperty(
         name="供体 6",
         default="",
         description="规格化时优先使用的第 6 个供体；来源组切换时会自动预填",
-        update=_on_donor_slot_update,
+        update=_on_donor_slot_6_update,
+    )
+    donor_slot_1_manual: BoolProperty(
+        default=False,
+        options={'HIDDEN'},
+    )
+    donor_slot_2_manual: BoolProperty(
+        default=False,
+        options={'HIDDEN'},
+    )
+    donor_slot_3_manual: BoolProperty(
+        default=False,
+        options={'HIDDEN'},
+    )
+    donor_slot_4_manual: BoolProperty(
+        default=False,
+        options={'HIDDEN'},
+    )
+    donor_slot_5_manual: BoolProperty(
+        default=False,
+        options={'HIDDEN'},
+    )
+    donor_slot_6_manual: BoolProperty(
+        default=False,
+        options={'HIDDEN'},
     )
     mirror_donor_slot_1: StringProperty(
         name="镜像供体 1",
         default="",
         description="供体 1 的镜像供体；会自动预填，也可手动覆盖",
-        update=_on_mirror_donor_slot_update,
+        update=_on_mirror_donor_slot_1_update,
     )
     mirror_donor_slot_2: StringProperty(
         name="镜像供体 2",
         default="",
         description="供体 2 的镜像供体；会自动预填，也可手动覆盖",
-        update=_on_mirror_donor_slot_update,
+        update=_on_mirror_donor_slot_2_update,
     )
     mirror_donor_slot_3: StringProperty(
         name="镜像供体 3",
         default="",
         description="供体 3 的镜像供体；会自动预填，也可手动覆盖",
-        update=_on_mirror_donor_slot_update,
+        update=_on_mirror_donor_slot_3_update,
     )
     mirror_donor_slot_4: StringProperty(
         name="镜像供体 4",
         default="",
         description="供体 4 的镜像供体；会自动预填，也可手动覆盖",
-        update=_on_mirror_donor_slot_update,
+        update=_on_mirror_donor_slot_4_update,
     )
     mirror_donor_slot_5: StringProperty(
         name="镜像供体 5",
         default="",
         description="供体 5 的镜像供体；会自动预填，也可手动覆盖",
-        update=_on_mirror_donor_slot_update,
+        update=_on_mirror_donor_slot_5_update,
     )
     mirror_donor_slot_6: StringProperty(
         name="镜像供体 6",
         default="",
         description="供体 6 的镜像供体；会自动预填，也可手动覆盖",
-        update=_on_mirror_donor_slot_update,
+        update=_on_mirror_donor_slot_6_update,
     )
     smoothing_enable: BoolProperty(
         name="启用平滑",
