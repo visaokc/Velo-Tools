@@ -369,6 +369,21 @@ def ensure_group_bone(context, settings, obj, group_name):
     return create_armature_bone(context, armature, group_name, head=head, tail=tail)
 
 
+def lock_transfer_target_groups(groups):
+    locked = []
+    seen = set()
+    for group in groups or ():
+        if group is None or getattr(group, "index", None) in seen:
+            continue
+        try:
+            group.lock_weight = True
+        except Exception:
+            continue
+        locked.append(group.name)
+        seen.add(getattr(group, "index", None))
+    return locked
+
+
 def resolve_armature_object(settings):
     armature = getattr(settings, "armature_object", None)
     if armature is not None and getattr(armature, "type", None) == 'ARMATURE':
@@ -1554,6 +1569,16 @@ def resolve_mirror_group(context, settings, obj, group_name):
         return MirrorGroupResolution(cleaned, numeric, "数字组权重重心镜像匹配", confidence, True)
 
     return MirrorGroupResolution(source_name=cleaned, reason="未找到可信镜像顶点组")
+
+
+def resolve_transfer_mirror_group_name(context, settings, target, target_group_name, fallback_name=""):
+    override = ""
+    if getattr(settings, "manual_mirror_target_group_name", False):
+        override = _clean_name(getattr(settings, "mirror_target_group_name", ""))
+    if override:
+        return override
+    mirror_resolution = resolve_mirror_group(context, settings, target, target_group_name)
+    return mirror_resolution.mirror_name or _clean_name(fallback_name)
 
 
 def _is_control_bone_name(name):

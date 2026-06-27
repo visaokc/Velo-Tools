@@ -131,7 +131,10 @@ def refresh_donor_vg_names(settings):
     if obj is None or obj.type != 'MESH':
         return
     target_name = (getattr(settings, "target_group_name", "") or "").strip()
-    mirror_name = (getattr(settings, "mirror_group", "") or "").strip()
+    mirror_name = (
+        (getattr(settings, "mirror_target_group_name", "") or "").strip()
+        or (getattr(settings, "mirror_group", "") or "").strip()
+    )
     try:
         from ..core.mapping.filters import is_special_vg_name
     except Exception:
@@ -178,6 +181,7 @@ def sync_mirror_group(settings, context):
     if not source_name or obj is None or obj.type != 'MESH':
         settings.mirror_group = ""
         settings.mirror_status = "未选择来源顶点组"
+        sync_mirror_target_group_name(settings, context)
         return
     try:
         from . import algorithms as _algo
@@ -185,6 +189,7 @@ def sync_mirror_group(settings, context):
     except Exception as exc:
         settings.mirror_group = ""
         settings.mirror_status = str(exc)
+        sync_mirror_target_group_name(settings, context)
         return
     if resolution.mirror_name:
         if getattr(settings, "mirror_group", "") != resolution.mirror_name:
@@ -195,6 +200,32 @@ def sync_mirror_group(settings, context):
         if getattr(settings, "mirror_group", ""):
             settings.mirror_group = ""
         settings.mirror_status = resolution.reason or "未找到可信镜像顶点组"
+    sync_mirror_target_group_name(settings, context)
+
+
+def sync_mirror_target_group_name(settings, context):
+    if getattr(settings, "manual_mirror_target_group_name", False):
+        return
+    mirror_name = (getattr(settings, "mirror_group", "") or "").strip()
+    target = getattr(settings, "target_object", None)
+    target_name = (getattr(settings, "target_group_name", "") or "").strip()
+    if not mirror_name or target is None or target.type != 'MESH' or not target_name:
+        if getattr(settings, "mirror_target_group_name", ""):
+            settings.mirror_target_group_name = ""
+        return
+    try:
+        from . import algorithms as _algo
+        resolved = _algo.resolve_transfer_mirror_group_name(
+            context,
+            settings,
+            target,
+            target_name,
+            mirror_name,
+        )
+    except Exception:
+        resolved = mirror_name
+    if resolved != getattr(settings, "mirror_target_group_name", ""):
+        settings.mirror_target_group_name = resolved
 
 
 def sync_mirror_donor_preview(settings, context, base_donor_names=None):
@@ -274,7 +305,10 @@ def preview_donor_names(settings, context):
             target,
             target_group,
             donor_count_value(settings),
-            exclude_group_names=[(getattr(settings, "mirror_group", "") or "").strip()],
+            exclude_group_names=[
+                (getattr(settings, "mirror_target_group_name", "") or "").strip()
+                or (getattr(settings, "mirror_group", "") or "").strip()
+            ],
             preferred_names=semantic_names,
             strict_preferred=False,
             focus_weights=focus_weights,
@@ -319,19 +353,31 @@ def _on_source_group_update(self, context):
 def _on_manual_target_group_update(self, context):
     if not getattr(self, "manual_target_group_name", False):
         sync_target_group_name(self, context)
+    sync_mirror_target_group_name(self, context)
     sync_donor_preview(self, context)
 
 
 def _on_target_group_name_update(self, context):
+    sync_mirror_target_group_name(self, context)
     sync_donor_preview(self, context)
 
 
 def _on_mirror_group_update(self, context):
+    sync_mirror_target_group_name(self, context)
     sync_mirror_donor_preview(self, context)
+
+
+def _on_mirror_target_group_update(self, context):
+    sync_donor_preview(self, context)
 
 
 def _on_donor_count_update(self, context):
     sync_donor_preview(self, context)
+
+
+def _on_manual_mirror_target_group_update(self, context):
+    if not getattr(self, "manual_mirror_target_group_name", False):
+        sync_mirror_target_group_name(self, context)
 
 
 class VELO_WeightSettings(bpy.types.PropertyGroup):
@@ -429,6 +475,18 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
         description="自动推断或手动指定的目标顶点组名；自动模式会优先使用 MMD 映射表认领的对应组",
         update=_on_target_group_name_update,
     )
+    manual_mirror_target_group_name: BoolProperty(
+        name="手动指定镜像承接组",
+        default=False,
+        description="关闭时按当前镜像传递规则自动识别镜像承接组；开启后使用下面填写的镜像承接组名作为覆盖",
+        update=_on_manual_mirror_target_group_update,
+    )
+    mirror_target_group_name: StringProperty(
+        name="镜像承接组名",
+        default="",
+        description="镜像传递时写入的目标顶点组名；可手动覆盖自动解析结果",
+        update=_on_mirror_target_group_update,
+    )
     reuse_existing_group: BoolProperty(
         name="复用已有承接组",
         default=True,
@@ -443,6 +501,11 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
         name="无承接组时创建新骨",
         default=True,
         description="承接组不存在且选择了目标骨架时，同时创建同名 deform 骨骼",
+    )
+    auto_lock_target_groups: BoolProperty(
+        name="传递后自动锁定承接组",
+        default=True,
+        description="权重传递成功后锁定本次写入的承接组；镜像传递时也会锁定镜像承接组，防止后续限制或规格化改写已完成组",
     )
     donor_count: IntProperty(
         name="自动供体数",

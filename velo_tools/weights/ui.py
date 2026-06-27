@@ -137,6 +137,12 @@ class VELO_PT_weight_transfer(bpy.types.Panel):
         row = col.row(align=True)
         row.enabled = settings.armature_object is not None
         row.prop(settings, "create_bone_if_missing")
+        col.prop(settings, "auto_lock_target_groups")
+        if (settings.mirror_group or "").strip():
+            col.prop(settings, "manual_mirror_target_group_name")
+            row = col.row(align=True)
+            row.enabled = settings.manual_mirror_target_group_name
+            row.prop(settings, "mirror_target_group_name")
         col.prop(settings, "donor_count")
         donor_box = col.box()
         donor_box.label(text="预计算供体（规格化时使用）")

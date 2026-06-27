@@ -795,6 +795,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
         created_bones = []
         created_group = False
         created_bone = False
+        locked_groups = []
         mirror_flag_stack = contextlib.ExitStack()
         try:
             _props.sync_target_group_name(settings, context)
@@ -833,8 +834,13 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             mirror_stats = None
             scope_ok, _scope_reason = _algo.is_component_export_object(context.scene, target)
             if scope_ok and (getattr(settings, "mirror_group", "") or "").strip():
-                mirror_resolution = _algo.resolve_mirror_group(context, settings, target, target_group.name)
-                mirror_group_name = mirror_resolution.mirror_name or (getattr(settings, "mirror_group", "") or "").strip()
+                mirror_group_name = _algo.resolve_transfer_mirror_group_name(
+                    context,
+                    settings,
+                    target,
+                    target_group.name,
+                    (getattr(settings, "mirror_group", "") or "").strip(),
+                )
                 if mirror_group_name and mirror_group_name != target_group.name:
                     mirror_group, mirror_created = _ensure_editable_group(target, mirror_group_name)
                     if mirror_created:
@@ -948,6 +954,10 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 if settings.create_bone_if_missing and _algo.ensure_group_bone(context, settings, target, current_mirror.name):
                     created_bones.append(current_mirror.name)
                 _algo.add_mirror_mapping(settings, target_group.name, current_mirror.name)
+            if getattr(settings, "auto_lock_target_groups", True):
+                locked_groups = _algo.lock_transfer_target_groups(
+                    [group for group in (current_group, mirror_group if mirror_enabled else None) if group is not None]
+                )
         except Exception as exc:
             for bone_name in created_bones:
                 try:
@@ -996,6 +1006,11 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append(f"镜像 {mirror_group.name} {mirror_stats.get('matched_vertices', 0)} 点")
             if mirror_stats.get("coincident_buckets", 0):
                 bits.append(f"重合点组 {mirror_stats['coincident_buckets']}")
+        if locked_groups:
+            if len(locked_groups) == 1:
+                bits.append("已锁定承接组")
+            else:
+                bits.append("已锁定承接组/镜像承接组")
         settings.last_report = "；".join(bits)
         self.report({'INFO'}, settings.last_report)
         return {'FINISHED'}
