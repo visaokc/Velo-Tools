@@ -86,9 +86,7 @@ class VELO_PT_weight_mirror_mapping(bpy.types.Panel):
         mapping_box = layout.box()
         header = mapping_box.row(align=True)
         header.label(text="手动映射")
-        add_op = header.operator("velo.weight_mirror_mapping_add", text="", icon='ADD')
-        add_op.left_group = settings.source_group
-        add_op.right_group = settings.mirror_group
+        header.operator("velo.weight_mirror_mapping_add", text="", icon='ADD')
         if len(settings.mirror_mappings) <= 0:
             mapping_box.label(text="暂无手动镜像映射", icon='INFO')
         for index, item in enumerate(settings.mirror_mappings):

@@ -429,11 +429,19 @@ class VELO_OT_weight_mirror_mapping_add(bpy.types.Operator):
 
     def execute(self, context):
         settings = context.scene.velo_weight_tools
-        left = (self.left_group or getattr(settings, "source_group", "") or "").strip()
-        right = (self.right_group or getattr(settings, "mirror_group", "") or "").strip()
+        left = (self.left_group or "").strip()
+        right = (self.right_group or "").strip()
         try:
+            if not left and not right:
+                item = settings.mirror_mappings.add()
+                item.left_group = ""
+                item.right_group = ""
+                settings.active_mirror_mapping_index = len(settings.mirror_mappings) - 1
+                settings.last_report = "已新增空白镜像映射"
+                self.report({'INFO'}, settings.last_report)
+                return {'FINISHED'}
             if not left or not right:
-                raise ValueError("请先指定左右两个镜像顶点组")
+                raise ValueError("请同时指定左右两个镜像顶点组")
             if left == right:
                 raise ValueError("镜像映射两侧不能是同一个顶点组")
             created = _algo.add_mirror_mapping(settings, left, right)
