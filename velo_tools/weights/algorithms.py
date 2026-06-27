@@ -33,6 +33,7 @@ class WeightTransferReport:
     limit_skipped_same_object: bool = False
     normalize_skipped_same_object: bool = False
     donors: list[str] = field(default_factory=list)
+    skipped_locked_donor_pairs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -40,6 +41,14 @@ class ScopedLimitReport:
     changed: bool = False
     protected_over_limit_vertices: int = 0
     authority_limited_vertices: int = 0
+
+
+@dataclass
+class DonorPairEligibility:
+    donors: list = field(default_factory=list)
+    mirror_donors: list = field(default_factory=list)
+    skipped_locked_pairs: list[str] = field(default_factory=list)
+    skipped_unavailable_pairs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -67,7 +76,10 @@ _NATIVE_MIRROR_FLAGS = (
     ("use_mirror_y", "Y Mirror"),
     ("use_mirror_z", "Z Mirror"),
 )
-_DONOR_DOMINANCE_RATIO = 0.25
+_DONOR_DOMINANCE_RATIO = 0.12
+_DONOR_SHARED_VERTEX_RATIO = 0.35
+_DONOR_SHARED_VERTEX_MIN = 3
+_DONOR_SHARED_FOCUS_RATIO = 0.35
 
 
 def _object_label(obj):
@@ -265,7 +277,7 @@ def _resolve_mmd_claimed_group(context, settings, source_name):
     return None
 
 
-def validate_source_group(source, group_name):
+def validate_source_group(source, group_name, *, require_unlocked=True):
     if source is None or source.type != 'MESH':
         raise ValueError(f"来源网格无效: {_object_label(source)}")
     group_name = _clean_name(group_name)
@@ -274,7 +286,7 @@ def validate_source_group(source, group_name):
     group = source.vertex_groups.get(group_name)
     if group is None:
         raise ValueError(f"来源网格 '{source.name}' 不存在顶点组 '{group_name}'")
-    if group.lock_weight:
+    if require_unlocked and group.lock_weight:
         raise ValueError(f"来源顶点组 '{source.name}/{group.name}' 已锁定，不能作为供体")
     if is_special_vg_name(group.name):
         raise ValueError(f"来源顶点组 '{source.name}/{group.name}' 是 Velo 特殊组，不能作为供体")
@@ -1411,6 +1423,57 @@ def mirrored_donor_groups(context, settings, obj, donor_groups, *, mirror_names=
     return result
 
 
+def auto_donor_pair_eligibility(context, settings, obj, donor_groups, *, exclude_names=None):
+    exclude = {_clean_name(name) for name in (exclude_names or ()) if _clean_name(name)}
+    result = DonorPairEligibility()
+    seen_donors = set()
+    seen_mirrors = set()
+    for donor in donor_groups or ():
+        if donor is None or getattr(donor, "index", None) in seen_donors:
+            continue
+        donor_name = _clean_name(getattr(donor, "name", ""))
+        if not donor_name:
+            continue
+        resolution = resolve_mirror_group(context, settings, obj, donor_name)
+        mirror_name = _clean_name(resolution.mirror_name)
+        pair_label = f"{donor_name} ↔ {mirror_name or '?'}"
+        if getattr(donor, "lock_weight", False):
+            result.skipped_locked_pairs.append(pair_label)
+            continue
+        if is_special_vg_name(donor_name) or donor_name in exclude:
+            result.skipped_unavailable_pairs.append(pair_label)
+            continue
+        if count_group_weights(obj, donor) <= 0:
+            result.skipped_unavailable_pairs.append(pair_label)
+            continue
+
+        if not mirror_name or mirror_name in exclude:
+            result.skipped_unavailable_pairs.append(pair_label)
+            continue
+        mirror_group = obj.vertex_groups.get(mirror_name)
+        if mirror_group is None:
+            result.skipped_unavailable_pairs.append(pair_label)
+            continue
+        if getattr(mirror_group, "lock_weight", False):
+            result.skipped_locked_pairs.append(pair_label)
+            continue
+        if is_special_vg_name(mirror_group.name):
+            result.skipped_unavailable_pairs.append(pair_label)
+            continue
+        if count_group_weights(obj, mirror_group) <= 0:
+            result.skipped_unavailable_pairs.append(pair_label)
+            continue
+        if getattr(mirror_group, "index", None) in seen_mirrors:
+            result.skipped_unavailable_pairs.append(pair_label)
+            continue
+
+        seen_donors.add(donor.index)
+        seen_mirrors.add(mirror_group.index)
+        result.donors.append(donor)
+        result.mirror_donors.append(mirror_group)
+    return result
+
+
 def _unique_normalize_groups(obj, groups, *, label):
     result = []
     seen = set()
@@ -2264,16 +2327,32 @@ def _apply_donor_dominance_gate(candidates):
     leader = candidates[0]
     leader_overlap = max(0.0, float(leader[2]))
     leader_focus_sum = max(0.0, float(leader[4]))
+    leader_shared = max(0, int(leader[5]))
     if leader_overlap <= 0.0 and leader_focus_sum <= 0.0:
         return candidates[:1]
     filtered = [leader]
     for candidate in candidates[1:]:
+        preferred = bool(candidate[0])
         overlap = max(0.0, float(candidate[2]))
+        focus_ratio = max(0.0, float(candidate[3]))
         focus_sum = max(0.0, float(candidate[4]))
+        shared = max(0, int(candidate[5]))
+        if preferred and (overlap > 0.0 or focus_sum > 0.0 or shared > 0):
+            filtered.append(candidate)
+            continue
         if leader_overlap > 0.0 and overlap >= leader_overlap * _DONOR_DOMINANCE_RATIO:
             filtered.append(candidate)
             continue
         if leader_focus_sum > 0.0 and focus_sum >= leader_focus_sum * _DONOR_DOMINANCE_RATIO:
+            filtered.append(candidate)
+            continue
+        shared_floor = max(_DONOR_SHARED_VERTEX_MIN, int(leader_shared * _DONOR_SHARED_VERTEX_RATIO))
+        if (
+            leader_focus_sum > 0.0
+            and shared >= shared_floor
+            and focus_ratio >= _DONOR_SHARED_FOCUS_RATIO
+            and focus_sum >= leader_focus_sum * (_DONOR_DOMINANCE_RATIO * 0.75)
+        ):
             filtered.append(candidate)
     return filtered
 
@@ -2288,6 +2367,7 @@ def select_auto_donors(
     strict_preferred=False,
     focus_weights=None,
     preferred_side=None,
+    include_locked_candidates=False,
 ):
     ok, error = _rwt.ensure_available()
     if not ok:
@@ -2303,7 +2383,7 @@ def select_auto_donors(
     for vg in obj.vertex_groups:
         if vg.index == target_group.index:
             continue
-        if vg.lock_weight:
+        if vg.lock_weight and not include_locked_candidates:
             continue
         if _clean_name(vg.name) in exclude_group_names:
             continue
@@ -2321,7 +2401,9 @@ def select_auto_donors(
         group = obj.vertex_groups.get(cleaned)
         if group is None or group.index == target_group.index:
             continue
-        if group.lock_weight or is_special_vg_name(group.name):
+        if group.lock_weight and not include_locked_candidates:
+            continue
+        if is_special_vg_name(group.name):
             continue
         if group not in candidate_groups:
             continue

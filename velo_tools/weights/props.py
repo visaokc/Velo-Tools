@@ -269,6 +269,13 @@ def _set_donor_slot_manual(settings, slot_index, value):
         setattr(settings, prop_name, bool(value))
 
 
+def _append_mirror_donor_status(settings, message):
+    if not message:
+        return
+    current = (getattr(settings, "mirror_donor_status", "") or "").strip()
+    settings.mirror_donor_status = f"{current}；{message}" if current else message
+
+
 def _clear_donor_slot_manual_flags(settings):
     for prop_name in _DONOR_SLOT_MANUAL_PROPS:
         if getattr(settings, prop_name, False):
@@ -312,7 +319,7 @@ def _refresh_mirror_donor_status(settings, context, donor_names=None):
         settings.mirror_donor_status = str(exc)
 
 
-def sync_mirror_donor_preview(settings, context, base_donor_names=None):
+def sync_mirror_donor_preview(settings, context, base_donor_names=None, skipped_locked_pairs=None):
     global _SYNCING_DONOR_PREVIEW
     previous = _SYNCING_DONOR_PREVIEW
     _SYNCING_DONOR_PREVIEW = True
@@ -325,6 +332,11 @@ def sync_mirror_donor_preview(settings, context, base_donor_names=None):
             return
         donor_names = list(base_donor_names) if base_donor_names is not None else selected_donor_names(settings)
         if not donor_names:
+            if skipped_locked_pairs:
+                _append_mirror_donor_status(
+                    settings,
+                    "已跳过锁定供体对: " + ", ".join(skipped_locked_pairs),
+                )
             return
         try:
             from . import algorithms as _algo
@@ -338,24 +350,36 @@ def sync_mirror_donor_preview(settings, context, base_donor_names=None):
             settings.mirror_donor_status = str(exc)
         else:
             _refresh_mirror_donor_status(settings, context, donor_names)
+            if skipped_locked_pairs:
+                _append_mirror_donor_status(
+                    settings,
+                    "已跳过锁定供体对: " + ", ".join(skipped_locked_pairs),
+                )
     finally:
         _SYNCING_DONOR_PREVIEW = previous
 
 
-def preview_donor_names(settings, context):
+def _uses_mirror_donor_pairs(settings):
+    return bool(
+        (getattr(settings, "mirror_group", "") or "").strip()
+        or (getattr(settings, "mirror_target_group_name", "") or "").strip()
+    )
+
+
+def preview_donor_selection(settings, context):
     if context is None:
-        return []
+        return [], []
     source_name = (getattr(settings, "source_group", "") or "").strip()
     target = getattr(settings, "target_object", None)
     if not source_name or target is None or target.type != 'MESH':
-        return []
+        return [], []
     try:
         from . import algorithms as _algo
         target_name = (getattr(settings, "target_group_name", "") or "").strip()
         if not target_name:
             target_name = _algo.suggest_target_group_name(context, settings)
         if not target_name:
-            return []
+            return [], []
         target_group = target.vertex_groups.get(target_name)
         try:
             focus_weights = _algo.source_group_target_focus_weights(context, settings, source_name)
@@ -378,20 +402,62 @@ def preview_donor_names(settings, context):
             focus_weights=focus_weights,
             candidate_groups=semantic_groups,
         )
+        mirror_target_name = (
+            (getattr(settings, "mirror_target_group_name", "") or "").strip()
+            or (getattr(settings, "mirror_group", "") or "").strip()
+        )
+        exclude_group_names = [mirror_target_name]
         donors = _algo.select_auto_donors(
             target,
             target_group,
             donor_count_value(settings),
-            exclude_group_names=[
-                (getattr(settings, "mirror_target_group_name", "") or "").strip()
-                or (getattr(settings, "mirror_group", "") or "").strip()
-            ],
+            exclude_group_names=exclude_group_names,
             preferred_names=semantic_names,
             strict_preferred=False,
             focus_weights=focus_weights,
             preferred_side=preferred_side,
         )
-        return [vg.name for vg in donors]
+        skipped_locked_pairs = []
+        if _uses_mirror_donor_pairs(settings):
+            eligibility = _algo.auto_donor_pair_eligibility(
+                context,
+                settings,
+                target,
+                donors,
+                exclude_names=[target_name, mirror_target_name],
+            )
+            donors = eligibility.donors
+            skipped_locked_pairs = list(eligibility.skipped_locked_pairs)
+            diagnostic_donors = _algo.select_auto_donors(
+                target,
+                target_group,
+                donor_count_value(settings),
+                exclude_group_names=exclude_group_names,
+                preferred_names=semantic_names,
+                strict_preferred=False,
+                focus_weights=focus_weights,
+                preferred_side=preferred_side,
+                include_locked_candidates=True,
+            )
+            diagnostic = _algo.auto_donor_pair_eligibility(
+                context,
+                settings,
+                target,
+                diagnostic_donors,
+                exclude_names=[target_name, mirror_target_name],
+            )
+            for label in diagnostic.skipped_locked_pairs:
+                if label not in skipped_locked_pairs:
+                    skipped_locked_pairs.append(label)
+        return [vg.name for vg in donors], skipped_locked_pairs
+    except Exception:
+        return [], []
+
+
+def preview_donor_names(settings, context):
+    try:
+        donor_names, _skipped_locked_pairs = preview_donor_selection(settings, context)
+        return donor_names
     except Exception:
         return []
 
@@ -403,12 +469,12 @@ def sync_donor_preview(settings, context):
     try:
         _clear_donor_slot_manual_flags(settings)
         refresh_donor_vg_names(settings)
-        preview_names = preview_donor_names(settings, context)
+        preview_names, skipped_locked_pairs = preview_donor_selection(settings, context)
         for prop_name, donor_name in zip(_DONOR_SLOT_PROPS, preview_names):
             _set_donor_slot_value(settings, prop_name, donor_name)
         for prop_name in _DONOR_SLOT_PROPS[len(preview_names):]:
             _set_donor_slot_value(settings, prop_name, "")
-        sync_mirror_donor_preview(settings, context, preview_names)
+        sync_mirror_donor_preview(settings, context, preview_names, skipped_locked_pairs=skipped_locked_pairs)
     finally:
         _SYNCING_DONOR_PREVIEW = previous
 

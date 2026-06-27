@@ -119,6 +119,21 @@ def _snapshot_group(snapshots, obj, group):
     snapshots[key] = list(_algo._plain_group_weights(obj, group))
 
 
+def _snapshot_group_locks(obj):
+    if obj is None or getattr(obj, "type", None) != 'MESH':
+        return {}
+    return {group.name: bool(group.lock_weight) for group in obj.vertex_groups}
+
+
+def _restore_group_locks(obj, snapshots):
+    if obj is None or not snapshots:
+        return
+    for group_name, locked in snapshots.items():
+        group = obj.vertex_groups.get(group_name)
+        if group is not None:
+            group.lock_weight = bool(locked)
+
+
 def _restore_group_snapshots(obj, snapshots):
     if obj is None:
         return
@@ -177,7 +192,18 @@ def _validate_mirror_donor_count(donors, mirror_donors):
         raise ValueError(f"镜像规格化需要匹配实际 {expected} 个镜像供体，但只找到 {actual} 个")
 
 
-def _select_donors_for_group(context, settings, target, group, source_name, *, configured_names=None, focus_weights=None, exclude_names=None):
+def _select_donors_for_group(
+    context,
+    settings,
+    target,
+    group,
+    source_name,
+    *,
+    configured_names=None,
+    focus_weights=None,
+    exclude_names=None,
+    include_locked_candidates=False,
+):
     donor_count = _props.donor_count_value(settings)
     configured_names = list(configured_names or [])
     if configured_names:
@@ -188,6 +214,7 @@ def _select_donors_for_group(context, settings, target, group, source_name, *, c
             exclude_group_names=exclude_names,
             preferred_names=configured_names,
             strict_preferred=True,
+            include_locked_candidates=include_locked_candidates,
         )
     preferred_donors = _algo.semantic_auto_donor_names(
         context,
@@ -213,6 +240,7 @@ def _select_donors_for_group(context, settings, target, group, source_name, *, c
         strict_preferred=False,
         focus_weights=focus_weights,
         preferred_side=preferred_side,
+        include_locked_candidates=include_locked_candidates,
     )
 
 
@@ -802,6 +830,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
         created_group = False
         created_bone = False
         locked_groups = []
+        source_lock_snapshot = {}
         mirror_flag_stack = contextlib.ExitStack()
         try:
             _props.sync_target_group_name(settings, context)
@@ -813,7 +842,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             if target is None or target.type != 'MESH':
                 raise ValueError("请选择目标网格")
             source_name = (settings.source_group or "").strip()
-            _algo.validate_source_group(source, source_name)
+            source_lock_snapshot = _snapshot_group_locks(source) if source is not target else {}
+            _algo.validate_source_group(source, source_name, require_unlocked=False)
             resolution = _algo.resolve_target_group(context, settings)
             target_group, created_group, created_bone = _algo.ensure_target_group(
                 context,
@@ -911,14 +941,46 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                     if configured_pairs:
                         mirror_by_donor = {donor: mirror for donor, mirror in configured_pairs}
                         mirror_names = [mirror_by_donor.get(group.name, "") for group in donors]
-                    mirror_donors = _algo.mirrored_donor_groups(
-                        context,
-                        settings,
-                        target,
-                        donors,
-                        mirror_names=mirror_names,
-                        exclude_names=[target_group.name, mirror_group.name],
-                    )
+                        mirror_donors = _algo.mirrored_donor_groups(
+                            context,
+                            settings,
+                            target,
+                            donors,
+                            mirror_names=mirror_names,
+                            exclude_names=[target_group.name, mirror_group.name],
+                        )
+                    else:
+                        eligibility = _algo.auto_donor_pair_eligibility(
+                            context,
+                            settings,
+                            target,
+                            donors,
+                            exclude_names=[target_group.name, mirror_group.name],
+                        )
+                        donors = eligibility.donors
+                        mirror_donors = eligibility.mirror_donors
+                        skipped_locked_pairs = list(eligibility.skipped_locked_pairs)
+                        diagnostic_donors = _select_donors_for_group(
+                            context,
+                            settings,
+                            target,
+                            target_group,
+                            source_name,
+                            focus_weights=focus_weights,
+                            exclude_names=exclude_names,
+                            include_locked_candidates=True,
+                        )
+                        diagnostic = _algo.auto_donor_pair_eligibility(
+                            context,
+                            settings,
+                            target,
+                            diagnostic_donors,
+                            exclude_names=[target_group.name, mirror_group.name],
+                        )
+                        for label in diagnostic.skipped_locked_pairs:
+                            if label not in skipped_locked_pairs:
+                                skipped_locked_pairs.append(label)
+                        report.skipped_locked_donor_pairs = skipped_locked_pairs
                     _validate_mirror_donor_count(donors, mirror_donors)
                     report.donors = [vg.name for vg in donors] + [f"镜像:{vg.name}" for vg in mirror_donors]
             if settings.limit_groups_enable:
@@ -1010,6 +1072,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             return {'CANCELLED'}
         finally:
             mirror_flag_stack.close()
+            _restore_group_locks(source, source_lock_snapshot)
 
         _invalidate_weight_overlay_caches(context)
 
@@ -1044,6 +1107,9 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append("同对象跳过 normalize")
         if report.donors:
             bits.append("供体 " + ", ".join(report.donors))
+        skipped_locked_pairs = getattr(report, "skipped_locked_donor_pairs", [])
+        if skipped_locked_pairs:
+            bits.append("已跳过锁定供体对 " + ", ".join(skipped_locked_pairs))
         if mirror_stats is not None and mirror_group is not None:
             bits.append(f"镜像 {mirror_group.name} {mirror_stats.get('matched_vertices', 0)} 点")
             if mirror_stats.get("coincident_buckets", 0):
