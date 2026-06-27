@@ -170,8 +170,15 @@ def _ensure_editable_group(obj, group_name):
     return group, created
 
 
+def _validate_mirror_donor_count(donors, mirror_donors):
+    expected = len(donors or ())
+    actual = len(mirror_donors or ())
+    if actual != expected:
+        raise ValueError(f"镜像规格化需要匹配实际 {expected} 个镜像供体，但只找到 {actual} 个")
+
+
 def _select_donors_for_group(context, settings, target, group, source_name, *, configured_names=None, focus_weights=None, exclude_names=None):
-    donor_count = int(settings.donor_count)
+    donor_count = _props.donor_count_value(settings)
     configured_names = list(configured_names or [])
     if configured_names:
         return _algo.select_auto_donors(
@@ -210,7 +217,7 @@ def _select_donors_for_group(context, settings, target, group, source_name, *, c
 
 
 def _select_activity_donors(context, settings, obj, group, *, exclude_names=None):
-    donor_count = int(settings.donor_count)
+    donor_count = _props.donor_count_value(settings)
     focus_weights = _algo.read_group_weights(obj, group)
     preferred_side = _algo.infer_donor_side(obj, group, focus_weights=focus_weights)
     return _algo.select_auto_donors(
@@ -388,7 +395,7 @@ class VELO_OT_weight_copy_last_report(bpy.types.Operator):
 class VELO_OT_weight_cycle_donor_count(bpy.types.Operator):
     bl_idname = "velo.weight_cycle_donor_count"
     bl_label = "切换自动供体数"
-    bl_description = "在 1 到 4 之间切换自动供体数量"
+    bl_description = "在 1 到 6 之间切换自动供体数量"
     bl_options = {'INTERNAL'}
 
     direction: EnumProperty(
@@ -410,7 +417,7 @@ class VELO_OT_weight_cycle_donor_count(bpy.types.Operator):
         if self.direction == 'PREV':
             current = max(1, current - 1)
         else:
-            current = min(4, current + 1)
+            current = min(6, current + 1)
         settings.donor_count = current
         return {'FINISHED'}
 
@@ -535,8 +542,6 @@ class VELO_OT_weight_mirror_active_group(bpy.types.Operator):
                     active_group,
                     exclude_names=[mirror_group.name],
                 )
-                if len(donors) < int(settings.donor_count):
-                    raise ValueError(f"镜像规格化需要 {int(settings.donor_count)} 个供体，但只找到 {len(donors)} 个")
                 mirror_donors = _algo.mirrored_donor_groups(
                     context,
                     settings,
@@ -544,6 +549,7 @@ class VELO_OT_weight_mirror_active_group(bpy.types.Operator):
                     donors,
                     exclude_names=[active_group.name, mirror_group.name],
                 )
+                _validate_mirror_donor_count(donors, mirror_donors)
                 for group in donors + mirror_donors:
                     _snapshot_group(snapshots, obj, group)
 
@@ -592,9 +598,9 @@ class VELO_OT_weight_mirror_active_group(bpy.types.Operator):
         if normalized:
             bits.append("normalize")
         if donors:
-            bits.append("供体 " + ", ".join(group.name for group in donors))
+            bits.append(f"供体 {len(donors)}/{_props.donor_count_value(settings)} " + ", ".join(group.name for group in donors))
         if mirror_donors:
-            bits.append("镜像供体 " + ", ".join(group.name for group in mirror_donors))
+            bits.append(f"镜像供体 {len(mirror_donors)}/{_props.donor_count_value(settings)} " + ", ".join(group.name for group in mirror_donors))
         settings.last_report = "；".join(bits)
         self.report({'INFO'}, settings.last_report)
         _invalidate_weight_overlay_caches(context)
@@ -886,7 +892,6 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             mirror_donors = []
             if settings.normalize_after:
                 configured_donors = _props.selected_donor_names(settings)
-                donor_count = int(settings.donor_count)
                 focus_weights = _algo.read_group_weights(target, target_group)
                 exclude_names = [mirror_group.name] if mirror_enabled and mirror_group is not None else []
                 donors = _select_donors_for_group(
@@ -901,8 +906,6 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 )
                 report.donors = [vg.name for vg in donors]
                 if mirror_enabled and mirror_group is not None and donors:
-                    if len(donors) < donor_count:
-                        raise ValueError(f"镜像规格化需要 {donor_count} 个来源供体，但只找到 {len(donors)} 个")
                     mirror_donors = _algo.mirrored_donor_groups(
                         context,
                         settings,
@@ -910,6 +913,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                         donors,
                         exclude_names=[target_group.name, mirror_group.name],
                     )
+                    _validate_mirror_donor_count(donors, mirror_donors)
                     report.donors = [vg.name for vg in donors] + [f"镜像:{vg.name}" for vg in mirror_donors]
             if settings.limit_groups_enable:
                 if source is target:

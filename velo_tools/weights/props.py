@@ -54,6 +54,8 @@ _DONOR_SLOT_PROPS = (
     "donor_slot_2",
     "donor_slot_3",
     "donor_slot_4",
+    "donor_slot_5",
+    "donor_slot_6",
 )
 
 
@@ -62,6 +64,8 @@ _MIRROR_DONOR_SLOT_PROPS = (
     "mirror_donor_slot_2",
     "mirror_donor_slot_3",
     "mirror_donor_slot_4",
+    "mirror_donor_slot_5",
+    "mirror_donor_slot_6",
 )
 
 
@@ -509,11 +513,11 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
     )
     donor_count: IntProperty(
         name="自动供体数",
-        description="规格化时最多使用的供体组数量；当前固定为 1 到 4 档",
-        default=3,
+        description="规格化时最多使用的供体组数量；当前固定为 1 到 6 档，自动选择不会为了凑满上限强行加入弱相关组",
+        default=4,
         min=1,
-        soft_max=4,
-        max=4,
+        soft_max=6,
+        max=6,
         update=_on_donor_count_update,
     )
     donor_slot_1: StringProperty(
@@ -536,6 +540,16 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
         default="",
         description="规格化时优先使用的第 4 个供体；来源组切换时会自动预填",
     )
+    donor_slot_5: StringProperty(
+        name="供体 5",
+        default="",
+        description="规格化时优先使用的第 5 个供体；来源组切换时会自动预填",
+    )
+    donor_slot_6: StringProperty(
+        name="供体 6",
+        default="",
+        description="规格化时优先使用的第 6 个供体；来源组切换时会自动预填",
+    )
     mirror_donor_slot_1: StringProperty(
         name="镜像供体 1",
         default="",
@@ -555,6 +569,16 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
         name="镜像供体 4",
         default="",
         description="供体 4 的镜像供体预览",
+    )
+    mirror_donor_slot_5: StringProperty(
+        name="镜像供体 5",
+        default="",
+        description="供体 5 的镜像供体预览",
+    )
+    mirror_donor_slot_6: StringProperty(
+        name="镜像供体 6",
+        default="",
+        description="供体 6 的镜像供体预览",
     )
     smoothing_enable: BoolProperty(
         name="启用平滑",

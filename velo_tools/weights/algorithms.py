@@ -2268,18 +2268,12 @@ def select_auto_donors(
             candidates.append((side_score, overlap, focus_ratio, focus_sum, shared_vertices, -total, vg.index))
     candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5]), reverse=True)
     selected_indices = [group.index for group in preferred]
-    remaining_count = max(0, count - len(selected_indices))
     selected_indices.extend(
         index
         for _side, _overlap, _focus_ratio, _focus_sum, _shared, _neg_total, index in candidates
         if index not in selected_indices
     )
     selected_indices = selected_indices[:count]
-    if len(selected_indices) < count:
-        selected = set(selected_indices)
-        remaining_groups = [vg for vg in candidate_groups if vg.index not in selected]
-        fallback = _select_spatial_fallback_donors(obj, target_group, target_mask, remaining_groups, count - len(selected_indices), np)
-        selected_indices.extend(vg.index for vg in fallback)
     return [obj.vertex_groups[index] for index in selected_indices]
 
 

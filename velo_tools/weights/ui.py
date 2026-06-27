@@ -14,7 +14,7 @@ def _report_summary(text, limit=84):
 
 def _donor_slot_count(settings):
     try:
-        return max(1, min(int(getattr(settings, "donor_count", 1)), 4))
+        return max(1, min(int(getattr(settings, "donor_count", 1)), 6))
     except Exception:
         return 1
 
@@ -149,7 +149,7 @@ class VELO_PT_weight_transfer(bpy.types.Panel):
         if len(settings.available_donor_vgs) <= 0:
             donor_box.label(text="当前没有可选供体组", icon='INFO')
         else:
-            for slot_index, prop_name in enumerate(("donor_slot_1", "donor_slot_2", "donor_slot_3", "donor_slot_4")[:_donor_slot_count(settings)], start=1):
+            for slot_index, prop_name in enumerate(("donor_slot_1", "donor_slot_2", "donor_slot_3", "donor_slot_4", "donor_slot_5", "donor_slot_6")[:_donor_slot_count(settings)], start=1):
                 row = donor_box.row(align=True)
                 row.prop_search(settings, prop_name, settings, "available_donor_vgs", text=f"供体 {slot_index}")
                 mirror_prop = f"mirror_donor_slot_{slot_index}"
