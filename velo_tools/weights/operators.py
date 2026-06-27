@@ -882,54 +882,67 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 report.smoothing_skipped = not report.smoothed
             if mirror_enabled:
                 mirror_stats = _algo.mirror_group_weights(target, target_group, mirror_group)
+            donors = []
+            mirror_donors = []
+            if settings.normalize_after:
+                configured_donors = _props.selected_donor_names(settings)
+                donor_count = int(settings.donor_count)
+                focus_weights = _algo.read_group_weights(target, target_group)
+                exclude_names = [mirror_group.name] if mirror_enabled and mirror_group is not None else []
+                donors = _select_donors_for_group(
+                    context,
+                    settings,
+                    target,
+                    target_group,
+                    source_name,
+                    configured_names=configured_donors,
+                    focus_weights=focus_weights,
+                    exclude_names=exclude_names,
+                )
+                report.donors = [vg.name for vg in donors]
+                if mirror_enabled and mirror_group is not None and donors:
+                    if len(donors) < donor_count:
+                        raise ValueError(f"镜像规格化需要 {donor_count} 个来源供体，但只找到 {len(donors)} 个")
+                    mirror_donors = _algo.mirrored_donor_groups(
+                        context,
+                        settings,
+                        target,
+                        donors,
+                        exclude_names=[target_group.name, mirror_group.name],
+                    )
+                    report.donors = [vg.name for vg in donors] + [f"镜像:{vg.name}" for vg in mirror_donors]
             if settings.limit_groups_enable:
                 if source is target:
                     report.limit_skipped_same_object = True
                 else:
-                    _snapshot_editable_groups(snapshots, target)
-                    report.limited = _algo.apply_limit_groups(target, settings, topology_cache=topology_cache)
+                    authority_groups = [target_group]
+                    if mirror_enabled and mirror_group is not None:
+                        authority_groups.append(mirror_group)
+                    if settings.normalize_after:
+                        authority_groups.extend(donors)
+                        authority_groups.extend(mirror_donors)
+                    for group in authority_groups:
+                        _snapshot_group(snapshots, target, group)
+                    limit_report = _algo.apply_limit_groups_scoped(target, settings, authority_groups)
+                    report.limited = bool(limit_report.changed)
+                    report.protected_over_limit_vertices = int(limit_report.protected_over_limit_vertices)
+                    report.authority_limited_vertices = int(limit_report.authority_limited_vertices)
             if settings.normalize_after:
                 if source is target:
                     report.normalize_skipped_same_object = True
-                else:
-                    configured_donors = _props.selected_donor_names(settings)
-                    donor_count = int(settings.donor_count)
-                    focus_weights = _algo.read_group_weights(target, target_group)
-                    exclude_names = [mirror_group.name] if mirror_enabled and mirror_group is not None else []
-                    donors = _select_donors_for_group(
-                        context,
-                        settings,
-                        target,
-                        target_group,
-                        source_name,
-                        configured_names=configured_donors,
-                        focus_weights=focus_weights,
-                        exclude_names=exclude_names,
-                    )
-                    report.donors = [vg.name for vg in donors]
-                    if donors:
-                        for group in donors:
+                elif donors:
+                    for group in donors:
+                        _snapshot_group(snapshots, target, group)
+                    if mirror_enabled and mirror_group is not None:
+                        for group in mirror_donors:
                             _snapshot_group(snapshots, target, group)
-                        if mirror_enabled and mirror_group is not None:
-                            if len(donors) < donor_count:
-                                raise ValueError(f"镜像规格化需要 {donor_count} 个来源供体，但只找到 {len(donors)} 个")
-                            mirror_donors = _algo.mirrored_donor_groups(
-                                context,
-                                settings,
-                                target,
-                                donors,
-                                exclude_names=[target_group.name, mirror_group.name],
-                            )
-                            for group in mirror_donors:
-                                _snapshot_group(snapshots, target, group)
-                            report.donors = [vg.name for vg in donors] + [f"镜像:{vg.name}" for vg in mirror_donors]
-                            report.normalized = _algo.normalize_authority_groups_with_donors(
-                                target,
-                                [target_group, mirror_group],
-                                donors + mirror_donors,
-                            )
-                        else:
-                            report.normalized = _algo.normalize_with_donors(target, target_group, donors)
+                        report.normalized = _algo.normalize_authority_groups_with_donors(
+                            target,
+                            [target_group, mirror_group],
+                            donors + mirror_donors,
+                        )
+                    else:
+                        report.normalized = _algo.normalize_with_donors(target, target_group, donors)
             _algo.ensure_numeric_export_compatible(target, target_group_name)
             if mirror_enabled and mirror_group is not None:
                 _algo.ensure_numeric_export_compatible(target, mirror_group.name)
@@ -994,6 +1007,10 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append("平滑已跳过")
         if report.limited:
             bits.append("limit")
+            if report.authority_limited_vertices:
+                bits.append(f"本次集合裁剪 {report.authority_limited_vertices} 点")
+        if report.protected_over_limit_vertices:
+            bits.append(f"集合外已超限 {report.protected_over_limit_vertices} 点")
         elif report.limit_skipped_same_object:
             bits.append("同对象跳过 limit")
         if report.normalized:

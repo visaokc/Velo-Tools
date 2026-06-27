@@ -10,7 +10,7 @@ from __future__ import annotations
 # Exact-match special names (lowercased; prefixes also included for comparison)
 _SPECIAL_EXACT = {"mmd_edge_scale", "mmd_vertex_order"}
 # Prefix match
-_SPECIAL_PREFIXES = ("uv_",)
+_SPECIAL_PREFIXES = ("mmd_", "uv_")
 
 
 def is_special_vg_name(name: str) -> bool:

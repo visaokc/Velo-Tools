@@ -27,10 +27,19 @@ class WeightTransferReport:
     smoothed: bool = False
     smoothing_skipped: bool = False
     limited: bool = False
+    protected_over_limit_vertices: int = 0
+    authority_limited_vertices: int = 0
     normalized: bool = False
     limit_skipped_same_object: bool = False
     normalize_skipped_same_object: bool = False
     donors: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ScopedLimitReport:
+    changed: bool = False
+    protected_over_limit_vertices: int = 0
+    authority_limited_vertices: int = 0
 
 
 @dataclass
@@ -1113,6 +1122,82 @@ def apply_limit_groups(obj, settings, *, topology_cache=None):
     return True
 
 
+def _unique_editable_groups(groups):
+    result = []
+    seen = set()
+    for group in groups or ():
+        if group is None:
+            continue
+        if getattr(group, "index", None) in seen:
+            continue
+        if getattr(group, "lock_weight", False) or is_special_vg_name(group.name):
+            continue
+        result.append(group)
+        seen.add(group.index)
+    return result
+
+
+def apply_limit_groups_scoped(obj, settings, authority_groups):
+    ok, error = _rwt.ensure_available()
+    if not ok:
+        raise RuntimeError(f"Robust limit 不可用: {error}")
+    np = _rwt.np_module()
+    authorities = _unique_editable_groups(authority_groups)
+    if not authorities:
+        return ScopedLimitReport()
+    authority_indices = [group.index for group in authorities]
+    max_groups = max(0, int(getattr(settings, "max_groups_per_vertex", 0)))
+    if max_groups <= 0:
+        weights = np.zeros((len(obj.data.vertices), len(authority_indices)), dtype=np.float32)
+        write_groups_by_indices(obj, authority_indices, weights)
+        return ScopedLimitReport(changed=True, authority_limited_vertices=len(obj.data.vertices))
+    protected_indices = [
+        group.index
+        for group in obj.vertex_groups
+        if group.index not in authority_indices
+        and not is_special_vg_name(group.name)
+    ]
+    authority_weights = _rwt.get_groups_arr(obj, authority_indices)
+    authority_weights[authority_weights <= 0.0001] = 0.0
+    if protected_indices:
+        protected_weights = _rwt.get_groups_arr(obj, protected_indices)
+        protected_weights[protected_weights <= 0.0001] = 0.0
+        protected_counts = np.count_nonzero(protected_weights, axis=1)
+    else:
+        protected_counts = np.zeros(len(obj.data.vertices), dtype=np.int64)
+    slots = np.maximum(0, max_groups - protected_counts).astype(int)
+    limited = np.zeros_like(authority_weights)
+    row_count = authority_weights.shape[0]
+    changed_rows = 0
+    for row in range(row_count):
+        keep = int(slots[row])
+        row_weights = authority_weights[row]
+        nonzero = np.flatnonzero(row_weights > 0.0001)
+        if keep <= 0:
+            if len(nonzero):
+                changed_rows += 1
+            continue
+        if len(nonzero) <= keep:
+            limited[row, nonzero] = row_weights[nonzero]
+            continue
+        order = sorted(nonzero, key=lambda column: (-float(row_weights[column]), column))
+        keep_columns = order[:keep]
+        limited[row, keep_columns] = row_weights[keep_columns]
+        changed_rows += 1
+    changed_columns = np.flatnonzero(np.any(np.abs(limited - authority_weights) > 1e-8, axis=0))
+    if len(changed_columns) == 0:
+        return ScopedLimitReport(
+            protected_over_limit_vertices=int(np.count_nonzero(protected_counts > max_groups)),
+        )
+    changed_indices = [authority_indices[int(column)] for column in changed_columns]
+    write_groups_by_indices(obj, changed_indices, limited[:, changed_columns])
+    return ScopedLimitReport(
+        changed=True,
+        protected_over_limit_vertices=int(np.count_nonzero(protected_counts > max_groups)),
+        authority_limited_vertices=int(changed_rows),
+    )
+
+
 def write_groups_by_indices(obj, group_indices, weights):
     for column, group_index in enumerate(group_indices):
         group = obj.vertex_groups[group_index]
@@ -1827,6 +1912,16 @@ def _mean_nearest_distance(coords, source_indices, target_indices):
     return total / count
 
 
+def _vector_length(value):
+    length = getattr(value, "length", None)
+    if length is not None:
+        return float(length)
+    try:
+        return float(sum(float(part) * float(part) for part in value) ** 0.5)
+    except Exception:
+        return 0.0
+
+
 def _select_spatial_fallback_donors(obj, target_group, target_mask, candidate_groups, count, np):
     if count <= 0 or not candidate_groups:
         return []
@@ -1855,11 +1950,112 @@ def _select_spatial_fallback_donors(obj, target_group, target_mask, candidate_gr
             if mean_distance == float("inf"):
                 continue
             source_center = _mean_vector(coords, source_indices)
-            center_distance = float((target_center - source_center).length)
+            center_distance = _vector_length(target_center - source_center)
             side_score = _side_affinity(vg.name, target_group.name)
             candidates.append((round(mean_distance, 4), -side_score, mean_distance, center_distance, -total, vg.index))
     candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5]))
     return [obj.vertex_groups[index] for _bucket, _side, _mean_distance, _center_distance, _neg_total, index in candidates[:count]]
+
+
+def _prefilter_donor_candidates(obj, candidate_groups, target_weights, preferred_side, preferred_names, count, np):
+    if not candidate_groups:
+        return []
+    target_weights = np.asarray(target_weights, dtype=float).reshape(-1)
+    target_mask = target_weights > 0.00001
+    if len(target_weights) != len(obj.data.vertices) or int(np.count_nonzero(target_mask)) <= 0:
+        return []
+    preferred_names = {_clean_name(name) for name in (preferred_names or ()) if _clean_name(name)}
+    candidate_by_index = {group.index: group for group in candidate_groups}
+    stats = {
+        group.index: {
+            "total": 0.0,
+            "focus_sum": 0.0,
+            "overlap": 0.0,
+            "shared_vertices": 0,
+            "weighted_center": Vector((0.0, 0.0, 0.0)),
+        }
+        for group in candidate_groups
+    }
+    coords = [obj.matrix_world @ vertex.co for vertex in obj.data.vertices] if hasattr(obj, "matrix_world") else None
+    target_center = None
+    if coords is not None:
+        target_indices = np.flatnonzero(target_mask)
+        target_center = _mean_vector(coords, target_indices)
+    saw_memberships = False
+    for vertex_index, vertex in enumerate(obj.data.vertices):
+        groups = getattr(vertex, "groups", None)
+        if groups is None:
+            continue
+        saw_memberships = True
+        target_weight = float(target_weights[vertex_index])
+        is_focus = target_weight > 0.00001
+        for item in groups:
+            group_index = getattr(item, "group", None)
+            stat = stats.get(group_index)
+            if stat is None:
+                continue
+            weight = float(getattr(item, "weight", 0.0))
+            if weight <= 0.00001:
+                continue
+            stat["total"] += weight
+            if is_focus:
+                stat["focus_sum"] += weight
+                stat["overlap"] += min(weight, target_weight)
+                stat["shared_vertices"] += 1
+            if coords is not None:
+                stat["weighted_center"] = stat["weighted_center"] + (coords[vertex_index] * weight)
+    if not saw_memberships:
+        for group in candidate_groups:
+            weights = np.asarray(read_group_weights(obj, group), dtype=float).reshape(-1)
+            if len(weights) != len(target_weights):
+                continue
+            positive = weights > 0.00001
+            stat = stats[group.index]
+            stat["total"] = float(weights[positive].sum())
+            focus = positive & target_mask
+            stat["focus_sum"] = float(weights[target_mask].sum())
+            stat["overlap"] = float(np.minimum(weights, target_weights).sum())
+            stat["shared_vertices"] = int(np.count_nonzero(focus))
+    scored = []
+    for group in candidate_groups:
+        stat = stats[group.index]
+        total = float(stat["total"])
+        if total <= 0.0:
+            continue
+        shared_vertices = int(stat["shared_vertices"])
+        overlap = float(stat["overlap"])
+        focus_sum = float(stat["focus_sum"])
+        focus_ratio = focus_sum / total if total > 1e-8 else 0.0
+        side_match = 1 if preferred_side in {"L", "R"} and _name_side_suffix(group.name) == preferred_side else 0
+        preferred = 1 if group.name in preferred_names else 0
+        center_distance = float("inf")
+        if target_center is not None:
+            center = stat["weighted_center"] / total
+            center_distance = _vector_length(target_center - center)
+        scored.append((
+            preferred,
+            side_match,
+            overlap,
+            focus_ratio,
+            focus_sum,
+            shared_vertices,
+            -center_distance,
+            -total,
+            group.index,
+        ))
+    if not scored:
+        return []
+    local_multiplier = 16
+    pool_size = max(count * local_multiplier, count + len(preferred_names), 32)
+    scored.sort(key=lambda item: item[:-1], reverse=True)
+    selected_indices = [item[-1] for item in scored[:pool_size]]
+    selected = set(selected_indices)
+    for item in scored:
+        index = item[-1]
+        if item[0] and index not in selected:
+            selected_indices.append(index)
+            selected.add(index)
+    return [obj.vertex_groups[index] for index in selected_indices]
 
 
 def _weights_center_world(obj, weights, np, *, threshold=0.00001):
@@ -2029,6 +2225,17 @@ def select_auto_donors(
         return preferred
     if not candidate_groups:
         return preferred
+    candidate_pool = _prefilter_donor_candidates(
+        obj,
+        candidate_groups,
+        target_weights,
+        preferred_side,
+        list(preferred_names or ()),
+        count,
+        np,
+    )
+    if candidate_pool:
+        candidate_groups = candidate_pool
     candidates = []
     target_mask_2d = target_mask.reshape(-1, 1)
     target_weights_2d = target_weights.reshape(-1, 1)
