@@ -933,7 +933,15 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                         authority_groups.extend(mirror_donors)
                     for group in authority_groups:
                         _snapshot_group(snapshots, target, group)
-                    limit_report = _algo.apply_limit_groups_scoped(target, settings, authority_groups)
+                    priority_groups = [target_group]
+                    if mirror_enabled and mirror_group is not None:
+                        priority_groups.append(mirror_group)
+                    limit_report = _algo.apply_limit_groups_scoped(
+                        target,
+                        settings,
+                        authority_groups,
+                        priority_groups=priority_groups,
+                    )
                     report.limited = bool(limit_report.changed)
                     report.protected_over_limit_vertices = int(limit_report.protected_over_limit_vertices)
                     report.authority_limited_vertices = int(limit_report.authority_limited_vertices)
@@ -1027,7 +1035,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             if report.authority_limited_vertices:
                 bits.append(f"本次集合裁剪 {report.authority_limited_vertices} 点")
         if report.protected_over_limit_vertices:
-            bits.append(f"集合外已超限 {report.protected_over_limit_vertices} 点")
+            bits.append(f"锁定组已超限 {report.protected_over_limit_vertices} 点")
         elif report.limit_skipped_same_object:
             bits.append("同对象跳过 limit")
         if report.normalized:

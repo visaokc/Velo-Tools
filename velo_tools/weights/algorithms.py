@@ -1153,7 +1153,40 @@ def _blocked_by_protected_limit_error(max_groups):
     )
 
 
-def apply_limit_groups_scoped(obj, settings, authority_groups):
+def _ordinary_locked_group_indices(obj, exclude_indices=None):
+    exclude = set(exclude_indices or ())
+    return [
+        group.index
+        for group in obj.vertex_groups
+        if group.index not in exclude
+        and group.lock_weight
+        and not is_special_vg_name(group.name)
+    ]
+
+
+def _yieldable_groups(obj, prefix_groups, *, exclude_indices=None):
+    result = []
+    seen = set(exclude_indices or ())
+    for group in prefix_groups or ():
+        if group is None or group.index in seen:
+            continue
+        if group.lock_weight:
+            raise ValueError(f"顶点组 '{_group_label(obj, group)}' 已锁定，不能写入")
+        if is_special_vg_name(group.name):
+            continue
+        result.append(group)
+        seen.add(group.index)
+    for group in obj.vertex_groups:
+        if group.index in seen:
+            continue
+        if group.lock_weight or is_special_vg_name(group.name):
+            continue
+        result.append(group)
+        seen.add(group.index)
+    return result
+
+
+def apply_limit_groups_scoped(obj, settings, authority_groups, *, priority_groups=None):
     ok, error = _rwt.ensure_available()
     if not ok:
         raise RuntimeError(f"Robust limit 不可用: {error}")
@@ -1161,58 +1194,67 @@ def apply_limit_groups_scoped(obj, settings, authority_groups):
     authorities = _unique_editable_groups(authority_groups, obj=obj, action="限制")
     if not authorities:
         return ScopedLimitReport()
-    authority_indices = [group.index for group in authorities]
+    priority_source = authorities[:1] if priority_groups is None else list(priority_groups or ())
+    priorities = _unique_editable_groups(priority_source, obj=obj, action="限制")
+    if not priorities:
+        priorities = authorities[:1]
+    priority_indices = [group.index for group in priorities]
+    write_groups = _yieldable_groups(obj, authorities, exclude_indices=priority_indices)
+    write_groups = priorities + write_groups
+    write_indices = [group.index for group in write_groups]
+    priority_count = len(priorities)
     max_groups = max(0, int(getattr(settings, "max_groups_per_vertex", 0)))
     if max_groups <= 0:
-        weights = np.zeros((len(obj.data.vertices), len(authority_indices)), dtype=np.float32)
-        write_groups_by_indices(obj, authority_indices, weights)
+        weights = np.zeros((len(obj.data.vertices), len(write_indices)), dtype=np.float32)
+        write_groups_by_indices(obj, write_indices, weights)
         return ScopedLimitReport(changed=True, authority_limited_vertices=len(obj.data.vertices))
-    protected_indices = [
-        group.index
-        for group in obj.vertex_groups
-        if group.index not in authority_indices
-        and not is_special_vg_name(group.name)
-    ]
-    authority_weights = _rwt.get_groups_arr(obj, authority_indices)
-    authority_weights[authority_weights <= 0.0001] = 0.0
-    if protected_indices:
-        protected_weights = _rwt.get_groups_arr(obj, protected_indices)
-        protected_weights[protected_weights <= 0.0001] = 0.0
-        protected_counts = np.count_nonzero(protected_weights, axis=1)
+    locked_indices = _ordinary_locked_group_indices(obj, exclude_indices=write_indices)
+    write_weights = _rwt.get_groups_arr(obj, write_indices)
+    write_weights[write_weights <= 0.0001] = 0.0
+    if locked_indices:
+        locked_weights = _rwt.get_groups_arr(obj, locked_indices)
+        locked_weights[locked_weights <= 0.0001] = 0.0
+        locked_counts = np.count_nonzero(locked_weights, axis=1)
     else:
-        protected_counts = np.zeros(len(obj.data.vertices), dtype=np.int64)
-    slots = np.maximum(0, max_groups - protected_counts).astype(int)
-    authority_has_weight = np.any(authority_weights > 0.0001, axis=1)
-    if bool(np.any((slots <= 0) & authority_has_weight)):
-        raise ValueError(_blocked_by_protected_limit_error(max_groups))
-    limited = np.zeros_like(authority_weights)
-    row_count = authority_weights.shape[0]
+        locked_counts = np.zeros(len(obj.data.vertices), dtype=np.int64)
+    priority_weights = write_weights[:, :priority_count]
+    focus_rows = np.any(priority_weights > 0.0001, axis=1)
+    slots = np.maximum(0, max_groups - locked_counts).astype(int)
+    limited = write_weights.copy()
+    row_count = write_weights.shape[0]
     changed_rows = 0
     for row in range(row_count):
+        if not bool(focus_rows[row]):
+            continue
         keep = int(slots[row])
-        row_weights = authority_weights[row]
-        nonzero = np.flatnonzero(row_weights > 0.0001)
+        row_weights = write_weights[row]
+        limited[row, :] = 0.0
+        priority_nonzero = np.flatnonzero(row_weights[:priority_count] > 0.0001)
+        secondary_nonzero = priority_count + np.flatnonzero(row_weights[priority_count:] > 0.0001)
+        nonzero = list(priority_nonzero) + list(secondary_nonzero)
         if keep <= 0:
             if len(nonzero):
                 changed_rows += 1
             continue
-        if len(nonzero) <= keep:
-            limited[row, nonzero] = row_weights[nonzero]
-            continue
-        order = sorted(nonzero, key=lambda column: (-float(row_weights[column]), column))
-        keep_columns = order[:keep]
+        priority_order = sorted(priority_nonzero, key=lambda column: (-float(row_weights[column]), column))
+        keep_columns = priority_order[:keep]
+        remaining = keep - len(keep_columns)
+        if remaining > 0:
+            secondary_order = sorted(secondary_nonzero, key=lambda column: (-float(row_weights[column]), column))
+            keep_columns.extend(secondary_order[:remaining])
         limited[row, keep_columns] = row_weights[keep_columns]
-        changed_rows += 1
-    changed_columns = np.flatnonzero(np.any(np.abs(limited - authority_weights) > 1e-8, axis=0))
+        if len(keep_columns) < len(nonzero):
+            changed_rows += 1
+    changed_columns = np.flatnonzero(np.any(np.abs(limited - write_weights) > 1e-8, axis=0))
     if len(changed_columns) == 0:
         return ScopedLimitReport(
-            protected_over_limit_vertices=int(np.count_nonzero(protected_counts > max_groups)),
+            protected_over_limit_vertices=int(np.count_nonzero(locked_counts > max_groups)),
         )
-    changed_indices = [authority_indices[int(column)] for column in changed_columns]
+    changed_indices = [write_indices[int(column)] for column in changed_columns]
     write_groups_by_indices(obj, changed_indices, limited[:, changed_columns])
     return ScopedLimitReport(
         changed=True,
-        protected_over_limit_vertices=int(np.count_nonzero(protected_counts > max_groups)),
+        protected_over_limit_vertices=int(np.count_nonzero(locked_counts > max_groups)),
         authority_limited_vertices=int(changed_rows),
     )
 
@@ -1369,76 +1411,82 @@ def mirrored_donor_groups(context, settings, obj, donor_groups, *, mirror_names=
     return result
 
 
-def normalize_authority_groups_with_donors(obj, authority_groups, donor_groups):
+def _unique_normalize_groups(obj, groups, *, label):
+    result = []
+    seen = set()
+    for group in groups or ():
+        if group is None or is_special_vg_name(group.name) or group.index in seen:
+            continue
+        if group.lock_weight:
+            raise ValueError(f"{label}顶点组 '{_group_label(obj, group)}' 已锁定，请先解锁后再执行")
+        result.append(group)
+        seen.add(group.index)
+    return result
+
+
+def _normalize_authority_priority_groups(obj, authority_groups, secondary_groups):
     ok, error = _rwt.ensure_available()
     if not ok:
         raise RuntimeError(f"规格化不可用: {error}")
     np = _rwt.np_module()
-    authorities = []
-    donors = []
-    seen = set()
-    for group in authority_groups:
-        if group is None or is_special_vg_name(group.name) or group.index in seen:
-            continue
-        if group.lock_weight:
-            raise ValueError(f"规格化顶点组 '{_group_label(obj, group)}' 已锁定，请先解锁后再执行")
-        authorities.append(group)
-        seen.add(group.index)
-    for group in donor_groups:
-        if group is None or is_special_vg_name(group.name) or group.index in seen:
-            continue
-        if group.lock_weight:
-            raise ValueError(f"规格化顶点组 '{_group_label(obj, group)}' 已锁定，请先解锁后再执行")
-        donors.append(group)
-        seen.add(group.index)
-    participant = authorities + donors
-    if not participant:
+    authorities = _unique_normalize_groups(obj, authority_groups, label="规格化")
+    if not authorities:
         return False
     authority_count = len(authorities)
+    secondary = _yieldable_groups(
+        obj,
+        _unique_normalize_groups(obj, secondary_groups, label="规格化"),
+        exclude_indices=[group.index for group in authorities],
+    )
+    participant = authorities + secondary
     participant_indices = [group.index for group in participant]
     participant_weights = _rwt.get_groups_arr(obj, participant_indices)
-    protected_indices = [
-        vg.index
-        for vg in obj.vertex_groups
-        if vg.index not in participant_indices and not is_special_vg_name(vg.name)
-    ]
-    if protected_indices:
-        protected_sum = _rwt.get_groups_arr(obj, protected_indices).sum(axis=1)
+    locked_indices = _ordinary_locked_group_indices(obj, exclude_indices=participant_indices)
+    if locked_indices:
+        locked_sum = _rwt.get_groups_arr(obj, locked_indices).sum(axis=1)
     else:
-        protected_sum = np.zeros(len(obj.data.vertices), dtype=np.float32)
-    available = np.maximum(0.0, 1.0 - protected_sum)
-    normalized = np.zeros_like(participant_weights)
-    if authority_count > 0:
-        authority_weights = participant_weights[:, :authority_count]
-        authority_totals = authority_weights.sum(axis=1)
-        if bool(np.any(authority_totals > (available + 1e-6))):
-            raise ValueError(
-                "集合外权重已占用本次承接组需要的权重空间，无法安全规格化；"
-                "请解锁并纳入相关镜像组/供体，或暂时关闭规格化后再执行。"
-            )
+        locked_sum = np.zeros(len(obj.data.vertices), dtype=np.float32)
+    available = np.maximum(0.0, 1.0 - locked_sum)
+    authority_weights = participant_weights[:, :authority_count]
+    authority_totals = authority_weights.sum(axis=1)
+    focus_rows = authority_totals > 1e-8
+    normalized = participant_weights.copy()
+    if bool(np.any(focus_rows)):
         authority_scale = np.divide(
             available,
             authority_totals,
             out=np.ones_like(available),
-            where=authority_totals > available,
+            where=(focus_rows & (authority_totals > available)),
         )
         authority_scale = np.minimum(authority_scale, 1.0)
-        normalized[:, :authority_count] = authority_weights * authority_scale.reshape(-1, 1)
-    donor_start = authority_count
-    if participant_weights.shape[1] > donor_start:
-        donor_weights = participant_weights[:, donor_start:]
-        used = normalized[:, :authority_count].sum(axis=1) if authority_count > 0 else np.zeros_like(available)
-        donor_available = np.maximum(0.0, available - used)
-        donor_totals = donor_weights.sum(axis=1)
-        donor_scale = np.divide(
-            donor_available,
-            donor_totals,
-            out=np.zeros_like(donor_available),
-            where=donor_totals > 1e-8,
+        normalized[focus_rows, :authority_count] = (
+            authority_weights[focus_rows] * authority_scale[focus_rows].reshape(-1, 1)
         )
-        normalized[:, donor_start:] = donor_weights * donor_scale.reshape(-1, 1)
-    _write_groups_preserving_locks(obj, participant, normalized)
+        secondary_start = authority_count
+        if participant_weights.shape[1] > secondary_start:
+            secondary_weights = participant_weights[:, secondary_start:]
+            used = normalized[:, :authority_count].sum(axis=1)
+            secondary_available = np.maximum(0.0, available - used)
+            secondary_totals = secondary_weights.sum(axis=1)
+            secondary_scale = np.divide(
+                secondary_available,
+                secondary_totals,
+                out=np.ones_like(secondary_available),
+                where=(focus_rows & (secondary_totals > secondary_available)),
+            )
+            secondary_scale = np.minimum(secondary_scale, 1.0)
+            normalized[focus_rows, secondary_start:] = (
+                secondary_weights[focus_rows] * secondary_scale[focus_rows].reshape(-1, 1)
+            )
+    changed_columns = np.flatnonzero(np.any(np.abs(normalized - participant_weights) > 1e-8, axis=0))
+    if len(changed_columns):
+        changed_indices = [participant_indices[int(column)] for column in changed_columns]
+        write_groups_by_indices(obj, changed_indices, normalized[:, changed_columns])
     return True
+
+
+def normalize_authority_groups_with_donors(obj, authority_groups, donor_groups):
+    return _normalize_authority_priority_groups(obj, authority_groups, donor_groups)
 
 
 def _name_side_suffix(name):
@@ -2357,54 +2405,7 @@ def _write_groups_preserving_locks(obj, groups, weights):
 
 
 def normalize_with_donors(obj, target_group, donor_groups):
-    ok, error = _rwt.ensure_available()
-    if not ok:
-        raise RuntimeError(f"规格化不可用: {error}")
-    np = _rwt.np_module()
-    participant = []
-    seen = set()
-    for vg in [target_group] + list(donor_groups):
-        if vg is None or is_special_vg_name(vg.name) or vg.index in seen:
-            continue
-        if vg.lock_weight:
-            raise ValueError(f"规格化顶点组 '{_group_label(obj, vg)}' 已锁定，请先解锁后再执行")
-        participant.append(vg)
-        seen.add(vg.index)
-    if not participant:
-        return False
-    participant_indices = [vg.index for vg in participant]
-    participant_weights = _rwt.get_groups_arr(obj, participant_indices)
-    protected_indices = [
-        vg.index
-        for vg in obj.vertex_groups
-        if vg.index not in participant_indices and not is_special_vg_name(vg.name)
-    ]
-    if protected_indices:
-        protected_sum = _rwt.get_groups_arr(obj, protected_indices).sum(axis=1)
-    else:
-        protected_sum = np.zeros(len(obj.data.vertices), dtype=np.float32)
-    available = np.maximum(0.0, 1.0 - protected_sum)
-    target_weights = participant_weights[:, 0]
-    if bool(np.any(target_weights > (available + 1e-6))):
-        raise ValueError(
-            "集合外权重已占用本次承接组需要的权重空间，无法安全规格化；"
-            "请解锁并纳入相关镜像组/供体，或暂时关闭规格化后再执行。"
-        )
-    normalized = np.zeros_like(participant_weights)
-    normalized[:, 0] = np.minimum(target_weights, available)
-    if participant_weights.shape[1] > 1:
-        donor_weights = participant_weights[:, 1:]
-        donor_available = np.maximum(0.0, available - normalized[:, 0])
-        donor_totals = donor_weights.sum(axis=1)
-        donor_scale = np.divide(
-            donor_available,
-            donor_totals,
-            out=np.zeros_like(donor_available),
-            where=donor_totals > 1e-8,
-        )
-        normalized[:, 1:] = donor_weights * donor_scale.reshape(-1, 1)
-    _write_groups_preserving_locks(obj, participant, normalized)
-    return True
+    return _normalize_authority_priority_groups(obj, [target_group], donor_groups)
 
 
 def ensure_numeric_export_compatible(obj, group_name):
