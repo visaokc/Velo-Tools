@@ -29,6 +29,8 @@ class WeightTransferReport:
     limited: bool = False
     protected_over_limit_vertices: int = 0
     authority_limited_vertices: int = 0
+    locked_boundary_vertices: int = 0
+    under_normalized_vertices: int = 0
     normalized: bool = False
     limit_skipped_same_object: bool = False
     normalize_skipped_same_object: bool = False
@@ -41,6 +43,19 @@ class ScopedLimitReport:
     changed: bool = False
     protected_over_limit_vertices: int = 0
     authority_limited_vertices: int = 0
+
+
+@dataclass
+class NormalizationReport:
+    attempted: bool = False
+    changed: bool = False
+    normalized_vertices: int = 0
+    under_normalized_vertices: int = 0
+    over_capacity_vertices: int = 0
+    problem_vertices: list[int] = field(default_factory=list)
+
+    def __bool__(self):
+        return bool(self.attempted)
 
 
 @dataclass
@@ -1065,10 +1080,90 @@ def build_weight_topology_cache(obj):
     }
 
 
-def apply_seam_safe_smoothing(obj, group, settings, matched=None, *, topology_cache=None):
+def _row_mask(np, rows, row_count):
+    mask = np.zeros(row_count, dtype=bool)
+    if rows is None:
+        return mask
+    arr = np.asarray(rows)
+    if arr.dtype == bool:
+        if arr.shape[0] != row_count:
+            raise ValueError("顶点行掩码长度与网格顶点数不一致")
+        return arr.astype(bool, copy=True)
+    for value in arr.reshape(-1):
+        index = int(value)
+        if 0 <= index < row_count:
+            mask[index] = True
+    return mask
+
+
+def _preserve_weight_rows(obj, group, proposed_weights, preserve_rows=None, preserve_weights=None):
+    if preserve_rows is None:
+        return proposed_weights
+    np = _rwt.np_module()
+    result = np.asarray(proposed_weights, dtype=float).reshape(-1).copy()
+    preserve_mask = _row_mask(np, preserve_rows, len(obj.data.vertices))
+    if not bool(np.any(preserve_mask)):
+        return result
+    if preserve_weights is None:
+        original = read_group_weights(obj, group)
+    else:
+        original = np.asarray(preserve_weights, dtype=float).reshape(-1)
+    if original.shape[0] != result.shape[0]:
+        raise ValueError("保留权重长度与写入权重长度不一致")
+    result[preserve_mask] = original[preserve_mask]
+    return result
+
+
+def locked_boundary_preserve_mask(obj, authority_groups, *, threshold=0.0001):
+    ok, error = _rwt.ensure_available()
+    if not ok:
+        raise RuntimeError(f"锁定边界检测不可用: {error}")
+    np = _rwt.np_module()
+    row_count = len(obj.data.vertices)
+    authority_indices = set()
+    for group in authority_groups or ():
+        if group is None:
+            continue
+        if is_special_vg_name(group.name):
+            continue
+        authority_indices.add(group.index)
+    locked_indices = _ordinary_locked_group_indices(obj, exclude_indices=authority_indices)
+    if not locked_indices:
+        return np.zeros(row_count, dtype=bool)
+    locked_weights = _rwt.get_groups_arr(obj, locked_indices)
+    locked_active = np.any(locked_weights > threshold, axis=1)
+    peer_indices = [
+        group.index
+        for group in obj.vertex_groups
+        if group.index not in authority_indices
+        and not group.lock_weight
+        and not is_special_vg_name(group.name)
+    ]
+    if peer_indices:
+        peer_weights = _rwt.get_groups_arr(obj, peer_indices)
+        peer_active = np.any(peer_weights > threshold, axis=1)
+    else:
+        peer_active = np.zeros(row_count, dtype=bool)
+    return locked_active & ~peer_active
+
+
+def apply_locked_boundary_preserve(obj, authority_groups, group, proposed_weights, *, original_weights=None, threshold=0.0001):
+    preserve_mask = locked_boundary_preserve_mask(obj, authority_groups, threshold=threshold)
+    preserved = _preserve_weight_rows(
+        obj,
+        group,
+        proposed_weights,
+        preserve_mask,
+        preserve_weights=original_weights,
+    )
+    return preserved, preserve_mask
+
+
+def apply_seam_safe_smoothing(obj, group, settings, matched=None, *, topology_cache=None, preserve_rows=None):
     ok, error = _rwt.ensure_available()
     if not ok:
         raise RuntimeError(f"Robust 平滑不可用: {error}")
+    np = _rwt.np_module()
     try:
         cache = topology_cache or build_weight_topology_cache(obj)
         adjacency_matrix = cache["adjacency_matrix"]
@@ -1079,6 +1174,10 @@ def apply_seam_safe_smoothing(obj, group, settings, matched=None, *, topology_ca
     weights = read_group_weights(obj, group).reshape(-1, 1)
     if matched is None or len(matched) != len(obj.data.vertices):
         matched = weights[:, 0] > 0.00001
+    preserve_mask = _row_mask(np, preserve_rows, len(obj.data.vertices))
+    if bool(np.any(preserve_mask)):
+        matched = np.asarray(matched, dtype=bool).copy()
+        matched[preserve_mask] = False
     smoothed = _rwt.smooth_weigths(
         verts,
         weights,
@@ -1089,6 +1188,8 @@ def apply_seam_safe_smoothing(obj, group, settings, matched=None, *, topology_ca
         settings.smoothing_factor,
         settings.robust_max_distance,
     )
+    if bool(np.any(preserve_mask)):
+        smoothed[preserve_mask, 0] = weights[preserve_mask, 0]
     write_group_weights(obj, group, smoothed[:, 0])
     return True
 
@@ -1198,7 +1299,7 @@ def _yieldable_groups(obj, prefix_groups, *, exclude_indices=None):
     return result
 
 
-def apply_limit_groups_scoped(obj, settings, authority_groups, *, priority_groups=None):
+def apply_limit_groups_scoped(obj, settings, authority_groups, *, priority_groups=None, preserve_rows=None):
     ok, error = _rwt.ensure_available()
     if not ok:
         raise RuntimeError(f"Robust limit 不可用: {error}")
@@ -1215,11 +1316,17 @@ def apply_limit_groups_scoped(obj, settings, authority_groups, *, priority_group
     write_groups = priorities + write_groups
     write_indices = [group.index for group in write_groups]
     priority_count = len(priorities)
+    row_count = len(obj.data.vertices)
+    preserve_mask = _row_mask(np, preserve_rows, row_count)
     max_groups = max(0, int(getattr(settings, "max_groups_per_vertex", 0)))
     if max_groups <= 0:
-        weights = np.zeros((len(obj.data.vertices), len(write_indices)), dtype=np.float32)
-        write_groups_by_indices(obj, write_indices, weights)
-        return ScopedLimitReport(changed=True, authority_limited_vertices=len(obj.data.vertices))
+        current = _rwt.get_groups_arr(obj, write_indices)
+        weights = current.copy()
+        weights[~preserve_mask, :] = 0.0
+        changed_rows = int(np.count_nonzero(np.any(np.abs(weights - current) > 1e-8, axis=1)))
+        if changed_rows:
+            write_groups_by_indices(obj, write_indices, weights)
+        return ScopedLimitReport(changed=bool(changed_rows), authority_limited_vertices=changed_rows)
     locked_indices = _ordinary_locked_group_indices(obj, exclude_indices=write_indices)
     write_weights = _rwt.get_groups_arr(obj, write_indices)
     write_weights[write_weights <= 0.0001] = 0.0
@@ -1231,6 +1338,7 @@ def apply_limit_groups_scoped(obj, settings, authority_groups, *, priority_group
         locked_counts = np.zeros(len(obj.data.vertices), dtype=np.int64)
     priority_weights = write_weights[:, :priority_count]
     focus_rows = np.any(priority_weights > 0.0001, axis=1)
+    focus_rows &= ~preserve_mask
     slots = np.maximum(0, max_groups - locked_counts).astype(int)
     limited = write_weights.copy()
     row_count = write_weights.shape[0]
@@ -1260,13 +1368,13 @@ def apply_limit_groups_scoped(obj, settings, authority_groups, *, priority_group
     changed_columns = np.flatnonzero(np.any(np.abs(limited - write_weights) > 1e-8, axis=0))
     if len(changed_columns) == 0:
         return ScopedLimitReport(
-            protected_over_limit_vertices=int(np.count_nonzero(locked_counts > max_groups)),
+            protected_over_limit_vertices=int(np.count_nonzero((locked_counts > max_groups) & focus_rows)),
         )
     changed_indices = [write_indices[int(column)] for column in changed_columns]
     write_groups_by_indices(obj, changed_indices, limited[:, changed_columns])
     return ScopedLimitReport(
         changed=True,
-        protected_over_limit_vertices=int(np.count_nonzero(locked_counts > max_groups)),
+        protected_over_limit_vertices=int(np.count_nonzero((locked_counts > max_groups) & focus_rows)),
         authority_limited_vertices=int(changed_rows),
     )
 
@@ -1310,7 +1418,16 @@ def _bucket_vertices_by_coordinate(obj, tolerance):
     return buckets
 
 
-def mirror_group_weights(obj, source_group, mirror_group, *, tolerance=None, threshold=0.00001):
+def mirror_group_weights(
+    obj,
+    source_group,
+    mirror_group,
+    *,
+    tolerance=None,
+    threshold=0.00001,
+    preserve_rows=None,
+    preserve_weights=None,
+):
     if obj is None or getattr(obj, "type", None) != 'MESH':
         raise ValueError("镜像权重需要 Mesh 对象")
     if source_group is None or mirror_group is None:
@@ -1340,7 +1457,14 @@ def mirror_group_weights(obj, source_group, mirror_group, *, tolerance=None, thr
         bucket_centers.append((x * scale, y * scale, z * scale))
         bucket_weights.append(weight_sum * scale)
     if not bucket_centers:
-        write_group_weights(obj, mirror_group, [0.0] * len(obj.data.vertices))
+        mirrored_weights = _preserve_weight_rows(
+            obj,
+            mirror_group,
+            [0.0] * len(obj.data.vertices),
+            preserve_rows,
+            preserve_weights=preserve_weights,
+        )
+        write_group_weights(obj, mirror_group, mirrored_weights)
         return {"matched_buckets": 0, "matched_vertices": 0, "coincident_buckets": 0, "tolerance": tolerance}
 
     tree = kdtree.KDTree(len(bucket_centers))
@@ -1377,6 +1501,13 @@ def mirror_group_weights(obj, source_group, mirror_group, *, tolerance=None, thr
         for index in indices:
             mirrored_weights[index] = value
             matched_vertices += 1
+    mirrored_weights = _preserve_weight_rows(
+        obj,
+        mirror_group,
+        mirrored_weights,
+        preserve_rows,
+        preserve_weights=preserve_weights,
+    )
     write_group_weights(obj, mirror_group, mirrored_weights, threshold=threshold)
     return {
         "matched_buckets": matched_buckets,
@@ -1487,14 +1618,14 @@ def _unique_normalize_groups(obj, groups, *, label):
     return result
 
 
-def _normalize_authority_priority_groups(obj, authority_groups, secondary_groups):
+def _normalize_authority_priority_groups(obj, authority_groups, secondary_groups, *, preserve_rows=None, tolerance=0.0001):
     ok, error = _rwt.ensure_available()
     if not ok:
         raise RuntimeError(f"规格化不可用: {error}")
     np = _rwt.np_module()
     authorities = _unique_normalize_groups(obj, authority_groups, label="规格化")
     if not authorities:
-        return False
+        return NormalizationReport()
     authority_count = len(authorities)
     secondary = _yieldable_groups(
         obj,
@@ -1504,52 +1635,68 @@ def _normalize_authority_priority_groups(obj, authority_groups, secondary_groups
     participant = authorities + secondary
     participant_indices = [group.index for group in participant]
     participant_weights = _rwt.get_groups_arr(obj, participant_indices)
+    row_count = participant_weights.shape[0]
+    preserve_mask = _row_mask(np, preserve_rows, row_count)
     locked_indices = _ordinary_locked_group_indices(obj, exclude_indices=participant_indices)
     if locked_indices:
         locked_sum = _rwt.get_groups_arr(obj, locked_indices).sum(axis=1)
     else:
-        locked_sum = np.zeros(len(obj.data.vertices), dtype=np.float32)
+        locked_sum = np.zeros(row_count, dtype=np.float32)
     available = np.maximum(0.0, 1.0 - locked_sum)
     authority_weights = participant_weights[:, :authority_count]
     authority_totals = authority_weights.sum(axis=1)
-    focus_rows = authority_totals > 1e-8
+    focus_rows = (authority_totals > tolerance) & ~preserve_mask
     normalized = participant_weights.copy()
     if bool(np.any(focus_rows)):
-        authority_scale = np.divide(
-            available,
-            authority_totals,
-            out=np.ones_like(available),
-            where=(focus_rows & (authority_totals > available)),
-        )
-        authority_scale = np.minimum(authority_scale, 1.0)
-        normalized[focus_rows, :authority_count] = (
-            authority_weights[focus_rows] * authority_scale[focus_rows].reshape(-1, 1)
-        )
         secondary_start = authority_count
+        over_authority = focus_rows & (authority_totals > available + tolerance)
+        if bool(np.any(over_authority)):
+            authority_scale = np.divide(
+                available,
+                authority_totals,
+                out=np.zeros_like(available),
+                where=(over_authority & (authority_totals > tolerance)),
+            )
+            normalized[over_authority, :authority_count] = (
+                authority_weights[over_authority] * authority_scale[over_authority].reshape(-1, 1)
+            )
+            if participant_weights.shape[1] > secondary_start:
+                normalized[over_authority, secondary_start:] = 0.0
+        fit_authority = focus_rows & ~over_authority
+        normalized[fit_authority, :authority_count] = authority_weights[fit_authority]
         if participant_weights.shape[1] > secondary_start:
             secondary_weights = participant_weights[:, secondary_start:]
-            used = normalized[:, :authority_count].sum(axis=1)
-            secondary_available = np.maximum(0.0, available - used)
             secondary_totals = secondary_weights.sum(axis=1)
+            secondary_available = np.maximum(0.0, available - authority_totals)
             secondary_scale = np.divide(
                 secondary_available,
                 secondary_totals,
-                out=np.ones_like(secondary_available),
-                where=(focus_rows & (secondary_totals > secondary_available)),
+                out=np.zeros_like(secondary_available),
+                where=(fit_authority & (secondary_totals > tolerance)),
             )
-            secondary_scale = np.minimum(secondary_scale, 1.0)
-            normalized[focus_rows, secondary_start:] = (
-                secondary_weights[focus_rows] * secondary_scale[focus_rows].reshape(-1, 1)
+            normalized[fit_authority, secondary_start:] = (
+                secondary_weights[fit_authority] * secondary_scale[fit_authority].reshape(-1, 1)
             )
     changed_columns = np.flatnonzero(np.any(np.abs(normalized - participant_weights) > 1e-8, axis=0))
     if len(changed_columns):
         changed_indices = [participant_indices[int(column)] for column in changed_columns]
         write_groups_by_indices(obj, changed_indices, normalized[:, changed_columns])
-    return True
+    totals = locked_sum + normalized.sum(axis=1)
+    under_rows = focus_rows & (totals < (1.0 - tolerance))
+    over_rows = focus_rows & (locked_sum > (1.0 + tolerance))
+    problem_rows = under_rows | over_rows
+    return NormalizationReport(
+        attempted=True,
+        changed=bool(len(changed_columns)),
+        normalized_vertices=int(np.count_nonzero(focus_rows & ~problem_rows)),
+        under_normalized_vertices=int(np.count_nonzero(under_rows)),
+        over_capacity_vertices=int(np.count_nonzero(over_rows)),
+        problem_vertices=[int(index) for index in np.flatnonzero(problem_rows)],
+    )
 
 
-def normalize_authority_groups_with_donors(obj, authority_groups, donor_groups):
-    return _normalize_authority_priority_groups(obj, authority_groups, donor_groups)
+def normalize_authority_groups_with_donors(obj, authority_groups, donor_groups, *, preserve_rows=None):
+    return _normalize_authority_priority_groups(obj, authority_groups, donor_groups, preserve_rows=preserve_rows)
 
 
 def _name_side_suffix(name):
@@ -2486,8 +2633,60 @@ def _write_groups_preserving_locks(obj, groups, weights):
     write_groups_by_indices(obj, [group.index for group in groups], weights)
 
 
-def normalize_with_donors(obj, target_group, donor_groups):
-    return _normalize_authority_priority_groups(obj, [target_group], donor_groups)
+def normalize_with_donors(obj, target_group, donor_groups, *, preserve_rows=None):
+    return _normalize_authority_priority_groups(obj, [target_group], donor_groups, preserve_rows=preserve_rows)
+
+
+def normalize_selected_vertices_proportional(obj, vertex_indices, *, tolerance=0.0001):
+    ok, error = _rwt.ensure_available()
+    if not ok:
+        raise RuntimeError(f"按比例规格化不可用: {error}")
+    np = _rwt.np_module()
+    row_count = len(obj.data.vertices)
+    selected_mask = _row_mask(np, vertex_indices, row_count)
+    if not bool(np.any(selected_mask)):
+        return NormalizationReport(attempted=True)
+    writable_indices = editable_group_indices(obj)
+    locked_indices = _ordinary_locked_group_indices(obj)
+    if locked_indices:
+        locked_sum = _rwt.get_groups_arr(obj, locked_indices).sum(axis=1)
+    else:
+        locked_sum = np.zeros(row_count, dtype=np.float32)
+    if writable_indices:
+        writable_weights = _rwt.get_groups_arr(obj, writable_indices)
+    else:
+        writable_weights = np.zeros((row_count, 0), dtype=np.float32)
+    normalized = writable_weights.copy()
+    writable_totals = writable_weights.sum(axis=1) if writable_weights.shape[1] else np.zeros(row_count, dtype=np.float32)
+    available = np.maximum(0.0, 1.0 - locked_sum)
+    scalable_rows = selected_mask & (writable_totals > tolerance)
+    if bool(np.any(scalable_rows)) and writable_weights.shape[1]:
+        scale = np.divide(
+            available,
+            writable_totals,
+            out=np.zeros_like(available),
+            where=scalable_rows,
+        )
+        normalized[scalable_rows, :] = writable_weights[scalable_rows] * scale[scalable_rows].reshape(-1, 1)
+    empty_problem_rows = selected_mask & (writable_totals <= tolerance) & (available > tolerance)
+    over_capacity_rows = selected_mask & (locked_sum > (1.0 + tolerance))
+    totals = locked_sum + normalized.sum(axis=1)
+    under_rows = selected_mask & (totals < (1.0 - tolerance))
+    problem_rows = empty_problem_rows | over_capacity_rows | under_rows
+    changed_columns = []
+    if writable_indices:
+        changed_columns = np.flatnonzero(np.any(np.abs(normalized - writable_weights) > 1e-8, axis=0))
+        if len(changed_columns):
+            changed_indices = [writable_indices[int(column)] for column in changed_columns]
+            write_groups_by_indices(obj, changed_indices, normalized[:, changed_columns])
+    return NormalizationReport(
+        attempted=True,
+        changed=bool(len(changed_columns)),
+        normalized_vertices=int(np.count_nonzero(selected_mask & ~problem_rows)),
+        under_normalized_vertices=int(np.count_nonzero(under_rows)),
+        over_capacity_vertices=int(np.count_nonzero(over_capacity_rows)),
+        problem_vertices=[int(index) for index in np.flatnonzero(problem_rows)],
+    )
 
 
 def ensure_numeric_export_compatible(obj, group_name):

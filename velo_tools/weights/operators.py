@@ -160,6 +160,32 @@ def _remove_created_groups(obj, group_names):
             pass
 
 
+def _selected_edit_vertex_indices(obj):
+    import bmesh
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    return [vert.index for vert in bm.verts if vert.select]
+
+
+def _set_object_vertex_selection(obj, vertex_indices):
+    selected = {int(index) for index in vertex_indices or ()}
+    for vertex in obj.data.vertices:
+        vertex.select = vertex.index in selected
+    update = getattr(obj.data, "update", None)
+    if callable(update):
+        update()
+
+
+def _set_edit_vertex_selection(obj, vertex_indices):
+    import bmesh
+    selected = {int(index) for index in vertex_indices or ()}
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    for vert in bm.verts:
+        vert.select_set(vert.index in selected)
+    bmesh.update_edit_mesh(obj.data)
+
+
 def _snapshot_editable_groups(snapshots, obj):
     if obj is None or getattr(obj, "type", None) != 'MESH':
         return
@@ -803,6 +829,67 @@ class VELO_OT_weight_merge_mapping_families(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class VELO_OT_weight_normalize_selected_vertices(bpy.types.Operator):
+    bl_idname = "velo.weight_normalize_selected_vertices"
+    bl_label = "按比例规格化选中顶点"
+    bl_description = "只对当前编辑模式选中的顶点按比例规格化已有未锁定普通权重，不创建新的顶点组权重"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(getattr(context, "scene", None), "velo_weight_tools", None) is not None
+
+    def execute(self, context):
+        _runtime.reset_overlay_pick_runtime(context)
+        settings = context.scene.velo_weight_tools
+        obj = getattr(context, "active_object", None)
+        if obj is None or getattr(obj, "type", None) != 'MESH':
+            settings.last_report = "请先选中一个 Mesh 物体"
+            self.report({'ERROR'}, settings.last_report)
+            return {'CANCELLED'}
+        if getattr(obj, "mode", None) != 'EDIT':
+            settings.last_report = "按比例规格化选中顶点需要在 Mesh Edit Mode 下执行"
+            self.report({'ERROR'}, settings.last_report)
+            return {'CANCELLED'}
+        try:
+            selected = _selected_edit_vertex_indices(obj)
+            if not selected:
+                settings.last_report = "没有选择任何顶点"
+                self.report({'ERROR'}, settings.last_report)
+                return {'CANCELLED'}
+            bpy.ops.object.mode_set(mode='OBJECT')
+            report = _algo.normalize_selected_vertices_proportional(obj, selected)
+            _set_object_vertex_selection(obj, report.problem_vertices)
+            bpy.ops.object.mode_set(mode='EDIT')
+            _set_edit_vertex_selection(obj, report.problem_vertices)
+            try:
+                bpy.ops.mesh.select_mode(type='VERT')
+            except Exception:
+                pass
+            bits = [
+                f"按比例规格化选中顶点 {len(selected)} 点",
+                f"完成 {report.normalized_vertices} 点",
+            ]
+            if report.problem_vertices:
+                bits.append(f"问题顶点 {len(report.problem_vertices)} 点，已保留选中")
+            else:
+                bits.append("全部完成")
+            settings.last_report = "；".join(bits)
+            self.report({'INFO'}, settings.last_report)
+            _invalidate_weight_overlay_caches(context)
+            return {'FINISHED'}
+        except Exception as exc:
+            try:
+                if getattr(obj, "mode", None) != 'EDIT':
+                    bpy.ops.object.mode_set(mode='EDIT')
+            except Exception:
+                pass
+            settings.last_report = str(exc)
+            self.report({'ERROR'}, settings.last_report)
+            _invalidate_weight_overlay_caches(context)
+            return {'CANCELLED'}
+
+
 class VELO_OT_weight_transfer(bpy.types.Operator):
     bl_idname = "velo.weight_transfer"
     bl_label = "执行权重传递"
@@ -831,6 +918,9 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
         created_bone = False
         locked_groups = []
         source_lock_snapshot = {}
+        original_target_weights = None
+        original_mirror_weights = None
+        preserve_rows = None
         mirror_flag_stack = contextlib.ExitStack()
         try:
             _props.sync_target_group_name(settings, context)
@@ -886,9 +976,24 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                     mirror_enabled = True
                     mirror_flag_stack.enter_context(_algo.suppress_native_mirror_flags(target))
 
+            original_target_weights = _algo.read_group_weights(target, target_group)
+            if mirror_enabled and mirror_group is not None:
+                original_mirror_weights = _algo.read_group_weights(target, mirror_group)
+            authority_for_domain = [target_group]
+            if mirror_enabled and mirror_group is not None:
+                authority_for_domain.append(mirror_group)
+
             matched = None
             if settings.engine == 'ROBUST':
                 weights, matched, matched_count, rescue_info = _algo.transfer_with_robust(context, settings, source_name)
+                weights, preserve_rows = _algo.apply_locked_boundary_preserve(
+                    target,
+                    authority_for_domain,
+                    target_group,
+                    weights,
+                    original_weights=original_target_weights,
+                )
+                report.locked_boundary_vertices = int(preserve_rows.sum())
                 _algo.write_group_weights(target, target_group, weights)
                 report.matched_count = matched_count
                 report.rescued_components = int(rescue_info.get("rescued_components", 0))
@@ -900,6 +1005,14 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 report.inpaint_fallback = str(rescue_info.get("inpaint_fallback", "") or "")
             elif settings.engine == 'DATA_TRANSFER_SURFACE':
                 weights = _algo.transfer_with_data_transfer(context, settings, source_name, target_group.name)
+                weights, preserve_rows = _algo.apply_locked_boundary_preserve(
+                    target,
+                    authority_for_domain,
+                    target_group,
+                    weights,
+                    original_weights=original_target_weights,
+                )
+                report.locked_boundary_vertices = int(preserve_rows.sum())
                 _algo.write_group_weights(target, target_group, weights)
                 report.matched_count = _algo.count_group_weights(target, target_group)
             else:
@@ -914,10 +1027,23 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 except Exception:
                     topology_cache = None
             if settings.smoothing_enable and settings.smoothing_repeat > 0 and settings.smoothing_factor > 0.0:
-                report.smoothed = _algo.apply_seam_safe_smoothing(target, target_group, settings, matched, topology_cache=topology_cache)
+                report.smoothed = _algo.apply_seam_safe_smoothing(
+                    target,
+                    target_group,
+                    settings,
+                    matched,
+                    topology_cache=topology_cache,
+                    preserve_rows=preserve_rows,
+                )
                 report.smoothing_skipped = not report.smoothed
             if mirror_enabled:
-                mirror_stats = _algo.mirror_group_weights(target, target_group, mirror_group)
+                mirror_stats = _algo.mirror_group_weights(
+                    target,
+                    target_group,
+                    mirror_group,
+                    preserve_rows=preserve_rows,
+                    preserve_weights=original_mirror_weights,
+                )
             donors = []
             mirror_donors = []
             if settings.normalize_after:
@@ -1003,6 +1129,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                         settings,
                         authority_groups,
                         priority_groups=priority_groups,
+                        preserve_rows=preserve_rows,
                     )
                     report.limited = bool(limit_report.changed)
                     report.protected_over_limit_vertices = int(limit_report.protected_over_limit_vertices)
@@ -1016,13 +1143,18 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                     if mirror_enabled and mirror_group is not None:
                         for group in mirror_donors:
                             _snapshot_group(snapshots, target, group)
-                        report.normalized = _algo.normalize_authority_groups_with_donors(
+                        norm_report = _algo.normalize_authority_groups_with_donors(
                             target,
                             [target_group, mirror_group],
                             donors + mirror_donors,
+                            preserve_rows=preserve_rows,
                         )
+                        report.normalized = bool(norm_report)
+                        report.under_normalized_vertices += int(norm_report.under_normalized_vertices)
                     else:
-                        report.normalized = _algo.normalize_with_donors(target, target_group, donors)
+                        norm_report = _algo.normalize_with_donors(target, target_group, donors, preserve_rows=preserve_rows)
+                        report.normalized = bool(norm_report)
+                        report.under_normalized_vertices += int(norm_report.under_normalized_vertices)
             _algo.ensure_numeric_export_compatible(target, target_group_name)
             if mirror_enabled and mirror_group is not None:
                 _algo.ensure_numeric_export_compatible(target, mirror_group.name)
@@ -1089,6 +1221,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append(f"无来源正权重 {report.evidence_blocked_components} 域/{report.evidence_blocked_vertices} 点")
         if report.inpaint_fallback:
             bits.append(f"{report.inpaint_fallback.lower()} inpaint 回退")
+        if report.locked_boundary_vertices:
+            bits.append(f"锁定边界保留 {report.locked_boundary_vertices} 点")
         if report.smoothed:
             bits.append("seam-safe 平滑")
         elif report.smoothing_skipped:
@@ -1103,6 +1237,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append("同对象跳过 limit")
         if report.normalized:
             bits.append("normalize")
+            if report.under_normalized_vertices:
+                bits.append(f"规格化不足 {report.under_normalized_vertices} 点")
         elif report.normalize_skipped_same_object:
             bits.append("同对象跳过 normalize")
         if report.donors:
@@ -1134,6 +1270,7 @@ _classes = (
     VELO_OT_weight_mirror_active_group,
     VELO_OT_weight_merge_groups,
     VELO_OT_weight_merge_mapping_families,
+    VELO_OT_weight_normalize_selected_vertices,
     VELO_OT_weight_transfer,
 )
 
