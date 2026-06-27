@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import textwrap
 
 import bpy
@@ -501,9 +502,10 @@ class VELO_OT_weight_mirror_active_group(bpy.types.Operator):
         snapshots = {}
         created_groups = []
         created_bones = []
+        mirror_flag_stack = contextlib.ExitStack()
         try:
             _algo.validate_velo_mirror_scope(context, obj)
-            _algo.validate_native_mirror_disabled(obj)
+            mirror_flag_stack.enter_context(_algo.suppress_native_mirror_flags(obj))
             active_group = obj.vertex_groups.active
             if active_group is None:
                 raise ValueError("请先在活动对象上选择一个活动顶点组")
@@ -576,6 +578,8 @@ class VELO_OT_weight_mirror_active_group(bpy.types.Operator):
             self.report({'ERROR'}, str(exc))
             _invalidate_weight_overlay_caches(context)
             return {'CANCELLED'}
+        finally:
+            mirror_flag_stack.close()
 
         bits = [
             f"镜像权重 {active_group.name} -> {mirror_group.name}",
@@ -791,6 +795,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
         created_bones = []
         created_group = False
         created_bone = False
+        mirror_flag_stack = contextlib.ExitStack()
         try:
             _props.sync_target_group_name(settings, context)
             _props.sync_mirror_group(settings, context)
@@ -828,7 +833,6 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             mirror_stats = None
             scope_ok, _scope_reason = _algo.is_component_export_object(context.scene, target)
             if scope_ok and (getattr(settings, "mirror_group", "") or "").strip():
-                _algo.validate_native_mirror_disabled(target)
                 mirror_resolution = _algo.resolve_mirror_group(context, settings, target, target_group.name)
                 mirror_group_name = mirror_resolution.mirror_name or (getattr(settings, "mirror_group", "") or "").strip()
                 if mirror_group_name and mirror_group_name != target_group.name:
@@ -838,6 +842,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                     else:
                         _snapshot_group(snapshots, target, mirror_group)
                     mirror_enabled = True
+                    mirror_flag_stack.enter_context(_algo.suppress_native_mirror_flags(target))
 
             matched = None
             if settings.engine == 'ROBUST':
@@ -955,6 +960,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             self.report({'ERROR'}, str(exc))
             _invalidate_weight_overlay_caches(context)
             return {'CANCELLED'}
+        finally:
+            mirror_flag_stack.close()
 
         _invalidate_weight_overlay_caches(context)
 

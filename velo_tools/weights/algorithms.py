@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import bpy
@@ -48,6 +49,15 @@ class MirrorGroupResolution:
     reason: str = ""
     confidence: float = 0.0
     automatic: bool = False
+
+
+_NATIVE_MIRROR_FLAGS = (
+    ("use_mirror_vertex_groups", "Mirror Vertex Groups"),
+    ("use_mirror_topology", "Topology Mirror"),
+    ("use_mirror_x", "X Mirror"),
+    ("use_mirror_y", "Y Mirror"),
+    ("use_mirror_z", "Z Mirror"),
+)
 
 
 def _object_label(obj):
@@ -130,13 +140,7 @@ def validate_velo_mirror_scope(context, obj):
 def validate_native_mirror_disabled(obj):
     mesh = getattr(obj, "data", None)
     enabled = []
-    for attr, label in (
-        ("use_mirror_vertex_groups", "Mirror Vertex Groups"),
-        ("use_mirror_topology", "Topology Mirror"),
-        ("use_mirror_x", "X Mirror"),
-        ("use_mirror_y", "Y Mirror"),
-        ("use_mirror_z", "Z Mirror"),
-    ):
+    for attr, label in _NATIVE_MIRROR_FLAGS:
         if bool(getattr(mesh, attr, False)):
             enabled.append(label)
     if enabled:
@@ -144,6 +148,32 @@ def validate_native_mirror_disabled(obj):
             "当前对象已进入 Velo 镜像接管范围，请先关闭 Blender 自带镜像选项: "
             + ", ".join(enabled)
         )
+
+
+@contextmanager
+def suppress_native_mirror_flags(obj):
+    mesh = getattr(obj, "data", None)
+    saved = []
+    if mesh is not None:
+        for attr, _label in _NATIVE_MIRROR_FLAGS:
+            try:
+                original = getattr(mesh, attr)
+            except Exception:
+                continue
+            saved.append((attr, original))
+            if bool(original):
+                try:
+                    setattr(mesh, attr, False)
+                except Exception:
+                    pass
+    try:
+        yield
+    finally:
+        for attr, original in saved:
+            try:
+                setattr(mesh, attr, original)
+            except Exception:
+                pass
 
 
 def _mmd_profile(context):
