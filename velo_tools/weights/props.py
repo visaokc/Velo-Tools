@@ -69,6 +69,9 @@ _MIRROR_DONOR_SLOT_PROPS = (
 )
 
 
+_SYNCING_DONOR_PREVIEW = False
+
+
 class _PreviewTargetGroup:
     __slots__ = ("name", "index")
 
@@ -84,17 +87,22 @@ def donor_count_value(settings):
         return 1
 
 
-def selected_donor_names(settings, count=None):
+def selected_donor_pairs(settings, count=None):
     limit = donor_count_value(settings) if count is None else max(0, min(int(count), len(_DONOR_SLOT_PROPS)))
-    names = []
+    pairs = []
     seen = set()
-    for prop_name in _DONOR_SLOT_PROPS[:limit]:
-        cleaned = (getattr(settings, prop_name, "") or "").strip()
+    for donor_prop, mirror_prop in zip(_DONOR_SLOT_PROPS[:limit], _MIRROR_DONOR_SLOT_PROPS[:limit]):
+        cleaned = (getattr(settings, donor_prop, "") or "").strip()
         if not cleaned or cleaned in seen:
             continue
-        names.append(cleaned)
+        mirror = (getattr(settings, mirror_prop, "") or "").strip()
+        pairs.append((cleaned, mirror))
         seen.add(cleaned)
-    return names
+    return pairs
+
+
+def selected_donor_names(settings, count=None):
+    return [donor for donor, _mirror in selected_donor_pairs(settings, count=count)]
 
 
 def sync_target_group_name(settings, context):
@@ -232,41 +240,76 @@ def sync_mirror_target_group_name(settings, context):
         settings.mirror_target_group_name = resolved
 
 
-def sync_mirror_donor_preview(settings, context, base_donor_names=None):
-    for prop_name in _MIRROR_DONOR_SLOT_PROPS:
-        setattr(settings, prop_name, "")
+def _set_donor_slot_value(settings, prop_name, value):
+    if getattr(settings, prop_name, "") != value:
+        setattr(settings, prop_name, value)
+
+
+def _refresh_mirror_donor_status(settings, context, donor_names=None):
     settings.mirror_donor_status = ""
     target = getattr(settings, "target_object", None)
     if target is None or target.type != 'MESH':
         return
-    donor_names = list(base_donor_names) if base_donor_names is not None else selected_donor_names(settings)
-    if not donor_names:
+    if donor_names is None:
+        pairs = selected_donor_pairs(settings)
+    else:
+        pairs = [
+            (donor_name, (getattr(settings, _MIRROR_DONOR_SLOT_PROPS[index], "") or "").strip())
+            for index, donor_name in enumerate(donor_names)
+        ]
+    if not pairs:
         return
     try:
-        from . import algorithms as _algo
-        mirrored = []
         missing = []
         locked = []
-        for donor_name in donor_names:
-            resolution = _algo.resolve_mirror_group(context, settings, target, donor_name)
-            if not resolution.mirror_name:
+        for donor_name, mirror_name in pairs:
+            if not mirror_name:
                 missing.append(donor_name)
-                mirrored.append("")
                 continue
-            group = target.vertex_groups.get(resolution.mirror_name)
+            group = target.vertex_groups.get(mirror_name)
+            if group is None:
+                missing.append(mirror_name)
+                continue
             if group is not None and getattr(group, "lock_weight", False):
-                locked.append(resolution.mirror_name)
-            mirrored.append(resolution.mirror_name)
-        for prop_name, donor_name in zip(_MIRROR_DONOR_SLOT_PROPS, mirrored):
-            setattr(settings, prop_name, donor_name)
+                locked.append(mirror_name)
         if locked:
             settings.mirror_donor_status = "镜像供体已锁定: " + ", ".join(locked)
         elif missing:
             settings.mirror_donor_status = "未找到镜像供体: " + ", ".join(missing)
-        elif mirrored:
+        elif pairs:
             settings.mirror_donor_status = "镜像供体已匹配"
     except Exception as exc:
         settings.mirror_donor_status = str(exc)
+
+
+def sync_mirror_donor_preview(settings, context, base_donor_names=None):
+    global _SYNCING_DONOR_PREVIEW
+    previous = _SYNCING_DONOR_PREVIEW
+    _SYNCING_DONOR_PREVIEW = True
+    try:
+        for prop_name in _MIRROR_DONOR_SLOT_PROPS:
+            _set_donor_slot_value(settings, prop_name, "")
+        settings.mirror_donor_status = ""
+        target = getattr(settings, "target_object", None)
+        if target is None or target.type != 'MESH':
+            return
+        donor_names = list(base_donor_names) if base_donor_names is not None else selected_donor_names(settings)
+        if not donor_names:
+            return
+        try:
+            from . import algorithms as _algo
+            mirrored = []
+            for donor_name in donor_names:
+                resolution = _algo.resolve_mirror_group(context, settings, target, donor_name)
+                mirrored.append(resolution.mirror_name or "")
+            for prop_name, donor_name in zip(_MIRROR_DONOR_SLOT_PROPS, mirrored):
+                _set_donor_slot_value(settings, prop_name, donor_name)
+        except Exception as exc:
+            settings.mirror_donor_status = str(exc)
+        else:
+            _refresh_mirror_donor_status(settings, context, donor_names)
+    finally:
+        _SYNCING_DONOR_PREVIEW = previous
 
 
 def preview_donor_names(settings, context):
@@ -324,13 +367,19 @@ def preview_donor_names(settings, context):
 
 
 def sync_donor_preview(settings, context):
-    refresh_donor_vg_names(settings)
-    preview_names = preview_donor_names(settings, context)
-    for prop_name, donor_name in zip(_DONOR_SLOT_PROPS, preview_names):
-        setattr(settings, prop_name, donor_name)
-    for prop_name in _DONOR_SLOT_PROPS[len(preview_names):]:
-        setattr(settings, prop_name, "")
-    sync_mirror_donor_preview(settings, context, preview_names)
+    global _SYNCING_DONOR_PREVIEW
+    previous = _SYNCING_DONOR_PREVIEW
+    _SYNCING_DONOR_PREVIEW = True
+    try:
+        refresh_donor_vg_names(settings)
+        preview_names = preview_donor_names(settings, context)
+        for prop_name, donor_name in zip(_DONOR_SLOT_PROPS, preview_names):
+            _set_donor_slot_value(settings, prop_name, donor_name)
+        for prop_name in _DONOR_SLOT_PROPS[len(preview_names):]:
+            _set_donor_slot_value(settings, prop_name, "")
+        sync_mirror_donor_preview(settings, context, preview_names)
+    finally:
+        _SYNCING_DONOR_PREVIEW = previous
 
 
 def _on_source_object_update(self, context):
@@ -377,6 +426,18 @@ def _on_mirror_target_group_update(self, context):
 
 def _on_donor_count_update(self, context):
     sync_donor_preview(self, context)
+
+
+def _on_donor_slot_update(self, context):
+    if _SYNCING_DONOR_PREVIEW:
+        return
+    sync_mirror_donor_preview(self, context)
+
+
+def _on_mirror_donor_slot_update(self, context):
+    if _SYNCING_DONOR_PREVIEW:
+        return
+    _refresh_mirror_donor_status(self, context)
 
 
 def _on_manual_mirror_target_group_update(self, context):
@@ -524,61 +585,73 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
         name="供体 1",
         default="",
         description="规格化时优先使用的第 1 个供体；来源组切换时会自动预填",
+        update=_on_donor_slot_update,
     )
     donor_slot_2: StringProperty(
         name="供体 2",
         default="",
         description="规格化时优先使用的第 2 个供体；来源组切换时会自动预填",
+        update=_on_donor_slot_update,
     )
     donor_slot_3: StringProperty(
         name="供体 3",
         default="",
         description="规格化时优先使用的第 3 个供体；来源组切换时会自动预填",
+        update=_on_donor_slot_update,
     )
     donor_slot_4: StringProperty(
         name="供体 4",
         default="",
         description="规格化时优先使用的第 4 个供体；来源组切换时会自动预填",
+        update=_on_donor_slot_update,
     )
     donor_slot_5: StringProperty(
         name="供体 5",
         default="",
         description="规格化时优先使用的第 5 个供体；来源组切换时会自动预填",
+        update=_on_donor_slot_update,
     )
     donor_slot_6: StringProperty(
         name="供体 6",
         default="",
         description="规格化时优先使用的第 6 个供体；来源组切换时会自动预填",
+        update=_on_donor_slot_update,
     )
     mirror_donor_slot_1: StringProperty(
         name="镜像供体 1",
         default="",
-        description="供体 1 的镜像供体预览",
+        description="供体 1 的镜像供体；会自动预填，也可手动覆盖",
+        update=_on_mirror_donor_slot_update,
     )
     mirror_donor_slot_2: StringProperty(
         name="镜像供体 2",
         default="",
-        description="供体 2 的镜像供体预览",
+        description="供体 2 的镜像供体；会自动预填，也可手动覆盖",
+        update=_on_mirror_donor_slot_update,
     )
     mirror_donor_slot_3: StringProperty(
         name="镜像供体 3",
         default="",
-        description="供体 3 的镜像供体预览",
+        description="供体 3 的镜像供体；会自动预填，也可手动覆盖",
+        update=_on_mirror_donor_slot_update,
     )
     mirror_donor_slot_4: StringProperty(
         name="镜像供体 4",
         default="",
-        description="供体 4 的镜像供体预览",
+        description="供体 4 的镜像供体；会自动预填，也可手动覆盖",
+        update=_on_mirror_donor_slot_update,
     )
     mirror_donor_slot_5: StringProperty(
         name="镜像供体 5",
         default="",
-        description="供体 5 的镜像供体预览",
+        description="供体 5 的镜像供体；会自动预填，也可手动覆盖",
+        update=_on_mirror_donor_slot_update,
     )
     mirror_donor_slot_6: StringProperty(
         name="镜像供体 6",
         default="",
-        description="供体 6 的镜像供体预览",
+        description="供体 6 的镜像供体；会自动预填，也可手动覆盖",
+        update=_on_mirror_donor_slot_update,
     )
     smoothing_enable: BoolProperty(
         name="启用平滑",

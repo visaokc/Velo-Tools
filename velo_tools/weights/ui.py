@@ -154,8 +154,7 @@ class VELO_PT_weight_transfer(bpy.types.Panel):
                 row.prop_search(settings, prop_name, settings, "available_donor_vgs", text=f"供体 {slot_index}")
                 mirror_prop = f"mirror_donor_slot_{slot_index}"
                 mirror = row.row(align=True)
-                mirror.enabled = False
-                mirror.prop(settings, mirror_prop, text=f"镜像 {slot_index}")
+                mirror.prop_search(settings, mirror_prop, settings, "available_donor_vgs", text=f"镜像 {slot_index}")
         if settings.mirror_donor_status:
             icon = 'ERROR' if "锁定" in settings.mirror_donor_status or "未找到" in settings.mirror_donor_status else 'INFO'
             donor_box.label(text=settings.mirror_donor_status, icon=icon)

@@ -67,6 +67,7 @@ _NATIVE_MIRROR_FLAGS = (
     ("use_mirror_y", "Y Mirror"),
     ("use_mirror_z", "Z Mirror"),
 )
+_DONOR_DOMINANCE_RATIO = 0.25
 
 
 def _object_label(obj):
@@ -1313,21 +1314,30 @@ def mirror_group_weights(obj, source_group, mirror_group, *, tolerance=None, thr
     }
 
 
-def mirrored_donor_groups(context, settings, obj, donor_groups, *, exclude_names=None):
+def mirrored_donor_groups(context, settings, obj, donor_groups, *, mirror_names=None, exclude_names=None):
     exclude = {_clean_name(name) for name in (exclude_names or ()) if _clean_name(name)}
     result = []
     seen = set()
-    for donor in donor_groups:
+    donor_groups = list(donor_groups or ())
+    override_names = list(mirror_names or ())
+    use_override_names = mirror_names is not None
+    for slot_index, donor in enumerate(donor_groups):
         if donor is None:
             continue
-        resolution = resolve_mirror_group(context, settings, obj, donor.name)
-        if not resolution.mirror_name:
-            raise ValueError(f"供体 '{donor.name}' 未找到镜像供体，无法执行镜像规格化")
-        if resolution.mirror_name in exclude:
-            raise ValueError(f"供体 '{donor.name}' 的镜像组 '{resolution.mirror_name}' 是本次权威组，不能作为供体")
-        mirror_group = obj.vertex_groups.get(resolution.mirror_name)
+        if use_override_names:
+            mirror_name = _clean_name(override_names[slot_index] if slot_index < len(override_names) else "")
+            if not mirror_name:
+                raise ValueError(f"供体 {slot_index + 1} '{donor.name}' 未指定镜像供体，无法执行镜像规格化")
+        else:
+            resolution = resolve_mirror_group(context, settings, obj, donor.name)
+            mirror_name = resolution.mirror_name
+            if not mirror_name:
+                raise ValueError(f"供体 '{donor.name}' 未找到镜像供体，无法执行镜像规格化")
+        if mirror_name in exclude:
+            raise ValueError(f"供体 '{donor.name}' 的镜像组 '{mirror_name}' 是本次权威组，不能作为供体")
+        mirror_group = obj.vertex_groups.get(mirror_name)
         if mirror_group is None:
-            raise ValueError(f"供体 '{donor.name}' 的镜像组 '{resolution.mirror_name}' 不存在")
+            raise ValueError(f"供体 '{donor.name}' 的镜像组 '{mirror_name}' 不存在")
         if mirror_group.lock_weight:
             raise ValueError(f"镜像供体 '{obj.name}/{mirror_group.name}' 已锁定，请先解锁后再执行")
         if is_special_vg_name(mirror_group.name):
@@ -2162,6 +2172,26 @@ def _side_filtered_groups(groups, preferred_side, count):
     return result
 
 
+def _apply_donor_dominance_gate(candidates):
+    if len(candidates) <= 1:
+        return candidates
+    leader = candidates[0]
+    leader_overlap = max(0.0, float(leader[2]))
+    leader_focus_sum = max(0.0, float(leader[4]))
+    if leader_overlap <= 0.0 and leader_focus_sum <= 0.0:
+        return candidates[:1]
+    filtered = [leader]
+    for candidate in candidates[1:]:
+        overlap = max(0.0, float(candidate[2]))
+        focus_sum = max(0.0, float(candidate[4]))
+        if leader_overlap > 0.0 and overlap >= leader_overlap * _DONOR_DOMINANCE_RATIO:
+            filtered.append(candidate)
+            continue
+        if leader_focus_sum > 0.0 and focus_sum >= leader_focus_sum * _DONOR_DOMINANCE_RATIO:
+            filtered.append(candidate)
+    return filtered
+
+
 def select_auto_donors(
     obj,
     target_group,
@@ -2181,6 +2211,8 @@ def select_auto_donors(
     if count == 0:
         return []
     exclude_group_names = {_clean_name(name) for name in (exclude_group_names or ()) if _clean_name(name)}
+    preferred_names = [_clean_name(name) for name in (preferred_names or ()) if _clean_name(name)]
+    preferred_name_set = set(preferred_names)
     raw_candidate_groups = []
     for vg in obj.vertex_groups:
         if vg.index == target_group.index:
@@ -2197,9 +2229,8 @@ def select_auto_donors(
     candidate_groups = _side_filtered_groups(raw_candidate_groups, preferred_side, count)
     preferred = []
     seen_preferred = set()
-    for name in preferred_names or ():
-        cleaned = _clean_name(name)
-        if not cleaned or cleaned in seen_preferred or cleaned in exclude_group_names:
+    for cleaned in preferred_names:
+        if cleaned in seen_preferred or cleaned in exclude_group_names:
             continue
         group = obj.vertex_groups.get(cleaned)
         if group is None or group.index == target_group.index:
@@ -2230,7 +2261,7 @@ def select_auto_donors(
         candidate_groups,
         target_weights,
         preferred_side,
-        list(preferred_names or ()),
+        preferred_names,
         count,
         np,
     )
@@ -2264,13 +2295,15 @@ def select_auto_donors(
             # Prefer donors that share real weighted mass with the target group.
             # Raw covered-vertex count can otherwise bias the result toward large,
             # unrelated rigid groups that merely blanket the same region.
+            preferred_score = 1 if vg.name in preferred_name_set else 0
             side_score = 1 if preferred_side in {"L", "R"} and _name_side_suffix(vg.name) == preferred_side else 0
-            candidates.append((side_score, overlap, focus_ratio, focus_sum, shared_vertices, -total, vg.index))
-    candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5]), reverse=True)
-    selected_indices = [group.index for group in preferred]
+            candidates.append((preferred_score, side_score, overlap, focus_ratio, focus_sum, shared_vertices, -total, vg.index))
+    candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5], item[6]), reverse=True)
+    candidates = _apply_donor_dominance_gate(candidates)
+    selected_indices = []
     selected_indices.extend(
         index
-        for _side, _overlap, _focus_ratio, _focus_sum, _shared, _neg_total, index in candidates
+        for _preferred, _side, _overlap, _focus_ratio, _focus_sum, _shared, _neg_total, index in candidates
         if index not in selected_indices
     )
     selected_indices = selected_indices[:count]

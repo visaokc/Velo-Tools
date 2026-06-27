@@ -891,7 +891,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             donors = []
             mirror_donors = []
             if settings.normalize_after:
-                configured_donors = _props.selected_donor_names(settings)
+                configured_pairs = _props.selected_donor_pairs(settings)
+                configured_donors = [donor for donor, _mirror in configured_pairs]
                 focus_weights = _algo.read_group_weights(target, target_group)
                 exclude_names = [mirror_group.name] if mirror_enabled and mirror_group is not None else []
                 donors = _select_donors_for_group(
@@ -906,11 +907,16 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 )
                 report.donors = [vg.name for vg in donors]
                 if mirror_enabled and mirror_group is not None and donors:
+                    mirror_names = None
+                    if configured_pairs:
+                        mirror_by_donor = {donor: mirror for donor, mirror in configured_pairs}
+                        mirror_names = [mirror_by_donor.get(group.name, "") for group in donors]
                     mirror_donors = _algo.mirrored_donor_groups(
                         context,
                         settings,
                         target,
                         donors,
+                        mirror_names=mirror_names,
                         exclude_names=[target_group.name, mirror_group.name],
                     )
                     _validate_mirror_donor_count(donors, mirror_donors)
