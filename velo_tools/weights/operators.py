@@ -62,6 +62,15 @@ def _report_wrapped_lines(text, width=78):
     return lines
 
 
+def _format_weight_evidence(value):
+    value = float(value or 0.0)
+    if value <= 0.0:
+        return "0"
+    if value < 0.001:
+        return f"{value:.2g}"
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
 def _first_existing_group(obj, names):
     if obj is None or getattr(obj, "type", None) != 'MESH':
         return None
@@ -933,7 +942,10 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 raise ValueError("请选择目标网格")
             source_name = (settings.source_group or "").strip()
             source_lock_snapshot = _snapshot_group_locks(source) if source is not target else {}
-            _algo.validate_source_group(source, source_name, require_unlocked=False)
+            source_group = _algo.validate_source_group(source, source_name, require_unlocked=False)
+            _source_nonzero, report.source_weight_max = _algo.weight_evidence_stats(
+                _algo.read_group_weights(source, source_group)
+            )
             resolution = _algo.resolve_target_group(context, settings)
             target_group, created_group, created_bone = _algo.ensure_target_group(
                 context,
@@ -986,6 +998,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             matched = None
             if settings.engine == 'ROBUST':
                 weights, matched, matched_count, rescue_info = _algo.transfer_with_robust(context, settings, source_name)
+                report.raw_weight_nonzero, report.raw_weight_max = _algo.weight_evidence_stats(weights)
                 weights, preserve_rows = _algo.apply_locked_boundary_preserve(
                     target,
                     authority_for_domain,
@@ -1005,6 +1018,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 report.inpaint_fallback = str(rescue_info.get("inpaint_fallback", "") or "")
             elif settings.engine == 'DATA_TRANSFER_SURFACE':
                 weights = _algo.transfer_with_data_transfer(context, settings, source_name, target_group.name)
+                report.raw_weight_nonzero, report.raw_weight_max = _algo.weight_evidence_stats(weights)
                 weights, preserve_rows = _algo.apply_locked_boundary_preserve(
                     target,
                     authority_for_domain,
@@ -1150,10 +1164,12 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                             preserve_rows=preserve_rows,
                         )
                         report.normalized = bool(norm_report)
+                        report.no_yieldable_vertices += int(norm_report.no_yieldable_vertices)
                         report.under_normalized_vertices += int(norm_report.under_normalized_vertices)
                     else:
                         norm_report = _algo.normalize_with_donors(target, target_group, donors, preserve_rows=preserve_rows)
                         report.normalized = bool(norm_report)
+                        report.no_yieldable_vertices += int(norm_report.no_yieldable_vertices)
                         report.under_normalized_vertices += int(norm_report.under_normalized_vertices)
             _algo.ensure_numeric_export_compatible(target, target_group_name)
             if mirror_enabled and mirror_group is not None:
@@ -1221,8 +1237,17 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append(f"无来源正权重 {report.evidence_blocked_components} 域/{report.evidence_blocked_vertices} 点")
         if report.inpaint_fallback:
             bits.append(f"{report.inpaint_fallback.lower()} inpaint 回退")
+        if report.raw_weight_nonzero:
+            bits.append(
+                "evidence "
+                f"source {_format_weight_evidence(report.source_weight_max)}/"
+                f"raw {_format_weight_evidence(report.raw_weight_max)}/"
+                f"{report.raw_weight_nonzero}点"
+            )
+            if max(float(report.source_weight_max), float(report.raw_weight_max)) < 0.25:
+                bits.append("来源权重较弱")
         if report.locked_boundary_vertices:
-            bits.append(f"锁定边界保留 {report.locked_boundary_vertices} 点")
+            bits.append(f"边界保留 {report.locked_boundary_vertices} 点")
         if report.smoothed:
             bits.append("seam-safe 平滑")
         elif report.smoothing_skipped:
@@ -1237,6 +1262,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append("同对象跳过 limit")
         if report.normalized:
             bits.append("normalize")
+            if report.no_yieldable_vertices:
+                bits.append(f"无可让路权重 {report.no_yieldable_vertices} 点")
             if report.under_normalized_vertices:
                 bits.append(f"规格化不足 {report.under_normalized_vertices} 点")
         elif report.normalize_skipped_same_object:

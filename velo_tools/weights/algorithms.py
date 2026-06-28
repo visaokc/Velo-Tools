@@ -30,7 +30,11 @@ class WeightTransferReport:
     protected_over_limit_vertices: int = 0
     authority_limited_vertices: int = 0
     locked_boundary_vertices: int = 0
+    no_yieldable_vertices: int = 0
     under_normalized_vertices: int = 0
+    source_weight_max: float = 0.0
+    raw_weight_max: float = 0.0
+    raw_weight_nonzero: int = 0
     normalized: bool = False
     limit_skipped_same_object: bool = False
     normalize_skipped_same_object: bool = False
@@ -50,6 +54,7 @@ class NormalizationReport:
     attempted: bool = False
     changed: bool = False
     normalized_vertices: int = 0
+    no_yieldable_vertices: int = 0
     under_normalized_vertices: int = 0
     over_capacity_vertices: int = 0
     problem_vertices: list[int] = field(default_factory=list)
@@ -1038,6 +1043,14 @@ def count_group_weights(obj, group, *, threshold=0.00001):
     return int(_rwt.np_module().count_nonzero(weights > threshold))
 
 
+def weight_evidence_stats(weights, *, threshold=0.00001):
+    np = _rwt.np_module()
+    arr = np.asarray(weights, dtype=float).reshape(-1)
+    if arr.size == 0:
+        return 0, 0.0
+    return int(np.count_nonzero(arr > threshold)), float(arr.max())
+
+
 def _uv_key(value):
     return (round(float(value.x), 6), round(float(value.y), 6))
 
@@ -1114,7 +1127,14 @@ def _preserve_weight_rows(obj, group, proposed_weights, preserve_rows=None, pres
     return result
 
 
-def locked_boundary_preserve_mask(obj, authority_groups, *, threshold=0.0001):
+def locked_boundary_preserve_mask(
+    obj,
+    authority_groups,
+    *,
+    proposed_weights=None,
+    original_weights=None,
+    threshold=0.0001,
+):
     ok, error = _rwt.ensure_available()
     if not ok:
         raise RuntimeError(f"锁定边界检测不可用: {error}")
@@ -1144,17 +1164,39 @@ def locked_boundary_preserve_mask(obj, authority_groups, *, threshold=0.0001):
         peer_active = np.any(peer_weights > threshold, axis=1)
     else:
         peer_active = np.zeros(row_count, dtype=bool)
-    return locked_active & ~peer_active
+    mask = locked_active & ~peer_active
+    if proposed_weights is None:
+        return mask
+    proposed = np.asarray(proposed_weights, dtype=float).reshape(-1)
+    if proposed.shape[0] != row_count:
+        raise ValueError("候选权重长度与网格顶点数不一致")
+    if original_weights is None:
+        changed = proposed > threshold
+    else:
+        original = np.asarray(original_weights, dtype=float).reshape(-1)
+        if original.shape[0] != row_count:
+            raise ValueError("原始权重长度与网格顶点数不一致")
+        changed = np.abs(proposed - original) > threshold
+    return mask & changed
 
 
 def apply_locked_boundary_preserve(obj, authority_groups, group, proposed_weights, *, original_weights=None, threshold=0.0001):
-    preserve_mask = locked_boundary_preserve_mask(obj, authority_groups, threshold=threshold)
+    original = original_weights
+    if original is None:
+        original = read_group_weights(obj, group)
+    preserve_mask = locked_boundary_preserve_mask(
+        obj,
+        authority_groups,
+        proposed_weights=proposed_weights,
+        original_weights=original,
+        threshold=threshold,
+    )
     preserved = _preserve_weight_rows(
         obj,
         group,
         proposed_weights,
         preserve_mask,
-        preserve_weights=original_weights,
+        preserve_weights=original,
     )
     return preserved, preserve_mask
 
@@ -1645,10 +1687,16 @@ def _normalize_authority_priority_groups(obj, authority_groups, secondary_groups
     available = np.maximum(0.0, 1.0 - locked_sum)
     authority_weights = participant_weights[:, :authority_count]
     authority_totals = authority_weights.sum(axis=1)
+    secondary_start = authority_count
+    if participant_weights.shape[1] > secondary_start:
+        secondary_weights = participant_weights[:, secondary_start:]
+        secondary_totals = secondary_weights.sum(axis=1)
+    else:
+        secondary_weights = np.zeros((row_count, 0), dtype=participant_weights.dtype)
+        secondary_totals = np.zeros(row_count, dtype=participant_weights.dtype)
     focus_rows = (authority_totals > tolerance) & ~preserve_mask
     normalized = participant_weights.copy()
     if bool(np.any(focus_rows)):
-        secondary_start = authority_count
         over_authority = focus_rows & (authority_totals > available + tolerance)
         if bool(np.any(over_authority)):
             authority_scale = np.divide(
@@ -1665,8 +1713,6 @@ def _normalize_authority_priority_groups(obj, authority_groups, secondary_groups
         fit_authority = focus_rows & ~over_authority
         normalized[fit_authority, :authority_count] = authority_weights[fit_authority]
         if participant_weights.shape[1] > secondary_start:
-            secondary_weights = participant_weights[:, secondary_start:]
-            secondary_totals = secondary_weights.sum(axis=1)
             secondary_available = np.maximum(0.0, available - authority_totals)
             secondary_scale = np.divide(
                 secondary_available,
@@ -1684,12 +1730,16 @@ def _normalize_authority_priority_groups(obj, authority_groups, secondary_groups
     totals = locked_sum + normalized.sum(axis=1)
     under_rows = focus_rows & (totals < (1.0 - tolerance))
     over_rows = focus_rows & (locked_sum > (1.0 + tolerance))
-    problem_rows = under_rows | over_rows
+    no_yieldable_rows = under_rows & (secondary_totals <= tolerance)
+    remaining_under_rows = under_rows & ~no_yieldable_rows
+    problem_rows = remaining_under_rows | over_rows
+    resolved_rows = focus_rows & ~(problem_rows | no_yieldable_rows)
     return NormalizationReport(
         attempted=True,
         changed=bool(len(changed_columns)),
-        normalized_vertices=int(np.count_nonzero(focus_rows & ~problem_rows)),
-        under_normalized_vertices=int(np.count_nonzero(under_rows)),
+        normalized_vertices=int(np.count_nonzero(resolved_rows)),
+        no_yieldable_vertices=int(np.count_nonzero(no_yieldable_rows)),
+        under_normalized_vertices=int(np.count_nonzero(remaining_under_rows)),
         over_capacity_vertices=int(np.count_nonzero(over_rows)),
         problem_vertices=[int(index) for index in np.flatnonzero(problem_rows)],
     )
