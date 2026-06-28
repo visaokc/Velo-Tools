@@ -949,6 +949,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
         original_target_weights = None
         original_mirror_weights = None
         preserve_rows = None
+        authority_suppressed_rows = None
         mirror_flag_stack = contextlib.ExitStack()
         try:
             _props.sync_target_group_name(settings, context)
@@ -1035,6 +1036,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 report.evidence_blocked_components = int(rescue_info.get("evidence_blocked_components", 0))
                 report.evidence_blocked_vertices = int(rescue_info.get("evidence_blocked_vertices", 0))
                 report.inpaint_fallback = str(rescue_info.get("inpaint_fallback", "") or "")
+                report.authority_suppressed_vertices = int(rescue_info.get("authority_suppressed_vertices", 0))
+                authority_suppressed_rows = rescue_info.get("authority_suppressed_rows")
             elif settings.engine == 'DATA_TRANSFER_SURFACE':
                 weights = _algo.transfer_with_data_transfer(context, settings, source_name, target_group.name)
                 report.raw_weight_nonzero, report.raw_weight_max = _algo.weight_evidence_stats(weights)
@@ -1050,6 +1053,12 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 report.matched_count = _algo.count_group_weights(target, target_group)
             else:
                 raise ValueError("未知权重引擎")
+            if authority_suppressed_rows is not None:
+                preserve_rows = _algo.combine_row_masks(
+                    len(target.data.vertices),
+                    preserve_rows,
+                    authority_suppressed_rows,
+                )
 
             topology_cache = None
             if (
@@ -1267,6 +1276,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 bits.append("来源权重较弱")
         if report.locked_boundary_vertices:
             bits.append(f"边界保留 {report.locked_boundary_vertices} 点")
+        if report.authority_suppressed_vertices:
+            bits.append(f"预写入拒绝 {report.authority_suppressed_vertices} 点")
         if report.smoothed:
             bits.append("seam-safe 平滑")
         elif report.smoothing_skipped:

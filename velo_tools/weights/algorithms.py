@@ -29,6 +29,7 @@ class WeightTransferReport:
     limited: bool = False
     protected_over_limit_vertices: int = 0
     authority_limited_vertices: int = 0
+    authority_suppressed_vertices: int = 0
     locked_boundary_vertices: int = 0
     no_yieldable_vertices: int = 0
     under_normalized_vertices: int = 0
@@ -72,6 +73,13 @@ class DonorPairEligibility:
 
 
 @dataclass
+class SourceCompetitionInfo:
+    selected_weights: object
+    competitor_weights: object
+    outcompeted: object
+
+
+@dataclass
 class TargetGroupResolution:
     name: str
     should_create: bool
@@ -100,6 +108,9 @@ _DONOR_DOMINANCE_RATIO = 0.12
 _DONOR_SHARED_VERTEX_RATIO = 0.35
 _DONOR_SHARED_VERTEX_MIN = 3
 _DONOR_SHARED_FOCUS_RATIO = 0.35
+_AUTHORITY_TRUSTED_SOURCE_RATIO = 0.25
+_AUTHORITY_COMPETITION_RATIO = 0.25
+_AUTHORITY_LOW_SOURCE_RATIO = 0.08
 
 
 def _object_label(obj):
@@ -610,6 +621,184 @@ def _weight_values(weights):
     return weights
 
 
+def _source_all_group_competition(
+    source_eval,
+    target,
+    source_verts,
+    source_faces,
+    source_normals,
+    target_verts,
+    target_faces,
+    target_normals,
+    settings,
+    source_group_name,
+    *,
+    threshold=0.00001,
+):
+    np = _rwt.np_module()
+    candidate_groups = []
+    selected_column = None
+    for group in getattr(source_eval, "vertex_groups", ()):
+        name = _clean_name(getattr(group, "name", ""))
+        if not name or is_special_vg_name(name):
+            continue
+        if name == source_group_name:
+            selected_column = len(candidate_groups)
+        candidate_groups.append(group)
+    if selected_column is None or len(candidate_groups) <= 1:
+        return None
+    group_indices = [group.index for group in candidate_groups]
+    source_matrix = _rwt.get_groups_arr(source_eval, group_indices)
+    if source_matrix.shape[1] <= 1:
+        return None
+    active_columns = set(int(column) for column in np.flatnonzero(np.any(source_matrix > threshold, axis=0)))
+    active_columns.add(int(selected_column))
+    ordered_columns = sorted(active_columns)
+    if len(ordered_columns) <= 1:
+        return None
+    selected_column = ordered_columns.index(int(selected_column))
+    source_matrix = source_matrix[:, ordered_columns]
+    matched_all, all_weights = _rwt.find_matches_closest_surface(
+        source_verts,
+        source_faces,
+        source_normals,
+        target_verts,
+        target_normals,
+        source_matrix,
+        settings.robust_max_distance ** 2,
+        _rwt.degrees(settings.robust_normal_angle),
+        settings.robust_flip_normals,
+    )
+    result, all_weights = _rwt.inpaint(
+        target_verts,
+        target_faces,
+        all_weights,
+        matched_all,
+        settings.robust_point_cloud_inpaint,
+    )
+    if not result and bool(settings.robust_point_cloud_inpaint):
+        result, all_weights = _rwt.inpaint(
+            target_verts,
+            target_faces,
+            all_weights,
+            matched_all,
+            False,
+        )
+    if not result:
+        return None
+    selected_weights = np.asarray(all_weights[:, selected_column], dtype=float)
+    competitor_matrix = np.delete(all_weights, selected_column, axis=1)
+    if competitor_matrix.shape[1] == 0:
+        return None
+    competitor_weights = np.max(competitor_matrix, axis=1)
+    outcompeted = (selected_weights > threshold) & (
+        competitor_weights > (selected_weights / max(_AUTHORITY_COMPETITION_RATIO, threshold))
+    )
+    max_groups = int(getattr(settings, "max_groups_per_vertex", 0))
+    if bool(getattr(settings, "limit_groups_enable", False)) and max_groups > 0 and all_weights.shape[1] > max_groups:
+        adjacency = _rwt.get_mesh_adjacency_matrix_sparse(target.data, include_self=True)
+        limit_mask = _rwt.limit_mask(
+            all_weights,
+            adjacency,
+            dilation_repeat=int(getattr(settings, "limit_dilation_repeat", 4)),
+            limit_num=max_groups,
+        )
+        limited_selected = (1 - limit_mask[:, selected_column]) * selected_weights
+        outcompeted |= (selected_weights > threshold) & (limited_selected <= threshold)
+    return SourceCompetitionInfo(
+        selected_weights=selected_weights,
+        competitor_weights=np.asarray(competitor_weights, dtype=float),
+        outcompeted=np.asarray(outcompeted, dtype=bool),
+    )
+
+
+def _positive_weight_components(obj, positive_mask):
+    total = len(getattr(obj.data, "vertices", ()))
+    adjacency = [[] for _ in range(total)]
+    for edge in getattr(obj.data, "edges", ()):
+        a, b = edge.vertices
+        if 0 <= a < total and 0 <= b < total:
+            adjacency[a].append(b)
+            adjacency[b].append(a)
+    seen = [False] * total
+    components = []
+    for start in range(total):
+        if seen[start] or not bool(positive_mask[start]):
+            continue
+        stack = [start]
+        seen[start] = True
+        component = []
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            for neighbor in adjacency[current]:
+                if seen[neighbor] or not bool(positive_mask[neighbor]):
+                    continue
+                seen[neighbor] = True
+                stack.append(neighbor)
+        components.append(component)
+    return components
+
+
+def build_pre_write_authority_mask(
+    obj,
+    weights,
+    direct_matched,
+    direct_weights,
+    source_weight_max,
+    source_competition=None,
+    *,
+    threshold=0.00001,
+):
+    np = _rwt.np_module()
+    flat_weights = np.asarray(_weight_values(weights), dtype=float).reshape(-1)
+    row_count = len(flat_weights)
+    authority = flat_weights > threshold
+    if row_count != len(getattr(obj.data, "vertices", ())):
+        return authority, {
+            "authority_suppressed_vertices": 0,
+            "authority_suppressed_components": 0,
+        }
+    direct = np.asarray(_weight_values(direct_weights), dtype=float).reshape(-1)
+    matched = np.asarray(direct_matched, dtype=bool).reshape(-1)
+    if direct.shape[0] != row_count or matched.shape[0] != row_count:
+        return authority, {
+            "authority_suppressed_vertices": 0,
+            "authority_suppressed_components": 0,
+        }
+    seed_threshold = max(float(threshold), float(source_weight_max) * _AUTHORITY_TRUSTED_SOURCE_RATIO)
+    direct_positive = matched & (direct > threshold)
+    trusted_seed = matched & (direct >= seed_threshold)
+    if source_competition is None:
+        outcompeted = np.zeros(row_count, dtype=bool)
+    else:
+        outcompeted = np.asarray(source_competition.outcompeted, dtype=bool).reshape(-1)
+        if outcompeted.shape[0] != row_count:
+            outcompeted = np.zeros(row_count, dtype=bool)
+    suppressed = np.zeros(row_count, dtype=bool)
+    suppressed_components = 0
+    for component in _positive_weight_components(obj, authority):
+        indices = np.asarray(component, dtype=int)
+        if bool(np.any(trusted_seed[indices])):
+            continue
+        has_direct_positive = bool(np.any(direct_positive[indices]))
+        if has_direct_positive:
+            continue
+        suppressed[indices] = True
+        suppressed_components += 1
+    low_authority_limit = max(float(threshold), float(source_weight_max) * _AUTHORITY_LOW_SOURCE_RATIO)
+    weak_outcompeted_rows = authority & outcompeted & (flat_weights <= low_authority_limit) & ~trusted_seed
+    suppressed |= weak_outcompeted_rows
+    if bool(np.any(suppressed)):
+        authority = authority.copy()
+        authority[suppressed] = False
+    return authority, {
+        "authority_suppressed_vertices": int(np.count_nonzero(suppressed)),
+        "authority_suppressed_components": int(suppressed_components),
+        "authority_suppressed_rows": suppressed,
+    }
+
+
 def transfer_with_robust(context, settings, source_group_name):
     ok, error = _rwt.ensure_available()
     if not ok:
@@ -627,6 +816,7 @@ def transfer_with_robust(context, settings, source_group_name):
         raise ValueError("来源或目标没有可用三角面")
     source_weights = _rwt.get_group_arr(source_eval, source_group_name)
     source_weight_count = int(_rwt.np_module().count_nonzero(source_weights > 0.00001))
+    source_weight_max = float(_rwt.np_module().max(source_weights)) if source_weight_count > 0 else 0.0
     if source_weight_count <= 0:
         raise ValueError(
             f"来源顶点组 '{source.name}/{source_group_name}' 在当前来源结果上没有任何非零权重，无法传递。"
@@ -644,6 +834,8 @@ def transfer_with_robust(context, settings, source_group_name):
         settings.robust_flip_normals,
         return_stats=True,
     )
+    direct_matched = matched.copy()
+    direct_weights = weights.copy()
     matched_count = int(_rwt.np_module().count_nonzero(matched))
     if matched_count <= 0:
         raise RuntimeError(
@@ -700,6 +892,34 @@ def transfer_with_robust(context, settings, source_group_name):
                 component_stats,
             )
             rescue_info.update(gate_info)
+            source_competition = None
+            try:
+                source_competition = _source_all_group_competition(
+                    source_eval,
+                    target,
+                    source_verts,
+                    source_faces,
+                    source_normals,
+                    target_verts,
+                    target_faces,
+                    target_normals,
+                    settings,
+                    source_group_name,
+                )
+            except Exception:
+                source_competition = None
+            authority_mask, authority_info = build_pre_write_authority_mask(
+                target,
+                fallback_weights,
+                direct_matched,
+                direct_weights,
+                source_weight_max,
+                source_competition,
+            )
+            fallback_weights = fallback_weights.copy()
+            fallback_weights[~authority_mask] = 0.0
+            rescue_info.update(authority_info)
+            rescue_info["authority_mask"] = authority_mask
             return _weight_values(fallback_weights), matched_for_inpaint, matched_count, rescue_info
         rescue_info = dict(rescue_info)
         rescue_info["inpaint_fallback_failed"] = "MESH"
@@ -712,6 +932,34 @@ def transfer_with_robust(context, settings, source_group_name):
         component_stats,
     )
     rescue_info.update(gate_info)
+    source_competition = None
+    try:
+        source_competition = _source_all_group_competition(
+            source_eval,
+            target,
+            source_verts,
+            source_faces,
+            source_normals,
+            target_verts,
+            target_faces,
+            target_normals,
+            settings,
+            source_group_name,
+        )
+    except Exception:
+        source_competition = None
+    authority_mask, authority_info = build_pre_write_authority_mask(
+        target,
+        weights,
+        direct_matched,
+        direct_weights,
+        source_weight_max,
+        source_competition,
+    )
+    weights = weights.copy()
+    weights[~authority_mask] = 0.0
+    rescue_info.update(authority_info)
+    rescue_info["authority_mask"] = authority_mask
     return _weight_values(weights), matched_for_inpaint, matched_count, rescue_info
 
 
@@ -1107,6 +1355,14 @@ def _row_mask(np, rows, row_count):
         if 0 <= index < row_count:
             mask[index] = True
     return mask
+
+
+def combine_row_masks(row_count, *rows):
+    np = _rwt.np_module()
+    combined = np.zeros(row_count, dtype=bool)
+    for row_set in rows:
+        combined |= _row_mask(np, row_set, row_count)
+    return combined
 
 
 def _preserve_weight_rows(obj, group, proposed_weights, preserve_rows=None, preserve_weights=None):
