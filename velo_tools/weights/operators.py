@@ -173,11 +173,24 @@ def _selected_edit_vertex_indices(obj):
     import bmesh
     bm = bmesh.from_edit_mesh(obj.data)
     bm.verts.ensure_lookup_table()
-    return [vert.index for vert in bm.verts if vert.select]
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    selected = {vert.index for vert in bm.verts if vert.select}
+    for edge in bm.edges:
+        if edge.select:
+            selected.update(vert.index for vert in edge.verts)
+    for face in bm.faces:
+        if face.select:
+            selected.update(vert.index for vert in face.verts)
+    return sorted(selected)
 
 
 def _set_object_vertex_selection(obj, vertex_indices):
     selected = {int(index) for index in vertex_indices or ()}
+    for polygon in getattr(obj.data, "polygons", ()):
+        polygon.select = False
+    for edge in getattr(obj.data, "edges", ()):
+        edge.select = False
     for vertex in obj.data.vertices:
         vertex.select = vertex.index in selected
     update = getattr(obj.data, "update", None)
@@ -190,6 +203,12 @@ def _set_edit_vertex_selection(obj, vertex_indices):
     selected = {int(index) for index in vertex_indices or ()}
     bm = bmesh.from_edit_mesh(obj.data)
     bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    for face in bm.faces:
+        face.select_set(False)
+    for edge in bm.edges:
+        edge.select_set(False)
     for vert in bm.verts:
         vert.select_set(vert.index in selected)
     bmesh.update_edit_mesh(obj.data)

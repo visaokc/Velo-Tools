@@ -229,7 +229,14 @@ class VELO_PT_weight_postprocess(bpy.types.Panel):
         row.enabled = settings.limit_groups_enable
         row.prop(settings, "max_groups_per_vertex")
         col.prop(settings, "normalize_after")
-        col.operator("velo.weight_normalize_selected_vertices", icon='MOD_VERTEX_WEIGHT')
+        repair_row = col.row(align=True)
+        active = getattr(context, "active_object", None)
+        repair_row.enabled = (
+            active is not None
+            and getattr(active, "type", None) == 'MESH'
+            and getattr(active, "mode", None) == 'EDIT'
+        )
+        repair_row.operator("velo.weight_normalize_selected_vertices", icon='MOD_VERTEX_WEIGHT')
 
 
 class VELO_PT_weight_advanced(bpy.types.Panel):
