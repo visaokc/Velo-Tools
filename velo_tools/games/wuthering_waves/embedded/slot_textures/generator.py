@@ -572,6 +572,38 @@ def build_plan(forms: List[Tuple[str, FormData]],
             terms.append(f'ps-t{slot} == {text}')
         return terms
 
+    def _condition(terms: List[str], form_gate: Optional[int] = None) -> str:
+        parts = list(terms)
+        if form_gate is not None:
+            parts.append(f'{constants.VAR_FORM} == {form_gate}')
+        return ' && '.join(parts)
+
+    def _common_branch_assignments(branches: List[_Branch]) -> Dict[int, str]:
+        common: Optional[Dict[int, str]] = None
+        for branch in branches:
+            if common is None:
+                common = dict(branch.assign)
+                continue
+            common = {
+                slot: resource for slot, resource in common.items()
+                if branch.assign.get(slot) == resource
+            }
+        return common or {}
+
+    all_form_ids = set(range(1, len(forms) + 1))
+
+    def _can_hoist_form_branches(branches: List[_Branch]) -> bool:
+        if not multi_form or len(branches) < 2:
+            return False
+        gates = {branch.form_gate for branch in branches}
+        return None not in gates and gates == all_form_ids
+
+    def _append_assignments(chunk: List[str], assign: Dict[int, str],
+                            indent: str):
+        for slot, res in sorted(assign.items()):
+            chunk.append(f'{indent}ps-t{slot} = ref {res}')
+            used_slots.add(slot)
+
     for comp_id in sorted(component_branches):
         name = constants.CMDLIST_SET_TEXTURES.format(component_id=comp_id)
         component_list_names[comp_id] = name
@@ -590,19 +622,49 @@ def build_plan(forms: List[Tuple[str, FormData]],
             key=lambda b: (-len(b.signature), b.form_gate or 0,
                            b.signature, tuple(sorted(b.assign.items()))))
         first = True
+        by_signature: Dict[Tuple[Tuple[int, float], ...], List[_Branch]] = {}
+        signature_order: List[Tuple[Tuple[int, float], ...]] = []
         for branch in ordered:
-            terms = _terms(comp_id, branch)
+            if branch.signature not in by_signature:
+                signature_order.append(branch.signature)
+            by_signature.setdefault(branch.signature, []).append(branch)
+
+        for signature in signature_order:
+            branches = sorted(
+                by_signature[signature],
+                key=lambda b: (b.form_gate or 0, tuple(sorted(b.assign.items()))))
+            terms = _terms(comp_id, branches[0])
             if not terms:
                 continue
-            cond = ' && '.join(terms)
-            if branch.form_gate is not None:
-                cond += f' && {constants.VAR_FORM} == {branch.form_gate}'
-            cond += ' && 1'
-            chunk.append(f'{"if" if first else "else if"} {cond}')
-            for slot, res in sorted(branch.assign.items()):
-                chunk.append(f'    ps-t{slot} = ref {res}')
-                used_slots.add(slot)
-            first = False
+
+            if _can_hoist_form_branches(branches):
+                common = _common_branch_assignments(branches)
+                chunk.append(f'{"if" if first else "else if"} '
+                             f'{_condition(terms)}')
+                _append_assignments(chunk, common, '    ')
+                inner_first = True
+                for branch in branches:
+                    diff = {
+                        slot: res for slot, res in branch.assign.items()
+                        if common.get(slot) != res
+                    }
+                    if not diff:
+                        continue
+                    chunk.append(
+                        f'    {"if" if inner_first else "else if"} '
+                        f'{constants.VAR_FORM} == {branch.form_gate}')
+                    _append_assignments(chunk, diff, '        ')
+                    inner_first = False
+                if not inner_first:
+                    chunk.append('    endif')
+                first = False
+                continue
+
+            for branch in branches:
+                chunk.append(f'{"if" if first else "else if"} '
+                             f'{_condition(terms, branch.form_gate)}')
+                _append_assignments(chunk, branch.assign, '    ')
+                first = False
         if not first:
             chunk.append('endif')
             body_chunks.append('\n'.join(chunk))
