@@ -913,18 +913,21 @@ def _transfer_with_robust_matrix_context(
         raise _robust_no_match_error(match_stats, settings)
     rescue_info = _empty_component_rescue_info()
     component_stats = _matched_component_stats(target, matched)
-    result, matrix_weights = _rwt.inpaint(
+    direct_matrix_weights = matrix_weights.copy()
+    result, painted_matrix_weights = _rwt.inpaint(
         target_verts,
         target_faces,
-        matrix_weights,
+        direct_matrix_weights.copy(),
         matched,
         settings.robust_point_cloud_inpaint,
     )
+    if result:
+        matrix_weights = painted_matrix_weights
     if not result and bool(settings.robust_point_cloud_inpaint):
         fallback_result, fallback_weights = _rwt.inpaint(
             target_verts,
             target_faces,
-            matrix_weights,
+            direct_matrix_weights.copy(),
             matched,
             False,
         )
