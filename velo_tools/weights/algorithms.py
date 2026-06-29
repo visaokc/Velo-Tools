@@ -55,6 +55,8 @@ class NormalizationReport:
     attempted: bool = False
     changed: bool = False
     normalized_vertices: int = 0
+    limited_vertices: int = 0
+    locked_limit_vertices: int = 0
     no_yieldable_vertices: int = 0
     under_normalized_vertices: int = 0
     over_capacity_vertices: int = 0
@@ -2943,7 +2945,32 @@ def normalize_with_donors(obj, target_group, donor_groups, *, preserve_rows=None
     return _normalize_authority_priority_groups(obj, [target_group], donor_groups, preserve_rows=preserve_rows)
 
 
-def normalize_selected_vertices_proportional(obj, vertex_indices, *, tolerance=0.0001):
+def _selected_limit_continuity_scores(obj, weights, selected_mask):
+    np = _rwt.np_module()
+    scores = np.zeros_like(weights, dtype=float)
+    edges = getattr(getattr(obj, "data", None), "edges", ()) or ()
+    for edge in edges:
+        vertices = tuple(getattr(edge, "vertices", ()) or ())
+        if len(vertices) != 2:
+            continue
+        left, right = int(vertices[0]), int(vertices[1])
+        if left < 0 or right < 0 or left >= weights.shape[0] or right >= weights.shape[0]:
+            continue
+        if not (bool(selected_mask[left]) and bool(selected_mask[right])):
+            continue
+        scores[left] += weights[right]
+        scores[right] += weights[left]
+    return scores
+
+
+def normalize_selected_vertices_proportional(
+    obj,
+    vertex_indices,
+    *,
+    limit_groups_enable=False,
+    max_groups_per_vertex=None,
+    tolerance=0.0001,
+):
     ok, error = _rwt.ensure_available()
     if not ok:
         raise RuntimeError(f"按比例规格化不可用: {error}")
@@ -2955,15 +2982,54 @@ def normalize_selected_vertices_proportional(obj, vertex_indices, *, tolerance=0
     writable_indices = editable_group_indices(obj)
     locked_indices = _ordinary_locked_group_indices(obj)
     if locked_indices:
-        locked_sum = _rwt.get_groups_arr(obj, locked_indices).sum(axis=1)
+        locked_weights = _rwt.get_groups_arr(obj, locked_indices)
+        locked_sum = locked_weights.sum(axis=1)
     else:
+        locked_weights = np.zeros((row_count, 0), dtype=np.float32)
         locked_sum = np.zeros(row_count, dtype=np.float32)
     if writable_indices:
         writable_weights = _rwt.get_groups_arr(obj, writable_indices)
     else:
         writable_weights = np.zeros((row_count, 0), dtype=np.float32)
     normalized = writable_weights.copy()
-    writable_totals = writable_weights.sum(axis=1) if writable_weights.shape[1] else np.zeros(row_count, dtype=np.float32)
+    limited_mask = np.zeros(row_count, dtype=bool)
+    locked_limit_rows = np.zeros(row_count, dtype=bool)
+    max_groups = int(max_groups_per_vertex or 0)
+    limit_enabled = bool(limit_groups_enable) and max_groups > 0
+    if limit_enabled:
+        if locked_indices:
+            locked_counts = np.count_nonzero(locked_weights > tolerance, axis=1)
+        else:
+            locked_counts = np.zeros(row_count, dtype=np.int64)
+        if writable_weights.shape[1]:
+            continuity_scores = _selected_limit_continuity_scores(obj, writable_weights, selected_mask)
+            for row in np.flatnonzero(selected_mask):
+                active_columns = np.flatnonzero(normalized[row] > tolerance)
+                remaining_slots = max_groups - int(locked_counts[row])
+                if remaining_slots <= 0:
+                    locked_limit_rows[row] = True
+                    if len(active_columns):
+                        normalized[row, active_columns] = 0.0
+                        limited_mask[row] = True
+                    continue
+                if len(active_columns) <= remaining_slots:
+                    continue
+                ordered = sorted(
+                    (int(column) for column in active_columns),
+                    key=lambda column: (
+                        -float(normalized[row, column]),
+                        -float(continuity_scores[row, column]),
+                        column,
+                    ),
+                )
+                keep = set(ordered[:remaining_slots])
+                for column in active_columns:
+                    if int(column) not in keep:
+                        normalized[row, int(column)] = 0.0
+                limited_mask[row] = True
+        else:
+            locked_limit_rows = selected_mask & (locked_counts >= max_groups)
+    writable_totals = normalized.sum(axis=1) if normalized.shape[1] else np.zeros(row_count, dtype=np.float32)
     available = np.maximum(0.0, 1.0 - locked_sum)
     scalable_rows = selected_mask & (writable_totals > tolerance)
     if bool(np.any(scalable_rows)) and writable_weights.shape[1]:
@@ -2973,12 +3039,12 @@ def normalize_selected_vertices_proportional(obj, vertex_indices, *, tolerance=0
             out=np.zeros_like(available),
             where=scalable_rows,
         )
-        normalized[scalable_rows, :] = writable_weights[scalable_rows] * scale[scalable_rows].reshape(-1, 1)
+        normalized[scalable_rows, :] = normalized[scalable_rows] * scale[scalable_rows].reshape(-1, 1)
     empty_problem_rows = selected_mask & (writable_totals <= tolerance) & (available > tolerance)
     over_capacity_rows = selected_mask & (locked_sum > (1.0 + tolerance))
     totals = locked_sum + normalized.sum(axis=1)
     under_rows = selected_mask & (totals < (1.0 - tolerance))
-    problem_rows = empty_problem_rows | over_capacity_rows | under_rows
+    problem_rows = empty_problem_rows | over_capacity_rows | under_rows | locked_limit_rows
     changed_columns = []
     if writable_indices:
         changed_columns = np.flatnonzero(np.any(np.abs(normalized - writable_weights) > 1e-8, axis=0))
@@ -2989,6 +3055,8 @@ def normalize_selected_vertices_proportional(obj, vertex_indices, *, tolerance=0
         attempted=True,
         changed=bool(len(changed_columns)),
         normalized_vertices=int(np.count_nonzero(selected_mask & ~problem_rows)),
+        limited_vertices=int(np.count_nonzero(limited_mask)),
+        locked_limit_vertices=int(np.count_nonzero(locked_limit_rows)),
         under_normalized_vertices=int(np.count_nonzero(under_rows)),
         over_capacity_vertices=int(np.count_nonzero(over_capacity_rows)),
         problem_vertices=[int(index) for index in np.flatnonzero(problem_rows)],

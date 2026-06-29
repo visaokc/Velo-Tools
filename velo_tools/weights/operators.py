@@ -860,7 +860,7 @@ class VELO_OT_weight_merge_mapping_families(bpy.types.Operator):
 class VELO_OT_weight_normalize_selected_vertices(bpy.types.Operator):
     bl_idname = "velo.weight_normalize_selected_vertices"
     bl_label = "按比例规格化选中顶点"
-    bl_description = "只对当前编辑模式选中的顶点按比例规格化已有未锁定普通权重，不创建新的顶点组权重"
+    bl_description = "只处理当前编辑模式选中的顶点；按当前最大组数量裁剪未锁定普通权重后再规格化，不创建新的顶点组权重"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -886,7 +886,12 @@ class VELO_OT_weight_normalize_selected_vertices(bpy.types.Operator):
                 self.report({'ERROR'}, settings.last_report)
                 return {'CANCELLED'}
             bpy.ops.object.mode_set(mode='OBJECT')
-            report = _algo.normalize_selected_vertices_proportional(obj, selected)
+            report = _algo.normalize_selected_vertices_proportional(
+                obj,
+                selected,
+                limit_groups_enable=getattr(settings, "limit_groups_enable", False),
+                max_groups_per_vertex=getattr(settings, "max_groups_per_vertex", None),
+            )
             _set_object_vertex_selection(obj, report.problem_vertices)
             bpy.ops.object.mode_set(mode='EDIT')
             _set_edit_vertex_selection(obj, report.problem_vertices)
@@ -898,6 +903,12 @@ class VELO_OT_weight_normalize_selected_vertices(bpy.types.Operator):
                 f"按比例规格化选中顶点 {len(selected)} 点",
                 f"完成 {report.normalized_vertices} 点",
             ]
+            limited_vertices = int(getattr(report, "limited_vertices", 0))
+            if limited_vertices:
+                bits.append(f"裁剪 {limited_vertices} 点")
+            locked_limit_vertices = int(getattr(report, "locked_limit_vertices", 0))
+            if locked_limit_vertices:
+                bits.append(f"锁定组占满/超限 {locked_limit_vertices} 点")
             if report.problem_vertices:
                 bits.append(f"问题顶点 {len(report.problem_vertices)} 点，已保留选中")
             else:
