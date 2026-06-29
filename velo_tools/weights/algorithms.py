@@ -1589,6 +1589,7 @@ def locked_boundary_preserve_mask(
     proposed_weights=None,
     original_weights=None,
     threshold=0.0001,
+    max_groups_per_vertex=None,
 ):
     ok, error = _rwt.ensure_available()
     if not ok:
@@ -1606,7 +1607,19 @@ def locked_boundary_preserve_mask(
     if not locked_indices:
         return np.zeros(row_count, dtype=bool)
     locked_weights = _rwt.get_groups_arr(obj, locked_indices)
-    locked_active = np.any(locked_weights > threshold, axis=1)
+    locked_effective = locked_weights.copy()
+    locked_effective[locked_effective <= threshold] = 0.0
+    locked_active = np.any(locked_effective > 0.0, axis=1)
+    locked_weight_full = np.sum(locked_effective, axis=1) >= (1.0 - threshold)
+    locked_slots_full = np.zeros(row_count, dtype=bool)
+    if max_groups_per_vertex is not None:
+        try:
+            max_groups = int(max_groups_per_vertex)
+        except (TypeError, ValueError):
+            max_groups = 0
+        if max_groups > 0:
+            locked_counts = np.count_nonzero(locked_effective > 0.0, axis=1)
+            locked_slots_full = locked_counts >= max_groups
     peer_indices = [
         group.index
         for group in obj.vertex_groups
@@ -1619,7 +1632,8 @@ def locked_boundary_preserve_mask(
         peer_active = np.any(peer_weights > threshold, axis=1)
     else:
         peer_active = np.zeros(row_count, dtype=bool)
-    mask = locked_active & ~peer_active
+    capacity_full = locked_weight_full | locked_slots_full
+    mask = locked_active & ~peer_active & capacity_full
     if proposed_weights is None:
         return mask
     proposed = np.asarray(proposed_weights, dtype=float).reshape(-1)
@@ -1635,7 +1649,16 @@ def locked_boundary_preserve_mask(
     return mask & changed
 
 
-def apply_locked_boundary_preserve(obj, authority_groups, group, proposed_weights, *, original_weights=None, threshold=0.0001):
+def apply_locked_boundary_preserve(
+    obj,
+    authority_groups,
+    group,
+    proposed_weights,
+    *,
+    original_weights=None,
+    threshold=0.0001,
+    max_groups_per_vertex=None,
+):
     original = original_weights
     if original is None:
         original = read_group_weights(obj, group)
@@ -1645,6 +1668,7 @@ def apply_locked_boundary_preserve(obj, authority_groups, group, proposed_weight
         proposed_weights=proposed_weights,
         original_weights=original,
         threshold=threshold,
+        max_groups_per_vertex=max_groups_per_vertex,
     )
     preserved = _preserve_weight_rows(
         obj,

@@ -1027,6 +1027,11 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             authority_for_domain = [target_group]
             if mirror_enabled and mirror_group is not None:
                 authority_for_domain.append(mirror_group)
+            locked_boundary_max_groups = (
+                getattr(settings, "max_groups_per_vertex", None)
+                if getattr(settings, "limit_groups_enable", False)
+                else None
+            )
 
             matched = None
             if settings.engine == 'ROBUST':
@@ -1040,6 +1045,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                     target_group,
                     weights,
                     original_weights=original_target_weights,
+                    max_groups_per_vertex=locked_boundary_max_groups,
                 )
                 report.locked_boundary_vertices = int(preserve_rows.sum())
                 _algo.write_group_weights(target, target_group, weights)
@@ -1065,6 +1071,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                     target_group,
                     weights,
                     original_weights=original_target_weights,
+                    max_groups_per_vertex=locked_boundary_max_groups,
                 )
                 report.locked_boundary_vertices = int(preserve_rows.sum())
                 _algo.write_group_weights(target, target_group, weights)
