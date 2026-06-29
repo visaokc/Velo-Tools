@@ -418,6 +418,14 @@ def register():
     except Exception:
         import traceback
         traceback.print_exc()
+    # Final INI artifact sanitizer: installed after slot_textures so it wraps
+    # outermost and cleans stock, LOD, cross-scene and custom-template renders.
+    try:
+        from .embedded import ini_sanitize as _inisanitize
+        _inisanitize.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
     # During extraction, additionally produce ShaderTextureUsage.json (hook build_components to capture + write_objects to output, idempotent and reversible).
     try:
         from . import _shader_texture_usage as _stu
@@ -450,7 +458,13 @@ def unregister():
         _a2.ungate("VTWW_PT_SIDEBAR")
     except Exception:
         pass
-    # Slot-style texture layer first (LIFO: installed last, wraps outermost).
+    # Final INI artifact sanitizer first (LIFO: installed after slot_textures).
+    try:
+        from .embedded import ini_sanitize as _inisanitize
+        _inisanitize.remove()
+    except Exception:
+        pass
+    # Slot-style texture layer after the final sanitizer (LIFO).
     try:
         from .embedded import slot_textures as _slott
         _slott.unregister_ui()

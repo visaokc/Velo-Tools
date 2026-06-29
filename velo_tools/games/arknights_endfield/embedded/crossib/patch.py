@@ -51,10 +51,24 @@ _CHECK_TEX_RE = re.compile(r'^\s*CheckTextureOverride\s*=\s*ps-t(\d+)\s*$', re.I
 # block is stripped (not duplicated) on such a re-injection. No pristine-body copy
 # is embedded — EFMI's own `; SHA256 CHECKSUM:` footer (re-added after injection)
 # covers tamper-detection, and the full-overwrite makes restore-and-reinject moot.
-_CROSSIB_BODY_BEGIN = "; >>> VELO CrossIB body (auto-generated; do not edit) >>>"
-_CROSSIB_BODY_END = "; <<< VELO CrossIB body end <<<"
-_CROSSIB_RES_BEGIN = "; >>> VELO CrossIB resources (auto-generated; do not edit) >>>"
-_CROSSIB_RES_END = "; <<< VELO CrossIB resources end <<<"
+_CROSSIB_BODY_BEGIN = "; >>> CrossIB body (auto-generated; do not edit) >>>"
+_CROSSIB_BODY_END = "; <<< CrossIB body end <<<"
+_CROSSIB_RES_BEGIN = "; >>> CrossIB resources (auto-generated; do not edit) >>>"
+_CROSSIB_RES_END = "; <<< CrossIB resources end <<<"
+_LEGACY_CROSSIB_BODY_BEGIN = "; >>> VELO CrossIB body (auto-generated; do not edit) >>>"
+_LEGACY_CROSSIB_BODY_END = "; <<< VELO CrossIB body end <<<"
+_LEGACY_CROSSIB_RES_BEGIN = "; >>> VELO CrossIB resources (auto-generated; do not edit) >>>"
+_LEGACY_CROSSIB_RES_END = "; <<< VELO CrossIB resources end <<<"
+_CROSSIB_BODY_BEGIN_MARKERS = {_CROSSIB_BODY_BEGIN, _LEGACY_CROSSIB_BODY_BEGIN}
+_CROSSIB_BODY_END_MARKERS = {_CROSSIB_BODY_END, _LEGACY_CROSSIB_BODY_END}
+_CROSSIB_RES_BEGIN_MARKERS = {_CROSSIB_RES_BEGIN, _LEGACY_CROSSIB_RES_BEGIN}
+_CROSSIB_RES_END_MARKERS = {_CROSSIB_RES_END, _LEGACY_CROSSIB_RES_END}
+_LEGACY_MARKER_REPLACEMENTS = {
+    _LEGACY_CROSSIB_BODY_BEGIN: _CROSSIB_BODY_BEGIN,
+    _LEGACY_CROSSIB_BODY_END: _CROSSIB_BODY_END,
+    _LEGACY_CROSSIB_RES_BEGIN: _CROSSIB_RES_BEGIN,
+    _LEGACY_CROSSIB_RES_END: _CROSSIB_RES_END,
+}
 _SHADER_OVERRIDE_HEADER_RE = re.compile(r'^\s*\[ShaderOverrideCrossIB_\w+\]\s*$')
 _CROSSIB_SHADER_INI_NAME = "ShaderOverride.ini"
 
@@ -143,28 +157,47 @@ def _wrap_injected_body(new_body):
     return [_CROSSIB_BODY_BEGIN] + list(new_body) + [_CROSSIB_BODY_END]
 
 
+def _normalize_legacy_marker_line(line):
+    stripped = line.strip()
+    replacement = _LEGACY_MARKER_REPLACEMENTS.get(stripped)
+    if replacement is None:
+        return line
+    return line[:len(line) - len(line.lstrip())] + replacement
+
+
+def _normalize_legacy_markers(lines):
+    return [_normalize_legacy_marker_line(line) for line in lines]
+
+
 def _body_is_injected(body):
-    """True if this CommandList body already carries a velo CrossIB injection
+    """True if this CommandList body already carries a CrossIB injection
     (detected by the BODY begin marker)."""
-    return any(line.strip() == _CROSSIB_BODY_BEGIN for line in body)
+    return any(line.strip() in _CROSSIB_BODY_BEGIN_MARKERS for line in body)
 
 
 def _strip_injected_resources(ini_text):
-    """Remove any previously appended velo CrossIB resource block(s) so they are
+    """Remove any previously appended CrossIB resource block(s) so they are
     regenerated rather than duplicated on re-injection."""
     out = []
     skipping = False
     for line in ini_text.split("\n"):
         stripped = line.strip()
-        if stripped == _CROSSIB_RES_BEGIN:
+        if stripped in _CROSSIB_RES_BEGIN_MARKERS:
             skipping = True
             continue
-        if stripped == _CROSSIB_RES_END:
+        if stripped in _CROSSIB_RES_END_MARKERS:
             skipping = False
             continue
         if not skipping:
             out.append(line)
     return "\n".join(out)
+
+
+def _find_marker(lines, markers, start=0):
+    for index in range(start, len(lines)):
+        if lines[index].strip() in markers:
+            return index
+    raise ValueError
 
 
 def split_out_shader_override_ini(ini_text):
@@ -176,8 +209,8 @@ def split_out_shader_override_ini(ini_text):
     there are no shader-override sections (e.g. no cross-IB mappings)."""
     lines = ini_text.split("\n")
     try:
-        begin = lines.index(_CROSSIB_RES_BEGIN)
-        end = lines.index(_CROSSIB_RES_END)
+        begin = _find_marker(lines, _CROSSIB_RES_BEGIN_MARKERS)
+        end = _find_marker(lines, _CROSSIB_RES_END_MARKERS, begin + 1)
     except ValueError:
         return ini_text, ""
     res_sections = _split_sections("\n".join(lines[begin + 1:end]))
@@ -187,7 +220,13 @@ def split_out_shader_override_ini(ini_text):
             shader.append((header, body))
         else:
             kept.append((header, body))
-    mod_lines = lines[:begin + 1] + _join_sections(kept).split("\n") + lines[end:]
+    mod_lines = (
+        lines[:begin]
+        + [_CROSSIB_RES_BEGIN]
+        + _join_sections(kept).split("\n")
+        + [_CROSSIB_RES_END]
+        + lines[end + 1:]
+    )
     shader_text = _join_sections(shader).strip("\n")
     return "\n".join(mod_lines), shader_text
 
@@ -494,6 +533,8 @@ def inject_cross_ib(ini_text, settings, extracted_object, merged_object, buffers
                 if not _body_is_injected(body):
                     body = _process_section_body(body, comp_id, providers_map, consumers_map)
                     body = _ensure_extra_ps_slot_checks(body, comp_id, extra_ps_slots_map)
+                else:
+                    body = _normalize_legacy_markers(body)
             else:
                 texture_match = _TEX_OVERRIDE_RE.match(header)
                 if texture_match:

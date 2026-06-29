@@ -190,7 +190,7 @@ def export_mod(collection, mod_output_folder: str, mode: str = 'AUTO') -> dict:
             f'[TextureOverrideRawTex{ti}]\nhash = {h}\nmatch_priority = 0\n'
             f'this = ResourceRawTex{ti}\n')
 
-    ini = ['; Velo raw-mesh mod (generated) - plain 3dmigoto per-component overrides',
+    ini = ['; Raw-mesh mod (generated) - plain 3dmigoto per-component overrides',
            '; Each component overrides its own source draw (vb0 hash + index range).', '',
            '; --- Draw overrides ---', '']
     ini.extend(overrides)

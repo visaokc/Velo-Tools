@@ -128,7 +128,7 @@ def build_fmt(layout: ComponentLayout, ib_format: str) -> str:
     """Human-readable .fmt for familiarity. The authoritative, faithful layout
     lives in Metadata.json's velo_raw_mesh block; our importer reads that, not
     this file (the stock importer cannot parse a multi-slot layout)."""
-    lines = ['; Velo raw-mesh extract - multi-slot layout',
+    lines = ['; Raw-mesh extract - multi-slot layout',
              '; authoritative per-slot layout is in Metadata.json (velo_raw_mesh)']
     for s in layout.slots:
         lines.append(f'; slot {s.slot} stride: {s.stride}')

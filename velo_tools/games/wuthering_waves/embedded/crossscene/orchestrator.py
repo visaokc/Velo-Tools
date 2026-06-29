@@ -467,7 +467,7 @@ def _write_empty_skip_mod(modout, tag, src, label):
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
     source_hash = meta.get("vb0_hash") or tag
     lines = [
-        "; Velo cross-scene empty own-buffer stub for hidden/excluded source object %s" % label,
+        "; Cross-scene empty own-buffer stub for hidden/excluded source object %s" % label,
         "",
         "[Constants]",
         "global $mod_enabled = 1",
