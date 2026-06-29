@@ -88,6 +88,23 @@ def texture_hash_from_name(name: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
+def texture_name_with_components(name: str, component_ids: set[int], tex_hash: str | None = None) -> str:
+    """Return a stock texture filename whose Components-* prefix uses merged component ids."""
+    if not component_ids:
+        return name
+    tex_hash = (tex_hash or texture_hash_from_name(name) or "").lower()
+    if not tex_hash:
+        return name
+    # Preserve everything after the hash (format/color-space suffixes, extension) from the source name.
+    m = re.search(r'(\s+t=' + re.escape(tex_hash) + r'.*)$', str(name), re.IGNORECASE)
+    if m:
+        tail = m.group(1)
+    else:
+        m = re.search(r'(t=' + re.escape(tex_hash) + r'.*)$', str(name), re.IGNORECASE)
+        tail = " " + m.group(1) if m else f" t={tex_hash}.dds"
+    return f"Components-{'-'.join(map(str, sorted(component_ids)))}{tail}"
+
+
 def _component_id(name: str) -> int | None:
     m = _COMPONENT_KEY_RE.match(str(name))
     return int(m.group(1)) if m else None
@@ -179,6 +196,128 @@ def _root_texture_files(folder: Path) -> dict[str, Path]:
         if h:
             files[h] = f
     return files
+
+
+def _merge_usage_component_ids(out: dict[str, set[int]], components: dict, id_map: dict[int, int] | None = None) -> None:
+    for comp_name, comp_pairs in (components or {}).items():
+        local = _component_id(comp_name)
+        if local is None or not isinstance(comp_pairs, dict):
+            continue
+        if id_map is None:
+            merged = local
+        else:
+            if local not in id_map:
+                continue
+            merged = id_map[local]
+        for slots in _iter_pair_slots(comp_pairs):
+            for rec in slots.values():
+                h = _record_hash(rec)
+                if h:
+                    out.setdefault(h, set()).add(int(merged))
+
+
+def _route_component_map(scene: dict) -> dict[int, int]:
+    if scene.get("foldable"):
+        mapped = {}
+        for k, v in ((scene.get("fold") or {}).get("comp_map") or {}).items():
+            try:
+                mapped[int(k)] = int(v)
+            except Exception:
+                continue
+        return mapped
+    bases = []
+    for value in ((scene.get("derive") or {}).get("base_components") or []):
+        try:
+            bases.append(int(value))
+        except Exception:
+            continue
+    return {local: merged for local, merged in enumerate(bases)}
+
+
+def cross_scene_root_texture_component_ids(merge_root: Path, routing: dict) -> dict[str, set[int]]:
+    """Map texture hash -> merged component ids that consume it in a cross-scene merge root."""
+    merge_root = Path(merge_root)
+    out: dict[str, set[int]] = {}
+
+    root_stu = _read_stu(merge_root)
+    _merge_usage_component_ids(out, _component_map(root_stu))
+    for components in _extra_form_component_maps(root_stu):
+        _merge_usage_component_ids(out, components)
+
+    for scene in (routing or {}).get("scene_ibs") or []:
+        scene_stu = _read_stu(merge_root / (scene.get("source_folder") or ""))
+        id_map = _route_component_map(scene)
+        _merge_usage_component_ids(out, _component_map(scene_stu), id_map)
+        for components in _extra_form_component_maps(scene_stu):
+            _merge_usage_component_ids(out, components, id_map)
+
+    for editable in (routing or {}).get("editable_ibs") or []:
+        try:
+            id_map = {
+                int(local): int(merged)
+                for local, merged in zip(editable.get("local_components") or [],
+                                         editable.get("merged_components") or [])
+            }
+        except Exception:
+            id_map = {}
+        editable_stu = _read_stu(merge_root / (editable.get("source_folder") or ""))
+        _merge_usage_component_ids(out, _component_map(editable_stu), id_map)
+        for components in _extra_form_component_maps(editable_stu):
+            _merge_usage_component_ids(out, components, id_map)
+
+    return out
+
+
+def _rewrite_usage_filenames(obj, hash_to_name: dict[str, str]) -> None:
+    if isinstance(obj, dict):
+        h = _record_hash(obj)
+        if h in hash_to_name and isinstance(obj.get("filename"), str):
+            obj["filename"] = hash_to_name[h]
+        for v in obj.values():
+            _rewrite_usage_filenames(v, hash_to_name)
+    elif isinstance(obj, list):
+        for item in obj:
+            _rewrite_usage_filenames(item, hash_to_name)
+
+
+def canonicalize_cross_scene_root_textures(merge_root: Path, routing: dict) -> dict:
+    """Rename root DDS files so their Components-* prefix reflects merged component ids after hash dedupe."""
+    merge_root = Path(merge_root)
+    root_files = _root_texture_files(merge_root)
+    component_ids = cross_scene_root_texture_component_ids(merge_root, routing)
+    canonical_names = {}
+    renamed = {}
+
+    for h, path in sorted(root_files.items()):
+        ids = component_ids.get(h)
+        if not ids:
+            continue
+        new_name = texture_name_with_components(path.name, ids, h)
+        canonical_names[h] = new_name
+        target = path.with_name(new_name)
+        if target == path:
+            continue
+        if target.exists():
+            path.unlink()
+        else:
+            path.rename(target)
+        renamed[h] = new_name
+
+    usage_path = merge_root / "ShaderTextureUsage.json"
+    if canonical_names and usage_path.is_file():
+        try:
+            import json
+            usage = json.loads(usage_path.read_text(encoding="utf-8"))
+            _rewrite_usage_filenames(usage, canonical_names)
+            usage_path.write_text(json.dumps(usage, indent=4, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    return {
+        "root_texture_canonical_names": canonical_names,
+        "root_textures_renamed": renamed,
+        "root_texture_component_ids": {h: sorted(ids) for h, ids in sorted(component_ids.items())},
+    }
 
 
 def _add_reasons(reasons: dict[str, set[str]], hashes: set[str], reason: str) -> None:

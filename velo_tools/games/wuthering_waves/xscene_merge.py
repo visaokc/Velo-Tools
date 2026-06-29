@@ -26,7 +26,8 @@ from ._wwmi_core.migoto_io.data_model.byte_buffer import (
     MigotoFormat, NumpyBuffer, Semantic, AbstractSemantic,
 )
 from .embedded.lod import cross_scene as lod_cross_scene
-from .xscene_textures import copy_textures_remapped, prune_cross_scene_root_textures, remap_editable_stu
+from .xscene_textures import (canonicalize_cross_scene_root_textures, copy_textures_remapped,
+                              prune_cross_scene_root_textures, remap_editable_stu)
 
 GRID = 0.001
 TOL = 0.0015
@@ -826,6 +827,12 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         if lod_entries_merged:
             meta_path.write_text(json.dumps(merged_meta, indent=4, ensure_ascii=False))
 
+    texture_canonical = canonicalize_cross_scene_root_textures(out, routing)
+    if texture_canonical.get("root_textures_renamed"):
+        print("[velo.xscene] canonicalized merge-root texture name(s): %s"
+              % ", ".join("%s:%s" % (h, n)
+                           for h, n in sorted(texture_canonical["root_textures_renamed"].items())))
+
     texture_prune = prune_cross_scene_root_textures(out, routing)
     if texture_prune.get("root_textures_pruned"):
         print("[velo.xscene] pruned redundant merge-root texture hash(es): %s"
@@ -849,6 +856,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         "splits": splits, "scene_ibs": [s["hash"] for s in dungeon_specs],
         "editable_ibs": editable_ib_records, "warnings": warnings,
         "lod_entries_merged": lod_entries_merged,
+        **texture_canonical,
         **texture_prune,
         "base_textures": base_tex, "analyze": [
             {k: (sorted(v) if isinstance(v, set) else v) for k, v in m.items() if k != "member_in_comp"}

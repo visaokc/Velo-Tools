@@ -7,8 +7,8 @@ for each IB k, non-texture sections become ``[X]->[X_ibK]``, ``$v->$v_ibK``, ``R
 Textures take one of two paths per IB:
   * Slot-style (velo): textures rebound inside the component draw scope as ``ps-t{n} = ref
     ResourceTexture{i}`` are kept PER-IB (``[ResourceTexture{i}]`` -> ``[ResourceTexture{i}_ibK]``,
-    filename normalised to the deduped ``Textures/t=<hash>.dds``), so the namespaced slot command
-    lists resolve. They carry NO texture-hash matching -> immune to streaming.
+    filename normalised to the deduped ``Textures/Components-* t=<hash>.dds``), so the namespaced
+    slot command lists resolve. They carry NO texture-hash matching -> immune to streaming.
   * Hash-style (stock / slot blind-zone fallback): ``[TextureOverrideTexture{i}]`` hash overrides
     collapse into one global ``[Resource_Texture_<hash>]``/``[TextureOverride_Texture_<hash>]`` per
     unique hash (gate = OR over each IB's ``$object_detected``), as before.
@@ -67,6 +67,10 @@ def _parse_sections(text):
     return sections
 
 
+def _texture_filename(path):
+    return os.path.basename(str(path).replace("\\", "/"))
+
+
 def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True, partial_export=False,
              suppress_body_hashes=None):
     """mods: ordered list of per-IB mod folders (each contains mod.ini + Meshes/ + Textures/).
@@ -92,13 +96,13 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     suppressed; own/editable sub-IBs can still keep a real hash fallback for the same hash."""
     write_textures = (not partial_export) and copy_textures
     write_final_ini = (not partial_export) and write_ini
-    # Clean ONLY our own products (out is the user's mod folder now; never rmtree the whole thing).
+    # Clean ONLY generated mesh products. Textures follow stock WWMI semantics: existing files are
+    # author assets and are not deleted or overwritten.
     os.makedirs(out, exist_ok=True)
     meshes_dir = os.path.join(out, "Meshes")
     textures_dir = os.path.join(out, "Textures")
-    for _p in (meshes_dir, textures_dir):
-        if os.path.exists(_p):
-            shutil.rmtree(_p)
+    if os.path.exists(meshes_dir):
+        shutil.rmtree(meshes_dir)
     os.makedirs(meshes_dir, exist_ok=True)
     if write_textures:
         os.makedirs(textures_dir, exist_ok=True)
@@ -106,6 +110,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     # Root-only allowlist + hash -> merged-root file path (the authoritative copy source).
     allowed = None
     root_file_by_hash = {}
+    root_name_by_hash = {}
     if texture_root is not None:
         allowed = set()
         for name in sorted(os.listdir(texture_root)):
@@ -117,6 +122,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             h = m.group(1).lower()
             allowed.add(h)
             root_file_by_hash.setdefault(h, os.path.join(texture_root, name))
+            root_name_by_hash.setdefault(h, name)
 
     constants, present, others = [], [], []
     tex = {}                # hash -> source .dds absolute path (deduped; slot + blind-zone)
@@ -124,6 +130,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                             # [TextureOverride_Texture_<hash>] each, gated by $object_detected.
     blindzone_mods = {}     # hash -> mod indexes that still need the hash-style fallback
     slot_hashes = set()     # hashes bound by ps-t slot -> per-IB resources, NO global hash override.
+    tex_name = {}            # hash -> shipped filename under Textures/
     if isinstance(suppress_body_hashes, dict):
         suppress_body_reasons = {
             str(h).lower(): str(reason or "body")
@@ -193,6 +200,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             blindzone_mods.setdefault(hv, set()).add(k)
             if hv not in tex:
                 tex[hv] = os.path.join(mod, fn)
+                tex_name[hv] = _texture_filename(fn)
         # Slot-covered resources: dedup their .dds by hash (file level) so multiple IBs binding the
         # same texture ship one t=<hash>.dds; the hash is parsed from the filename.
         slot_hash_by_res = {}
@@ -209,6 +217,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             slot_hashes.add(hv)
             if hv not in tex:
                 tex[hv] = os.path.join(mod, fn)
+                tex_name[hv] = _texture_filename(fn)
         tex_hash_per_mod.append(mod_hashes)
 
         for h, b in sections:
@@ -217,12 +226,13 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             if _RE_RESTEX.match(h):
                 if h in slot_covered:
                     # Keep per-IB (the slot command lists ref ResourceTexture{i}_ib{k}); normalise
-                    # the filename to the deduped shipped name so all IBs share one t=<hash>.dds.
+                    # the filename to the deduped shipped name so all IBs share one canonical DDS.
                     hv = slot_hash_by_res.get(h)
                     nb = []
                     for l in b:
                         if hv and re.match(r'\s*filename\s*=', l, re.I):
-                            nb.append(f'filename = Textures/t={hv}.dds')
+                            shipped_name = root_name_by_hash.get(hv) or tex_name.get(hv) or f't={hv}.dds'
+                            nb.append(f'filename = Textures/{shipped_name}')
                         else:
                             nb.append(l)
                     others.append((f'{h}_ib{k}', nb))
@@ -261,7 +271,11 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             if hv not in shipped:
                 continue
             src = root_file_by_hash[hv] if (allowed is not None and hv in root_file_by_hash) else tex[hv]
-            shutil.copy(src, os.path.join(textures_dir, f't={hv}.dds'))
+            shipped_name = root_name_by_hash.get(hv) or tex_name.get(hv) or f't={hv}.dds'
+            dst = os.path.join(textures_dir, shipped_name)
+            if os.path.exists(dst):
+                continue
+            shutil.copy(src, dst)
 
     gate = ' || '.join(f'$object_detected_ib{k}' for k in range(len(mods)))
     blindzone_shipped = sorted(hv for hv in blindzone if hv in shipped)
@@ -279,7 +293,8 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                 hv_gate = ' || '.join(
                     f'$object_detected_ib{k}'
                     for k in sorted(blindzone_mods.get(hv) or range(len(mods))))
-                f.write(f"[Resource_Texture_{hv}]\nfilename = Textures/t={hv}.dds\n\n")
+                shipped_name = root_name_by_hash.get(hv) or tex_name.get(hv) or f't={hv}.dds'
+                f.write(f"[Resource_Texture_{hv}]\nfilename = Textures/{shipped_name}\n\n")
                 f.write(f"[TextureOverride_Texture_{hv}]\nhash = {hv}\nmatch_priority = 0\n")
                 f.write(f"if {hv_gate}\n    this = Resource_Texture_{hv}\nendif\n\n")
 
