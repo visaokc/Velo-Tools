@@ -28,11 +28,8 @@
 #                                 per resource, so velo mods MUST use the same
 #                                 values as XQFA-exported mods or whichever
 #                                 loses the section-priority race goes blind.
-#   [16,200,000 .. 16,699,979)    per-texture marks (form markers and
-#                                 same-signature disambiguators):
-#                                 16,200,000 + hash32 % 499,979. Deterministic,
-#                                 so any two velo mods derive the same value
-#                                 for the same texture; float32-exact ints.
+#   [2,000,000 .. 15,999,981)     optional shader-anchor marks used only for
+#                                 user-provided form anchors.
 #
 # Known co-tenants kept clear of: WWMI core 3381.7777 (bone CB), RabbitFX
 # 1718.x / 1719.x, hand-made mod values around 3381.x.
@@ -40,29 +37,7 @@
 # ----------------------------------------------------- emitted names --------
 
 VAR_FORM = "$form_id"
-# Probe scope key: set around our own CheckTextureOverride calls so a mark
-# section knows WHICH (component, slot) is being checked. Field evidence
-# (v3.1): reading a mark's filter_index back via `ps-tN == value` does NOT
-# work when fuzzy format sections cover the same texture (the fuzzy tag wins
-# the fi contest). Field evidence (rev 10, dye diagnostics D1/D2): on the
-# field WWMI fork hash-matched mark sections never join the per-draw
-# command-list path AT ALL (neither fi reads nor CheckTextureOverride-driven
-# command lists are observable), so the probe ladder survives only for FORM
-# DETECTION, where it merely degrades (anchors/M1 markers carry the switch).
-# The binding layer must never depend on per-texture identity: textures that
-# need it are routed to live hash fallback instead (generator.SlotPlan
-# .live_fallback).
-VAR_LATCH_KEY = "$latch_key"
-CMDLIST_PROBE = "CommandListProbeComponent{component_id}"
 CMDLIST_SET_TEXTURES = "CommandListSetTexturesComponent{component_id}"
-CMDLIST_RESTORE = "CommandListRestoreTextures"
-
-
-def probe_key(component_id: int, slot: int) -> int:
-    """Distinct int per (component, slot) probe scope."""
-    return 16 * component_id + slot + 1
-RES_BACKUP = "ResourceTextureBackupT{slot}"
-SEC_TEX_MARK = "TextureOverrideMarkTexture{texture_hash}"
 # USER-SPECIFIED form anchors (detection only, optional): a form-exclusive
 # resource (a vb0 — geometry never streams, so the latch is instant and far
 # more version-stable than shaders) or shader latches $form_id the moment
@@ -92,24 +67,13 @@ SEC_FORMAT_TAG_LOD = "TextureOverrideLod{level}Component{component_id}{format_na
 
 # Fuzzy format-tag sections use the same match_priority as the XQFA fork (the
 # value is part of the cross-mod contract: equal-value duplicate sections must
-# tie, not fight). Per-texture mark sections outrank them so a marked texture
-# reads back its mark value (conditions OR the format value in as a fallback
-# in case the local 3DMigoto build resolves hash-vs-fuzzy differently).
+# tie, not fight).
 FORMAT_TAG_PRIORITY = 100
-MARK_PRIORITY = 200
 
 # ----------------------------------------------------- filter values --------
 
-_MARK_BASE = 16200000
-_MARK_MOD = 499979  # prime
-
 _PS_MARK_BASE = 2000000
 _PS_MARK_MOD = 13999981  # prime
-
-
-def mark_value(texture_hash: str) -> int:
-    """Deterministic filter_index for a per-texture mark (8 hex chars)."""
-    return _MARK_BASE + int(texture_hash, 16) % _MARK_MOD
 
 
 def ps_mark_value(ps_hash: str) -> int:
@@ -233,6 +197,7 @@ def emitted_format_members(format_name: str) -> list:
 # pairs anchor form detection, which set wins a same-signature conflict);
 # replacement branches themselves are emitted for every pair.
 MAIN_SLOTS = (0, 1, 2, 3)
+SERVICE_SLOTS = (5, 6, 7, 8)
 
 # Optional belt on top of the slot-set fingerprint: when a MAIN_SLOTS texture
 # descriptor is known, material pairs must look like character textures

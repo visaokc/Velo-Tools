@@ -15,11 +15,8 @@
 #      what those checks resolve.
 #   2. Every non-comment `run = CommandListTriggerResourceOverrides` line that
 #      lives in a section whose name carries a component id gets
-#      `run = CommandListSetTexturesComponent{id}` injected right after it,
-#      and the matching non-comment `run = CommandListCleanupSharedResources`
-#      in the same section gets `run = CommandListRestoreTextures` injected
-#      right before it (set/restore always paired - a missing cleanup anchor
-#      aborts).
+#      `run = CommandListSetTexturesComponent{id}` injected right after it.
+#      The concise XQFA-style path does not backup/restore ps-t slots.
 #   3. Multi-form only: `global $form_id = {plan.default_form_id}` is added
 #      to [Constants] (the unanchored form while the anchor watchdog is
 #      active, else 1 = base form; form markers latch it at runtime).
@@ -46,7 +43,6 @@ _FIRST_INDEX_RE = re.compile(r'^match_first_index\s*=\s*(\d+)\s*$', re.I)
 _INDEX_COUNT_RE = re.compile(r'^match_index_count\s*=\s*(\d+)\s*$', re.I)
 
 _TRIGGER_LINE = 'run = commandlisttriggerresourceoverrides'
-_CLEANUP_LINE = 'run = commandlistcleanupsharedresources'
 _CONSTANTS_SECTION = 'constants'
 _PRESENT_SECTION = 'present'
 
@@ -146,7 +142,6 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             continue
 
         trigger_indices = []
-        cleanup_indices = []
         for i in range(start + 1, end):
             stripped = lines[i].strip()
             if stripped.startswith(';'):
@@ -154,37 +149,17 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             low = stripped.lower()
             if low == _TRIGGER_LINE:
                 trigger_indices.append(i)
-            elif low == _CLEANUP_LINE:
-                cleanup_indices.append(i)
         if not trigger_indices:
             continue
-        if len(cleanup_indices) < len(trigger_indices):
-            raise SlotStyleDegrade(
-                f'section [{name}] has a resource-override trigger without a '
-                f'matching cleanup anchor - unknown template structure')
-        probe_name = plan.probe_list_names.get(comp_id)
         for i in trigger_indices:
             indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
-            if probe_name is not None:
-                # Probes run BEFORE the stock trigger: the FIRST check of a
-                # resource is ours, so the probe-key bracketing cannot be
-                # starved by a once-per-draw check cache.
-                insert_before.setdefault(i, []).append(f'{indent}run = {probe_name}')
             insert_after.setdefault(i, []).append(f'{indent}run = {list_name}')
-        for i in cleanup_indices:
-            indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
-            insert_before.setdefault(i, []).append(
-                f'{indent}run = {constants.CMDLIST_RESTORE}')
         injected_components.add(comp_id)
 
     if not injected_components:
         raise SlotStyleDegrade(
             'no component draw anchors found in the rendered ini - unknown '
             'template structure')
-    missing = drop_sections - removed_sections
-    if missing:
-        raise SlotStyleDegrade(
-            f'expected stock texture sections not found: {sorted(missing)}')
     if plan.multi_form and not found_constants:
         raise SlotStyleDegrade(
             f'[Constants] section not found for {constants.VAR_FORM}')

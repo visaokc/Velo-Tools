@@ -77,6 +77,22 @@ _ORIG_WRITE_OBJECTS = None
 _CAPTURE = {}
 
 
+def _skip_dirty_slot_enabled() -> bool:
+    """Read the current extraction setting when Blender is available.
+
+    Tests import this module without a real bpy context, so the default follows
+    the production default: enabled.
+    """
+    try:
+        import bpy  # type: ignore
+        cfg = getattr(getattr(bpy.context, 'scene', None), 'VTWW_settings', None)
+        if cfg is None or not hasattr(cfg, 'skip_slot_residual_textures'):
+            return True
+        return bool(cfg.skip_slot_residual_textures)
+    except Exception:
+        return True
+
+
 def _shader_keys(descriptor):
     """Extract the nested-schema keys ("vs=<hash>", "ps=<hash>") from the
     descriptor's shader refs. Selected by ``ShaderRef.type`` (not by parse
@@ -158,9 +174,15 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                 return f'Components-{joined} t={descriptor.hash}{Path(descriptor.path).suffix}'
 
             shader_texture_usage = OrderedDict()
+            skip_dirty_slot = _skip_dirty_slot_enabled()
             if evidence is not None:
                 shader_texture_usage['version'] = 4
+            elif per_object and skip_dirty_slot:
+                print(f'[velo slot-textures] {object_name}: Skip Dirty Slot is enabled '
+                      f'but no usable log.txt freshness evidence was found - '
+                      f'legacy ShaderTextureUsage.json kept unfiltered')
             record_cache = {}
+            skipped_dirty_slots = 0
             for component_id, component in enumerate(object_data.components):
                 # slot_hash values surviving the original pipeline filter (whether a texture file is included is entirely decided by the original pipeline).
                 surviving = {t.get_slot_hash() for t in component.textures}
@@ -184,6 +206,9 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                         fresh = _log_freshness.slot_is_fresh(
                             evidence, desc.call_id, desc.slot_id,
                             desc.hash, desc.old_hash)
+                        if skip_dirty_slot and fresh is False:
+                            skipped_dirty_slots += 1
+                            continue
                         rt = _log_freshness.call_has_color_rt(evidence, desc.call_id)
                         depth = (rt is False)
                         prev = pair_depth_only.get((vs_key, ps_key))
@@ -224,6 +249,11 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                         vs_out[ps_key] = ps_out
                     component_out[vs_key] = vs_out
                 shader_texture_usage[f'Component {component_id}'] = component_out
+
+            if skipped_dirty_slots:
+                print(f'[velo slot-textures] {object_name}: Skip Dirty Slot removed '
+                      f'{skipped_dirty_slots} stale-inherited slot record(s) from '
+                      f'ShaderTextureUsage.json')
 
             # Preserve the slot-texture layer's "extra_forms" key (merged
             # extra-form maps) across re-extraction.

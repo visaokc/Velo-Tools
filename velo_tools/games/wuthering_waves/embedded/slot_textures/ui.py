@@ -15,7 +15,9 @@ import bpy
 
 _MISSING = object()
 _orig_slot_style_annotation = _MISSING
+_orig_skip_dirty_slot_annotation = _MISSING
 _orig_draw_menu_export_mod = None
+_orig_draw_menu_extract_frame_data = None
 
 
 # ------------------------------------------------------- settings injection --
@@ -23,11 +25,13 @@ _orig_draw_menu_export_mod = None
 def inject_settings():
     """Adds the export option to VTWW_Settings. Must run BEFORE the vendored
     settings class is registered (same constraint as _patch_tool_mode)."""
-    global _orig_slot_style_annotation
+    global _orig_slot_style_annotation, _orig_skip_dirty_slot_annotation
     from ..._wwmi_core.addon import settings as _wsettings
 
     _orig_slot_style_annotation = _wsettings.VTWW_Settings.__annotations__.get(
         "velo_slot_style_textures", _MISSING)
+    _orig_skip_dirty_slot_annotation = _wsettings.VTWW_Settings.__annotations__.get(
+        "skip_slot_residual_textures", _MISSING)
     _wsettings.VTWW_Settings.__annotations__["velo_slot_style_textures"] = bpy.props.BoolProperty(
         name="插槽风格贴图",
         description=(
@@ -38,10 +42,18 @@ def inject_settings():
         ),
         default=True,
     )
+    _wsettings.VTWW_Settings.__annotations__["skip_slot_residual_textures"] = bpy.props.BoolProperty(
+        name="贴图过滤：跳过 Dirty Slot",
+        description=(
+            "仅保留 log.txt 中由 PSSetShaderResources 明确绑定过的 ps-t 槽位；"
+            "没有可用 log 证据时保持 legacy STU，不猜测删除。"
+        ),
+        default=True,
+    )
 
 
 def restore_settings():
-    global _orig_slot_style_annotation
+    global _orig_slot_style_annotation, _orig_skip_dirty_slot_annotation
     from ..._wwmi_core.addon import settings as _wsettings
 
     if _orig_slot_style_annotation is _MISSING:
@@ -50,6 +62,12 @@ def restore_settings():
         _wsettings.VTWW_Settings.__annotations__["velo_slot_style_textures"] = (
             _orig_slot_style_annotation)
     _orig_slot_style_annotation = _MISSING
+    if _orig_skip_dirty_slot_annotation is _MISSING:
+        _wsettings.VTWW_Settings.__annotations__.pop("skip_slot_residual_textures", None)
+    else:
+        _wsettings.VTWW_Settings.__annotations__["skip_slot_residual_textures"] = (
+            _orig_skip_dirty_slot_annotation)
+    _orig_skip_dirty_slot_annotation = _MISSING
 
 
 # --------------------------------------------------------- export menu wrap --
@@ -77,6 +95,56 @@ def _patch_export_menu():
                 _draw_anchor_finder(box, slot_cfg, cfg)
 
     _wui.VTWW_PT_SIDEBAR.draw_menu_export_mod = draw_menu_export_mod
+
+
+def _patch_extract_menu():
+    global _orig_draw_menu_extract_frame_data
+    from ..._wwmi_core.addon import ui as _wui
+
+    if _orig_draw_menu_extract_frame_data is not None:
+        return
+    _orig_draw_menu_extract_frame_data = _wui.VTWW_PT_SIDEBAR.draw_menu_extract_frame_data
+
+    def draw_menu_extract_frame_data(self, context):
+        cfg = context.scene.VTWW_settings
+        layout = self.layout
+
+        layout.row()
+
+        row = _wui.add_row_with_error_handler(layout, cfg, 'frame_dump_folder')
+        row.prop(cfg, 'frame_dump_folder')
+
+        layout.row().prop(cfg, 'extract_output_folder')
+
+        layout.row()
+
+        col = layout.column(align=True)
+        grid = col.grid_flow(columns=2, align=True)
+        grid.alignment = 'LEFT'
+        grid.prop(cfg, 'skip_small_textures')
+        if cfg.skip_small_textures:
+            grid.prop(cfg, 'skip_small_textures_size')
+
+        layout.row().prop(cfg, 'skip_jpg_textures')
+        layout.row().prop(cfg, 'skip_known_cubemap_textures')
+        layout.row().prop(cfg, 'skip_same_slot_hash_textures')
+        if hasattr(cfg, "skip_slot_residual_textures"):
+            layout.row().prop(cfg, 'skip_slot_residual_textures')
+
+        layout.row()
+
+        layout.row().operator(_wui.VTWW_ExtractFrameData.bl_idname)
+
+    _wui.VTWW_PT_SIDEBAR.draw_menu_extract_frame_data = draw_menu_extract_frame_data
+
+
+def _restore_extract_menu():
+    global _orig_draw_menu_extract_frame_data
+    from ..._wwmi_core.addon import ui as _wui
+
+    if _orig_draw_menu_extract_frame_data is not None:
+        _wui.VTWW_PT_SIDEBAR.draw_menu_extract_frame_data = _orig_draw_menu_extract_frame_data
+        _orig_draw_menu_extract_frame_data = None
 
 
 def _restore_export_menu():
@@ -589,9 +657,11 @@ def register():
             traceback.print_exc()
     bpy.types.Scene.vtww_slot_settings = bpy.props.PointerProperty(type=VTWW_SlotTextureSettings)
     _patch_export_menu()
+    _patch_extract_menu()
 
 
 def unregister():
+    _restore_extract_menu()
     _restore_export_menu()
     if hasattr(bpy.types.Scene, "vtww_slot_settings"):
         try:

@@ -9,9 +9,9 @@
 # re-applied here after the transformation so IniMaker.is_ini_edited keeps
 # protecting user-edited mod.ini files from silent overwrites.
 #
-# Degrade policy: any SlotStyleDegrade (missing usage json, unknown template
-# structure, cross-scene export, value collision) falls back to the untouched
-# stock hash-style output with a console explanation - never a half result.
+# Degrade policy: SlotStyleDegrade aborts the export with a clear explanation.
+# The concise slot layer must not silently fall back to hash-style output,
+# because that can re-enable stale slot pollution.
 
 import json
 import re
@@ -76,6 +76,8 @@ def install():
                     'formats were read from the model-folder files instead; '
                     're-extract to record the original game formats')
             manual_anchors = _parse_form_anchors(context, forms, load_warnings)
+            manual_anchors = _auto_form_anchors_from_stu(
+                source_folder, forms, manual_anchors, load_warnings)
             plan = generator.build_plan(
                 forms, textures, texture_info, load_warnings,
                 component_ranges=transform.extract_component_ranges(result),
@@ -116,10 +118,12 @@ def install():
                     sort_keys=True))
             _report(f'[SlotTextures] Slot-style texture layer applied: {plan.stats}')
         except generator.SlotStyleDegrade as e:
-            _report(f'[SlotTextures] Falling back to hash-style textures: {e}')
+            _report(f'[SlotTextures] ERROR: slot-style export aborted: {e}')
+            raise
         except Exception:
             traceback.print_exc()
-            _report('[SlotTextures] Unexpected error - falling back to hash-style textures.')
+            _report('[SlotTextures] ERROR: unexpected slot-style export failure.')
+            raise
 
         if with_checksum:
             result = _im_module.IniMaker.with_checksum(result)
@@ -171,6 +175,43 @@ def _parse_form_anchors(context, forms, warnings):
             continue
         anchors.append((anchor_hash.strip().lower(), form_id))
     return anchors
+
+
+def _auto_form_anchors_from_stu(source_folder, forms, anchors, warnings):
+    """Add one STU-recorded vb0 anchor for extra forms not covered manually."""
+    if len(forms) <= 1:
+        return anchors
+    labels = {label.strip().lower(): form_id
+              for form_id, (label, _) in enumerate(forms, start=1)}
+    covered_forms = {form_id for _anchor_hash, form_id in anchors}
+    seen = set(anchors)
+    try:
+        with open(source_folder / generator.constants.BASE_USAGE_FILENAME,
+                  encoding='utf-8') as f:
+            raw = json.load(f)
+    except Exception:
+        return anchors
+    out = list(anchors)
+    for entry in raw.get(generator.constants.EXTRA_FORMS_KEY) or []:
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get('label') or entry.get('source')
+        form_id = labels.get(str(label or '').strip().lower())
+        if form_id is None or form_id in covered_forms:
+            continue
+        anchor_hash = str(entry.get('vb0_hash') or '').strip().lower()
+        if not re.fullmatch(r'[0-9a-f]{8}', anchor_hash):
+            continue
+        pair = (anchor_hash, form_id)
+        if pair in seen:
+            continue
+        out.append(pair)
+        seen.add(pair)
+        covered_forms.add(form_id)
+        warnings.append(
+            f'auto form anchor {anchor_hash}:{forms[form_id - 1][0]} '
+            f'from {generator.constants.BASE_USAGE_FILENAME}')
+    return out
 
 
 def _read_lod_ranges(source_folder):

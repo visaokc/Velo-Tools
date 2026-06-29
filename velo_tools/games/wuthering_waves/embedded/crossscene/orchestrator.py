@@ -573,8 +573,10 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     # but the "Per-Component (from Merged)" path imports MERGED yet exports COMPONENT -- without this
     # the re-imported sub-IBs keep unified VG names and a COMPONENT export drops them (skeleton
     # collapse). Aligning sub-IB import to the export mode is generic (no asset-specific logic).
+    export_skeleton_type = ('COMPONENT' if cfg.mod_skeleton_type == 'COMPONENT_FROM_MERGED'
+                            else cfg.mod_skeleton_type)
     saved_import_type = cfg.import_skeleton_type
-    cfg.import_skeleton_type = cfg.mod_skeleton_type
+    cfg.import_skeleton_type = export_skeleton_type
     # Cross-scene now supports slot-style textures: each independently-exported IB (body / own-buffer /
     # editable) emits its own slot layer (the assembler keeps per-IB slot resources), and the fold
     # replays the base component maps onto the dungeon draws (fold.py). Just record the setting for the
@@ -683,7 +685,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                       % (tag, sp["split_object"]))
                 _write_empty_skip_mod(work / tag, tag, src, sp["split_object"])
             elif sp is not None and "host_vg_remap" in sp and split_obj is not None \
-                    and cfg.mod_skeleton_type in ('COMPONENT', 'MERGED'):
+                    and export_skeleton_type in ('COMPONENT', 'MERGED'):
                 own_col = bpy.data.collections.new("xs_own_" + tag)
                 bpy.context.scene.collection.children.link(own_col)
                 temp_cols.append(own_col)
@@ -693,7 +695,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 own_col.objects.link(cp)
                 try:
                     _bake_shapekeys(cp)
-                    if cfg.mod_skeleton_type == 'MERGED':
+                    if export_skeleton_type == 'MERGED':
                         # MERGED import names VGs by UNIFIED ids; bring them back to the base
                         # component's local numbering first (host_vg_remap's domain).
                         meta = json.loads((merged_folder / "Metadata.json").read_text(encoding="utf-8"))
@@ -721,7 +723,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             else:
                 why = ("路由无骨级翻译表（请重跑合并以生成）" if sp is None or "host_vg_remap" not in sp
                        else ("不支持的导出骨架模式 %s" % cfg.mod_skeleton_type
-                             if cfg.mod_skeleton_type not in ('COMPONENT', 'MERGED')
+                             if export_skeleton_type not in ('COMPONENT', 'MERGED')
                              else "基底集合中找不到拆件对象 %s" % sp["split_object"]))
                 own_legacy.append("%s: %s" % (tag, why))
                 print("[velo.xscene] own-buffer IB %s 走 legacy 重导入路径（%s）——对该部件的编辑不会传播。"
@@ -790,7 +792,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             # names (e.g. 355+) gap-fill to high indices and get dropped (the whole skeleton is lost, Blend
             # collapses to bone 0). Re-base the temp objects' VG names to the IB's own numbering first.
             base_off = int(rec.get("vg_base_offset") or 0)
-            if cfg.mod_skeleton_type == 'MERGED' and base_off:
+            if export_skeleton_type == 'MERGED' and base_off:
                 for cp in temp_objs:
                     for vg in cp.vertex_groups:
                         if vg.name.lstrip("-").isdigit():

@@ -1,11 +1,12 @@
 # WWMI slot-style texture layer (velo driver layer).
 #
 # Replaces the per-hash [TextureOverrideTextureN] sections of an exported mod
-# with slot-keyed rebinding inside the component draw scope, making textures
-# immune to streaming hash churn (each mip level is a separate D3D resource
-# with its own hash since WuWa 3.4). Optional per export: VTWW_Settings
-# `velo_slot_style_textures` (default ON); unchecked exports stay byte-equal
-# to stock. See games/wuthering_waves/docs/adr/0006.
+# with concise XQFA-style slot rebinding inside the component draw scope,
+# making textures immune to streaming hash churn (each mip level is a separate
+# D3D resource with its own hash since WuWa 3.4). Optional per export:
+# VTWW_Settings `velo_slot_style_textures` (default ON); unchecked exports stay
+# byte-equal to stock. Extraction also injects `skip_slot_residual_textures`
+# (default ON) so STU evidence omits dirty/stale slots when log.txt supports it.
 #
 #   constants.py   game-level constants (filter_index namespace, structural
 #                  ShaderRegex patterns, emitted brand-free names) - the only
@@ -20,7 +21,7 @@
 #                  per form; any form count supported)
 #   hook.py        IniMaker.build_from_template wrap (installed after the LOD
 #                  hook so it post-processes the final rendered text)
-#   ui.py          "Velo 兼容选项" export box + form-merge sub-panel/operator
+#   ui.py          export/extract option patches + form-merge sub-panel/operator
 #
 # Nothing in this package modifies _wwmi_core sources. This module stays
 # import-light (no bpy at import time) so tests can load the pure parts
