@@ -289,9 +289,133 @@ def _body_stu_for_export(root_stu, merged_folder, routing, keep_count):
                 })
             _merge_component_usage(target["components"], remapped)
 
+    _apply_editable_form_anchors(extra_by_label, routing, merged_folder)
+
     if extra_by_label:
         trimmed["extra_forms"] = list(extra_by_label.values())
     return trimmed
+
+
+def _valid_hash8(value):
+    return bool(re.fullmatch(r"[0-9a-fA-F]{8}", str(value or "").strip()))
+
+
+def _entry_label(entry):
+    return str((entry or {}).get("label") or (entry or {}).get("source")
+               or (entry or {}).get("form_label") or "").strip().lower()
+
+
+def _editable_vb0_hash(merged_folder, rec):
+    anchor = str((rec or {}).get("vb0_hash") or "").strip().lower()
+    if _valid_hash8(anchor):
+        return anchor
+    source_folder = str((rec or {}).get("source_folder") or "").strip()
+    if not merged_folder or not source_folder:
+        return ""
+    meta_path = Path(merged_folder) / source_folder / "Metadata.json"
+    if not meta_path.is_file():
+        return ""
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    anchor = str((meta or {}).get("vb0_hash") or "").strip().lower()
+    return anchor if _valid_hash8(anchor) else ""
+
+
+def _editable_anchor_candidates(routing, merged_folder=None):
+    candidates = []
+    for rec in (routing or {}).get("editable_ibs") or []:
+        if not isinstance(rec, dict):
+            continue
+        anchor = _editable_vb0_hash(merged_folder, rec)
+        if not _valid_hash8(anchor):
+            continue
+        candidates.append((rec, anchor))
+    return candidates
+
+
+def _apply_editable_form_anchors(extra_by_label, routing, merged_folder):
+    """Prefer routed editable IB VB0 hashes as auto form anchors.
+
+    Fold-local STU may carry a form vb0 from a folded body/clothing IB. An editable
+    form IB (for example a form2 face IB) is a stronger anchor because it belongs
+    to the independently-rendered form part and does not depend on FoldHost draw
+    order. Old routing can omit vb0_hash, so this also consults the editable
+    source folder Metadata.json before declining to auto-anchor.
+    """
+    if not extra_by_label:
+        return
+    candidates = _editable_anchor_candidates(routing, merged_folder)
+    if not candidates:
+        return
+
+    by_label = {label.strip().lower(): entry
+                for label, entry in extra_by_label.items()}
+    used = set()
+    for rec, anchor in candidates:
+        label = _entry_label(rec)
+        if not label or label not in by_label:
+            continue
+        by_label[label]["vb0_hash"] = anchor
+        by_label[label]["matched_by"] = "editable_vb0"
+        used.add(anchor)
+
+    remaining_labels = [
+        label for label, entry in by_label.items()
+        if str(entry.get("vb0_hash") or "").strip().lower() not in used
+    ]
+    unused = [(rec, anchor) for rec, anchor in candidates if anchor not in used]
+    if len(remaining_labels) == 1 and unused:
+        entry = by_label[remaining_labels[0]]
+        entry["vb0_hash"] = unused[0][1]
+        entry["matched_by"] = "editable_vb0"
+    elif len(remaining_labels) == len(unused):
+        for label, (_rec, anchor) in zip(remaining_labels, unused):
+            entry = by_label[label]
+            entry["vb0_hash"] = anchor
+            entry["matched_by"] = "editable_vb0"
+
+
+def _cross_scene_body_forms(merged_folder, routing, keep_count):
+    root_path = Path(merged_folder) / "ShaderTextureUsage.json"
+    if not root_path.is_file():
+        return []
+    try:
+        root_stu = json.loads(root_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return (_body_stu_for_export(root_stu, merged_folder, routing, keep_count)
+            .get("extra_forms") or [])
+
+
+def _fold_form_ids_for_export(merged_folder, routing, keep_count):
+    if not _editable_anchor_candidates(routing, merged_folder):
+        return {}
+    forms = _cross_scene_body_forms(merged_folder, routing, keep_count)
+    form_by_label = {
+        _entry_label(entry): form_id
+        for form_id, entry in enumerate(forms, start=2)
+        if _entry_label(entry)
+    }
+    out = {}
+    for scene in (routing or {}).get("scene_ibs") or []:
+        fold = scene.get("fold") or {}
+        if not scene.get("foldable") or not fold.get("comp_map"):
+            continue
+        stu_path = Path(merged_folder) / scene.get("source_folder", "") / "ShaderTextureUsage.json"
+        if not stu_path.is_file():
+            continue
+        try:
+            scene_stu = json.loads(stu_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for entry in scene_stu.get("extra_forms") or []:
+            form_id = form_by_label.get(_entry_label(entry))
+            if form_id is not None:
+                out[scene.get("ib_hash")] = form_id
+                break
+    return out
 
 
 def _fold_redundant_hashes(merged_folder, routing, keep_count, eligible):
@@ -744,6 +868,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         # (There used to be a morph_ref unedited-reference hack assuming identical topology, where deleting vertices caused row-number misalignment and welding; removed. reproject_morph's
         #   ref defaults to body_meshes, so we don't pass morph_ref. When vertices are moved far from their original position, moved vertices are approximated by nearest-neighbor -- a known limitation.)
         fold_skipped = []
+        fold_form_ids = _fold_form_ids_for_export(merged_folder, routing, keep_count)
         for s in foldable_ibs:
             src = str(merged_folder / s["source_folder"])
             col = _import_one(cfg, src, s["ib_hash"])
@@ -755,7 +880,9 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             # draw); export full slot harmlessly (eligible=None) -> never reads the merged-numbered rules.
             _export_col(cfg, col, str(work / tag), "om_" + tag, src, eligible=None)
             _purge_collection(col)
-            skipped = fold.apply_fold(work, s, tag, draw_excludes=fold_draw_excludes)
+            skipped = fold.apply_fold(
+                work, s, tag, draw_excludes=fold_draw_excludes,
+                form_id=fold_form_ids.get(tag))
             if skipped:
                 fold_skipped.append("%s: base components %s" % (tag, skipped))
                 print("[velo.xscene] foldable IB %s：折叠目标组件 %s 被排除，已跳过对应 fold 片。"

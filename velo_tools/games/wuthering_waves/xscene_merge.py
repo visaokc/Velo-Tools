@@ -41,6 +41,16 @@ _BW = AbstractSemantic(Semantic.Blendweight)
 _NB = [(x, y, z) for x in (-1, 0, 1) for y in (-1, 0, 1) for z in (-1, 0, 1)]
 
 
+def _hash8_or_empty(value):
+    value = str(value or "").strip()
+    return value if re.fullmatch(r"[0-9a-fA-F]{8}", value) else ""
+
+
+def _editable_record_vb0_hash(eib, metadata):
+    return (_hash8_or_empty((eib or {}).get("vb0_hash"))
+            or _hash8_or_empty((metadata or {}).get("vb0_hash")))
+
+
 # --------------------------------------------------------------------------- IO
 
 def _comp_names(folder: Path):
@@ -707,8 +717,10 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
             editable_warnings.append(
                 "editable IB %s 缺少 ShaderTextureUsage.json——其组件（%s）的编辑期自动贴图绑定已跳过（贴图已改名）。"
                 % (h, ", ".join(map(str, merged_comps))))
+        editable_vb0_hash = _editable_record_vb0_hash(eib, eib_meta)
         editable_ib_records.append({
-            "ib_hash": h, "role": eib.get("role", ""), "source_folder": f"scene_ibs/{h}",
+            "ib_hash": h, "vb0_hash": editable_vb0_hash,
+            "role": eib.get("role", ""), "source_folder": f"scene_ibs/{h}",
             "merged_components": merged_comps, "local_components": list(range(len(local_names))),
             "has_shapekeys": bool(sk.get("offsets_hash")), "offsets_hash": sk.get("offsets_hash", ""),
         })

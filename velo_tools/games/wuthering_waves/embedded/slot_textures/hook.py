@@ -177,10 +177,125 @@ def _parse_form_anchors(context, forms, warnings):
     return anchors
 
 
+def _valid_resource_anchor(value):
+    return re.fullmatch(r'[0-9a-f]{8}', str(value or '').strip().lower()) is not None
+
+
+def _form_label(value):
+    return str(value or '').strip().lower()
+
+
+def _crossscene_editable_vb0_hash(source_folder, rec):
+    anchor_hash = str((rec or {}).get('vb0_hash') or '').strip().lower()
+    if _valid_resource_anchor(anchor_hash):
+        return anchor_hash
+    rel = str((rec or {}).get('source_folder') or '').strip()
+    if not rel:
+        return ''
+    meta_path = source_folder / rel / 'Metadata.json'
+    if not meta_path.is_file():
+        return ''
+    try:
+        with open(meta_path, encoding='utf-8') as f:
+            meta = json.load(f) or {}
+    except Exception:
+        return ''
+    anchor_hash = str(meta.get('vb0_hash') or '').strip().lower()
+    return anchor_hash if _valid_resource_anchor(anchor_hash) else ''
+
+
+def _auto_form_anchors_from_crossscene_editable(source_folder, forms, anchors, warnings):
+    routing_path = source_folder / 'CrossSceneRouting.json'
+    if not routing_path.is_file():
+        return None
+    try:
+        with open(routing_path, encoding='utf-8') as f:
+            routing = json.load(f) or {}
+    except Exception as exc:
+        warnings.append(f'cross-scene routing unreadable; automatic form anchors skipped: {exc}')
+        return list(anchors)
+
+    editable = []
+    editable_count = 0
+    for rec in routing.get('editable_ibs') or []:
+        if not isinstance(rec, dict):
+            continue
+        editable_count += 1
+        anchor_hash = _crossscene_editable_vb0_hash(source_folder, rec)
+        if anchor_hash:
+            editable.append((rec, anchor_hash))
+    if not editable_count:
+        warnings.append(
+            'cross-scene routing has no editable IB; automatic form anchors skipped')
+        return list(anchors)
+    if not editable:
+        warnings.append(
+            'cross-scene editable IBs have no VB0 hash evidence; automatic form anchors skipped')
+        return list(anchors)
+
+    covered_forms = {form_id for _anchor_hash, form_id in anchors}
+    seen = set(anchors)
+    out = list(anchors)
+    form_ids = {
+        label.strip().lower(): form_id
+        for form_id, (label, _) in enumerate(forms, start=1)
+    }
+    unused = []
+    for rec, anchor_hash in editable:
+        label = _form_label(rec.get('label') or rec.get('source') or rec.get('form_label'))
+        form_id = form_ids.get(label)
+        if form_id in covered_forms or form_id == 1:
+            continue
+        if form_id is None:
+            unused.append((rec, anchor_hash))
+            continue
+        pair = (anchor_hash, form_id)
+        if pair not in seen:
+            out.append(pair)
+            seen.add(pair)
+            covered_forms.add(form_id)
+            warnings.append(
+                f'auto form anchor {anchor_hash}:{forms[form_id - 1][0]} '
+                'from CrossSceneRouting editable IB')
+
+    remaining = [
+        form_id for form_id in range(2, len(forms) + 1)
+        if form_id not in covered_forms
+    ]
+    if len(remaining) == 1 and unused:
+        form_id = remaining[0]
+        anchor_hash = unused[0][1]
+        pair = (anchor_hash, form_id)
+        if pair not in seen:
+            out.append(pair)
+            warnings.append(
+                f'auto form anchor {anchor_hash}:{forms[form_id - 1][0]} '
+                'from CrossSceneRouting editable IB')
+    elif len(remaining) == len(unused):
+        for form_id, (_rec, anchor_hash) in zip(remaining, unused):
+            pair = (anchor_hash, form_id)
+            if pair in seen:
+                continue
+            out.append(pair)
+            seen.add(pair)
+            warnings.append(
+                f'auto form anchor {anchor_hash}:{forms[form_id - 1][0]} '
+                'from CrossSceneRouting editable IB')
+    elif remaining:
+        warnings.append(
+            'cross-scene editable IB count does not unambiguously match uncovered forms; '
+            'manual form anchors are required')
+    return out
+
+
 def _auto_form_anchors_from_stu(source_folder, forms, anchors, warnings):
     """Add one STU-recorded vb0 anchor for extra forms not covered manually."""
     if len(forms) <= 1:
         return anchors
+    routed = _auto_form_anchors_from_crossscene_editable(
+        source_folder, forms, anchors, warnings)
+    if routed is not None:
+        return routed
     labels = {label.strip().lower(): form_id
               for form_id, (label, _) in enumerate(forms, start=1)}
     covered_forms = {form_id for _anchor_hash, form_id in anchors}
