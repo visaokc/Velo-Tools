@@ -614,7 +614,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
             chunk.append(f'    {constants.VAR_FORM} = {form_id}')
             if watchdog_form is not None:
                 chunk.append(f'    {constants.VAR_ANCHOR_SEEN} = 1')
-                chunk.append(f'    {constants.VAR_ANCHOR_ARMED} = 1')
             chunk.append('endif')
 
         ordered = sorted(
@@ -719,7 +718,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
             out.append(f'{constants.VAR_FORM} = {form_id}')
             if watchdog_form is not None:
                 out.append(f'{constants.VAR_ANCHOR_SEEN} = 1')
-                out.append(f'{constants.VAR_ANCHOR_ARMED} = 1')
         for h, form_id in sorted(anchor_shaders):
             out.append('')
             out.append(f'[{constants.SEC_SHADER_ANCHOR.format(anchor_hash=h)}]')
@@ -762,13 +760,13 @@ def build_plan(forms: List[Tuple[str, FormData]],
     extra_globals: List[str] = []
     watchdog_lines: List[str] = []
     if watchdog_form is not None:
-        extra_globals.extend([constants.VAR_ANCHOR_SEEN, constants.VAR_ANCHOR_ARMED])
+        extra_globals.append(constants.VAR_ANCHOR_SEEN)
         watchdog_lines = [
-            '; Form-anchor watchdog: a frame without an anchor heartbeat pins',
-            '; the one unanchored form by elimination.',
+            '; Form-anchor watchdog: a frame without an anchor heartbeat commits',
+            '; the one unanchored/default form by elimination.',
             f'if {constants.VAR_ANCHOR_SEEN}',
             f'    post {constants.VAR_ANCHOR_SEEN} = 0',
-            f'elif {constants.VAR_ANCHOR_ARMED}',
+            'else',
             f'    {constants.VAR_FORM} = {watchdog_form}',
             'endif',
         ]

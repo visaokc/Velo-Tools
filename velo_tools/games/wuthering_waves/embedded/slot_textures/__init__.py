@@ -4,7 +4,7 @@
 # with concise XQFA-style slot rebinding inside the component draw scope,
 # making textures immune to streaming hash churn (each mip level is a separate
 # D3D resource with its own hash since WuWa 3.4). Optional per export:
-# VTWW_Settings `velo_slot_style_textures` (default ON); unchecked exports stay
+# VTWW_Settings `velo_slot_style_textures` (default OFF); unchecked exports stay
 # byte-equal to stock. Extraction also injects `skip_slot_residual_textures`
 # (default ON) so STU evidence omits dirty/stale slots when log.txt supports it.
 #

@@ -40,7 +40,7 @@ def inject_settings():
             "多形态角色需先在提取页用「合并形态贴图数据」逐形态合并 dump。"
             "关闭则按原版 hash 风格导出（与未升级版本逐字节一致）"
         ),
-        default=True,
+        default=False,
     )
     _wsettings.VTWW_Settings.__annotations__["skip_slot_residual_textures"] = bpy.props.BoolProperty(
         name="贴图过滤：跳过 Dirty Slot",
@@ -348,7 +348,7 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
         try:
             import json
             from ..._wwmi_core.migoto_io.blender_interface.utility import resolve_path
-            from . import anchors
+            from . import anchors, form_merge
 
             if not cfg.frame_dump_folder.strip():
                 raise ValueError("基础形态 dump 未指定——就是提取页的 "
@@ -417,6 +417,12 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
 
             candidates = anchors.recommend_anchors(
                 dumps_by_form, form_labels, object_hash, top_n=12)
+            trusted_written = []
+            if cfg.object_source_folder.strip() and candidates:
+                source_folder = resolve_path(cfg.object_source_folder)
+                top = candidates[0]
+                trusted_written.extend(form_merge.write_trusted_form_anchor(
+                    source_folder, top.form_label, top.vb0, rank=1))
         except Exception as exc:
             traceback.print_exc()
             slot_cfg.anchor_status = f"查找失败：{exc}"
@@ -441,9 +447,13 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
                   + ", ".join(f"{n}: {c}" for n, c in cand.hits.items()))
         prefix = f"{detect_note}；" if detect_note else ""
         if candidates:
+            trusted_note = (
+                f"；已写入 {len(set(trusted_written))} 个 STU 锚点元数据"
+                if trusted_written else "")
             slot_cfg.anchor_status = (
                 f"{prefix}已确认 {len(candidates)} 个角色形态件（cb 与主体比对）；"
-                f"特效/UI 不自动列出，如需作锚点请在游戏确认 vb0 后手动填入")
+                f"特效/UI 不自动列出，如需作锚点请在游戏确认 vb0 后手动填入"
+                f"{trusted_note}")
             self.report({'INFO'}, f"确认 {len(candidates)} 个角色形态锚点")
         else:
             slot_cfg.anchor_status = (

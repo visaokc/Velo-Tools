@@ -374,6 +374,7 @@ def _upsert_extra_form(usage, components_usage, form_label, source,
     for index, existing in enumerate(extra_forms):
         if existing.get('source') == source:
             entry['label'] = label or existing.get('label') or entry['label']
+            _preserve_anchor_metadata(existing, entry)
             extra_forms[index] = entry
             replaced = True
             break
@@ -388,6 +389,127 @@ def _upsert_extra_form(usage, components_usage, form_label, source,
 
     usage[constants.EXTRA_FORMS_KEY] = extra_forms
     return entry, replaced, variants_added
+
+
+_ANCHOR_METADATA_KEYS = (
+    constants.FORM_ANCHOR_VB0_KEY,
+    constants.FORM_ANCHOR_LABEL_KEY,
+    constants.FORM_ANCHOR_SOURCE_KEY,
+    constants.FORM_ANCHOR_RANK_KEY,
+)
+
+
+def _preserve_anchor_metadata(existing, replacement):
+    for key in _ANCHOR_METADATA_KEYS:
+        if key in existing and key not in replacement:
+            replacement[key] = existing[key]
+
+
+def _valid_hash8(value):
+    text = str(value or '').strip().lower()
+    return len(text) == 8 and all(c in '0123456789abcdef' for c in text)
+
+
+def _entry_label(entry):
+    return str((entry or {}).get('label') or (entry or {}).get('source')
+               or (entry or {}).get('form_label') or '').strip().lower()
+
+
+def _usage_paths_for_anchor_write(object_source_folder):
+    root = Path(object_source_folder)
+    paths = []
+    base_path = root / constants.BASE_USAGE_FILENAME
+    if base_path.is_file():
+        paths.append(base_path)
+    scene_dir = root / 'scene_ibs'
+    if scene_dir.is_dir():
+        paths.extend(sorted(
+            p / constants.BASE_USAGE_FILENAME
+            for p in scene_dir.iterdir()
+            if (p / constants.BASE_USAGE_FILENAME).is_file()
+        ))
+    return paths
+
+
+def write_trusted_form_anchor(object_source_folder, form_label, anchor_hash,
+                              rank=1, source=constants.FORM_ANCHOR_SOURCE_TRUSTED):
+    """Write trusted form-anchor metadata into matching STU extra_forms."""
+    anchor_hash = str(anchor_hash or '').strip().lower()
+    if not _valid_hash8(anchor_hash):
+        raise FormMergeError(f'invalid form anchor vb0 hash: {anchor_hash!r}')
+    label = str(form_label or '').strip().lower()
+    if not label:
+        raise FormMergeError('form label is required for trusted anchor metadata')
+    updated = []
+    usage_paths = _usage_paths_for_anchor_write(object_source_folder)
+    base_path = Path(object_source_folder) / constants.BASE_USAGE_FILENAME
+    if label == 'base' and base_path.is_file():
+        usage_paths = [base_path]
+    for usage_path in usage_paths:
+        try:
+            usage = json.loads(usage_path.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        changed = False
+        if label == 'base':
+            usage[constants.FORM_ANCHOR_LABEL_KEY] = 'base'
+            usage[constants.FORM_ANCHOR_VB0_KEY] = anchor_hash
+            usage[constants.FORM_ANCHOR_SOURCE_KEY] = source
+            usage[constants.FORM_ANCHOR_RANK_KEY] = int(rank)
+            changed = True
+        else:
+            forms = usage.get(constants.EXTRA_FORMS_KEY)
+            if not isinstance(forms, list):
+                continue
+            for entry in forms:
+                if not isinstance(entry, dict) or _entry_label(entry) != label:
+                    continue
+                entry[constants.FORM_ANCHOR_LABEL_KEY] = label
+                entry[constants.FORM_ANCHOR_VB0_KEY] = anchor_hash
+                entry[constants.FORM_ANCHOR_SOURCE_KEY] = source
+                entry[constants.FORM_ANCHOR_RANK_KEY] = int(rank)
+                changed = True
+        if changed:
+            usage_path.write_text(json.dumps(usage, indent=4, ensure_ascii=False),
+                                  encoding='utf-8')
+            updated.append(str(usage_path))
+    return updated
+
+
+def read_trusted_form_anchors(object_source_folder):
+    """Return (label, anchor_hash) pairs from trusted STU metadata."""
+    out = []
+    seen = set()
+    for usage_path in _usage_paths_for_anchor_write(object_source_folder):
+        try:
+            usage = json.loads(usage_path.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        label = str(usage.get(constants.FORM_ANCHOR_LABEL_KEY) or '').strip().lower()
+        anchor_hash = str(usage.get(constants.FORM_ANCHOR_VB0_KEY) or '').strip().lower()
+        if not label and _valid_hash8(anchor_hash):
+            label = 'base'
+        if label and _valid_hash8(anchor_hash):
+            key = (label, anchor_hash)
+            if key not in seen:
+                seen.add(key)
+                out.append(key)
+        forms = usage.get(constants.EXTRA_FORMS_KEY)
+        if not isinstance(forms, list):
+            continue
+        for entry in forms:
+            if not isinstance(entry, dict):
+                continue
+            label = _entry_label(entry)
+            anchor_hash = str(entry.get(constants.FORM_ANCHOR_VB0_KEY) or '').strip().lower()
+            if not label or not _valid_hash8(anchor_hash):
+                continue
+            key = (label, anchor_hash)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+    return out
 
 
 def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
@@ -579,6 +701,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         if existing.get('source') == source:
             # Same dump re-merged: full overwrite.
             entry['label'] = form_label.strip() or existing.get('label') or entry['label']
+            _preserve_anchor_metadata(existing, entry)
             extra_forms[index] = entry
             replaced = True
             break

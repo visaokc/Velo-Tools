@@ -330,20 +330,16 @@ def _slot_active(body_text, bc):
     return ('[%s]' % (_SLOT_SET % bc)) in body_text
 
 
-def _fold_slot_runs(body_text, bc, form_id=None):
+def _fold_slot_runs(body_text, bc):
     """The slot command-list ``run`` lines a folded dungeon draw must execute so its textures are
     rebound to the BASE component's slot maps (= master content, streaming-immune): SetTextures runs
-    after the resource-override trigger, with an optional scene-forced form id immediately before it.
-    Legacy probe/restore lists are still tolerated if an older body ini is folded. Returns
+    after the resource-override trigger. Legacy probe/restore lists are still tolerated if an older body ini is folded. Returns
     (before_trigger, after_trigger, before_cleanup); all empty for a hash-style body."""
     if not _slot_active(body_text, bc):
         return [], [], []
     before_trigger, after_trigger, before_cleanup = [], [], []
     if ('[%s]' % (_SLOT_PROBE % bc)) in body_text:
         before_trigger.append('run = %s' % (_SLOT_PROBE % bc))
-    slot_section = _section(body_text, _SLOT_SET % bc) or ""
-    if form_id is not None and "$form_id" in slot_section:
-        after_trigger.append('$form_id = %d' % int(form_id))
     after_trigger.append('run = %s' % (_SLOT_SET % bc))
     if ('[%s]' % _SLOT_RESTORE) in body_text:
         before_cleanup.append('run = %s' % _SLOT_RESTORE)
@@ -406,7 +402,7 @@ def _merge_offset_shift(remap_table):
 
 
 def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_count_override=None,
-                           draws=None, form_id=None):
+                           draws=None):
     """MERGED FoldHost = the native body ``[TextureOverrideComponent<bc>]`` override replicated verbatim,
     so it inherits everything that component needs to draw correctly: the ``if $merge_status_id != 2``
     skeleton-build block, the ``if ResourceMergedSkeleton !== null`` draw block, and -- crucially for
@@ -476,7 +472,7 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             if not selected:
                 raise ValueError("LOD-fork body ini shape requires at least one fold draw of C%d" % bc)
             indent = ln[:len(ln) - len(ln.lstrip())]
-            bt, at, bcl = _fold_slot_runs(body_text, bc, form_id=form_id)
+            bt, at, bcl = _fold_slot_runs(body_text, bc)
             out.extend("%s%s" % (indent, r) for r in bt)
             out.append("%srun = CommandListTriggerResourceOverrides" % indent)
             out.extend("%s%s" % (indent, r) for r in at)
@@ -580,7 +576,7 @@ def emit_empty_fold_sections(body_text, fold_entry, face_match, tag, comp_map, r
 
 
 def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match, batch_counts, tag,
-                       has_morph=True, comp_map=None, draw_excludes=None, form_id=None):
+                       has_morph=True, comp_map=None, draw_excludes=None):
     """Inject the ini sections needed for folding, return the modified body_text:
       1) constants: per-batch $shapekey_vertex_offset/count_batch{N}_<tag> (inserted after the body's last batch constant) -- only when has_morph;
       2) FoldHost: each dungeon component's draw bound to the buffer range of the corresponding base component (those with mismatched VG go through the _remap CommandList);
@@ -635,13 +631,13 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             vg_shift, vg_count_override = _merge_offset_shift(rt) if rt else (0, None)
             selected = select_fold_draws(body_draw_plan.get(bc), draw_excludes.get(bc))
             out.append(_build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift, vg_count_override,
-                                              draws=selected, form_id=form_id))
+                                              draws=selected))
         else:
             selected = select_fold_draws(body_draw_plan.get(bc), draw_excludes.get(bc))
             ovr = remap_cmd[bc][0] if bc in remap_cmd else "CommandListOverrideSharedResources"
             # Slot-style: rebind the dungeon draw's textures to the BASE component's slot maps (master
             # content, streaming-immune). Empty for a hash-style body -> output byte-identical to before.
-            bt, at, bcl = _fold_slot_runs(body_text, bc, form_id=form_id)
+            bt, at, bcl = _fold_slot_runs(body_text, bc)
             lines = ["[TextureOverride_FoldHost_%s_C%d]" % (tag, fc),
                      "hash = %s" % fh,
                      "match_first_index = %d" % mfi,
@@ -677,7 +673,7 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
     return body_text + "".join(out)
 
 
-def apply_fold(work, fold_entry, tag, morph_ref=None, draw_excludes=None, form_id=None):
+def apply_fold(work, fold_entry, tag, morph_ref=None, draw_excludes=None):
     """For one foldable IB: on the already stock-exported ``work/body`` and ``work/<tag>``, reproject morph (if any) + apply blend remap
     + inject ini sections, **modifying work/body in place** (geometry fold, morph reprojection, VG remap all merged into the base buffer mod).
 
@@ -717,8 +713,8 @@ def apply_fold(work, fold_entry, tag, morph_ref=None, draw_excludes=None, form_i
             apply_blend_remap(body / "Meshes", table, bd[int(k)][0], "c%dremap" % int(k))
     if comp_map:
         new_body = emit_fold_sections(body_text, face_text, fold_entry, body_plan, fm, batch_counts, tag,
-                                       has_morph=has_morph, comp_map=comp_map,
-                                       draw_excludes=draw_excludes, form_id=form_id)
+                                        has_morph=has_morph, comp_map=comp_map,
+                                        draw_excludes=draw_excludes)
     else:
         new_body = body_text
     new_body = emit_empty_fold_sections(

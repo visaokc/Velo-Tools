@@ -110,6 +110,23 @@ def _reorganize_into_component_collections(main_col, new_objects):
                 sub.objects.link(obj)
 
 
+def _prefill_form_anchors_from_stu(context, cfg):
+    slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
+    if slot_cfg is None or str(slot_cfg.form_anchors or '').strip():
+        return []
+    if not str(getattr(cfg, "object_source_folder", "") or "").strip():
+        return []
+    from .._wwmi_core.migoto_io.blender_interface.utility import resolve_path
+    from .slot_textures import form_merge
+
+    pairs = form_merge.read_trusted_form_anchors(resolve_path(cfg.object_source_folder))
+    if not pairs:
+        return []
+    slot_cfg.form_anchors = ", ".join(f"{anchor_hash}:{label}"
+                                      for label, anchor_hash in pairs)
+    return pairs
+
+
 def install():
     global _orig_import_execute
     if _orig_import_execute is None:
@@ -141,6 +158,15 @@ def install():
             except Exception as exc:
                 traceback.print_exc()
                 self.report({'WARNING'}, _zh(f"按组件创建子集合失败：{exc}"))
+            try:
+                filled = _prefill_form_anchors_from_stu(context, cfg)
+                if filled:
+                    self.report(
+                        {'INFO'},
+                        _zh(f"已从 STU 预填 {len(filled)} 个形态锚点"))
+            except Exception as exc:
+                traceback.print_exc()
+                self.report({'WARNING'}, _zh(f"预填形态锚点失败：{exc}"))
             if getattr(cfg, "import_texture", False):
                 try:
                     summary = _imp_tex.assign_textures(cfg.object_source_folder, objects=new_objects)

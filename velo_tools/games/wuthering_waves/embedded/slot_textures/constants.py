@@ -50,18 +50,16 @@ CMDLIST_SET_TEXTURES = "CommandListSetTexturesComponent{component_id}"
 # an anchor.
 SEC_RESOURCE_ANCHOR = "TextureOverrideFormAnchor{anchor_hash}"
 SEC_SHADER_ANCHOR = "ShaderOverrideFormAnchor{anchor_hash}"
-# Anchor heartbeat + per-frame watchdog (emitted when exactly ONE form is
-# left unanchored, any form count; two-forms/one-anchor is the field-proven
-# special case). Anchored forms' exclusive parts draw every frame, so a
-# whole frame without a heartbeat pins the unanchored form by elimination —
-# every switch direction becomes zero-latency. All anchors share the one
-# heartbeat (which anchored form is active is settled by their direct
-# latches). ARMED gates the absence rule: a stale anchor never arms, so the
-# watchdog stays inert and the texture latches keep full authority instead
-# of fighting it every frame (with multiple anchors ARMED is global — one
-# stale anchor among live ones degrades less gracefully, see ADR 0007).
+# Anchor heartbeat + per-frame watchdog. Anchored forms' exclusive parts draw
+# every frame, so a whole frame without a heartbeat pins the unanchored/default
+# form by elimination. Stale or absent trusted anchors therefore fail closed to
+# form1 instead of leaving a previous scene's form state latched.
 VAR_ANCHOR_SEEN = "$anchor_seen"
-VAR_ANCHOR_ARMED = "$anchor_armed"
+FORM_ANCHOR_VB0_KEY = "form_anchor_vb0_hash"
+FORM_ANCHOR_LABEL_KEY = "form_anchor_label"
+FORM_ANCHOR_SOURCE_KEY = "form_anchor_source"
+FORM_ANCHOR_RANK_KEY = "form_anchor_rank"
+FORM_ANCHOR_SOURCE_TRUSTED = "trusted_anchor_finder"
 SEC_FORMAT_TAG = "TextureOverrideComponent{component_id}{format_name}"
 SEC_FORMAT_TAG_LOD = "TextureOverrideLod{level}Component{component_id}{format_name}"
 
