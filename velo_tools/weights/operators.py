@@ -961,6 +961,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
         original_mirror_weights = None
         preserve_rows = None
         authority_suppressed_rows = None
+        donor_focus_weights = None
+        robust_smoothing_handled = False
         mirror_flag_stack = contextlib.ExitStack()
         try:
             _props.sync_target_group_name(settings, context)
@@ -1029,6 +1031,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             matched = None
             if settings.engine == 'ROBUST':
                 weights, matched, matched_count, rescue_info = _algo.transfer_with_robust(context, settings, source_name)
+                donor_focus_weights = weights
+                robust_smoothing_handled = bool(rescue_info.get("smoothing_handled", False))
                 report.raw_weight_nonzero, report.raw_weight_max = _algo.weight_evidence_stats(weights)
                 weights, preserve_rows = _algo.apply_locked_boundary_preserve(
                     target,
@@ -1048,6 +1052,9 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 report.evidence_blocked_vertices = int(rescue_info.get("evidence_blocked_vertices", 0))
                 report.inpaint_fallback = str(rescue_info.get("inpaint_fallback", "") or "")
                 report.authority_suppressed_vertices = int(rescue_info.get("authority_suppressed_vertices", 0))
+                if robust_smoothing_handled:
+                    report.smoothed = bool(rescue_info.get("smoothed", False))
+                    report.smoothing_skipped = not report.smoothed
                 authority_suppressed_rows = rescue_info.get("authority_suppressed_rows")
             elif settings.engine == 'DATA_TRANSFER_SURFACE':
                 weights = _algo.transfer_with_data_transfer(context, settings, source_name, target_group.name)
@@ -1072,14 +1079,18 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 )
 
             topology_cache = None
-            if (
-                settings.smoothing_enable and settings.smoothing_repeat > 0 and settings.smoothing_factor > 0.0
-            ) or settings.limit_groups_enable:
+            smoothing_needed = (
+                settings.smoothing_enable
+                and settings.smoothing_repeat > 0
+                and settings.smoothing_factor > 0.0
+                and not robust_smoothing_handled
+            )
+            if smoothing_needed or settings.limit_groups_enable:
                 try:
                     topology_cache = _algo.build_weight_topology_cache(target)
                 except Exception:
                     topology_cache = None
-            if settings.smoothing_enable and settings.smoothing_repeat > 0 and settings.smoothing_factor > 0.0:
+            if smoothing_needed:
                 report.smoothed = _algo.apply_seam_safe_smoothing(
                     target,
                     target_group,
@@ -1102,7 +1113,9 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             if settings.normalize_after:
                 configured_pairs = _props.selected_donor_pairs(settings)
                 configured_donors = [donor for donor, _mirror in configured_pairs]
-                focus_weights = _algo.read_group_weights(target, target_group)
+                focus_weights = donor_focus_weights
+                if focus_weights is None:
+                    focus_weights = _algo.read_group_weights(target, target_group)
                 exclude_names = [mirror_group.name] if mirror_enabled and mirror_group is not None else []
                 donors = _select_donors_for_group(
                     context,

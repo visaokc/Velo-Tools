@@ -82,6 +82,14 @@ class SourceCompetitionInfo:
 
 
 @dataclass
+class RobustMatrixTransferResult:
+    weights: object
+    matched: object
+    matched_count: int
+    info: dict
+
+
+@dataclass
 class TargetGroupResolution:
     name: str
     should_create: bool
@@ -801,7 +809,155 @@ def build_pre_write_authority_mask(
     }
 
 
-def transfer_with_robust(context, settings, source_group_name):
+def _robust_matrix_source_groups(source_eval, source_group_name, *, threshold=0.00001):
+    np = _rwt.np_module()
+    candidate_groups = []
+    selected_column = None
+    for group in getattr(source_eval, "vertex_groups", ()):
+        name = _clean_name(getattr(group, "name", ""))
+        if not name or is_special_vg_name(name):
+            continue
+        if name == source_group_name:
+            selected_column = len(candidate_groups)
+        candidate_groups.append(group)
+    if selected_column is None or not candidate_groups:
+        return [], None, None
+    group_indices = [group.index for group in candidate_groups]
+    source_matrix = _rwt.get_groups_arr(source_eval, group_indices)
+    if source_matrix.shape[1] == 0:
+        return [], None, None
+    active_columns = set(int(column) for column in np.flatnonzero(np.any(source_matrix > threshold, axis=0)))
+    active_columns.add(int(selected_column))
+    ordered_columns = sorted(active_columns)
+    selected_column = ordered_columns.index(int(selected_column))
+    groups = [candidate_groups[int(column)] for column in ordered_columns]
+    return groups, selected_column, source_matrix[:, ordered_columns]
+
+
+def _smooth_robust_matrix_weights(target, target_verts, weights, matched, settings):
+    try:
+        cache = build_weight_topology_cache(target)
+        adjacency_matrix = cache["adjacency_matrix"]
+        adjacency_list = cache["adjacency_list"]
+    except Exception:
+        return weights, False
+    smoothed = _rwt.smooth_weigths(
+        target_verts,
+        weights,
+        matched,
+        adjacency_matrix,
+        adjacency_list,
+        settings.smoothing_repeat,
+        settings.smoothing_factor,
+        settings.robust_max_distance,
+    )
+    return smoothed, True
+
+
+def _robust_no_match_error(match_stats, settings):
+    return RuntimeError(
+        "Robust 没有找到满足距离/法线角阈值的有效匹配；"
+        f"目标顶点={match_stats.get('target_vertices', 0)}, "
+        f"距离通过={match_stats.get('distance_pass', 0)}, "
+        f"法线通过={match_stats.get('angle_pass', 0)}, "
+        f"最终匹配=0, 最大距离={settings.robust_max_distance:g}, "
+        f"法线角={_rwt.degrees(settings.robust_normal_angle):g}°, "
+        f"允许翻转={bool(settings.robust_flip_normals)}。请增大 Robust 最大距离或法线角。"
+    )
+
+
+def _transfer_with_robust_matrix_context(
+    source,
+    target,
+    source_eval,
+    target_verts,
+    target_faces,
+    target_normals,
+    source_verts,
+    source_faces,
+    source_normals,
+    settings,
+    source_group_name,
+    *,
+    threshold=0.00001,
+):
+    np = _rwt.np_module()
+    _groups, selected_column, source_matrix = _robust_matrix_source_groups(
+        source_eval,
+        source_group_name,
+        threshold=threshold,
+    )
+    if selected_column is None or source_matrix is None:
+        return None
+    selected_source = source_matrix[:, selected_column]
+    source_weight_count = int(np.count_nonzero(selected_source > threshold))
+    if source_weight_count <= 0:
+        raise ValueError(
+            f"来源顶点组 '{source.name}/{source_group_name}' 在当前来源结果上没有任何非零权重，无法传递。"
+            "请确认该组不是空组，并检查是否因为修改器/姿态导致 evaluated 结果里权重已不再对应当前网格。"
+        )
+    matched, matrix_weights, match_stats = _rwt.find_matches_closest_surface(
+        source_verts,
+        source_faces,
+        source_normals,
+        target_verts,
+        target_normals,
+        source_matrix,
+        settings.robust_max_distance ** 2,
+        _rwt.degrees(settings.robust_normal_angle),
+        settings.robust_flip_normals,
+        return_stats=True,
+    )
+    matched_count = int(np.count_nonzero(matched))
+    if matched_count <= 0:
+        raise _robust_no_match_error(match_stats, settings)
+    rescue_info = _empty_component_rescue_info()
+    component_stats = _matched_component_stats(target, matched)
+    result, matrix_weights = _rwt.inpaint(
+        target_verts,
+        target_faces,
+        matrix_weights,
+        matched,
+        settings.robust_point_cloud_inpaint,
+    )
+    if not result and bool(settings.robust_point_cloud_inpaint):
+        fallback_result, fallback_weights = _rwt.inpaint(
+            target_verts,
+            target_faces,
+            matrix_weights,
+            matched,
+            False,
+        )
+        if fallback_result:
+            rescue_info = dict(rescue_info)
+            rescue_info["inpaint_fallback"] = "MESH"
+            matrix_weights = fallback_weights
+            result = True
+        else:
+            rescue_info = dict(rescue_info)
+            rescue_info["inpaint_fallback_failed"] = "MESH"
+    if not result:
+        raise RuntimeError(describe_robust_inpaint_failure(target, matched, settings, component_stats, rescue_info))
+    smoothing_requested = (
+        settings.smoothing_enable
+        and settings.smoothing_repeat > 0
+        and settings.smoothing_factor > 0.0
+    )
+    if smoothing_requested:
+        matrix_weights, smoothed = _smooth_robust_matrix_weights(target, target_verts, matrix_weights, matched, settings)
+        rescue_info = dict(rescue_info)
+        rescue_info["smoothing_handled"] = True
+        rescue_info["smoothed"] = bool(smoothed)
+    rescue_info["matrix_context"] = True
+    return RobustMatrixTransferResult(
+        weights=_weight_values(matrix_weights[:, selected_column]),
+        matched=matched,
+        matched_count=matched_count,
+        info=rescue_info,
+    )
+
+
+def _transfer_with_robust_single_group_fallback(context, settings, source_group_name):
     ok, error = _rwt.ensure_available()
     if not ok:
         raise RuntimeError(f"Robust 引擎不可用: {error}")
@@ -963,6 +1119,44 @@ def transfer_with_robust(context, settings, source_group_name):
     rescue_info.update(authority_info)
     rescue_info["authority_mask"] = authority_mask
     return _weight_values(weights), matched_for_inpaint, matched_count, rescue_info
+
+
+def transfer_with_robust(context, settings, source_group_name):
+    ok, error = _rwt.ensure_available()
+    if not ok:
+        raise RuntimeError(f"Robust 引擎不可用: {error}")
+    source = settings.source_object
+    target = settings.target_object
+    depsgraph = context.evaluated_depsgraph_get()
+    source_eval = source.evaluated_get(depsgraph) if settings.use_deformed_source else source
+    target_eval = target.evaluated_get(depsgraph) if settings.use_deformed_target else target
+    source_verts, source_faces, source_normals = _rwt.get_obj_arrs_world(source_eval)
+    target_verts, target_faces, target_normals = _rwt.get_obj_arrs_world(target_eval)
+    if len(target_verts) != len(target.data.vertices):
+        raise ValueError("目标变形结果拓扑与原网格不一致")
+    if len(source_faces) == 0 or len(target_faces) == 0:
+        raise ValueError("来源或目标没有可用三角面")
+    matrix_result = _transfer_with_robust_matrix_context(
+        source,
+        target,
+        source_eval,
+        target_verts,
+        target_faces,
+        target_normals,
+        source_verts,
+        source_faces,
+        source_normals,
+        settings,
+        source_group_name,
+    )
+    if matrix_result is not None:
+        return (
+            matrix_result.weights,
+            matrix_result.matched,
+            matrix_result.matched_count,
+            matrix_result.info,
+        )
+    return _transfer_with_robust_single_group_fallback(context, settings, source_group_name)
 
 
 def _matched_component_stats(obj, matched):
