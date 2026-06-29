@@ -37,6 +37,7 @@ class WeightTransferReport:
     raw_weight_max: float = 0.0
     raw_weight_nonzero: int = 0
     normalized: bool = False
+    brush_seed_vertices: int = 0
     limit_skipped_same_object: bool = False
     normalize_skipped_same_object: bool = False
     donors: list[str] = field(default_factory=list)
@@ -1678,6 +1679,112 @@ def apply_locked_boundary_preserve(
         preserve_weights=original,
     )
     return preserved, preserve_mask
+
+
+def _vertex_has_group_membership(vertex, group_index):
+    for item in getattr(vertex, "groups", ()):
+        if int(getattr(item, "group", -1)) == int(group_index):
+            return True
+    return False
+
+
+def seed_brush_boundary_memberships(
+    obj,
+    target_group,
+    donor_groups,
+    *,
+    topology_cache=None,
+    threshold=0.00001,
+    max_groups_per_vertex=None,
+):
+    if obj is None or target_group is None:
+        return 0
+    if getattr(target_group, "lock_weight", False) or is_special_vg_name(target_group.name):
+        return 0
+    ok, error = _rwt.ensure_available()
+    if not ok:
+        raise RuntimeError(f"Blur 边界 membership 准备不可用: {error}")
+    row_count = len(obj.data.vertices)
+    if row_count <= 0:
+        return 0
+    np = _rwt.np_module()
+    target_index = int(target_group.index)
+    donor_indices = []
+    seen = {target_index}
+    for group in donor_groups or ():
+        if group is None:
+            continue
+        group_index = int(group.index)
+        if group_index in seen:
+            continue
+        seen.add(group_index)
+        if getattr(group, "lock_weight", False):
+            continue
+        if is_special_vg_name(group.name):
+            continue
+        donor_indices.append(group_index)
+    if not donor_indices:
+        return 0
+    target_weights = read_group_weights(obj, target_group).reshape(-1)
+    if target_weights.shape[0] != row_count:
+        return 0
+    donor_weights = _rwt.get_groups_arr(obj, donor_indices)
+    if donor_weights.shape[0] != row_count or donor_weights.shape[1] <= 0:
+        return 0
+    donor_active = np.any(donor_weights > threshold, axis=1)
+    target_active = target_weights > threshold
+    locked_full = np.zeros(row_count, dtype=bool)
+    locked_indices = _ordinary_locked_group_indices(obj, exclude_indices={target_index})
+    if locked_indices:
+        locked_weights = _rwt.get_groups_arr(obj, locked_indices)
+        locked_effective = locked_weights.copy()
+        locked_effective[locked_effective <= threshold] = 0.0
+        locked_full = np.sum(locked_effective, axis=1) >= (1.0 - threshold)
+    slots_full = np.zeros(row_count, dtype=bool)
+    if max_groups_per_vertex is not None:
+        try:
+            max_groups = int(max_groups_per_vertex)
+        except (TypeError, ValueError):
+            max_groups = 0
+        if max_groups > 0:
+            ordinary_indices = [
+                group.index
+                for group in obj.vertex_groups
+                if not is_special_vg_name(group.name)
+            ]
+            if ordinary_indices:
+                ordinary_weights = _rwt.get_groups_arr(obj, ordinary_indices)
+                ordinary_effective = ordinary_weights.copy()
+                ordinary_effective[ordinary_effective <= threshold] = 0.0
+                slots_full = np.count_nonzero(ordinary_effective > 0.0, axis=1) >= max_groups
+    try:
+        cache = topology_cache or build_weight_topology_cache(obj)
+        adjacency_list = cache["adjacency_list"]
+    except Exception:
+        return 0
+    candidate = (~target_active) & donor_active & (~locked_full) & (~slots_full)
+    added = 0
+    for row in np.flatnonzero(candidate):
+        row_index = int(row)
+        if row_index >= len(adjacency_list):
+            continue
+        has_target_neighbor = False
+        for neighbor in adjacency_list[row_index]:
+            neighbor_index = int(neighbor)
+            if 0 <= neighbor_index < row_count and target_active[neighbor_index]:
+                has_target_neighbor = True
+                break
+        if not has_target_neighbor:
+            continue
+        vertex = obj.data.vertices[row_index]
+        if _vertex_has_group_membership(vertex, target_index):
+            continue
+        try:
+            target_group.add([row_index], 0.0, 'REPLACE')
+            added += 1
+        except Exception:
+            continue
+    return added
 
 
 def apply_seam_safe_smoothing(obj, group, settings, matched=None, *, topology_cache=None, preserve_rows=None):

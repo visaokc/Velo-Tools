@@ -1230,6 +1230,29 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                         report.normalized = bool(norm_report)
                         report.no_yieldable_vertices += int(norm_report.no_yieldable_vertices)
                         report.under_normalized_vertices += int(norm_report.under_normalized_vertices)
+                    seed_max_groups = (
+                        getattr(settings, "max_groups_per_vertex", None)
+                        if getattr(settings, "limit_groups_enable", False)
+                        else None
+                    )
+                    seed_brush = getattr(_algo, "seed_brush_boundary_memberships", None)
+                    if callable(seed_brush):
+                        seeded = int(seed_brush(
+                            target,
+                            target_group,
+                            donors,
+                            topology_cache=topology_cache,
+                            max_groups_per_vertex=seed_max_groups,
+                        ))
+                        if mirror_enabled and mirror_group is not None and mirror_donors:
+                            seeded += int(seed_brush(
+                                target,
+                                mirror_group,
+                                mirror_donors,
+                                topology_cache=topology_cache,
+                                max_groups_per_vertex=seed_max_groups,
+                            ))
+                        report.brush_seed_vertices = int(getattr(report, "brush_seed_vertices", 0)) + seeded
             _algo.ensure_numeric_export_compatible(target, target_group_name)
             if mirror_enabled and mirror_group is not None:
                 _algo.ensure_numeric_export_compatible(target, mirror_group.name)
@@ -1329,6 +1352,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 bits.append(f"规格化不足 {report.under_normalized_vertices} 点")
         elif report.normalize_skipped_same_object:
             bits.append("同对象跳过 normalize")
+        if getattr(report, "brush_seed_vertices", 0):
+            bits.append(f"模糊边界 membership {report.brush_seed_vertices} 点")
         if report.donors:
             bits.append("供体 " + ", ".join(report.donors))
         skipped_locked_pairs = getattr(report, "skipped_locked_donor_pairs", [])

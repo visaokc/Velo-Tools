@@ -35,13 +35,13 @@ def reset_overlay_pick_runtime(context=None, *, disable_overlays=False):
     try:
         from ..general_mapping import pick as _general_pick
         general_pick = _general_pick
-        _general_pick.reset_state(ctx, restore_brush=False)
+        _general_pick.reset_state(ctx, restore_brush=True)
     except Exception:
         pass
     try:
         from ..games.arknights_endfield import mmd_pick as _mmd_pick
         mmd_pick = _mmd_pick
-        _mmd_pick.reset_state(ctx, restore_brush=False)
+        _mmd_pick.reset_state(ctx, restore_brush=True)
     except Exception:
         pass
     try:
