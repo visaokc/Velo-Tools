@@ -39,7 +39,7 @@
 VAR_FORM = "$form_id"
 CMDLIST_SET_TEXTURES = "CommandListSetTexturesComponent{component_id}"
 LOCAL_FORM_DISCRIMINATOR_KEY = "local_form_discriminator"
-LOCAL_FORM_DISCRIMINATOR_SCHEMA = 1
+LOCAL_FORM_DISCRIMINATOR_SCHEMA = 2
 # USER-SPECIFIED form anchors (detection only, optional): a form-exclusive
 # resource (a vb0 — geometry never streams, so the latch is instant and far
 # more version-stable than shaders) or shader latches $form_id the moment

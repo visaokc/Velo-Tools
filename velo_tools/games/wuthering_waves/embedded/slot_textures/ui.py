@@ -246,9 +246,9 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
         name="局部形态判据",
         description=(
             "开启后，多形态插槽贴图不再输出全局 $form_id 或 TextureOverrideFormAnchor；"
-            "每个 draw 分支用当前 fresh ps-t0..8 格式签名判断形态；同格式冲突时"
-            "只在该 draw 内追加当前 ps shader 判据。"
-            "需要 ShaderTextureUsage.json 内存在最新 local_form_discriminator 审计块。"
+            "导出只消费 ShaderTextureUsage.json 内最新 local_form_discriminator v2 审计的"
+            "slot override branch。材质 pass 使用 fresh ps-t0..8 格式条件，描边 pass 只可"
+            "使用审计确认的 observed/inherited 槽位条件；相同有效替换会合并，冲突则阻断导出。"
         ),
         default=True,
     )

@@ -283,6 +283,30 @@ def _local_signature_slots(pair_map: Dict[int, Optional[str]]) -> Set[int]:
     return set(pair_map) & set(constants.LOCAL_DISCRIMINATOR_SLOTS)
 
 
+def _canonical_override_slots(pair_map: Dict[int, Optional[str]],
+                              texture_info: TextureInfo) -> Set[int]:
+    if _is_material_pair(pair_map, texture_info):
+        return _eligible_slots(pair_map) & set(constants.MAIN_SLOTS)
+    return _eligible_slots(pair_map)
+
+
+def _component_hash_canonical_slots(forms: List[Tuple[str, FormData]],
+                                    alias: Dict[str, str]) -> Dict[Tuple[int, str], int]:
+    out: Dict[Tuple[int, str], int] = {}
+    for _label, form_data in forms:
+        for comp_id, comp_pairs in form_data.items():
+            for pair_map in comp_pairs.values():
+                for slot, tex_hash in pair_map.items():
+                    if slot in constants.SERVICE_SLOTS or not isinstance(tex_hash, str):
+                        continue
+                    canon = alias.get(tex_hash, tex_hash)
+                    key = (comp_id, canon)
+                    previous = out.get(key)
+                    if previous is None or slot < previous:
+                        out[key] = slot
+    return out
+
+
 def _fresh_signature_slots(comp_id: int,
                            ps: str,
                            pair_map: Dict[int, Optional[str]],
@@ -293,6 +317,34 @@ def _fresh_signature_slots(comp_id: int,
         slot for slot in _local_signature_slots(pair_map)
         if form_fresh.get((comp_id, ps, slot)) is True
     }
+
+
+def _pass_role(pair_map: Dict[int, Optional[str]],
+               texture_info: TextureInfo) -> str:
+    if _is_material_pair(pair_map, texture_info):
+        return 'material'
+    slots = set(pair_map)
+    if 2 in slots and 3 in slots and slots & set(constants.SERVICE_SLOTS):
+        return 'outline'
+    return 'auxiliary'
+
+
+def _local_condition_slots(pair_map: Dict[int, Optional[str]],
+                           role: str,
+                           fresh_slots: Set[int]) -> Set[int]:
+    if role == 'outline':
+        return _local_signature_slots(pair_map)
+    return fresh_slots
+
+
+def _local_assignment_slots(pair_map: Dict[int, Optional[str]],
+                            texture_info: TextureInfo,
+                            role: str,
+                            fresh_slots: Set[int]) -> Set[int]:
+    slots = _canonical_override_slots(pair_map, texture_info)
+    if role == 'outline':
+        return slots
+    return slots & fresh_slots
 
 
 def _is_material_pair(pair_map: Dict[int, Optional[str]],
@@ -324,18 +376,25 @@ def _fi_str(value: float) -> str:
 
 
 def _hash_fingerprint(forms: List[Tuple[str, FormData]],
-                      texture_info: TextureInfo) -> str:
+                      texture_info: TextureInfo,
+                      freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None) -> str:
     """Stable fingerprint for the STU facts the local discriminator consumes."""
     import hashlib
     payload = []
-    for label, form_data in forms:
+    for form_id, (label, form_data) in enumerate(forms, start=1):
+        form_fresh = (freshness[form_id - 1]
+                      if freshness is not None and form_id - 1 < len(freshness)
+                      else None)
         form_rows = []
         for comp_id in sorted(form_data):
             for ps in sorted(form_data[comp_id]):
                 row = []
                 for slot, tex_hash in sorted(form_data[comp_id][ps].items()):
                     info = texture_info.get(tex_hash or '') or {}
-                    row.append([slot, tex_hash, info.get('format') or ''])
+                    fresh = None
+                    if form_fresh is not None:
+                        fresh = form_fresh.get((comp_id, ps, slot))
+                    row.append([slot, tex_hash, info.get('format') or '', fresh])
                 form_rows.append([comp_id, ps, row])
         payload.append([label, form_rows])
     raw = json.dumps(payload, sort_keys=True, separators=(',', ':'))
@@ -357,6 +416,24 @@ def _signature_key(pair_map: Dict[int, Optional[str]],
     return tuple(signature)
 
 
+def _serialized_signature(signature: Tuple[Tuple[int, float], ...]) -> List[List[object]]:
+    return [[slot, _fi_str(key)] for slot, key in signature]
+
+
+def _signature_from_audit(value: object) -> Tuple[Tuple[int, float], ...]:
+    if not isinstance(value, list):
+        return ()
+    out: List[Tuple[int, float]] = []
+    for item in value:
+        if not isinstance(item, list) or len(item) != 2:
+            return ()
+        try:
+            out.append((int(item[0]), _f32(float(item[1]))))
+        except (TypeError, ValueError):
+            return ()
+    return tuple(out)
+
+
 def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                     texture_info: TextureInfo,
                                     freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
@@ -367,68 +444,112 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
     the fingerprint before trusting it, so stale STU edits fail closed.
     """
     local_warnings: List[str] = list(warnings or [])
-    filtered, _dirty_hashes, dirty_slots, phantom_pairs = _filtered_forms(
-        forms, freshness, local_warnings)
+    _filtered, _dirty_hashes, dirty_slots, phantom_pairs = _filtered_forms(
+        forms, freshness, [])
     alias = _variant_aliases(texture_info)
+    canonical_seats = _component_hash_canonical_slots(forms, alias)
     rows = []
-    by_component_signature: Dict[Tuple[int, Tuple[Tuple[int, float], ...]], List[dict]] = {}
+    branch_samples: Dict[Tuple[int, Tuple[Tuple[int, float], ...],
+                               Tuple[Tuple[int, str], ...]], dict] = {}
+    by_component_signature: Dict[Tuple[int, Tuple[Tuple[int, float], ...]], Set[Tuple[Tuple[int, str], ...]]] = {}
 
-    for form_id, (label, form_data) in enumerate(filtered, start=1):
+    for form_id, (label, form_data) in enumerate(forms, start=1):
         form_fresh = (freshness[form_id - 1]
                       if freshness is not None and form_id - 1 < len(freshness)
                       else None)
         for comp_id, comp_pairs in form_data.items():
             for ps, pair_map in comp_pairs.items():
+                fresh_slots = _fresh_signature_slots(
+                    comp_id, ps, pair_map, form_fresh)
+                role = _pass_role(pair_map, texture_info)
+                condition_slots = _local_condition_slots(
+                    pair_map, role, fresh_slots)
+                override_slots = _local_assignment_slots(
+                    pair_map, texture_info, role, fresh_slots)
                 sig = _signature_key(pair_map, texture_info,
-                                     _fresh_signature_slots(
-                                         comp_id, ps, pair_map, form_fresh),
-                                     alias)
+                                     condition_slots, alias)
                 if not sig:
                     continue
-                assign_hashes = {
+                observed_hashes = {
                     slot: tex_hash for slot, tex_hash in sorted(pair_map.items())
                     if isinstance(tex_hash, str)
+                }
+                assign_hashes = {
+                    slot: tex_hash for slot, tex_hash in observed_hashes.items()
+                    if (slot in override_slots
+                        and canonical_seats.get((comp_id, alias.get(tex_hash, tex_hash))) == slot)
                 }
                 row = {
                     'form_id': form_id,
                     'form': label,
                     'component': comp_id,
                     'ps': ps,
-                    'signature': [[slot, _fi_str(key)] for slot, key in sig],
+                    'pass_role': role,
+                    'condition_source': 'observed' if role == 'outline' else 'fresh',
+                    'signature': _serialized_signature(sig),
                     'assign_hashes': {str(slot): tex_hash
                                       for slot, tex_hash in assign_hashes.items()},
+                    'observed_hashes': {str(slot): tex_hash
+                                        for slot, tex_hash in observed_hashes.items()},
+                    'fresh_slots': sorted(fresh_slots),
+                    'canonical_slots': sorted(override_slots),
                 }
                 rows.append(row)
-                by_component_signature.setdefault((comp_id, sig), []).append(row)
+                if assign_hashes:
+                    akey = tuple(sorted((slot, tex_hash)
+                                        for slot, tex_hash in assign_hashes.items()))
+                    by_component_signature.setdefault((comp_id, sig), set()).add(akey)
+                    sample_key = (comp_id, sig, akey)
+                    sample = branch_samples.get(sample_key)
+                    if sample is None:
+                        branch_samples[sample_key] = {
+                            'component': comp_id,
+                            'signature': _serialized_signature(sig),
+                            'assign_hashes': {str(slot): tex_hash
+                                              for slot, tex_hash in assign_hashes.items()},
+                            'pass_role': role,
+                            'condition_source': 'observed' if role == 'outline' else 'fresh',
+                            'forms': [label],
+                            'sources': [{'form': label, 'ps': ps}],
+                        }
+                    else:
+                        if label not in sample['forms']:
+                            sample['forms'].append(label)
+                        sample['sources'].append({'form': label, 'ps': ps})
 
     conflicts = []
-    for (comp_id, sig), members in sorted(by_component_signature.items()):
-        assign_keys = {
-            tuple(sorted((int(slot), tex_hash)
-                         for slot, tex_hash in member['assign_hashes'].items()))
-            for member in members
-        }
+    for (comp_id, sig), assign_keys in sorted(by_component_signature.items()):
         if len(assign_keys) <= 1:
             continue
         conflicts.append({
             'component': comp_id,
-            'signature': [[slot, _fi_str(key)] for slot, key in sig],
+            'signature': _serialized_signature(sig),
             'members': [
-                {'form': m['form'], 'ps': m['ps'], 'assign_hashes': m['assign_hashes']}
-                for m in members
+                {
+                    'assign_hashes': {str(slot): tex_hash
+                                      for slot, tex_hash in assign_key},
+                    'sources': branch_samples[(comp_id, sig, assign_key)]['sources'],
+                }
+                for assign_key in sorted(assign_keys)
             ],
         })
 
+    branches = list(branch_samples.values())
+    for branch in branches:
+        branch['forms'] = sorted(branch['forms'])
+
     return {
         'schema': constants.LOCAL_FORM_DISCRIMINATOR_SCHEMA,
-        'fingerprint': _hash_fingerprint(filtered, texture_info),
+        'fingerprint': _hash_fingerprint(forms, texture_info, freshness),
         'slots': list(constants.LOCAL_DISCRIMINATOR_SLOTS),
         'service_slots': list(constants.SERVICE_SLOTS),
         'rows': rows,
+        'branches': branches,
         'conflicts': conflicts,
         'stats': {
-            'forms': len(filtered),
+            'forms': len(forms),
             'rows': len(rows),
+            'branches': len(branches),
             'conflicts': len(conflicts),
             'dirty_slots': dirty_slots,
             'phantom_pairs': phantom_pairs,
@@ -448,14 +569,140 @@ def validate_local_discriminator_audit(audit: object,
     if audit.get('schema') != constants.LOCAL_FORM_DISCRIMINATOR_SCHEMA:
         raise SlotStyleDegrade(
             'local form discriminator audit schema is unsupported; refresh STU audit')
-    filtered, _dirty_hashes, _dirty_slots, _phantom_pairs = _filtered_forms(
-        forms, freshness, [])
-    expected = _hash_fingerprint(filtered, texture_info)
+    expected = _hash_fingerprint(forms, texture_info, freshness)
     if audit.get('fingerprint') != expected:
         raise SlotStyleDegrade(
             'local form discriminator audit is stale for the current STU data; '
             'refresh STU audit before exporting')
     return audit
+
+
+def _local_branches_from_audit(audit: dict,
+                               mod_hashes: Dict[str, str],
+                               canon_fn,
+                               slot_eligible_components: Optional[Set[int]] = None,
+                               ) -> Tuple[Dict[int, List[_LocalBranch]], Set[str]]:
+    component_branches: Dict[int, List[_LocalBranch]] = {}
+    assigned_hashes: Set[str] = set()
+    effective_by_signature: Dict[
+        Tuple[int, Tuple[Tuple[int, float], ...]],
+        Dict[Tuple[Tuple[int, str], ...], List[str]],
+    ] = {}
+
+    def _source_from(entry: dict, fallback: str) -> str:
+        sources = entry.get('sources') or []
+        if isinstance(sources, list) and sources:
+            joined = ','.join(
+                f"{src.get('form', '?')}/ps={src.get('ps', '?')}"
+                for src in sources if isinstance(src, dict))
+            if joined:
+                return joined
+        form = entry.get('form')
+        ps = entry.get('ps')
+        if isinstance(form, str) or isinstance(ps, str):
+            return f'{form or "?"}/ps={ps or "?"}'
+        return fallback
+
+    def _effective_assignment(raw_assign: object,
+                              comp_id: int,
+                              source: str) -> Tuple[Dict[int, str], Tuple[Tuple[int, str], ...]]:
+        if not isinstance(raw_assign, dict):
+            raise SlotStyleDegrade(
+                f'component {comp_id}: local form discriminator {source} '
+                'has no assignment map')
+        assign: Dict[int, str] = {}
+        assign_hashes: Dict[int, str] = {}
+        for raw_slot, tex_hash in raw_assign.items():
+            if not isinstance(tex_hash, str):
+                continue
+            canon = canon_fn(tex_hash)
+            if canon in mod_hashes:
+                try:
+                    slot = int(raw_slot)
+                except (TypeError, ValueError):
+                    raise SlotStyleDegrade(
+                        f'component {comp_id}: local form discriminator {source} '
+                        f'has an invalid ps-t slot {raw_slot!r}')
+                assign[slot] = mod_hashes[canon]
+                assign_hashes[slot] = canon
+                assigned_hashes.add(canon)
+        return assign, tuple(sorted(assign_hashes.items()))
+
+    rows = audit.get('rows')
+    if not isinstance(rows, list):
+        raise SlotStyleDegrade(
+            'local form discriminator audit has no row evidence; refresh STU audit')
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise SlotStyleDegrade(
+                f'local form discriminator row #{index} has an unsupported shape')
+        try:
+            comp_id = int(row['component'])
+        except (KeyError, TypeError, ValueError):
+            raise SlotStyleDegrade(
+                f'local form discriminator row #{index} has no component id')
+        if (slot_eligible_components is not None
+                and comp_id not in slot_eligible_components):
+            continue
+        signature = _signature_from_audit(row.get('signature'))
+        if not signature:
+            continue
+        source = _source_from(row, f'row#{index}')
+        _assign, assign_key = _effective_assignment(
+            row.get('assign_hashes'), comp_id, source)
+        effective_by_signature.setdefault(
+            (comp_id, signature), {}).setdefault(assign_key, []).append(source)
+
+    for (comp_id, signature), assign_sources in sorted(effective_by_signature.items()):
+        non_empty = [key for key in assign_sources if key]
+        if non_empty and len(assign_sources) > 1:
+            details = [
+                f'{",".join(sources)} assign={dict(assign_key)}'
+                for assign_key, sources in sorted(assign_sources.items())
+            ]
+            raise SlotStyleDegrade(
+                f'component {comp_id}: local form discriminator signature '
+                f'{[[slot, _fi_str(key)] for slot, key in signature]} '
+                'maps to multiple slot override assignments: '
+                f'{"; ".join(details)}')
+
+    branches = audit.get('branches')
+    if not isinstance(branches, list):
+        raise SlotStyleDegrade(
+            'local form discriminator audit has no slot override branches; '
+            'refresh STU audit')
+    for index, entry in enumerate(branches):
+        if not isinstance(entry, dict):
+            raise SlotStyleDegrade(
+                f'local form discriminator branch #{index} has an unsupported shape')
+        try:
+            comp_id = int(entry['component'])
+        except (KeyError, TypeError, ValueError):
+            raise SlotStyleDegrade(
+                f'local form discriminator branch #{index} has no component id')
+        signature = _signature_from_audit(entry.get('signature'))
+        if not signature:
+            raise SlotStyleDegrade(
+                f'component {comp_id}: local form discriminator branch #{index} '
+                'has no usable slot-format signature')
+        source = _source_from(entry, f'branch#{index}')
+        assign, _assign_key = _effective_assignment(
+            entry.get('assign_hashes'), comp_id, f'branch #{index}')
+        if not assign:
+            continue
+        component_branches.setdefault(comp_id, []).append(_LocalBranch(
+            signature=signature,
+            negative_signature=(),
+            ps_signature=None,
+            assign=assign,
+            form_id=1,
+            label='local',
+            ps='',
+            source=source,
+        ))
+    if not component_branches:
+        raise SlotStyleDegrade('no component produced any slot assignment')
+    return component_branches, assigned_hashes
 
 
 def _build_local_plan(forms: List[Tuple[str, FormData]],
@@ -509,61 +756,38 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         group_families.setdefault(key, {}).setdefault(
             constants.format_prefix(fmt), (fmt, _fi_str(fi)))
 
-    raw_branches: Dict[int, List[_LocalBranch]] = {}
-    raw_assigned_hashes: Set[str] = set()
-    excluded_component_hashes: Set[str] = set()
-
-    for form_id, (label, form_data) in enumerate(forms, start=1):
-        form_fresh = (freshness[form_id - 1]
-                      if freshness is not None and form_id - 1 < len(freshness)
-                      else None)
-        for comp_id, comp_pairs in form_data.items():
-            for ps, pair_map in comp_pairs.items():
-                assigned: Dict[int, str] = {}
-                assigned_hashes: Dict[int, str] = {}
-                for slot, tex_hash in pair_map.items():
-                    canon = _canon(tex_hash)
-                    if canon in mod_hashes and canon not in live_fallback:
-                        assigned[slot] = mod_hashes[canon]
-                        assigned_hashes[slot] = canon
-                if not assigned:
-                    continue
-                if slot_eligible_components is not None and comp_id not in slot_eligible_components:
-                    excluded_component_hashes.update(assigned_hashes.values())
-                    continue
-                signature = _signature_key(
-                    pair_map, texture_info,
-                    _fresh_signature_slots(comp_id, ps, pair_map, form_fresh),
-                    alias)
-                if not signature:
-                    raise SlotStyleDegrade(
-                        f'component {comp_id} form "{label}" ps={ps}: '
-                        'no fresh slot-format signature for local discriminator')
-                raw_branches.setdefault(comp_id, []).append(_LocalBranch(
-                    signature=signature,
-                    negative_signature=(),
-                    ps_signature=None,
-                    assign=assigned,
-                    form_id=form_id,
-                    label=label,
-                    ps=ps,
-                    source=f'{label}/ps={ps}',
-                ))
-                raw_assigned_hashes.update(assigned_hashes.values())
-
-    for h in sorted(excluded_component_hashes - raw_assigned_hashes):
-        _route_live(h, 'component excluded from slot layer')
-
-    if not raw_branches:
+    component_branches, raw_assigned_hashes = _local_branches_from_audit(
+        local_discriminator_audit, mod_hashes, _canon, slot_eligible_components)
+    if slot_eligible_components is not None:
+        resource_to_hash_for_exclusion = {res: h for h, res in textures}
+        excluded_hashes: Set[str] = set()
+        for comp_id in list(component_branches):
+            if comp_id in slot_eligible_components:
+                continue
+            for branch in component_branches.pop(comp_id):
+                for resource in branch.assign.values():
+                    tex_hash = resource_to_hash_for_exclusion.get(resource)
+                    if tex_hash:
+                        excluded_hashes.add(tex_hash)
+        included_hashes = {
+            resource_to_hash_for_exclusion[resource]
+            for branches in component_branches.values()
+            for branch in branches
+            for resource in branch.assign.values()
+            if resource in resource_to_hash_for_exclusion
+        }
+        for h in sorted(excluded_hashes - included_hashes):
+            _route_live(h, 'component excluded from slot layer')
+    if not component_branches:
         if live_fallback:
             raise SlotStyleDegrade(
                 'all slot candidates were routed to stock hash sections; no '
                 'slot command lists were emitted')
         raise SlotStyleDegrade('no component produced any slot assignment')
 
-    component_branches: Dict[int, List[_LocalBranch]] = {}
+    merged_component_branches: Dict[int, List[_LocalBranch]] = {}
     conflict_count = 0
-    for comp_id, branches in raw_branches.items():
+    for comp_id, branches in component_branches.items():
         by_signature: Dict[Tuple[Tuple[int, float], ...], List[_LocalBranch]] = {}
         for branch in branches:
             by_signature.setdefault(branch.signature, []).append(branch)
@@ -583,45 +807,18 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             if len(by_assign) <= 1:
                 merged.extend(by_assign.values())
                 continue
-            by_ps: Dict[Tuple[int, Tuple[Tuple[int, str], ...]], _LocalBranch] = {}
-            ps_conflict = False
-            for assign_key, member in by_assign.items():
-                ps_key = constants.ps_mark_value(member.ps)
-                previous = by_ps.get((ps_key, assign_key))
-                if previous is not None:
-                    warnings.append(
-                        f'component {comp_id}: duplicate local discriminator '
-                        f'signature+ps for {previous.source} and {member.source}; '
-                        'kept one identical assignment branch')
-                    continue
-                if any(existing_ps == ps_key and existing_assign != assign_key
-                       for existing_ps, existing_assign in by_ps):
-                    ps_conflict = True
-                by_ps[(ps_key, assign_key)] = member
-            if ps_conflict:
-                conflict_count += len(by_assign) - 1
-                details = [
-                    f'{member.source} ps={member.ps} assign={dict(assign_key)}'
-                    for assign_key, member in by_assign.items()
-                ]
-                raise SlotStyleDegrade(
-                    f'component {comp_id}: local form discriminator signature '
-                    f'{[[slot, fi_text.get(key, _fi_str(key))] for slot, key in signature]} '
-                    'maps to multiple texture assignments even after current-ps '
-                    f'disambiguation: {"; ".join(details)}')
             conflict_count += len(by_assign) - 1
-            for (ps_key, _assign_key), member in sorted(by_ps.items()):
-                merged.append(_LocalBranch(
-                    signature=member.signature,
-                    negative_signature=member.negative_signature,
-                    ps_signature=ps_key,
-                    assign=member.assign,
-                    form_id=member.form_id,
-                    label=member.label,
-                    ps=member.ps,
-                    source=member.source,
-                ))
-        component_branches[comp_id] = merged
+            details = [
+                f'{member.source} assign={dict(assign_key)}'
+                for assign_key, member in by_assign.items()
+            ]
+            raise SlotStyleDegrade(
+                f'component {comp_id}: local form discriminator signature '
+                f'{[[slot, fi_text.get(key, _fi_str(key))] for slot, key in signature]} '
+                'maps to multiple slot override assignments: '
+                f'{"; ".join(details)}')
+        merged_component_branches[comp_id] = merged
+    component_branches = merged_component_branches
 
     resource_to_hash = {res: h for h, res in textures}
     all_assigned_hashes: Set[str] = set()
@@ -715,7 +912,9 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     out.append('; ============================================================')
     out.append('; Slot-style texture layer (local form discriminator)')
     out.append(f'; Forms: {form_sources}')
-    out.append('; Conditions are per-draw fresh ps-t0..8 format signatures;')
+    out.append('; Conditions are audited per-draw slot override branches;')
+    out.append('; material passes use fresh ps-t0..8 formats, while outline')
+    out.append('; passes may use audited observed/inherited slot formats.')
     out.append('; no global form state or form-anchor watchdog is used.')
     out.append('; ============================================================')
     out.extend(body_chunks)
@@ -866,6 +1065,9 @@ def build_plan(forms: List[Tuple[str, FormData]],
     if a form or same-signature case cannot be represented by format slots and
     user-provided form anchors, generation degrades instead of emitting a
     complex fallback path.
+
+    Local discriminator mode is stricter: it consumes audited slot override
+    branches only and never adds form-anchor or current-shader fallback state.
     """
     if local_form_discriminator:
         return _build_local_plan(
