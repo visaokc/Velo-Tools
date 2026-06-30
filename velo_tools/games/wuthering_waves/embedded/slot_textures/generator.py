@@ -274,6 +274,10 @@ class _Branch:
     assign: Dict[int, str]
     form_gate: Optional[int]
     source: str
+    pass_role: str = 'material'
+    condition_slots: Tuple[int, ...] = ()
+    assignment_slots: Tuple[int, ...] = ()
+    ps: str = ''
 
 
 @dataclass(eq=False)
@@ -286,6 +290,62 @@ class _LocalBranch:
     label: str
     ps: str
     source: str
+
+
+def _branch_with_assign(branch: _Branch,
+                        assign: Dict[int, str],
+                        form_gate: Optional[int]) -> _Branch:
+    return _Branch(
+        signature=branch.signature,
+        assign=assign,
+        form_gate=form_gate,
+        source=branch.source,
+        pass_role=branch.pass_role,
+        condition_slots=branch.condition_slots,
+        assignment_slots=tuple(sorted(assign)),
+        ps=branch.ps,
+    )
+
+
+def _is_weak_anchor_branch(branch: _Branch,
+                           needs_form_gate: bool = True) -> bool:
+    condition_slots = branch.condition_slots or tuple(
+        slot for slot, _key in branch.signature)
+    assignment_slots = branch.assignment_slots or tuple(sorted(branch.assign))
+    if (needs_form_gate
+            and len(condition_slots) == 1
+            and len(assignment_slots) == 1):
+        return True
+    return branch.pass_role == 'auxiliary' and len(assignment_slots) == 1
+
+
+def _local_branch_is_weak(signature: Tuple[Tuple[int, float], ...],
+                          negative_signature: Tuple[Tuple[int, float], ...],
+                          assign: Dict[int, str],
+                          pass_role: str) -> bool:
+    return (len(signature) == 1
+            and not negative_signature
+            and len(assign) == 1)
+
+
+def _branch_covered_by_stronger_layout(branch: _Branch,
+                                       candidates: List[_Branch]) -> bool:
+    assign_items = set(branch.assign.items())
+    signature_items = set(branch.signature)
+    if not assign_items or not signature_items:
+        return False
+    for candidate in candidates:
+        if candidate is branch:
+            continue
+        if candidate.form_gate != branch.form_gate:
+            continue
+        if len(candidate.signature) <= len(branch.signature):
+            continue
+        if not signature_items.issubset(set(candidate.signature)):
+            continue
+        if assign_items.issubset(set(candidate.assign.items())):
+            return True
+    return False
 
 
 def _common_assignments(by_assign: Dict[Tuple[Tuple[int, str], ...], Set[int]]) -> Dict[int, str]:
@@ -860,10 +920,13 @@ def _local_branches_from_audit(audit: dict,
                                mod_hashes: Dict[str, str],
                                canon_fn,
                                slot_eligible_components: Optional[Set[int]] = None,
-                               ) -> Tuple[Dict[int, List[_LocalBranch]], Set[str]]:
+                               ) -> Tuple[Dict[int, List[_LocalBranch]], Set[str], int, Set[str]]:
     component_branches: Dict[int, List[_LocalBranch]] = {}
     assigned_hashes: Set[str] = set()
+    suppressed_weak_hashes: Set[str] = set()
+    suppressed_weak_branches = 0
     branch_records: List[dict] = []
+    pending_branches: List[Tuple[int, dict, Dict[int, str], Tuple[Tuple[int, str], ...], str]] = []
 
     def _source_from(entry: dict, fallback: str) -> str:
         sources = entry.get('sources') or []
@@ -974,7 +1037,34 @@ def _local_branches_from_audit(audit: dict,
             and isinstance(tex_hash, str)
             and canon_fn(tex_hash) in mod_hashes
         ))
-        branch_records.append({
+        pending_branches.append((comp_id, entry, assign, assign_key, source))
+
+    row_records = [record for record in branch_records
+                   if record.get('kind') == 'row']
+    kept_branch_records: List[dict] = []
+    for comp_id, entry, assign, assign_key, source in pending_branches:
+        signature = _signature_from_audit(
+            entry.get('positive_signature') or entry.get('signature'))
+        negative_signature = _signature_from_audit(entry.get('negative_signature'))
+        pass_role = str(entry.get('pass_role') or '')
+        matched_assignments = {
+            record.get('assign_key') or ()
+            for record in row_records
+            if int(record.get('component')) == comp_id
+            and _local_condition_matches(
+                signature, negative_signature, record['signature'])
+        }
+        weak_problem = any(key != assign_key for key in matched_assignments)
+        if (weak_problem and _local_branch_is_weak(
+                signature, negative_signature, assign, pass_role)):
+            suppressed_weak_branches += 1
+            for tex_hash in (entry.get('assign_hashes') or {}).values():
+                if isinstance(tex_hash, str):
+                    canon = canon_fn(tex_hash)
+                    if canon in mod_hashes:
+                        suppressed_weak_hashes.add(canon)
+            continue
+        kept_branch_records.append({
             'kind': 'branch',
             'component': comp_id,
             'signature': signature,
@@ -992,12 +1082,23 @@ def _local_branches_from_audit(audit: dict,
             ps='',
             source=source,
         ))
+    branch_records.extend(kept_branch_records)
     problems = _local_conflict_messages(branch_records, slot_eligible_components)
     if problems:
         raise SlotStyleDegrade(_format_local_conflict_message(problems))
     if not component_branches:
+        if suppressed_weak_branches:
+            comps = sorted({
+                item[0] for item in pending_branches
+                if slot_eligible_components is None or item[0] in slot_eligible_components
+            })
+            comp_text = ', '.join(f'Component {comp}' for comp in comps)
+            raise SlotStyleDegrade(
+                f'{comp_text}: all local slot branches were weak single-slot '
+                'conditions and were suppressed')
         raise SlotStyleDegrade('no component produced any slot assignment')
-    return component_branches, assigned_hashes
+    return (component_branches, assigned_hashes,
+            suppressed_weak_branches, suppressed_weak_hashes)
 
 
 def _build_local_plan(forms: List[Tuple[str, FormData]],
@@ -1027,6 +1128,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         return alias.get(tex_hash, tex_hash)
 
     live_fallback: Dict[str, str] = {}
+    suppressed_weak_branches = 0
+    suppressed_weak_hashes: Set[str] = set()
 
     def _route_live(tex_hash: str, reason: str):
         canon = _canon(tex_hash) or tex_hash
@@ -1051,8 +1154,13 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         group_families.setdefault(key, {}).setdefault(
             constants.format_prefix(fmt), (fmt, _fi_str(fi)))
 
-    component_branches, raw_assigned_hashes = _local_branches_from_audit(
+    component_branches, raw_assigned_hashes, suppressed_weak_branches, suppressed_weak_hashes = _local_branches_from_audit(
         local_discriminator_audit, mod_hashes, _canon, slot_eligible_components)
+    if suppressed_weak_branches:
+        warnings.append(
+            f'suppressed {suppressed_weak_branches} weak local slot branch(es); '
+            'single-slot positive conditions without a negative discriminator '
+            'are unsafe for same-IB multi-instance rendering')
     if slot_eligible_components is not None:
         resource_to_hash_for_exclusion = {res: h for h, res in textures}
         excluded_hashes: Set[str] = set()
@@ -1110,7 +1218,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     component_branches = merged_component_branches
 
     resource_to_hash = {res: h for h, res in textures}
-    all_assigned_hashes: Set[str] = set()
+    all_assigned_hashes: Set[str] = set(suppressed_weak_hashes)
     for branches in component_branches.values():
         for branch in branches:
             for resource in branch.assign.values():
@@ -1277,6 +1385,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             'service_slots': len([s for s in used_slots if s in constants.SERVICE_SLOTS]),
             'suppressed_latches': 0,
             'local_form_discriminator': 1,
+            'suppressed_weak_branches': suppressed_weak_branches,
         },
     )
 
@@ -1437,10 +1546,15 @@ def build_plan(forms: List[Tuple[str, FormData]],
     raw_branches: Dict[int, List[_Branch]] = {}
     raw_assigned_hashes: Set[str] = set()
     excluded_component_hashes: Set[str] = set()
+    suppressed_weak_hashes: Set[str] = set()
+    suppressed_weak_branches = 0
+    suppressed_covered_hashes: Set[str] = set()
+    suppressed_covered_branches = 0
 
     for form_id, (label, form_data) in enumerate(forms, start=1):
         for comp_id, comp_pairs in form_data.items():
             for ps, pair_map in comp_pairs.items():
+                pass_role = _pass_role(pair_map, texture_info)
                 eligible_slots = _eligible_slots(pair_map)
                 if not has_freshness_evidence:
                     eligible_slots -= set(constants.SERVICE_SLOTS)
@@ -1478,6 +1592,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     assign=assigned,
                     form_gate=form_id if multi_form else None,
                     source=f'{label}/ps={ps}',
+                    pass_role=pass_role,
+                    condition_slots=tuple(slot for slot, _key in signature),
+                    assignment_slots=tuple(sorted(assigned)),
+                    ps=ps,
                 ))
                 raw_assigned_hashes.update(assigned_hashes.values())
 
@@ -1490,6 +1608,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 'all slot candidates were routed to stock hash sections; no '
                 'slot command lists were emitted')
         raise SlotStyleDegrade('no component produced any slot assignment')
+
+    resource_to_hash = {res: h for h, res in textures}
 
     component_branches: Dict[int, List[_Branch]] = {}
     conflict_count = 0
@@ -1531,13 +1651,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
                             'multi-form slot branches need manual form anchors; '
                             'add vb0:label anchors with the form finder before '
                             'using concise slot export')
+                    member = sample[next(iter(by_assign))]
                     for form_id in gate_ids:
-                        merged.append(_Branch(
-                            signature=signature,
-                            assign=dict(common),
-                            form_gate=form_id or None,
-                            source=sample[next(iter(by_assign))].source,
-                        ))
+                        merged.append(_branch_with_assign(
+                            member, dict(common), form_id or None))
                     continue
                 if not multi_form or not forms_fully_covered:
                     raise SlotStyleDegrade(
@@ -1546,17 +1663,20 @@ def build_plan(forms: List[Tuple[str, FormData]],
                         f'with Skip Dirty Slot enabled')
                 for assign_key, form_ids in sorted(by_assign.items()):
                     member = sample[assign_key]
+                    if _is_weak_anchor_branch(member, needs_form_gate=True):
+                        suppressed_weak_branches += len(form_ids)
+                        for resource in dict(assign_key).values():
+                            tex_hash = resource_to_hash.get(resource)
+                            if tex_hash:
+                                suppressed_weak_hashes.add(tex_hash)
+                        continue
                     for form_id in sorted(form_ids):
                         if form_id == 0:
                             raise SlotStyleDegrade(
                                 f'component {comp_id}: single-form branch joined '
                                 f'a multi-form conflict')
-                        merged.append(_Branch(
-                            signature=signature,
-                            assign=dict(assign_key),
-                            form_gate=form_id,
-                            source=member.source,
-                        ))
+                        merged.append(_branch_with_assign(
+                            member, dict(assign_key), form_id))
                 continue
             assign_key, form_ids = next(iter(by_assign.items()))
             member = sample[assign_key]
@@ -1567,23 +1687,45 @@ def build_plan(forms: List[Tuple[str, FormData]],
                         'add vb0:label anchors with the form finder before '
                         'using concise slot export')
                 for form_id in sorted(form_ids):
-                    merged.append(_Branch(
-                        signature=signature,
-                        assign=dict(assign_key),
-                        form_gate=form_id,
-                        source=member.source,
-                    ))
+                    merged.append(_branch_with_assign(
+                        member, dict(assign_key), form_id))
             else:
-                merged.append(_Branch(
-                    signature=signature,
-                    assign=dict(assign_key),
-                    form_gate=None,
-                    source=member.source,
-                ))
-        component_branches[comp_id] = merged
+                merged.append(_branch_with_assign(
+                    member, dict(assign_key), None))
+        kept: List[_Branch] = []
+        for branch in merged:
+            if _is_weak_anchor_branch(branch, needs_form_gate=False):
+                suppressed_weak_branches += 1
+                for resource in branch.assign.values():
+                    tex_hash = resource_to_hash.get(resource)
+                    if tex_hash:
+                        suppressed_weak_hashes.add(tex_hash)
+                continue
+            if _branch_covered_by_stronger_layout(branch, merged):
+                suppressed_covered_branches += 1
+                for resource in branch.assign.values():
+                    tex_hash = resource_to_hash.get(resource)
+                    if tex_hash:
+                        suppressed_covered_hashes.add(tex_hash)
+                continue
+            kept.append(branch)
+        component_branches[comp_id] = kept
 
-    resource_to_hash = {res: h for h, res in textures}
+    if suppressed_weak_branches:
+        warnings.append(
+            f'suppressed {suppressed_weak_branches} weak single-slot or '
+            f'auxiliary slot branch(es); format-only ps-t conditions are '
+            f'unsafe for same-IB multi-instance rendering')
+    if suppressed_covered_branches:
+        warnings.append(
+            f'suppressed {suppressed_covered_branches} slot branch(es) covered '
+            'by a stronger same-form layout')
+
     all_assigned_hashes: Set[str] = set()
+    for tex_hash in suppressed_weak_hashes:
+        all_assigned_hashes.add(tex_hash)
+    for tex_hash in suppressed_covered_hashes:
+        all_assigned_hashes.add(tex_hash)
     for branches in component_branches.values():
         for branch in branches:
             for resource in branch.assign.values():
@@ -1660,9 +1802,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
             body_chunks.append('\n'.join(chunk))
         else:
             component_list_names.pop(comp_id, None)
-
-    if not body_chunks:
-        raise SlotStyleDegrade('no component produced a complete slot condition')
 
     covered_resource_indices: Set[int] = set()
     blind_zone: List[Tuple[str, str]] = []
@@ -1798,5 +1937,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'dirty_slots': dirty_slots,
             'service_slots': len([s for s in used_slots if s in constants.SERVICE_SLOTS]),
             'suppressed_latches': 0,
+            'suppressed_weak_branches': suppressed_weak_branches,
+            'suppressed_covered_branches': suppressed_covered_branches,
         },
     )
