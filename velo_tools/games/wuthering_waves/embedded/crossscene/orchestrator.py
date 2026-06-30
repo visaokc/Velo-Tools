@@ -283,6 +283,13 @@ def _body_stu_for_export(root_stu, merged_folder, routing, keep_count):
 
     if extra_by_label:
         trimmed["extra_forms"] = list(extra_by_label.values())
+    if isinstance(trimmed, dict):
+        try:
+            from ..slot_textures import form_merge as slot_form_merge
+        except ImportError:
+            pass
+        else:
+            slot_form_merge.refresh_local_discriminator_audit_in_usage(trimmed)
     return trimmed
 
 

@@ -30,7 +30,7 @@ _VS_KEY_RE = re.compile(r'^vs=[0-9a-f?]+$')
 _COMP_RE = re.compile(r'component\s*(\d+)\s*$', re.I)
 _SLOT_RE = re.compile(r'^ps-t(\d+)$')
 
-_RESERVED_KEYS = {constants.EXTRA_FORMS_KEY, 'version'}
+_RESERVED_KEYS = {constants.EXTRA_FORMS_KEY, constants.LOCAL_FORM_DISCRIMINATOR_KEY, 'version'}
 
 
 def _f32(value: float) -> float:
@@ -186,6 +186,40 @@ def load_forms(object_source_folder: Path,
     return forms, texture_info, warnings
 
 
+def read_local_discriminator_audit(object_source_folder: Path) -> object:
+    base_path = Path(object_source_folder) / constants.BASE_USAGE_FILENAME
+    try:
+        with open(base_path, encoding='utf-8') as f:
+            raw = json.load(f)
+    except Exception as e:
+        raise SlotStyleDegrade(f'failed to read local discriminator audit: {e}')
+    if not isinstance(raw, dict):
+        raise SlotStyleDegrade(
+            f'{constants.BASE_USAGE_FILENAME} has an unexpected shape')
+    return raw.get(constants.LOCAL_FORM_DISCRIMINATOR_KEY)
+
+
+def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
+    warnings: List[str] = []
+    texture_info: TextureInfo = {}
+    freshness: List[Dict[Tuple[int, str, int], bool]] = []
+
+    def _freshness() -> Dict[Tuple[int, str, int], bool]:
+        fresh: Dict[Tuple[int, str, int], bool] = {}
+        freshness.append(fresh)
+        return fresh
+
+    forms: List[Tuple[str, FormData]] = [
+        ('base', normalize_usage(usage, 'base', warnings, texture_info, _freshness()))]
+    for entry in usage.get(constants.EXTRA_FORMS_KEY) or []:
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get('label') or entry.get('source') or f'form{len(forms) + 1}'
+        forms.append((label, normalize_usage(entry.get('components'), label,
+                                             warnings, texture_info, _freshness())))
+    return build_local_discriminator_audit(forms, texture_info, freshness, warnings)
+
+
 # -------------------------------------------------------------------- plan --
 
 @dataclass
@@ -215,6 +249,18 @@ class _Branch:
     source: str
 
 
+@dataclass(eq=False)
+class _LocalBranch:
+    signature: Tuple[Tuple[int, float], ...]
+    negative_signature: Tuple[Tuple[int, float], ...]
+    ps_signature: Optional[int]
+    assign: Dict[int, str]
+    form_id: int
+    label: str
+    ps: str
+    source: str
+
+
 def _common_assignments(by_assign: Dict[Tuple[Tuple[int, str], ...], Set[int]]) -> Dict[int, str]:
     common: Optional[Dict[int, str]] = None
     for assign_key in by_assign:
@@ -231,6 +277,22 @@ def _common_assignments(by_assign: Dict[Tuple[Tuple[int, str], ...], Set[int]]) 
 
 def _eligible_slots(pair_map: Dict[int, Optional[str]]) -> Set[int]:
     return set(pair_map) - set(constants.SERVICE_SLOTS)
+
+
+def _local_signature_slots(pair_map: Dict[int, Optional[str]]) -> Set[int]:
+    return set(pair_map) & set(constants.LOCAL_DISCRIMINATOR_SLOTS)
+
+
+def _fresh_signature_slots(comp_id: int,
+                           ps: str,
+                           pair_map: Dict[int, Optional[str]],
+                           form_fresh: Optional[Dict[Tuple[int, str, int], bool]]) -> Set[int]:
+    if form_fresh is None:
+        return set()
+    return {
+        slot for slot in _local_signature_slots(pair_map)
+        if form_fresh.get((comp_id, ps, slot)) is True
+    }
 
 
 def _is_material_pair(pair_map: Dict[int, Optional[str]],
@@ -259,6 +321,474 @@ def _family_key(tex_hash: Optional[str], texture_info: TextureInfo) -> Optional[
 def _fi_str(value: float) -> str:
     text = repr(value)
     return text[:-2] if text.endswith('.0') else text
+
+
+def _hash_fingerprint(forms: List[Tuple[str, FormData]],
+                      texture_info: TextureInfo) -> str:
+    """Stable fingerprint for the STU facts the local discriminator consumes."""
+    import hashlib
+    payload = []
+    for label, form_data in forms:
+        form_rows = []
+        for comp_id in sorted(form_data):
+            for ps in sorted(form_data[comp_id]):
+                row = []
+                for slot, tex_hash in sorted(form_data[comp_id][ps].items()):
+                    info = texture_info.get(tex_hash or '') or {}
+                    row.append([slot, tex_hash, info.get('format') or ''])
+                form_rows.append([comp_id, ps, row])
+        payload.append([label, form_rows])
+    raw = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def _signature_key(pair_map: Dict[int, Optional[str]],
+                   texture_info: TextureInfo,
+                   slots: Set[int],
+                   alias: Optional[Dict[str, str]] = None) -> Tuple[Tuple[int, float], ...]:
+    signature: List[Tuple[int, float]] = []
+    for slot in sorted(slots):
+        tex_hash = pair_map.get(slot)
+        if tex_hash is not None and alias is not None:
+            tex_hash = alias.get(tex_hash, tex_hash)
+        key = _family_key(tex_hash, texture_info)
+        if key is not None:
+            signature.append((slot, key))
+    return tuple(signature)
+
+
+def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
+                                    texture_info: TextureInfo,
+                                    freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+                                    warnings: Optional[List[str]] = None) -> dict:
+    """Build the STU audit block for local form discriminator export.
+
+    The audit is intentionally data-only: export still recomputes and verifies
+    the fingerprint before trusting it, so stale STU edits fail closed.
+    """
+    local_warnings: List[str] = list(warnings or [])
+    filtered, _dirty_hashes, dirty_slots, phantom_pairs = _filtered_forms(
+        forms, freshness, local_warnings)
+    alias = _variant_aliases(texture_info)
+    rows = []
+    by_component_signature: Dict[Tuple[int, Tuple[Tuple[int, float], ...]], List[dict]] = {}
+
+    for form_id, (label, form_data) in enumerate(filtered, start=1):
+        form_fresh = (freshness[form_id - 1]
+                      if freshness is not None and form_id - 1 < len(freshness)
+                      else None)
+        for comp_id, comp_pairs in form_data.items():
+            for ps, pair_map in comp_pairs.items():
+                sig = _signature_key(pair_map, texture_info,
+                                     _fresh_signature_slots(
+                                         comp_id, ps, pair_map, form_fresh),
+                                     alias)
+                if not sig:
+                    continue
+                assign_hashes = {
+                    slot: tex_hash for slot, tex_hash in sorted(pair_map.items())
+                    if isinstance(tex_hash, str)
+                }
+                row = {
+                    'form_id': form_id,
+                    'form': label,
+                    'component': comp_id,
+                    'ps': ps,
+                    'signature': [[slot, _fi_str(key)] for slot, key in sig],
+                    'assign_hashes': {str(slot): tex_hash
+                                      for slot, tex_hash in assign_hashes.items()},
+                }
+                rows.append(row)
+                by_component_signature.setdefault((comp_id, sig), []).append(row)
+
+    conflicts = []
+    for (comp_id, sig), members in sorted(by_component_signature.items()):
+        assign_keys = {
+            tuple(sorted((int(slot), tex_hash)
+                         for slot, tex_hash in member['assign_hashes'].items()))
+            for member in members
+        }
+        if len(assign_keys) <= 1:
+            continue
+        conflicts.append({
+            'component': comp_id,
+            'signature': [[slot, _fi_str(key)] for slot, key in sig],
+            'members': [
+                {'form': m['form'], 'ps': m['ps'], 'assign_hashes': m['assign_hashes']}
+                for m in members
+            ],
+        })
+
+    return {
+        'schema': constants.LOCAL_FORM_DISCRIMINATOR_SCHEMA,
+        'fingerprint': _hash_fingerprint(filtered, texture_info),
+        'slots': list(constants.LOCAL_DISCRIMINATOR_SLOTS),
+        'service_slots': list(constants.SERVICE_SLOTS),
+        'rows': rows,
+        'conflicts': conflicts,
+        'stats': {
+            'forms': len(filtered),
+            'rows': len(rows),
+            'conflicts': len(conflicts),
+            'dirty_slots': dirty_slots,
+            'phantom_pairs': phantom_pairs,
+        },
+        'warnings': local_warnings,
+    }
+
+
+def validate_local_discriminator_audit(audit: object,
+                                       forms: List[Tuple[str, FormData]],
+                                       texture_info: TextureInfo,
+                                       freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None) -> dict:
+    if not isinstance(audit, dict):
+        raise SlotStyleDegrade(
+            'local form discriminator audit is missing; refresh STU by merging '
+            'form textures before exporting with the local discriminator mode')
+    if audit.get('schema') != constants.LOCAL_FORM_DISCRIMINATOR_SCHEMA:
+        raise SlotStyleDegrade(
+            'local form discriminator audit schema is unsupported; refresh STU audit')
+    filtered, _dirty_hashes, _dirty_slots, _phantom_pairs = _filtered_forms(
+        forms, freshness, [])
+    expected = _hash_fingerprint(filtered, texture_info)
+    if audit.get('fingerprint') != expected:
+        raise SlotStyleDegrade(
+            'local form discriminator audit is stale for the current STU data; '
+            'refresh STU audit before exporting')
+    return audit
+
+
+def _build_local_plan(forms: List[Tuple[str, FormData]],
+                      textures: List[Tuple[str, str]],
+                      texture_info: TextureInfo,
+                      load_warnings: Optional[List[str]] = None,
+                      component_ranges: Optional[Dict[int, Tuple[int, int]]] = None,
+                      lod_ranges: Optional[Dict[int, Dict[int, Tuple[int, int]]]] = None,
+                      multi_state_seats: Optional[Dict[Tuple[int, int], Set[str]]] = None,
+                      live_seed: Optional[Set[str]] = None,
+                      freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+                      slot_eligible_components: Optional[Set[int]] = None,
+                      local_discriminator_audit: Optional[dict] = None) -> SlotPlan:
+    warnings: List[str] = list(load_warnings or [])
+    validate_local_discriminator_audit(
+        local_discriminator_audit, forms, texture_info, freshness)
+    forms, dirty_hashes_raw, dirty_slots, phantom_pairs = _filtered_forms(
+        forms, freshness, warnings)
+    alias = _variant_aliases(texture_info)
+    mod_hashes = {h: res for h, res in textures}
+    if not mod_hashes:
+        raise SlotStyleDegrade('mod has no textures, nothing to do')
+
+    def _canon(tex_hash: Optional[str]) -> Optional[str]:
+        if tex_hash is None:
+            return None
+        return alias.get(tex_hash, tex_hash)
+
+    live_fallback: Dict[str, str] = {}
+
+    def _route_live(tex_hash: str, reason: str):
+        canon = _canon(tex_hash) or tex_hash
+        if canon in mod_hashes:
+            live_fallback.setdefault(canon, reason)
+
+    for h in sorted(live_seed or ()):
+        _route_live(h, 'caller-routed live seed')
+    for (comp_id, slot), hashes in sorted((multi_state_seats or {}).items()):
+        for h in sorted(hashes):
+            _route_live(h, f'multi-state seat (component {comp_id}, ps-t{slot})')
+
+    fi_text: Dict[float, str] = {}
+    group_families: Dict[float, Dict[str, Tuple[str, str]]] = {}
+    for info in texture_info.values():
+        fmt = info.get('format')
+        if not fmt:
+            continue
+        fi = constants.format_filter_index(fmt)
+        key = _f32(fi)
+        fi_text.setdefault(key, _fi_str(fi))
+        group_families.setdefault(key, {}).setdefault(
+            constants.format_prefix(fmt), (fmt, _fi_str(fi)))
+
+    raw_branches: Dict[int, List[_LocalBranch]] = {}
+    raw_assigned_hashes: Set[str] = set()
+    excluded_component_hashes: Set[str] = set()
+
+    for form_id, (label, form_data) in enumerate(forms, start=1):
+        form_fresh = (freshness[form_id - 1]
+                      if freshness is not None and form_id - 1 < len(freshness)
+                      else None)
+        for comp_id, comp_pairs in form_data.items():
+            for ps, pair_map in comp_pairs.items():
+                assigned: Dict[int, str] = {}
+                assigned_hashes: Dict[int, str] = {}
+                for slot, tex_hash in pair_map.items():
+                    canon = _canon(tex_hash)
+                    if canon in mod_hashes and canon not in live_fallback:
+                        assigned[slot] = mod_hashes[canon]
+                        assigned_hashes[slot] = canon
+                if not assigned:
+                    continue
+                if slot_eligible_components is not None and comp_id not in slot_eligible_components:
+                    excluded_component_hashes.update(assigned_hashes.values())
+                    continue
+                signature = _signature_key(
+                    pair_map, texture_info,
+                    _fresh_signature_slots(comp_id, ps, pair_map, form_fresh),
+                    alias)
+                if not signature:
+                    raise SlotStyleDegrade(
+                        f'component {comp_id} form "{label}" ps={ps}: '
+                        'no fresh slot-format signature for local discriminator')
+                raw_branches.setdefault(comp_id, []).append(_LocalBranch(
+                    signature=signature,
+                    negative_signature=(),
+                    ps_signature=None,
+                    assign=assigned,
+                    form_id=form_id,
+                    label=label,
+                    ps=ps,
+                    source=f'{label}/ps={ps}',
+                ))
+                raw_assigned_hashes.update(assigned_hashes.values())
+
+    for h in sorted(excluded_component_hashes - raw_assigned_hashes):
+        _route_live(h, 'component excluded from slot layer')
+
+    if not raw_branches:
+        if live_fallback:
+            raise SlotStyleDegrade(
+                'all slot candidates were routed to stock hash sections; no '
+                'slot command lists were emitted')
+        raise SlotStyleDegrade('no component produced any slot assignment')
+
+    component_branches: Dict[int, List[_LocalBranch]] = {}
+    conflict_count = 0
+    for comp_id, branches in raw_branches.items():
+        by_signature: Dict[Tuple[Tuple[int, float], ...], List[_LocalBranch]] = {}
+        for branch in branches:
+            by_signature.setdefault(branch.signature, []).append(branch)
+        merged: List[_LocalBranch] = []
+        for signature, members in sorted(by_signature.items()):
+            by_assign: Dict[Tuple[Tuple[int, str], ...], _LocalBranch] = {}
+            for member in members:
+                assign_key = tuple(sorted(member.assign.items()))
+                previous = by_assign.get(assign_key)
+                if previous is not None:
+                    warnings.append(
+                        f'component {comp_id}: duplicate local discriminator '
+                        f'signature for {previous.source} and {member.source}; '
+                        'kept one identical assignment branch')
+                    continue
+                by_assign[assign_key] = member
+            if len(by_assign) <= 1:
+                merged.extend(by_assign.values())
+                continue
+            by_ps: Dict[Tuple[int, Tuple[Tuple[int, str], ...]], _LocalBranch] = {}
+            ps_conflict = False
+            for assign_key, member in by_assign.items():
+                ps_key = constants.ps_mark_value(member.ps)
+                previous = by_ps.get((ps_key, assign_key))
+                if previous is not None:
+                    warnings.append(
+                        f'component {comp_id}: duplicate local discriminator '
+                        f'signature+ps for {previous.source} and {member.source}; '
+                        'kept one identical assignment branch')
+                    continue
+                if any(existing_ps == ps_key and existing_assign != assign_key
+                       for existing_ps, existing_assign in by_ps):
+                    ps_conflict = True
+                by_ps[(ps_key, assign_key)] = member
+            if ps_conflict:
+                conflict_count += len(by_assign) - 1
+                details = [
+                    f'{member.source} ps={member.ps} assign={dict(assign_key)}'
+                    for assign_key, member in by_assign.items()
+                ]
+                raise SlotStyleDegrade(
+                    f'component {comp_id}: local form discriminator signature '
+                    f'{[[slot, fi_text.get(key, _fi_str(key))] for slot, key in signature]} '
+                    'maps to multiple texture assignments even after current-ps '
+                    f'disambiguation: {"; ".join(details)}')
+            conflict_count += len(by_assign) - 1
+            for (ps_key, _assign_key), member in sorted(by_ps.items()):
+                merged.append(_LocalBranch(
+                    signature=member.signature,
+                    negative_signature=member.negative_signature,
+                    ps_signature=ps_key,
+                    assign=member.assign,
+                    form_id=member.form_id,
+                    label=member.label,
+                    ps=member.ps,
+                    source=member.source,
+                ))
+        component_branches[comp_id] = merged
+
+    resource_to_hash = {res: h for h, res in textures}
+    all_assigned_hashes: Set[str] = set()
+    for branches in component_branches.values():
+        for branch in branches:
+            for resource in branch.assign.values():
+                tex_hash = resource_to_hash.get(resource)
+                if tex_hash:
+                    all_assigned_hashes.add(tex_hash)
+
+    used_slots: Set[int] = set()
+    used_families: Dict[int, Set[float]] = {}
+    component_list_names: Dict[int, str] = {}
+    body_chunks: List[str] = []
+
+    def _terms(comp_id: int, branch: _LocalBranch) -> List[str]:
+        terms: List[str] = []
+        for slot, key in branch.signature:
+            text = fi_text.get(key)
+            if text is None:
+                continue
+            used_families.setdefault(comp_id, set()).add(key)
+            terms.append(f'ps-t{slot} == {text}')
+        for slot, key in branch.negative_signature:
+            text = fi_text.get(key)
+            if text is None:
+                continue
+            used_families.setdefault(comp_id, set()).add(key)
+            terms.append(f'ps-t{slot} != {text}')
+        if branch.ps_signature is not None:
+            terms.append(
+                f'(ps == {branch.ps_signature} || vs == {branch.ps_signature})')
+        return terms
+
+    def _append_assignments(chunk: List[str], assign: Dict[int, str], indent: str):
+        for slot, res in sorted(assign.items()):
+            chunk.append(f'{indent}ps-t{slot} = ref {res}')
+            used_slots.add(slot)
+
+    for comp_id in sorted(component_branches):
+        name = constants.CMDLIST_SET_TEXTURES.format(component_id=comp_id)
+        component_list_names[comp_id] = name
+        chunk: List[str] = ['', f'[{name}]']
+        ordered = sorted(
+            component_branches[comp_id],
+            key=lambda b: (-len(b.signature), b.form_id, b.signature,
+                           tuple(sorted(b.assign.items()))))
+        first = True
+        for branch in ordered:
+            terms = _terms(comp_id, branch)
+            if not terms:
+                continue
+            chunk.append(f'{"if" if first else "else if"} ' + ' && '.join(terms))
+            _append_assignments(chunk, branch.assign, '    ')
+            first = False
+        if not first:
+            chunk.append('endif')
+            body_chunks.append('\n'.join(chunk))
+        else:
+            component_list_names.pop(comp_id, None)
+
+    if not body_chunks:
+        raise SlotStyleDegrade('no component produced a complete slot condition')
+
+    covered_resource_indices: Set[int] = set()
+    blind_zone: List[Tuple[str, str]] = []
+    dirty_hashes = {_canon(h) or h for h in dirty_hashes_raw}
+    dirty_only_hashes = dirty_hashes - all_assigned_hashes
+    phantom_only_resource_indices: Set[int] = set()
+    phantom_suppressed: List[Tuple[str, str]] = []
+    has_freshness_evidence = freshness is not None and any(freshness)
+    for index, (h, _res) in enumerate(textures):
+        canon = _canon(h) or h
+        if canon in all_assigned_hashes and canon not in live_fallback:
+            covered_resource_indices.add(index)
+        elif canon in dirty_only_hashes:
+            section = f'TextureOverrideTexture{index}'
+            phantom_only_resource_indices.add(index)
+            phantom_suppressed.append((h, section))
+        elif canon not in live_fallback:
+            section = f'TextureOverrideTexture{index}'
+            if has_freshness_evidence:
+                phantom_only_resource_indices.add(index)
+                phantom_suppressed.append((h, section))
+            else:
+                blind_zone.append((h, section))
+
+    out: List[str] = []
+    form_sources = ', '.join(label for label, _ in forms)
+    out.append('')
+    out.append('; ============================================================')
+    out.append('; Slot-style texture layer (local form discriminator)')
+    out.append(f'; Forms: {form_sources}')
+    out.append('; Conditions are per-draw fresh ps-t0..8 format signatures;')
+    out.append('; no global form state or form-anchor watchdog is used.')
+    out.append('; ============================================================')
+    out.extend(body_chunks)
+
+    format_section_count = 0
+    out.append('')
+    out.append('; -- Format-family tags')
+    for comp_id in sorted(used_families):
+        crange = (component_ranges or {}).get(comp_id)
+        if crange is None:
+            raise SlotStyleDegrade(
+                f'component {comp_id} index range unknown - cannot emit its '
+                f'format tag sections')
+        ranges = [(constants.SEC_FORMAT_TAG, None, crange)]
+        for level, lranges in sorted((lod_ranges or {}).items()):
+            if comp_id in lranges:
+                ranges.append((constants.SEC_FORMAT_TAG_LOD, level, lranges[comp_id]))
+        for key in sorted(used_families[comp_id]):
+            for prefix in sorted(group_families.get(key, {})):
+                name, text = group_families[key][prefix]
+                for member in constants.emitted_format_members(name):
+                    for template, level, (first, count) in ranges:
+                        out.append('')
+                        out.append('[' + template.format(component_id=comp_id,
+                                                         format_name=member,
+                                                         level=level) + ']')
+                        out.append(f'match_first_index = {first}')
+                        out.append(f'match_index_count = {count}')
+                        out.append(f'match_priority = {constants.FORMAT_TAG_PRIORITY}')
+                        out.append(f'match_format = {member}')
+                        out.append(f'filter_index = {text}')
+                        format_section_count += 1
+    out.append('')
+
+    return SlotPlan(
+        block_text='\n'.join(out),
+        component_list_names=component_list_names,
+        covered_resource_indices=covered_resource_indices,
+        blind_zone=blind_zone,
+        multi_form=False,
+        used_slots=sorted(used_slots),
+        phantom_only_resource_indices=phantom_only_resource_indices,
+        phantom_suppressed=phantom_suppressed,
+        extra_globals=[],
+        watchdog_lines=[],
+        default_form_id=1,
+        live_fallback=dict(live_fallback),
+        warnings=warnings,
+        stats={
+            'forms': len(forms),
+            'components': len(component_list_names),
+            'branches': sum(len(b) for b in component_branches.values()),
+            'conflicts': conflict_count,
+            'marks': 0,
+            'fork_latches': 0,
+            'anchors': 0,
+            'anchor_watchdog': 0,
+            'probes': 0,
+            'live_fallback': len(live_fallback),
+            'format_sections': format_section_count,
+            'format_sections_raw': format_section_count,
+            'format_sections_unique': format_section_count,
+            'format_sections_removed': 0,
+            'covered_textures': len(covered_resource_indices),
+            'blind_zone_textures': len(blind_zone),
+            'phantom_suppressed_textures': len(phantom_only_resource_indices),
+            'phantom_pairs': phantom_pairs,
+            'dirty_slots': dirty_slots,
+            'service_slots': len([s for s in used_slots if s in constants.SERVICE_SLOTS]),
+            'suppressed_latches': 0,
+            'local_form_discriminator': 1,
+        },
+    )
 
 
 def _variant_aliases(texture_info: TextureInfo) -> Dict[str, str]:
@@ -327,7 +857,9 @@ def build_plan(forms: List[Tuple[str, FormData]],
                live_seed: Optional[Set[str]] = None,
                trusted_hashes: Optional[Set[str]] = None,
                freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
-               slot_eligible_components: Optional[Set[int]] = None) -> SlotPlan:
+               slot_eligible_components: Optional[Set[int]] = None,
+               local_form_discriminator: bool = False,
+               local_discriminator_audit: Optional[dict] = None) -> SlotPlan:
     """Build a concise XQFA-style slot plan.
 
     The legacy probe/mark/backup/restore machinery is intentionally absent:
@@ -335,6 +867,16 @@ def build_plan(forms: List[Tuple[str, FormData]],
     user-provided form anchors, generation degrades instead of emitting a
     complex fallback path.
     """
+    if local_form_discriminator:
+        return _build_local_plan(
+            forms, textures, texture_info, load_warnings,
+            component_ranges=component_ranges,
+            lod_ranges=lod_ranges,
+            multi_state_seats=multi_state_seats,
+            live_seed=live_seed,
+            freshness=freshness,
+            slot_eligible_components=slot_eligible_components,
+            local_discriminator_audit=local_discriminator_audit)
     warnings: List[str] = list(load_warnings or [])
     multi_form = len(forms) > 1
     mod_hashes = {h: res for h, res in textures}

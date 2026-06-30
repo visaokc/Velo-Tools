@@ -90,9 +90,11 @@ def _patch_export_menu():
             box.prop(cfg, "velo_slot_style_textures")
             slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
             if (slot_cfg is not None and cfg.velo_slot_style_textures):
+                box.prop(slot_cfg, "local_form_discriminator")
                 _draw_slot_components(box, slot_cfg)
-                box.prop(slot_cfg, "form_anchors")
-                _draw_anchor_finder(box, slot_cfg, cfg)
+                if not slot_cfg.local_form_discriminator:
+                    box.prop(slot_cfg, "form_anchors")
+                    _draw_anchor_finder(box, slot_cfg, cfg)
 
     _wui.VTWW_PT_SIDEBAR.draw_menu_export_mod = draw_menu_export_mod
 
@@ -238,6 +240,17 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
                     "形态，整帧无命中=排除法判定无锚形态，全方向零延迟切换；"
                     "锚点因版本更新失效后自动退回贴图锁存（有流送延迟）",
         default='',
+    )
+
+    local_form_discriminator: bpy.props.BoolProperty(
+        name="局部形态判据",
+        description=(
+            "开启后，多形态插槽贴图不再输出全局 $form_id 或 TextureOverrideFormAnchor；"
+            "每个 draw 分支用当前 fresh ps-t0..8 格式签名判断形态；同格式冲突时"
+            "只在该 draw 内追加当前 ps shader 判据。"
+            "需要 ShaderTextureUsage.json 内存在最新 local_form_discriminator 审计块。"
+        ),
+        default=True,
     )
 
     # Per-component slot eligibility (UI opt-out). Empty = never populated = all components

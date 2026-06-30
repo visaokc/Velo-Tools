@@ -76,25 +76,40 @@ def install():
                     'legacy ShaderTextureUsage.json without recorded formats - '
                     'formats were read from the model-folder files instead; '
                     're-extract to record the original game formats')
-            manual_anchors = _parse_form_anchors(context, forms, load_warnings)
-            manual_anchors = _auto_form_anchors_from_stu(
-                source_folder, forms, manual_anchors, load_warnings)
+            slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
+            local_discriminator = bool(
+                slot_cfg is not None
+                and getattr(slot_cfg, "local_form_discriminator", True))
+            manual_anchors = []
+            local_audit = None
+            if local_discriminator:
+                local_audit = generator.read_local_discriminator_audit(source_folder)
+            else:
+                manual_anchors = _parse_form_anchors(context, forms, load_warnings)
+                manual_anchors = _auto_form_anchors_from_stu(
+                    source_folder, forms, manual_anchors, load_warnings)
             plan = generator.build_plan(
                 forms, textures, texture_info, load_warnings,
                 component_ranges=transform.extract_component_ranges(result),
                 lod_ranges=_read_lod_ranges(source_folder),
                 manual_anchors=manual_anchors,
                 freshness=form_freshness,
-                slot_eligible_components=_read_slot_eligible(context))
+                slot_eligible_components=_read_slot_eligible(context),
+                local_form_discriminator=local_discriminator,
+                local_discriminator_audit=local_audit)
             result = transform.apply(result, plan)
-            for anchor_hash, form_id in manual_anchors:
-                kind = 'shader (ps)' if len(anchor_hash) == 16 else 'resource (vb0)'
-                _report(f'[SlotTextures] form anchor {anchor_hash} ({kind}) -> '
-                        f'form "{forms[form_id - 1][0]}"')
-            if plan.stats.get('anchor_watchdog'):
-                _report(f'[SlotTextures] anchor watchdog active: a frame without '
-                        f'an anchor hit commits form '
-                        f'"{forms[plan.default_form_id - 1][0]}" by elimination')
+            if local_discriminator:
+                _report('[SlotTextures] local form discriminator active: '
+                        'form anchors and global $form_id are not emitted')
+            else:
+                for anchor_hash, form_id in manual_anchors:
+                    kind = 'shader (ps)' if len(anchor_hash) == 16 else 'resource (vb0)'
+                    _report(f'[SlotTextures] form anchor {anchor_hash} ({kind}) -> '
+                            f'form "{forms[form_id - 1][0]}"')
+                if plan.stats.get('anchor_watchdog'):
+                    _report(f'[SlotTextures] anchor watchdog active: a frame without '
+                            f'an anchor hit commits form '
+                            f'"{forms[plan.default_form_id - 1][0]}" by elimination')
             for warning in plan.warnings:
                 _report(f'[SlotTextures] WARNING: {warning}')
             for tex_hash, section in plan.blind_zone:

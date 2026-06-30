@@ -431,6 +431,33 @@ def _usage_paths_for_anchor_write(object_source_folder):
     return paths
 
 
+def refresh_local_discriminator_audit_in_usage(usage):
+    """Refresh only the local discriminator audit block of an STU dict."""
+    from . import generator
+    usage[constants.LOCAL_FORM_DISCRIMINATOR_KEY] = (
+        generator.build_local_discriminator_audit_from_usage(usage))
+    return usage[constants.LOCAL_FORM_DISCRIMINATOR_KEY]
+
+
+def refresh_local_discriminator_audit_file(usage_path):
+    usage_path = Path(usage_path)
+    usage = json.loads(usage_path.read_text(encoding='utf-8'))
+    if not isinstance(usage, dict):
+        raise FormMergeError(f'{usage_path} has an unexpected shape')
+    audit = refresh_local_discriminator_audit_in_usage(usage)
+    usage_path.write_text(json.dumps(usage, indent=4, ensure_ascii=False),
+                          encoding='utf-8')
+    return audit
+
+
+def refresh_local_discriminator_audits(object_source_folder):
+    updated = []
+    for usage_path in _usage_paths_for_anchor_write(object_source_folder):
+        refresh_local_discriminator_audit_file(usage_path)
+        updated.append(str(usage_path))
+    return updated
+
+
 def write_trusted_form_anchor(object_source_folder, form_label, anchor_hash,
                               rank=1, source=constants.FORM_ANCHOR_SOURCE_TRUSTED):
     """Write trusted form-anchor metadata into matching STU extra_forms."""
@@ -592,8 +619,9 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             entry, replaced, variants_added = _upsert_extra_form(
                 usage, components_usage, form_label, dump_path.name,
                 'vb0', route.get('vb0_hash') or vb0)
+            refresh_local_discriminator_audit_in_usage(usage)
             with open(usage_path, 'w', encoding='utf-8') as f:
-                f.write(json.dumps(usage, indent=4))
+                f.write(json.dumps(usage, indent=4, ensure_ascii=False))
             fold_forms_written.append({
                 'ib_hash': vb0,
                 'usage_file': str(usage_path),
@@ -637,8 +665,9 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         variants_added, records_added, conflicts_marked = _merge_variant_records(
             base_components, components_usage)
         usage.update(base_components)
+        refresh_local_discriminator_audit_in_usage(usage)
         with open(usage_path, 'w', encoding='utf-8') as f:
-            f.write(json.dumps(usage, indent=4))
+            f.write(json.dumps(usage, indent=4, ensure_ascii=False))
         return {
             'usage_file': str(usage_path),
             'label': 'base',
@@ -718,8 +747,9 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         extra_forms.append(entry)
 
     usage[constants.EXTRA_FORMS_KEY] = extra_forms
+    refresh_local_discriminator_audit_in_usage(usage)
     with open(usage_path, 'w', encoding='utf-8') as f:
-        f.write(json.dumps(usage, indent=4))
+        f.write(json.dumps(usage, indent=4, ensure_ascii=False))
     if legacy_path.is_file():
         legacy_path.unlink()
 
