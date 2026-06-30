@@ -17,11 +17,49 @@ Folded parts no longer distinguish clothing/face: the producer auto-determines f
 import json
 import re
 import shutil
+import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import bpy
 import bmesh
+
+_LOCAL_COMPONENT_SOURCES_KEY = "_velo_local_component_sources"
+
+
+@contextmanager
+def _cross_scene_export_guard():
+    """Make sub-export operator calls bypass the cross-scene patch.
+
+    UI export already sets this guard before calling the orchestrator. Direct
+    headless calls to build_cross_scene_mod need the same protection, otherwise
+    sub-exports recurse and namespace an already merged body mod a second time.
+    """
+    try:
+        from . import patch as crossscene_patch
+    except Exception:
+        package = globals().get("__package__") or __name__.rsplit(".", 1)[0]
+        candidates = []
+        if package:
+            candidates.append(package + ".patch")
+        candidates.append(__name__.rsplit(".", 1)[0] + ".patch")
+        candidates.append(".patch")
+        crossscene_patch = None
+        for name in dict.fromkeys(candidates):
+            module = sys.modules.get(name)
+            if module is not None and hasattr(module, "_IN_XSCENE"):
+                crossscene_patch = module
+                break
+        if crossscene_patch is None:
+            yield
+            return
+    saved = crossscene_patch._IN_XSCENE[0]
+    crossscene_patch._IN_XSCENE[0] = True
+    try:
+        yield
+    finally:
+        crossscene_patch._IN_XSCENE[0] = saved
 
 
 def _relabel_draw_comments(mod_ini, index_to_label):
@@ -221,9 +259,10 @@ def _merge_component_usage(dst, src):
                     vs_dst[ps_key] = slot_map
 
 
-def _remap_stu_components(components, comp_map, keep_count):
+def _remap_stu_components(components, comp_map, keep_count, source_label=None):
     """Remap a scene-IB-local STU component map to merged base component ids."""
     out = {}
+    sources = {}
     comp_map = {int(k): int(v) for k, v in (comp_map or {}).items()}
     for comp_name, comp_pairs in (components or {}).items():
         local = _component_id(comp_name)
@@ -233,7 +272,21 @@ def _remap_stu_components(components, comp_map, keep_count):
         if base < 0 or base >= keep_count:
             continue
         _merge_component_usage(out, {f"Component {base}": comp_pairs})
-    return out
+        if source_label:
+            sources.setdefault(f"Component {base}", []).append(
+                f"merged Component {base} <- {source_label} local Component {local}")
+    return out, sources
+
+
+def _merge_local_component_sources(target, sources):
+    if not sources:
+        return
+    out = target.setdefault(_LOCAL_COMPONENT_SOURCES_KEY, {})
+    for comp_name, values in sources.items():
+        bucket = out.setdefault(comp_name, [])
+        for value in values:
+            if value not in bucket:
+                bucket.append(value)
 
 
 def _body_stu_for_export(root_stu, merged_folder, routing, keep_count):
@@ -273,13 +326,17 @@ def _body_stu_for_export(root_stu, merged_folder, routing, keep_count):
         for entry in scene_stu.get("extra_forms") or []:
             if not isinstance(entry, dict):
                 continue
-            remapped = _remap_stu_components(entry.get("components") or {},
-                                             fold.get("comp_map") or {}, keep_count)
+            source_label = (scene.get("tag") or scene.get("source_folder")
+                            or scene.get("ib_hash") or "?")
+            remapped, remap_sources = _remap_stu_components(
+                entry.get("components") or {}, fold.get("comp_map") or {},
+                keep_count, source_label=source_label)
             if not remapped:
                 continue
             label = entry.get("label") or entry.get("source") or f"form{len(extra_by_label) + 2}"
             target = extra_by_label.setdefault(label, dict(entry, label=label, components={}))
             _merge_component_usage(target["components"], remapped)
+            _merge_local_component_sources(target, remap_sources)
 
     if extra_by_label:
         trimmed["extra_forms"] = list(extra_by_label.values())
@@ -611,257 +668,258 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         cfg.custom_template_live_update = False
     temp_cols = []
     try:
-        # 1) body: gather the base's Component meshes once, honoring the stock collection settings
-        #    (Ignore Nested / Hidden Collections / Hidden Objects), exactly like a single-IB export.
-        base_meshes = _base_meshes(cfg, base_collection)
-        if (not base_meshes and cfg.ignore_nested_collections
-                and any(o.type == 'MESH' for o in base_collection.all_objects)):
-            raise RuntimeError(
-                "跨场景导出：基底集合『%s』的组件网格都在子集合里，但当前勾选了"
-                "「忽略嵌套集合」(Ignore Nested Collections)，导致一个组件都取不到。"
-                "请取消勾选该选项后重试。" % base_collection.name)
-        base_by_name = {o.name: o for o in base_meshes}
-        if hole:
+        with _cross_scene_export_guard():
+            # 1) body: gather the base's Component meshes once, honoring the stock collection settings
+            #    (Ignore Nested / Hidden Collections / Hidden Objects), exactly like a single-IB export.
+            base_meshes = _base_meshes(cfg, base_collection)
+            if (not base_meshes and cfg.ignore_nested_collections
+                    and any(o.type == 'MESH' for o in base_collection.all_objects)):
+                raise RuntimeError(
+                    "跨场景导出：基底集合『%s』的组件网格都在子集合里，但当前勾选了"
+                    "「忽略嵌套集合」(Ignore Nested Collections)，导致一个组件都取不到。"
+                    "请取消勾选该选项后重试。" % base_collection.name)
+            base_by_name = {o.name: o for o in base_meshes}
+            if hole:
+                for o in base_meshes:
+                    _pos_hole(o, frac=hole_frac)
+            # Always export the body from a flat temp collection (identical whether or not there are
+            # editable IBs to exclude), so the body path no longer depends on ignore_nested_collections.
+            body_col = bpy.data.collections.new("xs_body")
+            bpy.context.scene.collection.children.link(body_col)
+            temp_cols.append(body_col)
             for o in base_meshes:
-                _pos_hole(o, frac=hole_frac)
-        # Always export the body from a flat temp collection (identical whether or not there are
-        # editable IBs to exclude), so the body path no longer depends on ignore_nested_collections.
-        body_col = bpy.data.collections.new("xs_body")
-        bpy.context.scene.collection.children.link(body_col)
-        temp_cols.append(body_col)
-        for o in base_meshes:
-            if o.name not in eib_comp_names:
-                body_col.objects.link(o)
-        keep_count = routing["base"]["component_count"]
-        body_elig = (None if merged_eligible is None
-                     else {c for c in merged_eligible if c < keep_count})
-        body_hash_suppressions = (_body_hash_suppressions(merged_folder, routing, keep_count, body_elig)
-                                  if slot_style_on else {})
-        _export_body_with_trimmed_metadata(
-            cfg, body_col, work, merged_folder, keep_count, routing, eligible=body_elig)
+                if o.name not in eib_comp_names:
+                    body_col.objects.link(o)
+            keep_count = routing["base"]["component_count"]
+            body_elig = (None if merged_eligible is None
+                         else {c for c in merged_eligible if c < keep_count})
+            body_hash_suppressions = (_body_hash_suppressions(merged_folder, routing, keep_count, body_elig)
+                                      if slot_style_on else {})
+            _export_body_with_trimmed_metadata(
+                cfg, body_col, work, merged_folder, keep_count, routing, eligible=body_elig)
 
-        # body = showcase shared buffer mod (base export copied verbatim into body); all foldable IBs fold into it.
-        mods = [str(_copy_body(work))]
+            # body = showcase shared buffer mod (base export copied verbatim into body); all foldable IBs fold into it.
+            mods = [str(_copy_body(work))]
 
-        # 2) Non-foldable IB (the bear waist): exports its own buffer.
-        #    New path (split part with a producer host VG translation table): export the EDITED
-        #    split object from the base collection with its VG names translated to host-local
-        #    numbering -- edits propagate (move / delete / full mesh replacement). MERGED exports
-        #    take an extra unified->component-local rename first. Falls back to the legacy
-        #    pristine reimport when the table is missing (old routing JSON / table build failed /
-        #    split object not found) -- edits don't propagate there.
-        own_legacy = []
-        own_excluded = []
-        own_excluded_tags = {}
-        splits_by_ib = {sp.get("ib_hash"): sp for sp in routing["base"].get("splits", [])}
-        source_mesh_names = {o.name for o in base_collection.all_objects if o.type == 'MESH'}
-        try:
-            from .. import per_from_merged
-            source_mesh_names.update(per_from_merged.current_excluded_object_names())
-        except Exception:
-            pass
-        fold_draw_excludes = {}
-        for sp in routing["base"].get("splits", []):
+            # 2) Non-foldable IB (the bear waist): exports its own buffer.
+            #    New path (split part with a producer host VG translation table): export the EDITED
+            #    split object from the base collection with its VG names translated to host-local
+            #    numbering -- edits propagate (move / delete / full mesh replacement). MERGED exports
+            #    take an extra unified->component-local rename first. Falls back to the legacy
+            #    pristine reimport when the table is missing (old routing JSON / table build failed /
+            #    split object not found) -- edits don't propagate there.
+            own_legacy = []
+            own_excluded = []
+            own_excluded_tags = {}
+            splits_by_ib = {sp.get("ib_hash"): sp for sp in routing["base"].get("splits", [])}
+            source_mesh_names = {o.name for o in base_collection.all_objects if o.type == 'MESH'}
             try:
-                bc = int(sp.get("base_component"))
+                from .. import per_from_merged
+                source_mesh_names.update(per_from_merged.current_excluded_object_names())
             except Exception:
-                continue
-            split_name = sp.get("split_object")
-            if split_name:
-                fold_draw_excludes.setdefault(bc, set()).add(split_name)
-        for s in own_ibs:
-            src = str(merged_folder / s["source_folder"])
-            tag = s["ib_hash"]
-            # Slot eligibility: the own-buffer host renumbers to its local components, but it is the
-            # split of base component(s) derive.base_components -> slot iff any of those is checked
-            # (None = all eligible; empty set = all hash).
-            own_base = (s.get("derive") or {}).get("base_components") or []
-            own_elig = (None if (merged_eligible is None or not own_base
-                                 or any(b in merged_eligible for b in own_base)) else set())
-            sp = splits_by_ib.get(tag)
-            split_obj = base_by_name.get(sp["split_object"]) if sp else None
-            split_name = sp.get("split_object") if sp else None
-            if sp is not None and split_obj is None and split_name in source_mesh_names:
-                # The split part IS in the base collection but the stock settings excluded it
-                # (hidden / Ignore Hidden Objects / PFM temp filtering) -> still match the IB but draw
-                # nothing, so excluded means empty draw rather than falling back to the game's original.
-                own_excluded.append("%s (%s)" % (tag, sp["split_object"]))
-                own_excluded_tags[tag] = sp["split_object"]
-                print("[velo.xscene] own-buffer IB %s 的拆件 %s 被忽略（隐藏/排除），生成空 skip 子 IB。"
-                      % (tag, sp["split_object"]))
-                _write_empty_skip_mod(work / tag, tag, src, sp["split_object"])
-            elif sp is not None and "host_vg_remap" in sp and split_obj is not None \
-                    and export_skeleton_type in ('COMPONENT', 'MERGED'):
-                own_col = bpy.data.collections.new("xs_own_" + tag)
-                bpy.context.scene.collection.children.link(own_col)
-                temp_cols.append(own_col)
-                cp = split_obj.copy()
-                cp.data = split_obj.data.copy()
-                cp.name = sp.get("host_component_object", "Component 0")
-                own_col.objects.link(cp)
+                pass
+            fold_draw_excludes = {}
+            for sp in routing["base"].get("splits", []):
                 try:
-                    _bake_shapekeys(cp)
-                    if export_skeleton_type == 'MERGED':
-                        # MERGED import names VGs by UNIFIED ids; bring them back to the base
-                        # component's local numbering first (host_vg_remap's domain).
-                        meta = json.loads((merged_folder / "Metadata.json").read_text(encoding="utf-8"))
-                        comp_meta = (meta.get("components") or [])[sp["base_component"]]
-                        _translate_unified_to_local(cp, comp_meta.get("vg_map") or {},
-                                                    sp["split_object"], tag)
-                    _translate_host_vgs(cp, sp, tag)
+                    bc = int(sp.get("base_component"))
+                except Exception:
+                    continue
+                split_name = sp.get("split_object")
+                if split_name:
+                    fold_draw_excludes.setdefault(bc, set()).add(split_name)
+            for s in own_ibs:
+                src = str(merged_folder / s["source_folder"])
+                tag = s["ib_hash"]
+                # Slot eligibility: the own-buffer host renumbers to its local components, but it is the
+                # split of base component(s) derive.base_components -> slot iff any of those is checked
+                # (None = all eligible; empty set = all hash).
+                own_base = (s.get("derive") or {}).get("base_components") or []
+                own_elig = (None if (merged_eligible is None or not own_base
+                                     or any(b in merged_eligible for b in own_base)) else set())
+                sp = splits_by_ib.get(tag)
+                split_obj = base_by_name.get(sp["split_object"]) if sp else None
+                split_name = sp.get("split_object") if sp else None
+                if sp is not None and split_obj is None and split_name in source_mesh_names:
+                    # The split part IS in the base collection but the stock settings excluded it
+                    # (hidden / Ignore Hidden Objects / PFM temp filtering) -> still match the IB but draw
+                    # nothing, so excluded means empty draw rather than falling back to the game's original.
+                    own_excluded.append("%s (%s)" % (tag, sp["split_object"]))
+                    own_excluded_tags[tag] = sp["split_object"]
+                    print("[velo.xscene] own-buffer IB %s 的拆件 %s 被忽略（隐藏/排除），生成空 skip 子 IB。"
+                          % (tag, sp["split_object"]))
+                    _write_empty_skip_mod(work / tag, tag, src, sp["split_object"])
+                elif sp is not None and "host_vg_remap" in sp and split_obj is not None \
+                        and export_skeleton_type in ('COMPONENT', 'MERGED'):
+                    own_col = bpy.data.collections.new("xs_own_" + tag)
+                    bpy.context.scene.collection.children.link(own_col)
+                    temp_cols.append(own_col)
+                    cp = split_obj.copy()
+                    cp.data = split_obj.data.copy()
+                    cp.name = sp.get("host_component_object", "Component 0")
+                    own_col.objects.link(cp)
+                    try:
+                        _bake_shapekeys(cp)
+                        if export_skeleton_type == 'MERGED':
+                            # MERGED import names VGs by UNIFIED ids; bring them back to the base
+                            # component's local numbering first (host_vg_remap's domain).
+                            meta = json.loads((merged_folder / "Metadata.json").read_text(encoding="utf-8"))
+                            comp_meta = (meta.get("components") or [])[sp["base_component"]]
+                            _translate_unified_to_local(cp, comp_meta.get("vg_map") or {},
+                                                        sp["split_object"], tag)
+                        _translate_host_vgs(cp, sp, tag)
+                        if hole:
+                            _pos_hole(cp, frac=hole_frac)
+                        _export_col(cfg, own_col, str(work / tag), "om_" + tag, src, eligible=own_elig)
+                        # Annotate the own-buffer draw with the split's real (Blender) name (e.g.
+                        # Component 5.001) instead of the export-local 'Component 0.001' artifact.
+                        _m_idx = re.search(r'(\d+)', cp.name)
+                        if _m_idx:
+                            _relabel_draw_comments(
+                                work / tag / "mod.ini",
+                                {int(_m_idx.group(1)): sp["split_object"].split("Component ", 1)[-1]})
+                    finally:
+                        mesh = cp.data
+                        bpy.data.objects.remove(cp, do_unlink=True)
+                        try:
+                            bpy.data.meshes.remove(mesh)
+                        except Exception:
+                            pass
+                else:
+                    why = ("路由无骨级翻译表（请重跑合并以生成）" if sp is None or "host_vg_remap" not in sp
+                           else ("不支持的导出骨架模式 %s" % cfg.mod_skeleton_type
+                                 if export_skeleton_type not in ('COMPONENT', 'MERGED')
+                                 else "基底集合中找不到拆件对象 %s" % sp["split_object"]))
+                    own_legacy.append("%s: %s" % (tag, why))
+                    print("[velo.xscene] own-buffer IB %s 走 legacy 重导入路径（%s）——对该部件的编辑不会传播。"
+                          % (tag, why))
+                    col = _import_one(cfg, src, tag)
                     if hole:
+                        for o in [o for o in col.objects if o.type == 'MESH']:
+                            _pos_hole(o, frac=hole_frac)
+                    _export_col(cfg, col, str(work / tag), "om_" + tag, src, eligible=own_elig)
+                    _purge_collection(col)
+                mods.append(str(work / tag))
+
+            # 3) Foldable IB (clothing/face): export takes its host (face carries morph), then fold.apply_fold redirects the geometry
+            #    + (face) morph reprojection + blend remap, all folded into the body buffer mod (modifies work/body in place); not made into a separate mod.
+            from . import fold
+            # Morph reprojection does position matching against **the edited body itself** (how the green mod did it originally): surviving vertices stay in place and naturally match
+            # the dungeon face; morph vid = the real row number of the edited body, naturally aligned with the body -> topology-changing edits like geometry deletion are also correct.
+            # (There used to be a morph_ref unedited-reference hack assuming identical topology, where deleting vertices caused row-number misalignment and welding; removed. reproject_morph's
+            #   ref defaults to body_meshes, so we don't pass morph_ref. When vertices are moved far from their original position, moved vertices are approximated by nearest-neighbor -- a known limitation.)
+            fold_skipped = []
+            for s in foldable_ibs:
+                src = str(merged_folder / s["source_folder"])
+                col = _import_one(cfg, src, s["ib_hash"])
+                if hole:
+                    for o in [o for o in col.objects if o.type == 'MESH']:
+                        _pos_hole(o, frac=hole_frac)
+                tag = s["ib_hash"]
+                # Foldable host: its slot layer is discarded (fold replays the BASE maps onto the dungeon
+                # draw), so keep this intermediate export hash-style. This avoids requiring form anchors
+                # for a temporary ini whose texture layer never reaches the final mod.
+                _export_col(cfg, col, str(work / tag), "om_" + tag, src,
+                            eligible=None, slot_style=False)
+                _purge_collection(col)
+                skipped = fold.apply_fold(work, s, tag, draw_excludes=fold_draw_excludes)
+                if skipped:
+                    fold_skipped.append("%s: base components %s" % (tag, skipped))
+                    print("[velo.xscene] foldable IB %s：折叠目标组件 %s 被排除，已跳过对应 fold 片。"
+                          % (tag, skipped))
+
+            # 4) editable_ibs (form2 face etc.): copy C8-11 -> temporary Component 0-3 -> export against their own source
+            #    (shape keys are per-object and must be exported separately; mesh.copy() carries the form2 shape keys -> export re-emits them automatically).
+            eib_roles = []
+            eib_excluded = []
+            for rec in editable_ibs:
+                tag = rec["ib_hash"]
+                eib_col = bpy.data.collections.new("xs_eib_" + rec["ib_hash"])
+                bpy.context.scene.collection.children.link(eib_col)
+                temp_cols.append(eib_col)
+                temp_objs = []
+                for li, mi in zip(rec["local_components"], rec["merged_components"]):
+                    src_obj = base_by_name.get(f"Component {mi}")
+                    if src_obj is None:
+                        continue
+                    cp = src_obj.copy()
+                    cp.data = src_obj.data.copy()
+                    cp.name = f"Component {li}"
+                    eib_col.objects.link(cp)
+                    temp_objs.append(cp)
+                if not temp_objs:
+                    # every component of this editable IB was excluded (hidden / Ignore Hidden Objects)
+                    # or absent -> skip the whole editable sub-IB (that form just isn't in the mod).
+                    eib_excluded.append(tag)
+                    print("[velo.xscene] editable IB %s 的所有组件都被忽略（隐藏/排除/缺失），跳过该子 IB。" % tag)
+                    continue
+                # MERGED: the editable IB was imported with UNIFIED VG names (vg_base_offset + its own 0-based
+                # numbering). Its export runs against the IB's own 0-based source, where object_merger fills VG
+                # gaps by name and then drops VGs whose collection index >= the source's total_vg_count; unified
+                # names (e.g. 355+) gap-fill to high indices and get dropped (the whole skeleton is lost, Blend
+                # collapses to bone 0). Re-base the temp objects' VG names to the IB's own numbering first.
+                base_off = int(rec.get("vg_base_offset") or 0)
+                if export_skeleton_type == 'MERGED' and base_off:
+                    for cp in temp_objs:
+                        for vg in cp.vertex_groups:
+                            if vg.name.lstrip("-").isdigit():
+                                vg.name = str(int(vg.name) - base_off)
+                if hole:
+                    for cp in temp_objs:
                         _pos_hole(cp, frac=hole_frac)
-                    _export_col(cfg, own_col, str(work / tag), "om_" + tag, src, eligible=own_elig)
-                    # Annotate the own-buffer draw with the split's real (Blender) name (e.g.
-                    # Component 5.001) instead of the export-local 'Component 0.001' artifact.
-                    _m_idx = re.search(r'(\d+)', cp.name)
-                    if _m_idx:
-                        _relabel_draw_comments(
-                            work / tag / "mod.ini",
-                            {int(_m_idx.group(1)): sp["split_object"].split("Component ", 1)[-1]})
-                finally:
+                eib_src = str(merged_folder / rec["source_folder"])
+                eib_elig = (None if merged_eligible is None
+                            else {li for li, mi in zip(rec["local_components"], rec["merged_components"])
+                                  if mi in merged_eligible})
+                _export_col(cfg, eib_col, str(work / tag), "om_" + tag, eib_src, eligible=eib_elig)
+                # Annotate the editable draws with the merged (Blender) component numbers (e.g. 8-11)
+                # instead of the export-local 'Component 0-3.001' artifacts.
+                _relabel_draw_comments(
+                    work / tag / "mod.ini",
+                    {li: str(mi) for li, mi in zip(rec["local_components"], rec["merged_components"])})
+                mods.append(str(work / tag))
+                eib_roles.append(tag)
+                for cp in temp_objs:
                     mesh = cp.data
                     bpy.data.objects.remove(cp, do_unlink=True)
                     try:
                         bpy.data.meshes.remove(mesh)
                     except Exception:
                         pass
-            else:
-                why = ("路由无骨级翻译表（请重跑合并以生成）" if sp is None or "host_vg_remap" not in sp
-                       else ("不支持的导出骨架模式 %s" % cfg.mod_skeleton_type
-                             if export_skeleton_type not in ('COMPONENT', 'MERGED')
-                             else "基底集合中找不到拆件对象 %s" % sp["split_object"]))
-                own_legacy.append("%s: %s" % (tag, why))
-                print("[velo.xscene] own-buffer IB %s 走 legacy 重导入路径（%s）——对该部件的编辑不会传播。"
-                      % (tag, why))
-                col = _import_one(cfg, src, tag)
-                if hole:
-                    for o in [o for o in col.objects if o.type == 'MESH']:
-                        _pos_hole(o, frac=hole_frac)
-                _export_col(cfg, col, str(work / tag), "om_" + tag, src, eligible=own_elig)
-                _purge_collection(col)
-            mods.append(str(work / tag))
 
-        # 3) Foldable IB (clothing/face): export takes its host (face carries morph), then fold.apply_fold redirects the geometry
-        #    + (face) morph reprojection + blend remap, all folded into the body buffer mod (modifies work/body in place); not made into a separate mod.
-        from . import fold
-        # Morph reprojection does position matching against **the edited body itself** (how the green mod did it originally): surviving vertices stay in place and naturally match
-        # the dungeon face; morph vid = the real row number of the edited body, naturally aligned with the body -> topology-changing edits like geometry deletion are also correct.
-        # (There used to be a morph_ref unedited-reference hack assuming identical topology, where deleting vertices caused row-number misalignment and welding; removed. reproject_morph's
-        #   ref defaults to body_meshes, so we don't pass morph_ref. When vertices are moved far from their original position, moved vertices are approximated by nearest-neighbor -- a known limitation.)
-        fold_skipped = []
-        for s in foldable_ibs:
-            src = str(merged_folder / s["source_folder"])
-            col = _import_one(cfg, src, s["ib_hash"])
-            if hole:
-                for o in [o for o in col.objects if o.type == 'MESH']:
-                    _pos_hole(o, frac=hole_frac)
-            tag = s["ib_hash"]
-            # Foldable host: its slot layer is discarded (fold replays the BASE maps onto the dungeon
-            # draw), so keep this intermediate export hash-style. This avoids requiring form anchors
-            # for a temporary ini whose texture layer never reaches the final mod.
-            _export_col(cfg, col, str(work / tag), "om_" + tag, src,
-                        eligible=None, slot_style=False)
-            _purge_collection(col)
-            skipped = fold.apply_fold(work, s, tag, draw_excludes=fold_draw_excludes)
-            if skipped:
-                fold_skipped.append("%s: base components %s" % (tag, skipped))
-                print("[velo.xscene] foldable IB %s：折叠目标组件 %s 被排除，已跳过对应 fold 片。"
-                      % (tag, skipped))
-
-        # 4) editable_ibs (form2 face etc.): copy C8-11 -> temporary Component 0-3 -> export against their own source
-        #    (shape keys are per-object and must be exported separately; mesh.copy() carries the form2 shape keys -> export re-emits them automatically).
-        eib_roles = []
-        eib_excluded = []
-        for rec in editable_ibs:
-            tag = rec["ib_hash"]
-            eib_col = bpy.data.collections.new("xs_eib_" + rec["ib_hash"])
-            bpy.context.scene.collection.children.link(eib_col)
-            temp_cols.append(eib_col)
-            temp_objs = []
-            for li, mi in zip(rec["local_components"], rec["merged_components"]):
-                src_obj = base_by_name.get(f"Component {mi}")
-                if src_obj is None:
-                    continue
-                cp = src_obj.copy()
-                cp.data = src_obj.data.copy()
-                cp.name = f"Component {li}"
-                eib_col.objects.link(cp)
-                temp_objs.append(cp)
-            if not temp_objs:
-                # every component of this editable IB was excluded (hidden / Ignore Hidden Objects)
-                # or absent -> skip the whole editable sub-IB (that form just isn't in the mod).
-                eib_excluded.append(tag)
-                print("[velo.xscene] editable IB %s 的所有组件都被忽略（隐藏/排除/缺失），跳过该子 IB。" % tag)
-                continue
-            # MERGED: the editable IB was imported with UNIFIED VG names (vg_base_offset + its own 0-based
-            # numbering). Its export runs against the IB's own 0-based source, where object_merger fills VG
-            # gaps by name and then drops VGs whose collection index >= the source's total_vg_count; unified
-            # names (e.g. 355+) gap-fill to high indices and get dropped (the whole skeleton is lost, Blend
-            # collapses to bone 0). Re-base the temp objects' VG names to the IB's own numbering first.
-            base_off = int(rec.get("vg_base_offset") or 0)
-            if export_skeleton_type == 'MERGED' and base_off:
-                for cp in temp_objs:
-                    for vg in cp.vertex_groups:
-                        if vg.name.lstrip("-").isdigit():
-                            vg.name = str(int(vg.name) - base_off)
-            if hole:
-                for cp in temp_objs:
-                    _pos_hole(cp, frac=hole_frac)
-            eib_src = str(merged_folder / rec["source_folder"])
-            eib_elig = (None if merged_eligible is None
-                        else {li for li, mi in zip(rec["local_components"], rec["merged_components"])
-                              if mi in merged_eligible})
-            _export_col(cfg, eib_col, str(work / tag), "om_" + tag, eib_src, eligible=eib_elig)
-            # Annotate the editable draws with the merged (Blender) component numbers (e.g. 8-11)
-            # instead of the export-local 'Component 0-3.001' artifacts.
-            _relabel_draw_comments(
-                work / tag / "mod.ini",
-                {li: str(mi) for li, mi in zip(rec["local_components"], rec["merged_components"])})
-            mods.append(str(work / tag))
-            eib_roles.append(tag)
-            for cp in temp_objs:
-                mesh = cp.data
-                bpy.data.objects.remove(cp, do_unlink=True)
-                try:
-                    bpy.data.meshes.remove(mesh)
-                except Exception:
-                    pass
-
-        # 5) Namespace merge + texture dedup + self-check.
-        # The merged root is the single authoritative texture allowlist: only hashes still present
-        # at merged_folder root ship (sub-IB scene_ibs/<hash>/ no longer re-supply a pruned hash).
-        from . import assembler
-        report = assembler.assemble(
-            str(out_folder), mods, texture_root=str(merged_folder),
-            write_ini=saved_gating["write_ini"],
-            partial_export=saved_gating["partial_export"],
-            copy_textures=saved_gating["copy_textures"],
-            suppress_body_hashes=body_hash_suppressions)
-        report["ib_count"] = len(mods)
-        report["roles"] = ["body"] + [s["ib_hash"] for s in own_ibs] + eib_roles
-        report["slot_style"] = slot_style_on
-        if own_legacy:
-            report["own_buffer_legacy"] = own_legacy
-        if own_excluded:
-            report["own_buffer_excluded"] = own_excluded
-        if eib_excluded:
-            report["editable_excluded"] = eib_excluded
-        if fold_skipped:
-            report["fold_skipped"] = fold_skipped
-        try:
-            from . import audit
-            static_audit = audit.audit_cross_scene_ini(
-                Path(out_folder) / "mod.ini", routing, report["roles"],
-                own_excluded=own_excluded_tags,
-                draw_excludes=fold_draw_excludes)
-            report["static_audit"] = static_audit
-            if static_audit.get("errors"):
-                report["static_audit_errors"] = static_audit["errors"]
-                report["sound"] = False
-        except Exception as e:
-            report["static_audit"] = {"skipped": True, "reason": str(e), "errors": []}
-        return report
+            # 5) Namespace merge + texture dedup + self-check.
+            # The merged root is the single authoritative texture allowlist: only hashes still present
+            # at merged_folder root ship (sub-IB scene_ibs/<hash>/ no longer re-supply a pruned hash).
+            from . import assembler
+            report = assembler.assemble(
+                str(out_folder), mods, texture_root=str(merged_folder),
+                write_ini=saved_gating["write_ini"],
+                partial_export=saved_gating["partial_export"],
+                copy_textures=saved_gating["copy_textures"],
+                suppress_body_hashes=body_hash_suppressions)
+            report["ib_count"] = len(mods)
+            report["roles"] = ["body"] + [s["ib_hash"] for s in own_ibs] + eib_roles
+            report["slot_style"] = slot_style_on
+            if own_legacy:
+                report["own_buffer_legacy"] = own_legacy
+            if own_excluded:
+                report["own_buffer_excluded"] = own_excluded
+            if eib_excluded:
+                report["editable_excluded"] = eib_excluded
+            if fold_skipped:
+                report["fold_skipped"] = fold_skipped
+            try:
+                from . import audit
+                static_audit = audit.audit_cross_scene_ini(
+                    Path(out_folder) / "mod.ini", routing, report["roles"],
+                    own_excluded=own_excluded_tags,
+                    draw_excludes=fold_draw_excludes)
+                report["static_audit"] = static_audit
+                if static_audit.get("errors"):
+                    report["static_audit_errors"] = static_audit["errors"]
+                    report["sound"] = False
+            except Exception as e:
+                report["static_audit"] = {"skipped": True, "reason": str(e), "errors": []}
+            return report
     finally:
         cfg.object_source_folder, cfg.mod_output_folder, cfg.mod_name = saved[0], saved[2], saved[3]
         cfg.import_skeleton_type = saved_import_type

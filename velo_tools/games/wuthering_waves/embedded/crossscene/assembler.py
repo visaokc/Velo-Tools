@@ -43,10 +43,19 @@ _RE_TEXHASH = re.compile(r't=([0-9a-fA-F]+)')
 # namespaced once before the final assembler pass).
 _RE_PST_REF = re.compile(r'ps-t\d+\s*=\s*ref\s+(ResourceTexture\d+(?:_ib\d+)*)\b')
 _RE_TEXTURE_REF = re.compile(r'\s*this\s*=\s*(ResourceTexture\d+(?:_ib\d+)*)\b', re.I)
+_SHARED_BODY_GLOBALS = {"form_id"}
 
 
-def _ns_line(line, k):
-    line = _RE_GLOBAL.sub(lambda m: f'${m.group(1)}_ib{k}', line)
+def _ns_line(line, k, *, shared_globals=None):
+    shared_globals = shared_globals or set()
+
+    def _sub_global(m):
+        name = m.group(1)
+        if name in shared_globals:
+            return f'${name}'
+        return f'${name}_ib{k}'
+
+    line = _RE_GLOBAL.sub(_sub_global, line)
     line = _RE_RESCMD.sub(lambda m: f'{m.group(1)}_ib{k}', line)
     line = line.replace('Meshes/', f'Meshes/ib{k}_')
     return line
@@ -249,7 +258,8 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                 elif norm != [l.strip() for l in mark_bone_body if l.strip()]:
                     mark_bone_mismatch = True  # IBs disagree on cb4/filter_index -> NOT one character
                 continue
-            nb = [_ns_line(l, k) for l in b]
+            shared_globals = _SHARED_BODY_GLOBALS if k == 0 else None
+            nb = [_ns_line(l, k, shared_globals=shared_globals) for l in b]
             if h == 'Constants':
                 constants += [f'; --- ib{k} ---'] + nb
             elif h == 'Present':

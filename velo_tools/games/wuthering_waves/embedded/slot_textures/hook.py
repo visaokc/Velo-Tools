@@ -86,8 +86,9 @@ def install():
                 local_audit = generator.read_local_discriminator_audit(source_folder)
             else:
                 manual_anchors = _parse_form_anchors(context, forms, load_warnings)
-                manual_anchors = _auto_form_anchors_from_stu(
-                    source_folder, forms, manual_anchors, load_warnings)
+                if not manual_anchors:
+                    manual_anchors = _auto_form_anchors_from_stu(
+                        source_folder, forms, manual_anchors, load_warnings)
             plan = generator.build_plan(
                 forms, textures, texture_info, load_warnings,
                 component_ranges=transform.extract_component_ranges(result),
@@ -197,7 +198,9 @@ def _valid_resource_anchor(value):
 
 
 def _auto_form_anchors_from_stu(source_folder, forms, anchors, warnings):
-    """Add STU-recorded trusted vb0 anchors for extra forms not covered manually."""
+    """Use STU-recorded trusted vb0 anchors when no manual override exists."""
+    if anchors:
+        return anchors
     if len(forms) <= 1:
         return anchors
     labels = {label.strip().lower(): form_id

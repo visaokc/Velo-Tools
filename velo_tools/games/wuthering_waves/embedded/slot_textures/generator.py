@@ -30,7 +30,12 @@ _VS_KEY_RE = re.compile(r'^vs=[0-9a-f?]+$')
 _COMP_RE = re.compile(r'component\s*(\d+)\s*$', re.I)
 _SLOT_RE = re.compile(r'^ps-t(\d+)$')
 
-_RESERVED_KEYS = {constants.EXTRA_FORMS_KEY, constants.LOCAL_FORM_DISCRIMINATOR_KEY, 'version'}
+_RESERVED_KEYS = {
+    constants.EXTRA_FORMS_KEY,
+    constants.LOCAL_FORM_DISCRIMINATOR_KEY,
+    constants.LOCAL_COMPONENT_SOURCES_KEY,
+    'version',
+}
 
 
 def _f32(value: float) -> float:
@@ -203,21 +208,43 @@ def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
     warnings: List[str] = []
     texture_info: TextureInfo = {}
     freshness: List[Dict[Tuple[int, str, int], bool]] = []
+    source_meta: Dict[Tuple[str, int], List[str]] = {}
 
     def _freshness() -> Dict[Tuple[int, str, int], bool]:
         fresh: Dict[Tuple[int, str, int], bool] = {}
         freshness.append(fresh)
         return fresh
 
+    def _collect_source_meta(label: str, container: dict):
+        raw = (container.get(constants.LOCAL_COMPONENT_SOURCES_KEY)
+               if isinstance(container, dict) else None)
+        if not isinstance(raw, dict):
+            return
+        for comp_name, values in raw.items():
+            found = _COMP_RE.search(str(comp_name))
+            if not found:
+                continue
+            if isinstance(values, str):
+                items = [values]
+            elif isinstance(values, list):
+                items = [item for item in values if isinstance(item, str)]
+            else:
+                continue
+            if items:
+                source_meta.setdefault((label, int(found.group(1))), []).extend(items)
+
     forms: List[Tuple[str, FormData]] = [
         ('base', normalize_usage(usage, 'base', warnings, texture_info, _freshness()))]
+    _collect_source_meta('base', usage)
     for entry in usage.get(constants.EXTRA_FORMS_KEY) or []:
         if not isinstance(entry, dict):
             continue
         label = entry.get('label') or entry.get('source') or f'form{len(forms) + 1}'
         forms.append((label, normalize_usage(entry.get('components'), label,
                                              warnings, texture_info, _freshness())))
-    return build_local_discriminator_audit(forms, texture_info, freshness, warnings)
+        _collect_source_meta(label, entry)
+    return build_local_discriminator_audit(
+        forms, texture_info, freshness, warnings, source_meta=source_meta)
 
 
 # -------------------------------------------------------------------- plan --
@@ -276,7 +303,7 @@ def _common_assignments(by_assign: Dict[Tuple[Tuple[int, str], ...], Set[int]]) 
 
 
 def _eligible_slots(pair_map: Dict[int, Optional[str]]) -> Set[int]:
-    return set(pair_map) - set(constants.SERVICE_SLOTS)
+    return set(pair_map)
 
 
 def _local_signature_slots(pair_map: Dict[int, Optional[str]]) -> Set[int]:
@@ -285,8 +312,6 @@ def _local_signature_slots(pair_map: Dict[int, Optional[str]]) -> Set[int]:
 
 def _canonical_override_slots(pair_map: Dict[int, Optional[str]],
                               texture_info: TextureInfo) -> Set[int]:
-    if _is_material_pair(pair_map, texture_info):
-        return _eligible_slots(pair_map) & set(constants.MAIN_SLOTS)
     return _eligible_slots(pair_map)
 
 
@@ -297,7 +322,7 @@ def _component_hash_canonical_slots(forms: List[Tuple[str, FormData]],
         for comp_id, comp_pairs in form_data.items():
             for pair_map in comp_pairs.values():
                 for slot, tex_hash in pair_map.items():
-                    if slot in constants.SERVICE_SLOTS or not isinstance(tex_hash, str):
+                    if not isinstance(tex_hash, str):
                         continue
                     canon = alias.get(tex_hash, tex_hash)
                     key = (comp_id, canon)
@@ -332,9 +357,7 @@ def _pass_role(pair_map: Dict[int, Optional[str]],
 def _local_condition_slots(pair_map: Dict[int, Optional[str]],
                            role: str,
                            fresh_slots: Set[int]) -> Set[int]:
-    if role == 'outline':
-        return _local_signature_slots(pair_map)
-    return fresh_slots
+    return _local_signature_slots(pair_map)
 
 
 def _local_assignment_slots(pair_map: Dict[int, Optional[str]],
@@ -416,6 +439,53 @@ def _signature_key(pair_map: Dict[int, Optional[str]],
     return tuple(signature)
 
 
+def _condition_source(comp_id: int,
+                      ps: str,
+                      slots: Set[int],
+                      form_fresh: Optional[Dict[Tuple[int, str, int], bool]]) -> str:
+    if not slots:
+        return 'none'
+    if form_fresh is None:
+        return 'observed'
+    flags = [form_fresh.get((comp_id, ps, slot)) for slot in sorted(slots)]
+    if all(flag is True for flag in flags):
+        return 'fresh'
+    if any(flag is True for flag in flags):
+        return 'mixed'
+    return 'observed'
+
+
+def _source_meta_for(source_meta: Optional[Dict[Tuple[str, int], List[str]]],
+                     label: str,
+                     comp_id: int) -> List[str]:
+    if not source_meta:
+        return []
+    return list(source_meta.get((label, comp_id), ()))
+
+
+def _minimal_negative_signature(positive: Tuple[Tuple[int, float], ...],
+                                own_signatures: Set[Tuple[Tuple[int, float], ...]],
+                                other_signatures: Set[Tuple[Tuple[int, float], ...]]
+                                ) -> Optional[Tuple[Tuple[int, float], ...]]:
+    blocking = [
+        other for other in other_signatures
+        if all(term in other for term in positive)
+    ]
+    if not blocking:
+        return ()
+    candidates: List[Tuple[int, float]] = []
+    for other in blocking:
+        for term in other:
+            if term not in positive and term not in candidates:
+                candidates.append(term)
+    for term in sorted(candidates):
+        if any(term in own for own in own_signatures):
+            continue
+        if all(term in other for other in blocking):
+            return (term,)
+    return None
+
+
 def _serialized_signature(signature: Tuple[Tuple[int, float], ...]) -> List[List[object]]:
     return [[slot, _fi_str(key)] for slot, key in signature]
 
@@ -434,26 +504,68 @@ def _signature_from_audit(value: object) -> Tuple[Tuple[int, float], ...]:
     return tuple(out)
 
 
+def _format_signature(signature: Tuple[Tuple[int, float], ...]) -> str:
+    if not signature:
+        return '[]'
+    return '[' + ', '.join(
+        f'ps-t{slot}={_fi_str(key)}' for slot, key in signature) + ']'
+
+
+def _format_condition(positive: Tuple[Tuple[int, float], ...],
+                      negative: Tuple[Tuple[int, float], ...]) -> str:
+    terms = [f'ps-t{slot} == {_fi_str(key)}' for slot, key in positive]
+    terms.extend(f'ps-t{slot} != {_fi_str(key)}' for slot, key in negative)
+    return ' && '.join(terms) if terms else '(empty)'
+
+
+def _local_audit_forms(forms: List[Tuple[str, FormData]],
+                       filtered_forms: List[Tuple[str, FormData]],
+                       texture_info: TextureInfo) -> List[Tuple[str, FormData]]:
+    out: List[Tuple[str, FormData]] = []
+    for index, (label, form_data) in enumerate(forms):
+        filtered_data = (filtered_forms[index][1]
+                         if index < len(filtered_forms) else {})
+        out_form: FormData = {}
+        for comp_id, comp_pairs in form_data.items():
+            for ps, raw_pair in comp_pairs.items():
+                role = _pass_role(raw_pair, texture_info)
+                pair_map = raw_pair if role == 'outline' else (
+                    filtered_data.get(comp_id, {}).get(ps))
+                if not pair_map:
+                    continue
+                out_form.setdefault(comp_id, {})[ps] = pair_map
+        out.append((label, out_form))
+    return out
+
+
 def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                     texture_info: TextureInfo,
                                     freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
-                                    warnings: Optional[List[str]] = None) -> dict:
+                                    warnings: Optional[List[str]] = None,
+                                    source_meta: Optional[Dict[Tuple[str, int], List[str]]] = None) -> dict:
     """Build the STU audit block for local form discriminator export.
 
     The audit is intentionally data-only: export still recomputes and verifies
     the fingerprint before trusting it, so stale STU edits fail closed.
     """
     local_warnings: List[str] = list(warnings or [])
-    _filtered, _dirty_hashes, dirty_slots, phantom_pairs = _filtered_forms(
+    filtered_forms, _dirty_hashes, dirty_slots, phantom_pairs = _filtered_forms(
         forms, freshness, [])
+    audit_forms = _local_audit_forms(forms, filtered_forms, texture_info)
     alias = _variant_aliases(texture_info)
-    canonical_seats = _component_hash_canonical_slots(forms, alias)
+    canonical_seats = _component_hash_canonical_slots(audit_forms, alias)
     rows = []
-    branch_samples: Dict[Tuple[int, Tuple[Tuple[int, float], ...],
-                               Tuple[Tuple[int, str], ...]], dict] = {}
-    by_component_signature: Dict[Tuple[int, Tuple[Tuple[int, float], ...]], Set[Tuple[Tuple[int, str], ...]]] = {}
+    branch_samples: Dict[
+        Tuple[int, Tuple[Tuple[int, str], ...], Tuple[Tuple[int, float], ...]],
+        dict,
+    ] = {}
+    component_assignments: Dict[
+        int,
+        Dict[Tuple[Tuple[int, str], ...], Set[Tuple[Tuple[int, float], ...]]],
+    ] = {}
+    conflict_details: Dict[int, Dict[Tuple[Tuple[int, str], ...], dict]] = {}
 
-    for form_id, (label, form_data) in enumerate(forms, start=1):
+    for form_id, (label, form_data) in enumerate(audit_forms, start=1):
         form_fresh = (freshness[form_id - 1]
                       if freshness is not None and form_id - 1 < len(freshness)
                       else None)
@@ -470,6 +582,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                      condition_slots, alias)
                 if not sig:
                     continue
+                condition_source = _condition_source(
+                    comp_id, ps, set(slot for slot, _key in sig), form_fresh)
                 observed_hashes = {
                     slot: tex_hash for slot, tex_hash in sorted(pair_map.items())
                     if isinstance(tex_hash, str)
@@ -485,8 +599,12 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     'component': comp_id,
                     'ps': ps,
                     'pass_role': role,
-                    'condition_source': 'observed' if role == 'outline' else 'fresh',
+                    'condition_source': condition_source,
                     'signature': _serialized_signature(sig),
+                    'positive_signature': _serialized_signature(sig),
+                    'negative_signature': [],
+                    'condition_slots': [slot for slot, _key in sig],
+                    'assignment_slots': sorted(assign_hashes),
                     'assign_hashes': {str(slot): tex_hash
                                       for slot, tex_hash in assign_hashes.items()},
                     'observed_hashes': {str(slot): tex_hash
@@ -494,45 +612,111 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     'fresh_slots': sorted(fresh_slots),
                     'canonical_slots': sorted(override_slots),
                 }
+                remap_sources = _source_meta_for(source_meta, label, comp_id)
+                if remap_sources:
+                    row['remap_sources'] = remap_sources
                 rows.append(row)
                 if assign_hashes:
                     akey = tuple(sorted((slot, tex_hash)
                                         for slot, tex_hash in assign_hashes.items()))
-                    by_component_signature.setdefault((comp_id, sig), set()).add(akey)
-                    sample_key = (comp_id, sig, akey)
+                    component_assignments.setdefault(
+                        comp_id, {}).setdefault(akey, set()).add(sig)
+                    detail = conflict_details.setdefault(comp_id, {}).setdefault(
+                        akey, {'assign_hashes': assign_hashes, 'sources': []})
+                    detail['sources'].append({
+                        'form': label,
+                        'ps': ps,
+                        'signature': _serialized_signature(sig),
+                        'pass_role': role,
+                        'remap_sources': remap_sources,
+                    })
+                    sample_key = (comp_id, akey, sig)
                     sample = branch_samples.get(sample_key)
                     if sample is None:
                         branch_samples[sample_key] = {
                             'component': comp_id,
                             'signature': _serialized_signature(sig),
+                            'positive_signature': _serialized_signature(sig),
+                            'negative_signature': [],
+                            'condition_slots': [slot for slot, _key in sig],
+                            'assignment_slots': sorted(assign_hashes),
                             'assign_hashes': {str(slot): tex_hash
                                               for slot, tex_hash in assign_hashes.items()},
                             'pass_role': role,
-                            'condition_source': 'observed' if role == 'outline' else 'fresh',
+                            'condition_source': condition_source,
                             'forms': [label],
                             'sources': [{'form': label, 'ps': ps}],
                         }
+                        if remap_sources:
+                            branch_samples[sample_key]['remap_sources'] = remap_sources
                     else:
                         if label not in sample['forms']:
                             sample['forms'].append(label)
                         sample['sources'].append({'form': label, 'ps': ps})
 
     conflicts = []
-    for (comp_id, sig), assign_keys in sorted(by_component_signature.items()):
-        if len(assign_keys) <= 1:
+    for comp_id, by_assign in sorted(component_assignments.items()):
+        if len(by_assign) <= 1:
             continue
-        conflicts.append({
-            'component': comp_id,
-            'signature': _serialized_signature(sig),
-            'members': [
-                {
-                    'assign_hashes': {str(slot): tex_hash
-                                      for slot, tex_hash in assign_key},
-                    'sources': branch_samples[(comp_id, sig, assign_key)]['sources'],
-                }
-                for assign_key in sorted(assign_keys)
-            ],
-        })
+        for assign_key, signatures in sorted(by_assign.items()):
+            other_signatures = set()
+            for other_key, values in by_assign.items():
+                if other_key != assign_key:
+                    other_signatures.update(values)
+            for sig in sorted(signatures, key=lambda value: (-len(value), value)):
+                negative = _minimal_negative_signature(
+                    sig, set(signatures), other_signatures)
+                sample = branch_samples.get((comp_id, assign_key, sig))
+                if sample is None:
+                    continue
+                if negative is None:
+                    sample['unresolved'] = True
+                else:
+                    sample['negative_signature'] = _serialized_signature(negative)
+
+    unresolved_components: Set[int] = set()
+    for comp_id, by_assign in sorted(component_assignments.items()):
+        if len(by_assign) <= 1:
+            continue
+        for assign_key, signatures in sorted(by_assign.items()):
+            has_branch = False
+            for sig in signatures:
+                sample = branch_samples.get((comp_id, assign_key, sig))
+                if sample is None:
+                    continue
+                pos = _signature_from_audit(sample.get('positive_signature')
+                                            or sample.get('signature'))
+                neg = _signature_from_audit(sample.get('negative_signature'))
+                blocked = False
+                for other_key, other_signatures in by_assign.items():
+                    if other_key == assign_key:
+                        continue
+                    for other_sig in other_signatures:
+                        if all(term in other_sig for term in pos) and not any(
+                                term in other_sig for term in neg):
+                            blocked = True
+                            break
+                    if blocked:
+                        break
+                if not blocked:
+                    has_branch = True
+                    break
+            if not has_branch:
+                unresolved_components.add(comp_id)
+        if comp_id in unresolved_components:
+            conflicts.append({
+                'component': comp_id,
+                'reason': 'local slot-layout conditions cannot separate different assignments',
+                'members': [
+                    {
+                        'assign_hashes': {str(slot): tex_hash
+                                          for slot, tex_hash in assign_key},
+                        'sources': detail['sources'],
+                    }
+                    for assign_key, detail in sorted(
+                        conflict_details.get(comp_id, {}).items())
+                ],
+            })
 
     branches = list(branch_samples.values())
     for branch in branches:
@@ -564,17 +748,112 @@ def validate_local_discriminator_audit(audit: object,
                                        freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None) -> dict:
     if not isinstance(audit, dict):
         raise SlotStyleDegrade(
-            'local form discriminator audit is missing; refresh STU by merging '
-            'form textures before exporting with the local discriminator mode')
+            '局部形态判据审计缺失；请先刷新 ShaderTextureUsage.json 后再导出。')
     if audit.get('schema') != constants.LOCAL_FORM_DISCRIMINATOR_SCHEMA:
         raise SlotStyleDegrade(
-            'local form discriminator audit schema is unsupported; refresh STU audit')
+            '局部形态判据审计版本过旧；请刷新 ShaderTextureUsage.json 后再导出。')
     expected = _hash_fingerprint(forms, texture_info, freshness)
     if audit.get('fingerprint') != expected:
         raise SlotStyleDegrade(
-            'local form discriminator audit is stale for the current STU data; '
-            'refresh STU audit before exporting')
+            '局部形态判据审计已过期；当前 STU 数据与审计 fingerprint 不一致，请刷新 STU 审计。')
     return audit
+
+
+def _local_condition_matches(signature: Tuple[Tuple[int, float], ...],
+                             negative_signature: Tuple[Tuple[int, float], ...],
+                             target: Tuple[Tuple[int, float], ...]) -> bool:
+    return (all(term in target for term in signature)
+            and not any(term in target for term in negative_signature))
+
+
+def _local_conflict_messages(records: List[dict],
+                             slot_eligible_components: Optional[Set[int]]) -> List[dict]:
+    row_by_component: Dict[int, List[dict]] = {}
+    branch_by_component: Dict[int, List[dict]] = {}
+    for record in records:
+        assign_key = record.get('assign_key') or ()
+        if not assign_key:
+            assign_key = ()
+        try:
+            comp_id = int(record.get('component'))
+        except (TypeError, ValueError):
+            continue
+        if slot_eligible_components is not None and comp_id not in slot_eligible_components:
+            continue
+        if record.get('kind') == 'row':
+            row_by_component.setdefault(comp_id, []).append(record)
+        elif record.get('kind') == 'branch':
+            branch_by_component.setdefault(comp_id, []).append(record)
+    problems = []
+    for comp_id, branches in sorted(branch_by_component.items()):
+        evidence = row_by_component.get(comp_id, [])
+        issues = []
+        seen_issues: Set[
+            Tuple[
+                Tuple[Tuple[int, float], ...],
+                Tuple[Tuple[int, float], ...],
+                Tuple[Tuple[Tuple[int, str], ...], ...],
+            ],
+        ] = set()
+        for branch in branches:
+            matched: Dict[Tuple[Tuple[int, str], ...], List[str]] = {}
+            for record in evidence:
+                if _local_condition_matches(
+                        branch['signature'],
+                        branch.get('negative_signature') or (),
+                        record['signature']):
+                    matched.setdefault(
+                        record['assign_key'], []).append(record.get('source') or '?')
+            if any(assign_key != branch['assign_key'] for assign_key in matched):
+                issue_key = (
+                    branch['signature'],
+                    branch.get('negative_signature') or (),
+                    tuple(sorted(matched)),
+                )
+                if issue_key in seen_issues:
+                    continue
+                seen_issues.add(issue_key)
+                issues.append({
+                    'signature': branch['signature'],
+                    'negative_signature': branch.get('negative_signature') or (),
+                    'branch_assign': branch['assign_key'],
+                    'branch_source': branch.get('source') or '?',
+                    'members': [
+                        {'assign': assign_key, 'sources': sorted(set(sources))}
+                        for assign_key, sources in sorted(matched.items())
+                    ],
+                })
+        if issues:
+            problems.append({'component': comp_id, 'issues': issues})
+    return problems
+
+
+def _format_local_conflict_message(problems: List[dict]) -> str:
+    lines = [
+        '局部形态判据无法为以下 Component 生成安全的本地 slot-layout 分支，已阻断导出：',
+    ]
+    for problem in problems:
+        comp_id = problem['component']
+        lines.append(f'- Component {comp_id}')
+        for issue in problem['issues'][:4]:
+            condition = _format_condition(
+                issue["signature"], issue.get("negative_signature") or ())
+            lines.append(f'  条件 {condition} 下存在多个有效贴图 assignment：')
+            for member in issue['members'][:4]:
+                assigns = ', '.join(
+                    f'ps-t{slot}->{tex_hash}' for slot, tex_hash in member['assign'])
+                sources = '; '.join(member['sources'])
+                lines.append(f'    {assigns or "(no assignment)"} 来自 {sources}')
+        if len(problem['issues']) > 4:
+            lines.append(f'  另有 {len(problem["issues"]) - 4} 个冲突条件未展开。')
+    lines.extend([
+        '可选补救：',
+        '1. 在“按组件选插槽风格”里取消上述 Component，只让它们回到 hash-style。',
+        '2. 关闭“局部形态判据”，回到旧 form anchor 导出。',
+        '3. 关闭“插槽风格贴图”，整体回到 hash-style。',
+        '工具不会自动取消这些 Component，以免误以为它们仍在 local slot layer。',
+    ])
+    return '\n'.join(lines)
 
 
 def _local_branches_from_audit(audit: dict,
@@ -584,10 +863,7 @@ def _local_branches_from_audit(audit: dict,
                                ) -> Tuple[Dict[int, List[_LocalBranch]], Set[str]]:
     component_branches: Dict[int, List[_LocalBranch]] = {}
     assigned_hashes: Set[str] = set()
-    effective_by_signature: Dict[
-        Tuple[int, Tuple[Tuple[int, float], ...]],
-        Dict[Tuple[Tuple[int, str], ...], List[str]],
-    ] = {}
+    branch_records: List[dict] = []
 
     def _source_from(entry: dict, fallback: str) -> str:
         sources = entry.get('sources') or []
@@ -596,12 +872,19 @@ def _local_branches_from_audit(audit: dict,
                 f"{src.get('form', '?')}/ps={src.get('ps', '?')}"
                 for src in sources if isinstance(src, dict))
             if joined:
-                return joined
+                remap = _remap_source_from(entry)
+                return joined + (f' ({remap})' if remap else '')
         form = entry.get('form')
         ps = entry.get('ps')
         if isinstance(form, str) or isinstance(ps, str):
             return f'{form or "?"}/ps={ps or "?"}'
         return fallback
+
+    def _remap_source_from(entry: dict) -> str:
+        values = entry.get('remap_sources')
+        if isinstance(values, list):
+            return ', '.join(str(value) for value in values if isinstance(value, str))
+        return ''
 
     def _effective_assignment(raw_assign: object,
                               comp_id: int,
@@ -631,7 +914,7 @@ def _local_branches_from_audit(audit: dict,
     rows = audit.get('rows')
     if not isinstance(rows, list):
         raise SlotStyleDegrade(
-            'local form discriminator audit has no row evidence; refresh STU audit')
+            '局部形态判据审计没有 row evidence；请刷新 STU 审计。')
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise SlotStyleDegrade(
@@ -648,29 +931,21 @@ def _local_branches_from_audit(audit: dict,
         if not signature:
             continue
         source = _source_from(row, f'row#{index}')
-        _assign, assign_key = _effective_assignment(
+        _assign, _assign_key = _effective_assignment(
             row.get('assign_hashes'), comp_id, source)
-        effective_by_signature.setdefault(
-            (comp_id, signature), {}).setdefault(assign_key, []).append(source)
-
-    for (comp_id, signature), assign_sources in sorted(effective_by_signature.items()):
-        non_empty = [key for key in assign_sources if key]
-        if non_empty and len(assign_sources) > 1:
-            details = [
-                f'{",".join(sources)} assign={dict(assign_key)}'
-                for assign_key, sources in sorted(assign_sources.items())
-            ]
-            raise SlotStyleDegrade(
-                f'component {comp_id}: local form discriminator signature '
-                f'{[[slot, _fi_str(key)] for slot, key in signature]} '
-                'maps to multiple slot override assignments: '
-                f'{"; ".join(details)}')
+        branch_records.append({
+            'kind': 'row',
+            'component': comp_id,
+            'signature': signature,
+            'negative_signature': (),
+            'assign_key': _assign_key,
+            'source': source,
+        })
 
     branches = audit.get('branches')
     if not isinstance(branches, list):
         raise SlotStyleDegrade(
-            'local form discriminator audit has no slot override branches; '
-            'refresh STU audit')
+            '局部形态判据审计没有 slot override branch；请刷新 STU 审计。')
     for index, entry in enumerate(branches):
         if not isinstance(entry, dict):
             raise SlotStyleDegrade(
@@ -680,7 +955,8 @@ def _local_branches_from_audit(audit: dict,
         except (KeyError, TypeError, ValueError):
             raise SlotStyleDegrade(
                 f'local form discriminator branch #{index} has no component id')
-        signature = _signature_from_audit(entry.get('signature'))
+        signature = _signature_from_audit(
+            entry.get('positive_signature') or entry.get('signature'))
         if not signature:
             raise SlotStyleDegrade(
                 f'component {comp_id}: local form discriminator branch #{index} '
@@ -690,9 +966,25 @@ def _local_branches_from_audit(audit: dict,
             entry.get('assign_hashes'), comp_id, f'branch #{index}')
         if not assign:
             continue
+        negative_signature = _signature_from_audit(entry.get('negative_signature'))
+        assign_key = tuple(sorted(
+            (int(slot), canon_fn(tex_hash))
+            for slot, tex_hash in (entry.get('assign_hashes') or {}).items()
+            if str(slot).isdigit()
+            and isinstance(tex_hash, str)
+            and canon_fn(tex_hash) in mod_hashes
+        ))
+        branch_records.append({
+            'kind': 'branch',
+            'component': comp_id,
+            'signature': signature,
+            'negative_signature': negative_signature,
+            'assign_key': assign_key,
+            'source': source,
+        })
         component_branches.setdefault(comp_id, []).append(_LocalBranch(
             signature=signature,
-            negative_signature=(),
+            negative_signature=negative_signature,
             ps_signature=None,
             assign=assign,
             form_id=1,
@@ -700,6 +992,9 @@ def _local_branches_from_audit(audit: dict,
             ps='',
             source=source,
         ))
+    problems = _local_conflict_messages(branch_records, slot_eligible_components)
+    if problems:
+        raise SlotStyleDegrade(_format_local_conflict_message(problems))
     if not component_branches:
         raise SlotStyleDegrade('no component produced any slot assignment')
     return component_branches, assigned_hashes
@@ -786,37 +1081,31 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         raise SlotStyleDegrade('no component produced any slot assignment')
 
     merged_component_branches: Dict[int, List[_LocalBranch]] = {}
-    conflict_count = 0
     for comp_id, branches in component_branches.items():
-        by_signature: Dict[Tuple[Tuple[int, float], ...], List[_LocalBranch]] = {}
-        for branch in branches:
-            by_signature.setdefault(branch.signature, []).append(branch)
         merged: List[_LocalBranch] = []
-        for signature, members in sorted(by_signature.items()):
-            by_assign: Dict[Tuple[Tuple[int, str], ...], _LocalBranch] = {}
-            for member in members:
-                assign_key = tuple(sorted(member.assign.items()))
-                previous = by_assign.get(assign_key)
-                if previous is not None:
-                    warnings.append(
-                        f'component {comp_id}: duplicate local discriminator '
-                        f'signature for {previous.source} and {member.source}; '
-                        'kept one identical assignment branch')
-                    continue
-                by_assign[assign_key] = member
-            if len(by_assign) <= 1:
-                merged.extend(by_assign.values())
+        seen: Dict[
+            Tuple[
+                Tuple[Tuple[int, float], ...],
+                Tuple[Tuple[int, float], ...],
+                Tuple[Tuple[int, str], ...],
+            ],
+            _LocalBranch,
+        ] = {}
+        for branch in branches:
+            key = (
+                branch.signature,
+                branch.negative_signature,
+                tuple(sorted(branch.assign.items())),
+            )
+            previous = seen.get(key)
+            if previous is not None:
+                warnings.append(
+                    f'component {comp_id}: duplicate local discriminator '
+                    f'condition for {previous.source} and {branch.source}; '
+                    'kept one identical assignment branch')
                 continue
-            conflict_count += len(by_assign) - 1
-            details = [
-                f'{member.source} assign={dict(assign_key)}'
-                for assign_key, member in by_assign.items()
-            ]
-            raise SlotStyleDegrade(
-                f'component {comp_id}: local form discriminator signature '
-                f'{[[slot, fi_text.get(key, _fi_str(key))] for slot, key in signature]} '
-                'maps to multiple slot override assignments: '
-                f'{"; ".join(details)}')
+            seen[key] = branch
+            merged.append(branch)
         merged_component_branches[comp_id] = merged
     component_branches = merged_component_branches
 
@@ -861,7 +1150,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     for comp_id in sorted(component_branches):
         name = constants.CMDLIST_SET_TEXTURES.format(component_id=comp_id)
         component_list_names[comp_id] = name
-        chunk: List[str] = ['', f'[{name}]']
+        chunk: List[str] = ['', f'[{name}]', 'if $object_detected == 1']
         ordered = sorted(
             component_branches[comp_id],
             key=lambda b: (-len(b.signature), b.form_id, b.signature,
@@ -871,10 +1160,11 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             terms = _terms(comp_id, branch)
             if not terms:
                 continue
-            chunk.append(f'{"if" if first else "else if"} ' + ' && '.join(terms))
-            _append_assignments(chunk, branch.assign, '    ')
+            chunk.append(f'    {"if" if first else "else if"} ' + ' && '.join(terms))
+            _append_assignments(chunk, branch.assign, '        ')
             first = False
         if not first:
+            chunk.append('    endif')
             chunk.append('endif')
             body_chunks.append('\n'.join(chunk))
         else:
@@ -912,9 +1202,10 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     out.append('; ============================================================')
     out.append('; Slot-style texture layer (local form discriminator)')
     out.append(f'; Forms: {form_sources}')
-    out.append('; Conditions are audited per-draw slot override branches;')
-    out.append('; material passes use fresh ps-t0..8 formats, while outline')
-    out.append('; passes may use audited observed/inherited slot formats.')
+    out.append('; Conditions are audited per-draw slot-layout branches;')
+    out.append('; ps-t0..8 may be used as condition slots, while assignment')
+    out.append('; slots are limited to canonical override seats with mod resources.')
+    out.append('; object_detected is an outer scope gate, not a form discriminator.')
     out.append('; no global form state or form-anchor watchdog is used.')
     out.append('; ============================================================')
     out.extend(body_chunks)
@@ -967,7 +1258,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             'forms': len(forms),
             'components': len(component_list_names),
             'branches': sum(len(b) for b in component_branches.values()),
-            'conflicts': conflict_count,
+            'conflicts': 0,
             'marks': 0,
             'fork_latches': 0,
             'anchors': 0,
@@ -1150,10 +1441,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
     for form_id, (label, form_data) in enumerate(forms, start=1):
         for comp_id, comp_pairs in form_data.items():
             for ps, pair_map in comp_pairs.items():
-                material_pair = _is_material_pair(pair_map, texture_info)
                 eligible_slots = _eligible_slots(pair_map)
-                assign_slots = (eligible_slots & set(constants.MAIN_SLOTS)
-                                if material_pair else eligible_slots)
+                if not has_freshness_evidence:
+                    eligible_slots -= set(constants.SERVICE_SLOTS)
+                assign_slots = eligible_slots
                 assigned: Dict[int, str] = {}
                 assigned_hashes: Dict[int, str] = {}
                 for slot, tex_hash in pair_map.items():
@@ -1169,8 +1460,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     excluded_component_hashes.update(assigned_hashes.values())
                     continue
 
-                sig_slots = (eligible_slots & set(constants.MAIN_SLOTS)
-                             if material_pair else eligible_slots)
+                sig_slots = eligible_slots
                 signature: List[Tuple[int, float]] = []
                 for slot in sorted(sig_slots):
                     canon = _canon(pair_map.get(slot))
@@ -1322,26 +1612,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
             parts.append(f'{constants.VAR_FORM} == {form_gate}')
         return ' && '.join(parts)
 
-    def _common_branch_assignments(branches: List[_Branch]) -> Dict[int, str]:
-        common: Optional[Dict[int, str]] = None
-        for branch in branches:
-            if common is None:
-                common = dict(branch.assign)
-                continue
-            common = {
-                slot: resource for slot, resource in common.items()
-                if branch.assign.get(slot) == resource
-            }
-        return common or {}
-
-    all_form_ids = set(range(1, len(forms) + 1))
-
-    def _can_hoist_form_branches(branches: List[_Branch]) -> bool:
-        if not multi_form or len(branches) < 2:
-            return False
-        gates = {branch.form_gate for branch in branches}
-        return None not in gates and gates == all_form_ids
-
     def _append_assignments(chunk: List[str], assign: Dict[int, str],
                             indent: str):
         for slot, res in sorted(assign.items()):
@@ -1378,29 +1648,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 key=lambda b: (b.form_gate or 0, tuple(sorted(b.assign.items()))))
             terms = _terms(comp_id, branches[0])
             if not terms:
-                continue
-
-            if _can_hoist_form_branches(branches):
-                common = _common_branch_assignments(branches)
-                chunk.append(f'{"if" if first else "else if"} '
-                             f'{_condition(terms)}')
-                _append_assignments(chunk, common, '    ')
-                inner_first = True
-                for branch in branches:
-                    diff = {
-                        slot: res for slot, res in branch.assign.items()
-                        if common.get(slot) != res
-                    }
-                    if not diff:
-                        continue
-                    chunk.append(
-                        f'    {"if" if inner_first else "else if"} '
-                        f'{constants.VAR_FORM} == {branch.form_gate}')
-                    _append_assignments(chunk, diff, '        ')
-                    inner_first = False
-                if not inner_first:
-                    chunk.append('    endif')
-                first = False
                 continue
 
             for branch in branches:
@@ -1549,7 +1796,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'phantom_suppressed_textures': len(phantom_only_resource_indices),
             'phantom_pairs': phantom_pairs,
             'dirty_slots': dirty_slots,
-            'service_slots': 0,
+            'service_slots': len([s for s in used_slots if s in constants.SERVICE_SLOTS]),
             'suppressed_latches': 0,
         },
     )
