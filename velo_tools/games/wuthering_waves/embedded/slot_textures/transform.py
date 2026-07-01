@@ -10,9 +10,10 @@
 #      the slot maps, or only came from stale-inherited phantom pairs, are
 #      removed ([ResourceTexture{i}] filename sections stay; blind-zone
 #      textures keep their stock hash section as a fallback).
-#      The per-slot `CheckTextureOverride = ps-tN` trigger lines always stay:
-#      v3 conditions read the filter_index of bound slots, which is exactly
-#      what those checks resolve.
+#      The global per-slot `CheckTextureOverride = ps-tN` trigger lines stay
+#      for ordinary format tags. Components using hash-marker + slot-write
+#      discrimination get additional draw-local scoped trigger lists so only
+#      the marker slot needed by that branch can set its marker variable.
 #   2. Every non-comment `run = CommandListTriggerResourceOverrides` line that
 #      lives in a section whose name carries a component id gets
 #      `run = CommandListSetTexturesComponent{id}` injected right after it.
@@ -45,6 +46,18 @@ _INDEX_COUNT_RE = re.compile(r'^match_index_count\s*=\s*(\d+)\s*$', re.I)
 _TRIGGER_LINE = 'run = commandlisttriggerresourceoverrides'
 _CONSTANTS_SECTION = 'constants'
 _PRESENT_SECTION = 'present'
+
+
+def _trigger_section_name(component_id: int, sequence_index: int) -> str:
+    return f'CommandListTriggerSlotMarkersComponent{component_id}_{sequence_index}'
+
+
+def _trigger_run_name(section_name: str, source_name: str) -> str:
+    suffix = ''
+    match = re.search(r'(_ib\d+)$', source_name)
+    if match:
+        suffix = match.group(1)
+    return section_name + suffix
 
 
 def _section_spans(lines: List[str]) -> List[Tuple[str, int, int]]:
@@ -153,11 +166,30 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             continue
         for i in trigger_indices:
             indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
-            reset_vars = getattr(plan, 'marker_reset_vars_by_component', {}).get(comp_id, [])
-            if reset_vars:
-                insert_before.setdefault(i, []).extend(
-                    f'{indent}{var} = 0' for var in reset_vars)
-            insert_after.setdefault(i, []).append(f'{indent}run = {list_name}')
+            sequences = getattr(
+                plan, 'trigger_sequences_by_component', {}).get(comp_id)
+            if sequences:
+                after_lines: List[str] = []
+                for seq_index, sequence in enumerate(sequences):
+                    reset_vars = sequence.get('reset_vars') or []
+                    trigger_slots = sequence.get('trigger_slots')
+                    if trigger_slots:
+                        after_lines.extend(f'{indent}{var} = 0'
+                                           for var in reset_vars)
+                        section_name = _trigger_section_name(comp_id, seq_index)
+                        after_lines.append(
+                            f'{indent}run = {_trigger_run_name(section_name, name)}')
+                    elif sequence.get('run_set_textures'):
+                        after_lines.append(f'{indent}run = {list_name}')
+                if after_lines:
+                    insert_after.setdefault(i, []).extend(after_lines)
+            else:
+                reset_vars = getattr(
+                    plan, 'marker_reset_vars_by_component', {}).get(comp_id, [])
+                if reset_vars:
+                    insert_before.setdefault(i, []).extend(
+                        f'{indent}{var} = 0' for var in reset_vars)
+                insert_after.setdefault(i, []).append(f'{indent}run = {list_name}')
         injected_components.add(comp_id)
 
     if not injected_components:
@@ -183,6 +215,20 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
     if plan.watchdog_lines and not found_present:
         # Template has no [Present]: create one (no duplicate can exist).
         result += '\n[Present]\n' + '\n'.join(plan.watchdog_lines) + '\n'
+    trigger_blocks: List[str] = []
+    for comp_id, sequences in sorted(
+            getattr(plan, 'trigger_sequences_by_component', {}).items()):
+        for seq_index, sequence in enumerate(sequences):
+            trigger_slots = sequence.get('trigger_slots')
+            if not trigger_slots:
+                continue
+            section_name = _trigger_section_name(comp_id, seq_index)
+            trigger_blocks.append('')
+            trigger_blocks.append(f'[{section_name}]')
+            for slot in sorted(set(int(slot) for slot in trigger_slots)):
+                trigger_blocks.append(f'CheckTextureOverride = ps-t{slot}')
+    if trigger_blocks:
+        result += '\n' + '\n'.join(trigger_blocks) + '\n'
     result += plan.block_text
     if not result.endswith('\n'):
         result += '\n'

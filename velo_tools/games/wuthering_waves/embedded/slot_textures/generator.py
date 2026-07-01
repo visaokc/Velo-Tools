@@ -263,6 +263,7 @@ class SlotPlan:
     extra_globals: List[str] = field(default_factory=list)
     watchdog_lines: List[str] = field(default_factory=list)
     marker_reset_vars_by_component: Dict[int, List[str]] = field(default_factory=dict)
+    trigger_sequences_by_component: Dict[int, List[Dict[str, object]]] = field(default_factory=dict)
     default_form_id: int = 1
     live_fallback: Dict[str, str] = field(default_factory=dict)
     slot_unrepresented: List[Dict[str, object]] = field(default_factory=list)
@@ -320,6 +321,7 @@ class _Branch:
     ps: str = ''
     observed: Dict[int, str] = field(default_factory=dict)
     markers: Tuple[str, ...] = ()
+    marker_slots: Tuple[int, ...] = ()
 
 
 @dataclass(eq=False)
@@ -336,7 +338,8 @@ class _LocalBranch:
 def _branch_with_assign(branch: _Branch,
                         assign: Dict[int, str],
                         form_gate: Optional[int],
-                        markers: Tuple[str, ...] = ()) -> _Branch:
+                        markers: Tuple[str, ...] = (),
+                        marker_slots: Tuple[int, ...] = ()) -> _Branch:
     return _Branch(
         signature=branch.signature,
         assign=assign,
@@ -350,6 +353,7 @@ def _branch_with_assign(branch: _Branch,
         ps=branch.ps,
         observed=dict(branch.observed),
         markers=tuple(markers or branch.markers),
+        marker_slots=tuple(marker_slots or branch.marker_slots),
     )
 
 
@@ -2230,22 +2234,22 @@ def build_plan(forms: List[Tuple[str, FormData]],
 
     component_branches: Dict[int, List[_Branch]] = {}
     conflict_count = 0
-    marker_defs: List[Tuple[int, int, str, str]] = []
+    marker_defs: List[Tuple[int, int, int, str, str]] = []
     marker_vars_by_component: Dict[int, Set[str]] = {}
-    marker_var_by_comp_hash: Dict[Tuple[int, str], str] = {}
+    marker_var_by_comp_slot_hash: Dict[Tuple[int, int, str], str] = {}
     next_marker_id: Dict[int, int] = {}
 
-    def _marker_var_for(comp_id: int, tex_hash: str) -> str:
-        key = (comp_id, tex_hash)
-        existing = marker_var_by_comp_hash.get(key)
+    def _marker_var_for(comp_id: int, slot: int, tex_hash: str) -> str:
+        key = (comp_id, slot, tex_hash)
+        existing = marker_var_by_comp_slot_hash.get(key)
         if existing:
             return existing
         marker_id = next_marker_id.get(comp_id, 0)
         next_marker_id[comp_id] = marker_id + 1
         var = _marker_var_name(comp_id, marker_id)
-        marker_var_by_comp_hash[key] = var
+        marker_var_by_comp_slot_hash[key] = var
         marker_vars_by_component.setdefault(comp_id, set()).add(var)
-        marker_defs.append((comp_id, marker_id, tex_hash, var))
+        marker_defs.append((comp_id, marker_id, slot, tex_hash, var))
         return var
 
     for comp_id, branches in raw_branches.items():
@@ -2279,7 +2283,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                             raise SlotStyleDegrade(
                                 f'component {comp_id}: marker slot ps-t{slot} '
                                 'has no observed texture hash')
-                        marker_vars.append(_marker_var_for(comp_id, tex_hash))
+                        marker_vars.append(
+                            _marker_var_for(comp_id, slot, tex_hash))
                     marker_by_member[member] = tuple(marker_vars)
                 warnings.append(
                     f'component {comp_id}: same-format texture sets use '
@@ -2288,7 +2293,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 for member in members:
                     merged.append(_branch_with_assign(
                         member, dict(member.assign), None,
-                        marker_by_member.get(member, ())))
+                        marker_by_member.get(member, ()),
+                        tuple(marker_slots)))
                 _minimize_anchor_branches(merged)
                 continue
             assign_key, form_ids = next(iter(by_assign.items()))
@@ -2493,10 +2499,13 @@ def build_plan(forms: List[Tuple[str, FormData]],
 
     if marker_defs:
         out.append('')
-        out.append('; -- Draw-local texture discriminators')
-        for comp_id, marker_id, tex_hash, var in marker_defs:
+        out.append('; -- Hash-marker + slot-write texture discriminators')
+        for comp_id, marker_id, slot, tex_hash, var in marker_defs:
             out.append('')
             out.append(f'[{_marker_section_name(comp_id, marker_id)}]')
+            out.append('; marker_mode = hash-marker + slot-write')
+            out.append(f'; marker_component = {comp_id}')
+            out.append(f'; marker_slot = ps-t{slot}')
             out.append(f'hash = {tex_hash}')
             out.append('allow_duplicate_hash = true')
             out.append('match_priority = 0')
@@ -2550,6 +2559,28 @@ def build_plan(forms: List[Tuple[str, FormData]],
     for _comp_id, vars_for_comp in sorted(marker_vars_by_component.items()):
         extra_globals.extend(sorted(vars_for_comp))
 
+    trigger_sequences_by_component: Dict[int, List[Dict[str, object]]] = {}
+    for comp_id, branches in sorted(component_branches.items()):
+        marker_slot_groups: List[Tuple[int, ...]] = []
+        for branch in branches:
+            if not branch.markers:
+                continue
+            group = tuple(sorted(set(branch.marker_slots)))
+            if group and group not in marker_slot_groups:
+                marker_slot_groups.append(group)
+        if not marker_slot_groups:
+            continue
+        reset_vars = sorted(marker_vars_by_component.get(comp_id, ()))
+        sequences: List[Dict[str, object]] = []
+        for index, group in enumerate(marker_slot_groups):
+            sequences.append({
+                'reset_vars': reset_vars if index == 0 else [],
+                'trigger_slots': list(group),
+                'run_set_textures': False,
+            })
+        sequences.append({'run_set_textures': True})
+        trigger_sequences_by_component[comp_id] = sequences
+
     return SlotPlan(
         block_text='\n'.join(out),
         component_list_names=component_list_names,
@@ -2565,6 +2596,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             comp_id: sorted(values)
             for comp_id, values in marker_vars_by_component.items()
         },
+        trigger_sequences_by_component=trigger_sequences_by_component,
         default_form_id=watchdog_form if watchdog_form is not None else 1,
         live_fallback=dict(live_fallback),
         warnings=warnings,
@@ -2592,5 +2624,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'suppressed_latches': 0,
             'suppressed_weak_branches': suppressed_weak_branches,
             'suppressed_covered_branches': suppressed_covered_branches,
+            'hash_marker_slot_write': len(marker_defs),
+            'marker_trigger_scoped_components': len(trigger_sequences_by_component),
         },
     )
