@@ -58,11 +58,157 @@ def _draw_entries(block):
     return entries
 
 
+def _drawindexed_tuples(block):
+    tuples = []
+    for ln in (block or "").splitlines():
+        m = re.match(r'\s*drawindexed = (\d+), (\d+), (-?\d+)', ln)
+        if m:
+            tuples.append((int(m.group(1)), int(m.group(2)), int(m.group(3))))
+    return tuples
+
+
+def _sections(text):
+    for match in re.finditer(r'(^\[([^\]]+)\][^\[]*)', text, re.M):
+        yield match.group(2), match.group(1)
+
+
+def _draw_atom_tuple_map(text):
+    atoms = {}
+    for name, block in _sections(text):
+        if not re.match(r'CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*$', name):
+            continue
+        entries = _draw_entries(block)
+        if len(entries) == 1:
+            cnt, off, _label = entries[0]
+            atoms[name] = (cnt, off)
+    return atoms
+
+
+def _draw_atom_label_map(text):
+    labels = {}
+    for name, block in _sections(text):
+        if not re.match(r'CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*$', name):
+            continue
+        entries = _draw_entries(block)
+        if len(entries) == 1:
+            _cnt, _off, label = entries[0]
+            labels[name] = label
+    return labels
+
+
+def _run_draw_atoms(block):
+    return re.findall(
+        r'^\s*run\s*=\s*(CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*)\s*$',
+        block or "",
+        re.M)
+
+
+def _run_draw_owners(block):
+    return re.findall(
+        r'^\s*run\s*=\s*(CommandListDrawOwnerComponent\d+(?:_ib\d+)*)\s*$',
+        block or "",
+        re.M)
+
+
+def _draw_owner_atom_runs(text):
+    return {
+        name: _run_draw_atoms(block)
+        for name, block in _sections(text)
+        if re.match(r'CommandListDrawOwnerComponent\d+(?:_ib\d+)*$', name)
+    }
+
+
+def _draw_owner_skip_ordinals(block, component_id, ib_id):
+    suffix = "(?:_ib0)?" if ib_id == 0 else "_ib%d" % ib_id
+    pattern = r'\$xscene_skip_draw_c%d_(\d+)%s\s*=\s*1\b' % (
+        int(component_id), suffix)
+    return {int(raw) for raw in re.findall(pattern, block or "")}
+
+
+def _owner_plan(text, owner_name, *, skip_ordinals=None):
+    atoms = _draw_atom_tuple_map(text)
+    labels = _draw_atom_label_map(text)
+    runs = _draw_owner_atom_runs(text).get(owner_name, [])
+    skip_ordinals = set(skip_ordinals or set())
+    out = []
+    for ordinal, atom in enumerate(runs):
+        if ordinal in skip_ordinals or atom not in atoms:
+            continue
+        cnt, off = atoms[atom]
+        out.append((cnt, off, labels.get(atom)))
+    return out
+
+
+def _audit_draw_owners(text):
+    errors = []
+    seen = {}
+    for name, block in _sections(text):
+        is_owner = re.match(r'CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*$', name) is not None
+        for draw in _drawindexed_tuples(block):
+            if not is_owner:
+                errors.append("%s contains drawindexed outside draw-owner atom" % name)
+                continue
+            prev = seen.get(draw)
+            if prev is not None:
+                errors.append(
+                    "drawindexed tuple %s duplicated in %s and %s"
+                    % (draw, prev, name))
+            else:
+                seen[draw] = name
+        if re.match(r'CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*$', name):
+            continue
+        if re.match(r'CommandListDrawOwnerComponent\d+(?:_ib\d+)*$', name):
+            continue
+        for atom in _run_draw_atoms(block):
+            errors.append("%s directly runs draw atom %s outside canonical draw owner"
+                          % (name, atom))
+    return errors
+
+
 def _body_draw_entries(text, component_id):
+    atoms = _draw_atom_tuple_map(text)
     cmd = _section(text, "CommandListDrawComponent%d_ib0" % component_id)
     if cmd:
+        owner_runs = _run_draw_owners(cmd)
+        if owner_runs:
+            out = _owner_plan(text, owner_runs[-1])
+            if out:
+                return out
+        out = []
+        label = None
+        for ln in cmd.splitlines():
+            s = ln.strip()
+            if s.startswith("; Draw "):
+                label = s.split("; Draw ", 1)[1].strip()
+                continue
+            m = re.match(r'run = (CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*)$', s)
+            if m and m.group(1) in atoms:
+                cnt, off = atoms[m.group(1)]
+                out.append((cnt, off, label))
+                label = None
+        if out:
+            return out
         return _draw_entries(cmd)
     ovr = _section(text, "TextureOverrideComponent%d_ib0" % component_id)
+    owner_runs = _run_draw_owners(ovr)
+    if owner_runs:
+        out = _owner_plan(text, owner_runs[-1])
+        if out:
+            return out
+    out = []
+    label = None
+    for ln in (ovr or "").splitlines():
+        s = ln.strip()
+        if s.startswith("; Draw "):
+            label = s.split("; Draw ", 1)[1].strip()
+            continue
+        m = re.match(r'run = (CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*)$', s)
+        if m and m.group(1) in atoms:
+            cnt, off = atoms[m.group(1)]
+            out.append((cnt, off, label))
+            label = None
+    if out:
+        return out
     return _draw_entries(ovr)
 
 
@@ -227,6 +373,40 @@ def _audit_marker_resets(text):
     return errors
 
 
+def _audit_residual_sensitive_conditions(text):
+    errors = []
+    for match in re.finditer(
+            r'(^\[(CommandListSetTexturesComponent[^\]]*)\][^\[]*)',
+            text, re.M):
+        block = match.group(1)
+        header = match.group(2)
+        assigned_slots = {
+            int(slot)
+            for slot in re.findall(
+                r'^\s*ps-t(\d+)\s*=\s*ref\s+ResourceTexture[0-9A-Za-z_]+\b',
+                block, re.M)
+        }
+        if not assigned_slots:
+            continue
+        reported = set()
+        for line in block.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith(("if ", "else if ")):
+                continue
+            for slot_raw, expected in re.findall(
+                    r'\bps-t(\d+)\s*!=\s*([0-9.]+)', stripped):
+                slot = int(slot_raw)
+                if slot not in assigned_slots or slot in reported:
+                    continue
+                reported.add(slot)
+                errors.append(
+                    "%s uses residual-sensitive ps-t%d != %s after the same "
+                    "command list assigns ps-t%d; require a fresh positive "
+                    "slot condition or marker-only discriminator"
+                    % (header, slot, expected, slot))
+    return errors
+
+
 def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, draw_excludes=None,
                            allowed_body_hash_fallbacks=None):
     """Return a dict with routing errors found in the final namespace-merged INI."""
@@ -241,6 +421,10 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
     errors.extend(_audit_slot_resources(text, path.parent))
     errors.extend(_audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks))
     errors.extend(_audit_marker_resets(text))
+    errors.extend(_audit_residual_sensitive_conditions(text))
+    errors.extend(_audit_draw_owners(text))
+    draw_atoms = _draw_atom_tuple_map(text)
+    draw_owners = _draw_owner_atom_runs(text)
 
     for tag, label in sorted(own_excluded.items()):
         if tag not in roles:
@@ -261,8 +445,11 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
             for run in re.findall(r'^\s*run\s*=\s*(CommandListDrawComponent\d+_ib%d)\s*$' % ib,
                                   block, re.M):
                 target = _section(text, run)
-                if target and "drawindexed" in target:
+                if target and (_draw_entries(target) or _run_draw_atoms(target)):
                     errors.append("hidden own-buffer %s (%s) still draws via %s" % (tag, label, run))
+                for owner in _run_draw_owners(target):
+                    if draw_owners.get(owner):
+                        errors.append("hidden own-buffer %s (%s) still draws via %s" % (tag, label, run))
         if not matched:
             errors.append("hidden own-buffer %s (%s) has no matching skip section" % (tag, label))
 
@@ -286,12 +473,31 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
                     errors.append("%s does not skip excluded base Component %d" % (header, bc))
                 if "drawindexed" in block:
                     errors.append("%s draws even though base Component %d has no draw" % (header, bc))
+                if _run_draw_atoms(block):
+                    errors.append("%s runs draw-owner atoms even though base Component %d has no draw"
+                                  % (header, bc))
+                if _run_draw_owners(block):
+                    errors.append("%s runs draw owner even though base Component %d has no draw"
+                                  % (header, bc))
                 continue
             if not block:
                 errors.append("%s missing for visible base Component %d" % (header, bc))
                 continue
             expected = _pairs(_select_draws(body_draws, draw_excludes.get(bc)))
-            actual = _pairs(_draw_entries(block))
+            if _run_draw_atoms(block):
+                errors.append("%s directly runs draw-owner atom(s); run canonical draw owner instead"
+                              % header)
+            owner_runs = _run_draw_owners(block)
+            missing_owners = [name for name in owner_runs if name not in draw_owners]
+            if missing_owners:
+                errors.append("%s references missing draw owner(s): %s" % (header, missing_owners))
+            if len(owner_runs) != 1:
+                errors.append("%s must run exactly one canonical draw owner, got %s"
+                              % (header, owner_runs))
+                actual = []
+            else:
+                skip = _draw_owner_skip_ordinals(block, bc, 0)
+                actual = _pairs(_owner_plan(text, owner_runs[0], skip_ordinals=skip))
             if actual != expected:
                 errors.append("%s draw plan mismatch: expected %s, got %s" % (header, expected, actual))
 

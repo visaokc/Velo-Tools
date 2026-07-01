@@ -98,6 +98,41 @@ def _normalise_draw_entries(draws):
     return out
 
 
+def _draw_atom_name(component_id, ordinal):
+    return "CommandListDrawAtomComponent%d_%d" % (int(component_id), int(ordinal))
+
+
+def _draw_atom_names(component_id, draws):
+    names = {}
+    for ordinal, (cnt, off, _label) in enumerate(_normalise_draw_entries(draws)):
+        names.setdefault((cnt, off), _draw_atom_name(component_id, ordinal))
+    return names
+
+
+def _draw_owner_name(component_id):
+    return "CommandListDrawOwnerComponent%d" % int(component_id)
+
+
+def _skip_var_name(component_id, ordinal):
+    return "$xscene_skip_draw_c%d_%d" % (int(component_id), int(ordinal))
+
+
+def _draw_owner_run_lines(component_id, draws, selected):
+    selected_pairs = {
+        (int(cnt), int(off))
+        for cnt, off, _label in _normalise_draw_entries(selected)
+    }
+    lines = []
+    for ordinal, (cnt, off, _label) in enumerate(_normalise_draw_entries(draws)):
+        if (cnt, off) not in selected_pairs:
+            lines.append("    %s = 1" % _skip_var_name(component_id, ordinal))
+    lines.append("    run = %s" % _draw_owner_name(component_id))
+    for ordinal, (cnt, off, _label) in enumerate(_normalise_draw_entries(draws)):
+        if (cnt, off) not in selected_pairs:
+            lines.append("    %s = 0" % _skip_var_name(component_id, ordinal))
+    return lines
+
+
 def select_fold_draws(draws, excluded_labels=None):
     """Return draw entries a FoldHost may replay for one base component.
 
@@ -402,7 +437,7 @@ def _merge_offset_shift(remap_table):
 
 
 def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_count_override=None,
-                           draws=None):
+                           draws=None, all_draws=None):
     """MERGED FoldHost = the native body ``[TextureOverrideComponent<bc>]`` override replicated verbatim,
     so it inherits everything that component needs to draw correctly: the ``if $merge_status_id != 2``
     skeleton-build block, the ``if ResourceMergedSkeleton !== null`` draw block, and -- crucially for
@@ -425,16 +460,17 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
     the dungeon cb4 lands at ``base_offset + vg_shift`` (where the base surviving geometry reads), not at the
     bear-inclusive base offset. Identity folds pass ``vg_shift=0`` (no rewrite, byte-identical).
 
-    ``draws`` = fold draw plan entries ``(index_count, first_index, label)``. Needed for the
+    ``draws`` = selected fold draw plan entries ``(index_count, first_index, label)``. Needed for the
     LOD-fork ini shape, where the native section carries no inline draws but delegates to the shared
     ``[CommandListDrawComponent{N}]`` list -- that list may hold own-buffer split sub-draws plus the
     ``$lod_level`` dispatch, so running it from the FoldHost would also draw the split part with shifted
-    (wrong) bones in the dungeon scene. The delegation line is replaced with the stock inline sequence
-    (trigger / shared-resources bind / selected draws / cleanup)."""
+    (wrong) bones in the dungeon scene. FoldHost therefore runs the canonical draw owner with temporary
+    skip vars for excluded sub-draws instead of expanding atom runs itself."""
     native = _section(body_text, "TextureOverrideComponent%d" % bc)
     if not native:
         return ""
     selected = _normalise_draw_entries(draws)
+    all_draws = _normalise_draw_entries(all_draws if all_draws is not None else draws)
     selected_pairs = {(cnt, off) for cnt, off, _label in selected}
     out, seen_draw, header_done, pending_comment = [], False, False, None
     for ln in native.rstrip("\n").split("\n"):
@@ -460,8 +496,11 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             if m and (int(m.group(1)), int(m.group(2))) in selected_pairs:
                 if pending_comment:
                     out.append(pending_comment)
-                out.append(ln)
-                seen_draw = True
+                if not seen_draw:
+                    indent = ln[:len(ln) - len(ln.lstrip())]
+                    for run_line in _draw_owner_run_lines(bc, all_draws, selected):
+                        out.append("%s%s" % (indent, run_line.strip()))
+                    seen_draw = True
             pending_comment = None
         elif s.startswith("run = CommandListDrawComponent"):
             # LOD-fork shape: replace the shared-list delegation with the stock inline
@@ -477,10 +516,8 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             out.append("%srun = CommandListTriggerResourceOverrides" % indent)
             out.extend("%s%s" % (indent, r) for r in at)
             out.append("%srun = CommandListOverrideSharedResources" % indent)
-            for cnt, off, label in selected:
-                if label:
-                    out.append("%s; Draw %s" % (indent, label))
-                out.append("%sdrawindexed = %d, %d, 0" % (indent, cnt, off))
+            for run_line in _draw_owner_run_lines(bc, all_draws, selected):
+                out.append("%s%s" % (indent, run_line.strip()))
             out.extend("%s%s" % (indent, r) for r in bcl)
             out.append("%srun = CommandListCleanupSharedResources" % indent)
             seen_draw = True
@@ -631,7 +668,7 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             vg_shift, vg_count_override = _merge_offset_shift(rt) if rt else (0, None)
             selected = select_fold_draws(body_draw_plan.get(bc), draw_excludes.get(bc))
             out.append(_build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift, vg_count_override,
-                                              draws=selected))
+                                              draws=selected, all_draws=body_draw_plan.get(bc)))
         else:
             selected = select_fold_draws(body_draw_plan.get(bc), draw_excludes.get(bc))
             ovr = remap_cmd[bc][0] if bc in remap_cmd else "CommandListOverrideSharedResources"
@@ -649,10 +686,7 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             lines.append("    run = CommandListTriggerResourceOverrides")
             lines += ["    %s" % r for r in at]
             lines.append("    run = %s" % ovr)
-            for cnt, offd, label in selected:
-                if label:
-                    lines.append("    ; Draw %s" % label)
-                lines.append("    drawindexed = %d, %d, 0" % (cnt, offd))
+            lines += _draw_owner_run_lines(bc, body_draw_plan.get(bc), selected)
             lines += ["    %s" % r for r in bcl]
             lines.append("    run = CommandListCleanupSharedResources")
             lines.append("endif")

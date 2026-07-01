@@ -91,6 +91,7 @@ def _patch_export_menu():
             slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
             if (slot_cfg is not None and cfg.velo_slot_style_textures):
                 box.prop(slot_cfg, "local_form_discriminator")
+                box.prop(slot_cfg, "slot_audit_dump_folder")
                 _draw_slot_components(box, slot_cfg)
                 if not slot_cfg.local_form_discriminator:
                     box.prop(slot_cfg, "form_anchors")
@@ -251,6 +252,16 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
             "mod 资源的 canonical assignment slot；相同有效替换会合并，冲突则列出 Component 并阻断导出。"
         ),
         default=True,
+    )
+
+    slot_audit_dump_folder: bpy.props.StringProperty(
+        name="Raw 审计 Dump",
+        description=(
+            "可选：指定一份真实 FrameAnalysis raw dump。跨场景 slot-style 导出会确认该 dump "
+            "里 fresh 绑定过的 pass 已被当前 ShaderTextureUsage.json 覆盖；未覆盖则阻断导出。"
+        ),
+        subtype='DIR_PATH',
+        default='',
     )
 
     # Per-component slot eligibility (UI opt-out). Empty = never populated = all components

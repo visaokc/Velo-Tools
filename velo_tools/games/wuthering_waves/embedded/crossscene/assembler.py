@@ -80,6 +80,149 @@ def _texture_filename(path):
     return os.path.basename(str(path).replace("\\", "/"))
 
 
+def _draw_atom_name(component_id, ordinal, suffix):
+    return f"CommandListDrawAtomComponent{component_id}_{ordinal}{suffix or ''}"
+
+
+def _draw_owner_name(component_id, suffix):
+    return f"CommandListDrawOwnerComponent{component_id}{suffix or ''}"
+
+
+def _skip_var_name(component_id, ordinal, suffix):
+    return f"$xscene_skip_draw_c{component_id}_{ordinal}{suffix or ''}"
+
+
+def _atomize_draw_owner_sections(text):
+    """Move actual drawindexed calls into deterministic atom command lists.
+
+    Existing CommandListDrawComponent sections keep setup, LOD dispatch, slot
+    rebinding and cleanup lines, then run one canonical draw owner. The owner
+    owns the draw atom list; FoldHost sections may run that owner, but must not
+    expand the same atom list themselves.
+    """
+    out = []
+    owners = []
+    atoms = []
+    header = None
+    body = []
+    section_names = {
+        name
+        for name, _body in _parse_sections(text)
+    }
+    guarded_skips = {
+        (int(comp), int(ordinal), suffix or "")
+        for comp, ordinal, suffix in re.findall(
+            r'\$xscene_skip_draw_c(\d+)_(\d+)((?:_ib\d+)*)\b',
+            text)
+    }
+
+    def flush():
+        if header is None:
+            return
+        match = re.match(r'CommandListDrawComponent(\d+)((?:_ib\d+)*)$', header)
+        if not match:
+            override = re.match(r'TextureOverrideComponent(\d+)((?:_ib\d+)*)$', header)
+            if override:
+                candidate = f"CommandListDrawComponent{override.group(1)}{override.group(2) or ''}"
+                if candidate not in section_names:
+                    match = override
+        if not match:
+            out.append((header, list(body)))
+            return
+        comp_id = int(match.group(1))
+        suffix = match.group(2) or ""
+        draw_indices = [
+            idx for idx, line in enumerate(body)
+            if re.match(r'\s*drawindexed = \d+, \d+, -?\d+', line)
+        ]
+        if not draw_indices:
+            out.append((header, list(body)))
+            return
+
+        draw_start = draw_indices[0]
+        while draw_start > 0 and body[draw_start - 1].strip().startswith("; Draw "):
+            draw_start -= 1
+        draw_end = len(body)
+        for idx in range(draw_indices[-1] + 1, len(body)):
+            if re.match(r'\s*run\s*=\s*CommandListCleanupSharedResources(?:_ib\d+)*\b', body[idx]):
+                draw_end = idx
+                break
+
+        first_draw_line = body[draw_indices[0]]
+        owner_indent = first_draw_line[:len(first_draw_line) - len(first_draw_line.lstrip())]
+        owner = _draw_owner_name(comp_id, suffix)
+        new_body = list(body[:draw_start])
+        new_body.append(f"{owner_indent}run = {owner}")
+        new_body.extend(body[draw_end:])
+
+        owner_body = []
+        pending_comment = None
+        ordinal = 0
+        for line in body[draw_start:draw_end]:
+            stripped = line.strip()
+            if stripped.startswith("; Draw "):
+                pending_comment = stripped
+                owner_body.append(line)
+                continue
+            draw = re.match(r'drawindexed = (\d+), (\d+), (-?\d+)', stripped)
+            if not draw:
+                owner_body.append(line)
+                continue
+            atom = _draw_atom_name(comp_id, ordinal, suffix)
+            indent = line[:len(line) - len(line.lstrip())]
+            skip_var = _skip_var_name(comp_id, ordinal, suffix)
+            if (comp_id, ordinal, suffix) in guarded_skips:
+                owner_body.append(f"{indent}if {skip_var} != 1")
+                owner_body.append(f"{indent}    run = {atom}")
+                owner_body.append(f"{indent}endif")
+            else:
+                owner_body.append(f"{indent}run = {atom}")
+            atom_body = []
+            if pending_comment:
+                atom_body.append(pending_comment)
+            atom_body.append(stripped)
+            atoms.append((atom, atom_body))
+            pending_comment = None
+            ordinal += 1
+        out.append((header, new_body))
+        owners.append((owner, owner_body))
+
+    preamble = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            flush()
+            header, body = stripped[1:-1], []
+        elif header is None:
+            preamble.append(line)
+        else:
+            body.append(line)
+    flush()
+    if not atoms:
+        return text
+
+    parts = list(preamble)
+    if parts:
+        parts.append("")
+    for section, lines in out:
+        parts.append(f"[{section}]")
+        parts.extend(lines)
+        parts.append("")
+    parts.append("; --- Draw owners (canonical draw route per component) ---")
+    parts.append("")
+    for section, lines in owners:
+        parts.append(f"[{section}]")
+        parts.extend(lines)
+        parts.append("")
+    parts.append("; --- Draw owner atoms (one actual drawindexed per atom) ---")
+    parts.append("")
+    for section, lines in atoms:
+        parts.append(f"[{section}]")
+        parts.extend(lines)
+        parts.append("")
+    return "\n".join(parts).rstrip() + "\n"
+
+
 def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True, partial_export=False,
              suppress_body_hashes=None):
     """mods: ordered list of per-IB mod folders (each contains mod.ini + Meshes/ + Textures/).
@@ -310,9 +453,10 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
 
     # ---- self-check ----
     ini_path = os.path.join(out, "mod.ini")
-    text = open(ini_path, encoding="utf-8").read()
+    text_before_postprocess = open(ini_path, encoding="utf-8").read()
+    text = _atomize_draw_owner_sections(text_before_postprocess)
     text, format_stats = _format_tags.dedupe_format_tag_sections(text)
-    if format_stats.get("format_sections_removed"):
+    if text != text_before_postprocess:
         with open(ini_path, "w", encoding="utf-8") as f:
             f.write(text)
     sections_set = set(re.findall(r'^\[([^\]]+)\]', text, re.M))

@@ -797,6 +797,7 @@ def _minimal_condition_signature(
         own_signatures: List[Tuple[Tuple[int, float], ...]],
         other_signatures: List[Tuple[Tuple[int, float], ...]],
         assignment_slots: Set[int],
+        blocked_negative_slots: Optional[Set[int]] = None,
         ) -> Tuple[Tuple[Tuple[int, float], ...], Tuple[Tuple[int, float], ...]]:
     common = _signature_common(own_signatures)
     if not common:
@@ -818,7 +819,7 @@ def _minimal_condition_signature(
             negative: Tuple[Tuple[int, float], ...] = ()
             if blockers:
                 found = _minimal_negative_signature(
-                    subset, own_set, set(blockers))
+                    subset, own_set, set(blockers), blocked_negative_slots)
                 if found is None:
                     continue
                 negative = found
@@ -832,12 +833,18 @@ def _minimal_condition_signature(
         if all(term in other for term in fallback)
     ]
     if blockers:
-        negative = _minimal_negative_signature(fallback, own_set, set(blockers))
+        negative = _minimal_negative_signature(
+            fallback, own_set, set(blockers), blocked_negative_slots)
         return fallback, negative or ()
     return fallback, ()
 
 
 def _minimize_anchor_branches(branches: List[_Branch]) -> None:
+    blocked_negative_slots = {
+        slot
+        for branch in branches
+        for slot in branch.assign
+    }
     scoped: Dict[Optional[int], List[_Branch]] = {}
     for branch in branches:
         scoped.setdefault(None if branch.markers else branch.form_gate, []).append(branch)
@@ -865,7 +872,8 @@ def _minimize_anchor_branches(branches: List[_Branch]) -> None:
                 ]
             assignment_slots = {slot for slot, _res in assign_key}
             positive, negative = _minimal_condition_signature(
-                own_signatures, other_signatures, assignment_slots)
+                own_signatures, other_signatures, assignment_slots,
+                blocked_negative_slots)
             for member in members:
                 member.signature = positive
                 member.negative_signature = negative
@@ -898,7 +906,8 @@ def _source_meta_for(source_meta: Optional[Dict[Tuple[str, int], List[str]]],
 
 def _minimal_negative_signature(positive: Tuple[Tuple[int, float], ...],
                                 own_signatures: Set[Tuple[Tuple[int, float], ...]],
-                                other_signatures: Set[Tuple[Tuple[int, float], ...]]
+                                other_signatures: Set[Tuple[Tuple[int, float], ...]],
+                                blocked_negative_slots: Optional[Set[int]] = None,
                                 ) -> Optional[Tuple[Tuple[int, float], ...]]:
     blocking = [
         other for other in other_signatures
@@ -914,6 +923,7 @@ def _minimal_negative_signature(positive: Tuple[Tuple[int, float], ...],
     stable_candidates = [
         term for term in candidates
         if not _volatile_condition_slot(term[0])
+        and term[0] not in (blocked_negative_slots or set())
     ]
     for term in sorted(stable_candidates):
         if any(term in own for own in own_signatures):
@@ -2253,80 +2263,39 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 sample.setdefault(assign_key, member)
             if len(by_assign) > 1:
                 conflict_count += len(by_assign) - 1
-                seen_forms: Set[int] = set()
-                overlapping_forms: Set[int] = set()
-                for form_ids in by_assign.values():
-                    overlapping_forms.update(seen_forms & form_ids)
-                    seen_forms |= form_ids
-                if overlapping_forms:
-                    if multi_form and not forms_fully_covered:
-                        raise SlotStyleDegrade(
-                            'multi-form slot branches need manual form anchors; '
-                            'add vb0:label anchors with the form finder before '
-                            'using concise slot export')
-                    marker_slots = _find_marker_slots_for_same_signature(
-                        members, alias)
-                    if not marker_slots:
-                        raise SlotStyleDegrade(
-                            f'component {comp_id}: multiple texture sets under '
-                            'the same format signature have no marker-only '
-                            'texture discriminator; refresh STU/log evidence')
-                    marker_by_member: Dict[_Branch, Tuple[str, ...]] = {}
-                    for member in members:
-                        marker_vars: List[str] = []
-                        for slot in marker_slots:
-                            tex_hash = member.observed.get(slot)
-                            if not tex_hash:
-                                raise SlotStyleDegrade(
-                                    f'component {comp_id}: marker slot ps-t{slot} '
-                                    'has no observed texture hash')
-                            marker_vars.append(_marker_var_for(comp_id, tex_hash))
-                        marker_by_member[member] = tuple(marker_vars)
-                    warnings.append(
-                        f'component {comp_id}: same-format texture sets use '
-                        'marker-only texture discriminator(s); assignments remain '
-                        'inside component ps-t branches')
-                    for member in members:
-                        merged.append(_branch_with_assign(
-                            member, dict(member.assign), None,
-                            marker_by_member.get(member, ())))
-                    _minimize_anchor_branches(merged)
-                    continue
-                if not multi_form or not forms_fully_covered:
+                marker_slots = _find_marker_slots_for_same_signature(
+                    members, alias)
+                if not marker_slots:
                     raise SlotStyleDegrade(
-                        f'component {comp_id}: multiple texture sets share one '
-                        f'format signature; add/refresh form anchors or re-extract '
-                        f'with Skip Dirty Slot enabled')
-                for assign_key, form_ids in sorted(by_assign.items()):
-                    member = sample[assign_key]
-                    if (not member.form_gate
-                            and _is_weak_anchor_branch(member, needs_form_gate=True)):
-                        suppressed_weak_branches += len(form_ids)
-                        for resource in dict(assign_key).values():
-                            tex_hash = resource_to_hash.get(resource)
-                            if tex_hash:
-                                suppressed_weak_hashes.add(tex_hash)
-                        continue
-                    for form_id in sorted(form_ids):
-                        if form_id == 0:
+                        f'component {comp_id}: multiple texture sets under '
+                        'the same format signature have no marker-only texture '
+                        'discriminator; refresh STU/log evidence')
+                marker_by_member: Dict[_Branch, Tuple[str, ...]] = {}
+                for member in members:
+                    marker_vars: List[str] = []
+                    for slot in marker_slots:
+                        tex_hash = member.observed.get(slot)
+                        if not tex_hash:
                             raise SlotStyleDegrade(
-                                f'component {comp_id}: single-form branch joined '
-                                f'a multi-form conflict')
-                        merged.append(_branch_with_assign(
-                            member, dict(assign_key), form_id))
+                                f'component {comp_id}: marker slot ps-t{slot} '
+                                'has no observed texture hash')
+                        marker_vars.append(_marker_var_for(comp_id, tex_hash))
+                    marker_by_member[member] = tuple(marker_vars)
+                warnings.append(
+                    f'component {comp_id}: same-format texture sets use '
+                    'marker-only texture discriminator(s); assignments remain '
+                    'inside component ps-t branches')
+                for member in members:
+                    merged.append(_branch_with_assign(
+                        member, dict(member.assign), None,
+                        marker_by_member.get(member, ())))
                 _minimize_anchor_branches(merged)
                 continue
             assign_key, form_ids = next(iter(by_assign.items()))
             member = sample[assign_key]
             if multi_form and form_ids != set(range(1, len(forms) + 1)):
-                if not forms_fully_covered:
-                    raise SlotStyleDegrade(
-                        'multi-form slot branches need manual form anchors; '
-                        'add vb0:label anchors with the form finder before '
-                        'using concise slot export')
-                for form_id in sorted(form_ids):
-                    merged.append(_branch_with_assign(
-                        member, dict(assign_key), form_id))
+                merged.append(_branch_with_assign(
+                    member, dict(assign_key), None))
             else:
                 merged.append(_branch_with_assign(
                     member, dict(assign_key), None))
