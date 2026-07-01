@@ -143,6 +143,10 @@ def _audit_draw_owners(text):
     errors = []
     seen = {}
     for name, block in _sections(text):
+        if re.match(r'TextureOverride_FoldHost_.*_LOD\d+(?:_ib\d+)?$', name):
+            errors.append(
+                "%s is a FoldHost LOD section and must not be emitted; "
+                "LOD draw sections are not format-tag twins" % name)
         is_owner = re.match(r'CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*$', name) is not None
         for draw in _drawindexed_tuples(block):
             if not is_owner:

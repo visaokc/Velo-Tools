@@ -389,14 +389,16 @@ def _fold_format_tag_twins(body_text, bc, fc, tag, mfi, mic):
     base draw range, so without a twin at the dungeon range the slot conditions go blind on the
     dungeon draw (same field-proven reason LOD draws need per-level twins). filter_index/match_format
     are copied verbatim (the family value is what the SetTextures list reads); only the match window
-    is swapped. The bare ``[TextureOverrideComponent{bc}]`` draw section (no format suffix) and the
-    ``TextureOverrideLod*`` twins are excluded. Empty for a hash-style body."""
+    is swapped. The bare ``[TextureOverrideComponent{bc}]`` draw section (no format suffix) and
+    ``LOD*`` draw sections are excluded. Empty for a hash-style body."""
     if not _slot_active(body_text, bc):
         return []
     twins = []
     pat = re.compile(r'^\[TextureOverrideComponent%d([A-Za-z][^\]]*)\]\s*$' % bc, re.M)
     for m in pat.finditer(body_text):
         fmt = m.group(1)
+        if re.fullmatch(r'LOD\d+', fmt):
+            continue
         sec = _section(body_text, 'TextureOverrideComponent%d%s' % (bc, fmt))
         if not sec:
             continue
