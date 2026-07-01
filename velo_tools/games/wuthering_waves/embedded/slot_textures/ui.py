@@ -477,6 +477,19 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class VTWW_OT_anchor_candidates_reset(bpy.types.Operator):
+    bl_idname = "vtww.anchor_candidates_reset"
+    bl_label = "重置候选"
+    bl_description = "清空形态锚点候选结果，不清空 Dump 路径或已填写的形态锚点"
+
+    def execute(self, context):
+        slot_cfg = context.scene.vtww_slot_settings
+        slot_cfg.anchor_candidates.clear()
+        slot_cfg.anchor_status = ''
+        self.report({'INFO'}, "已清空形态锚点候选")
+        return {'FINISHED'}
+
+
 class VTWW_OT_apply_form_anchor(bpy.types.Operator):
     bl_idname = "vtww.apply_form_anchor"
     bl_label = "采用"
@@ -508,7 +521,10 @@ def _draw_anchor_finder(layout, slot_cfg, wwmi_cfg):
     fact, one property - the object_source_folder pattern), so both pages
     always show the same value with zero sync code."""
     box = layout.box()
-    box.label(text="形态锚点查找", icon='VIEWZOOM')
+    header = box.row(align=True)
+    header.label(text="形态锚点查找", icon='VIEWZOOM')
+    header.operator(VTWW_OT_anchor_candidates_reset.bl_idname,
+                    text='', icon='FILE_REFRESH')
     box.row().prop(wwmi_cfg, 'frame_dump_folder', text="基础形态 Dump")
     for index, row_item in enumerate(slot_cfg.anchor_form_dumps):
         split = box.row(align=True).split(factor=0.62, align=True)
@@ -665,6 +681,7 @@ _CLASSES = (
     VTWW_OT_anchor_form_dump_add,
     VTWW_OT_anchor_form_dump_remove,
     VTWW_OT_find_form_anchors,
+    VTWW_OT_anchor_candidates_reset,
     VTWW_OT_apply_form_anchor,
     VTWW_UL_slot_components,
     VTWW_OT_slot_populate_components,
