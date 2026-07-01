@@ -9,6 +9,7 @@ import re
 import struct
 
 from dataclasses import dataclass, field
+from itertools import combinations
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -274,6 +275,8 @@ class _Branch:
     assign: Dict[int, str]
     form_gate: Optional[int]
     source: str
+    negative_signature: Tuple[Tuple[int, float], ...] = ()
+    full_signature: Tuple[Tuple[int, float], ...] = ()
     pass_role: str = 'material'
     condition_slots: Tuple[int, ...] = ()
     assignment_slots: Tuple[int, ...] = ()
@@ -300,6 +303,8 @@ def _branch_with_assign(branch: _Branch,
         assign=assign,
         form_gate=form_gate,
         source=branch.source,
+        negative_signature=branch.negative_signature,
+        full_signature=branch.full_signature,
         pass_role=branch.pass_role,
         condition_slots=branch.condition_slots,
         assignment_slots=tuple(sorted(assign)),
@@ -312,38 +317,35 @@ def _is_weak_anchor_branch(branch: _Branch,
     condition_slots = branch.condition_slots or tuple(
         slot for slot, _key in branch.signature)
     assignment_slots = branch.assignment_slots or tuple(sorted(branch.assign))
-    if (needs_form_gate
-            and len(condition_slots) == 1
+    if (len(condition_slots) == 1
+            and not branch.negative_signature
             and len(assignment_slots) == 1):
         return True
-    return branch.pass_role == 'auxiliary' and len(assignment_slots) == 1
+    return (branch.pass_role == 'auxiliary'
+            and len(condition_slots) == 1
+            and not branch.negative_signature
+            and len(assignment_slots) == 1)
 
 
 def _local_branch_is_weak(signature: Tuple[Tuple[int, float], ...],
                           negative_signature: Tuple[Tuple[int, float], ...],
                           assign: Dict[int, str],
                           pass_role: str) -> bool:
-    return (len(signature) == 1
-            and not negative_signature
-            and len(assign) == 1)
+    return len(signature) == 1 and not negative_signature and len(assign) == 1
 
 
 def _branch_covered_by_stronger_layout(branch: _Branch,
                                        candidates: List[_Branch]) -> bool:
-    assign_items = set(branch.assign.items())
-    signature_items = set(branch.signature)
-    if not assign_items or not signature_items:
+    condition = (branch.signature, branch.negative_signature,
+                 branch.form_gate, tuple(sorted(branch.assign.items())))
+    if not branch.signature:
         return False
     for candidate in candidates:
         if candidate is branch:
             continue
-        if candidate.form_gate != branch.form_gate:
-            continue
-        if len(candidate.signature) <= len(branch.signature):
-            continue
-        if not signature_items.issubset(set(candidate.signature)):
-            continue
-        if assign_items.issubset(set(candidate.assign.items())):
+        other = (candidate.signature, candidate.negative_signature,
+                 candidate.form_gate, tuple(sorted(candidate.assign.items())))
+        if other == condition:
             return True
     return False
 
@@ -499,6 +501,146 @@ def _signature_key(pair_map: Dict[int, Optional[str]],
     return tuple(signature)
 
 
+def _ordered_signature(terms: Set[Tuple[int, float]] | Tuple[Tuple[int, float], ...]
+                       ) -> Tuple[Tuple[int, float], ...]:
+    return tuple(sorted(terms))
+
+
+def _signature_common(signatures: List[Tuple[Tuple[int, float], ...]]
+                      ) -> Tuple[Tuple[int, float], ...]:
+    if not signatures:
+        return ()
+    common = set(signatures[0])
+    for signature in signatures[1:]:
+        common &= set(signature)
+    return _ordered_signature(common)
+
+
+def _volatile_condition_slot(slot: int) -> bool:
+    return slot >= 5
+
+
+def _condition_term_sort_key(term: Tuple[int, float],
+                             assignment_slots: Set[int]) -> Tuple[int, int, float]:
+    slot, key = term
+    assigned = slot in assignment_slots
+    volatile = _volatile_condition_slot(slot)
+    if assigned and not volatile:
+        group = 0
+    elif not volatile:
+        group = 1
+    elif assigned:
+        group = 2
+    else:
+        group = 3
+    return (group, slot, key)
+
+
+def _safe_condition_shape(positive: Tuple[Tuple[int, float], ...],
+                          negative: Tuple[Tuple[int, float], ...]) -> bool:
+    return len(positive) > 1 or bool(negative)
+
+
+def _default_condition_signature(common: Tuple[Tuple[int, float], ...],
+                                 assignment_slots: Set[int]
+                                 ) -> Tuple[Tuple[int, float], ...]:
+    terms = sorted(common, key=lambda term: _condition_term_sort_key(
+        term, assignment_slots))
+    selected: List[Tuple[int, float]] = [
+        term for term in terms
+        if term[0] in assignment_slots and not _volatile_condition_slot(term[0])
+    ]
+    if selected:
+        return _ordered_signature(tuple(selected))
+
+    selected = [
+        term for term in terms
+        if not _volatile_condition_slot(term[0])
+    ]
+    if selected:
+        return _ordered_signature(tuple(selected))
+
+    for term in terms:
+        if term[0] in assignment_slots:
+            selected.append(term)
+    if not selected:
+        for term in terms:
+            selected.append(term)
+    return _ordered_signature(tuple(selected))
+
+
+def _minimal_condition_signature(
+        own_signatures: List[Tuple[Tuple[int, float], ...]],
+        other_signatures: List[Tuple[Tuple[int, float], ...]],
+        assignment_slots: Set[int],
+        ) -> Tuple[Tuple[Tuple[int, float], ...], Tuple[Tuple[int, float], ...]]:
+    common = _signature_common(own_signatures)
+    if not common:
+        return (), ()
+    if not other_signatures:
+        return _default_condition_signature(common, assignment_slots), ()
+
+    ordered_terms = sorted(common, key=lambda term: _condition_term_sort_key(
+        term, assignment_slots))
+    own_set = set(own_signatures)
+    other_set = set(other_signatures)
+    for size in range(1, len(ordered_terms) + 1):
+        for subset_raw in combinations(ordered_terms, size):
+            subset = _ordered_signature(tuple(subset_raw))
+            blockers = [
+                other for other in other_set
+                if all(term in other for term in subset)
+            ]
+            negative: Tuple[Tuple[int, float], ...] = ()
+            if blockers:
+                found = _minimal_negative_signature(
+                    subset, own_set, set(blockers))
+                if found is None:
+                    continue
+                negative = found
+            if not _safe_condition_shape(subset, negative):
+                continue
+            return subset, negative
+
+    fallback = _default_condition_signature(common, assignment_slots)
+    blockers = [
+        other for other in other_set
+        if all(term in other for term in fallback)
+    ]
+    if blockers:
+        negative = _minimal_negative_signature(fallback, own_set, set(blockers))
+        return fallback, negative or ()
+    return fallback, ()
+
+
+def _minimize_anchor_branches(branches: List[_Branch]) -> None:
+    scoped: Dict[Optional[int], List[_Branch]] = {}
+    for branch in branches:
+        scoped.setdefault(branch.form_gate, []).append(branch)
+    for scope_branches in scoped.values():
+        groups: Dict[Tuple[Tuple[Tuple[int, str], ...], str], List[_Branch]] = {}
+        for branch in scope_branches:
+            assign_key = tuple(sorted(branch.assign.items()))
+            groups.setdefault((assign_key, branch.pass_role), []).append(branch)
+        for (assign_key, _role), members in groups.items():
+            own_signatures = [
+                member.full_signature or member.signature
+                for member in members
+            ]
+            other_signatures = [
+                other.full_signature or other.signature
+                for other in scope_branches
+                if tuple(sorted(other.assign.items())) != assign_key
+            ]
+            assignment_slots = {slot for slot, _res in assign_key}
+            positive, negative = _minimal_condition_signature(
+                own_signatures, other_signatures, assignment_slots)
+            for member in members:
+                member.signature = positive
+                member.negative_signature = negative
+                member.condition_slots = tuple(slot for slot, _key in positive)
+
+
 def _condition_source(comp_id: int,
                       ps: str,
                       slots: Set[int],
@@ -538,7 +680,11 @@ def _minimal_negative_signature(positive: Tuple[Tuple[int, float], ...],
         for term in other:
             if term not in positive and term not in candidates:
                 candidates.append(term)
-    for term in sorted(candidates):
+    stable_candidates = [
+        term for term in candidates
+        if not _volatile_condition_slot(term[0])
+    ]
+    for term in sorted(stable_candidates):
         if any(term in own for own in own_signatures):
             continue
         if all(term in other for other in blocking):
@@ -714,25 +860,58 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                             sample['forms'].append(label)
                         sample['sources'].append({'form': label, 'ps': ps})
 
-    conflicts = []
+    minimized_branch_samples: Dict[
+        Tuple[int, Tuple[Tuple[int, str], ...], Tuple[Tuple[int, float], ...]],
+        dict,
+    ] = {}
     for comp_id, by_assign in sorted(component_assignments.items()):
-        if len(by_assign) <= 1:
-            continue
         for assign_key, signatures in sorted(by_assign.items()):
-            other_signatures = set()
-            for other_key, values in by_assign.items():
-                if other_key != assign_key:
-                    other_signatures.update(values)
-            for sig in sorted(signatures, key=lambda value: (-len(value), value)):
-                negative = _minimal_negative_signature(
-                    sig, set(signatures), other_signatures)
-                sample = branch_samples.get((comp_id, assign_key, sig))
-                if sample is None:
-                    continue
-                if negative is None:
-                    sample['unresolved'] = True
-                else:
-                    sample['negative_signature'] = _serialized_signature(negative)
+            other_signatures = [
+                sig for other_key, values in by_assign.items()
+                if other_key != assign_key for sig in values
+            ]
+            positive, negative = _minimal_condition_signature(
+                list(signatures), other_signatures,
+                {slot for slot, _tex_hash in assign_key})
+            samples = [
+                branch_samples[(comp_id, assign_key, sig)]
+                for sig in signatures
+                if (comp_id, assign_key, sig) in branch_samples
+            ]
+            if not samples:
+                continue
+            sample = dict(samples[0])
+            forms_seen: Set[str] = set()
+            sources: List[dict] = []
+            remap_sources: List[str] = []
+            condition_sources: Set[str] = set()
+            pass_roles: Set[str] = set()
+            for item in samples:
+                forms_seen.update(item.get('forms') or [])
+                sources.extend(src for src in (item.get('sources') or [])
+                               if isinstance(src, dict))
+                condition_sources.add(str(item.get('condition_source') or ''))
+                pass_roles.add(str(item.get('pass_role') or ''))
+                for remap in item.get('remap_sources') or []:
+                    if isinstance(remap, str) and remap not in remap_sources:
+                        remap_sources.append(remap)
+            sample['signature'] = _serialized_signature(positive)
+            sample['positive_signature'] = _serialized_signature(positive)
+            sample['negative_signature'] = _serialized_signature(negative)
+            sample['condition_slots'] = [slot for slot, _key in positive]
+            sample['forms'] = sorted(forms_seen)
+            sample['sources'] = sources
+            sample['condition_source'] = (
+                condition_sources.pop() if len(condition_sources) == 1
+                else 'mixed')
+            if len(pass_roles) == 1:
+                sample['pass_role'] = pass_roles.pop()
+            if remap_sources:
+                sample['remap_sources'] = remap_sources
+            minimized_branch_samples[(comp_id, assign_key, positive)] = sample
+    branch_samples = minimized_branch_samples
+
+    conflicts = []
 
     unresolved_components: Set[int] = set()
     for comp_id, by_assign in sorted(component_assignments.items()):
@@ -740,9 +919,9 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
             continue
         for assign_key, signatures in sorted(by_assign.items()):
             has_branch = False
-            for sig in signatures:
-                sample = branch_samples.get((comp_id, assign_key, sig))
-                if sample is None:
+            for sample_key, sample in branch_samples.items():
+                sample_comp, sample_assign, _sample_sig = sample_key
+                if sample_comp != comp_id or sample_assign != assign_key:
                     continue
                 pos = _signature_from_audit(sample.get('positive_signature')
                                             or sample.get('signature'))
@@ -864,11 +1043,17 @@ def _local_conflict_messages(records: List[dict],
                         record['signature']):
                     matched.setdefault(
                         record['assign_key'], []).append(record.get('source') or '?')
-            if any(assign_key != branch['assign_key'] for assign_key in matched):
+            branch_assign = tuple(branch['assign_key'])
+            branch_set = set(branch_assign)
+            unsafe_matches = {
+                assign_key: sources for assign_key, sources in matched.items()
+                if not branch_set.issubset(set(assign_key))
+            }
+            if unsafe_matches:
                 issue_key = (
                     branch['signature'],
                     branch.get('negative_signature') or (),
-                    tuple(sorted(matched)),
+                    tuple(sorted(unsafe_matches)),
                 )
                 if issue_key in seen_issues:
                     continue
@@ -876,11 +1061,11 @@ def _local_conflict_messages(records: List[dict],
                 issues.append({
                     'signature': branch['signature'],
                     'negative_signature': branch.get('negative_signature') or (),
-                    'branch_assign': branch['assign_key'],
+                    'branch_assign': branch_assign,
                     'branch_source': branch.get('source') or '?',
                     'members': [
                         {'assign': assign_key, 'sources': sorted(set(sources))}
-                        for assign_key, sources in sorted(matched.items())
+                        for assign_key, sources in sorted(unsafe_matches.items())
                     ],
                 })
         if issues:
@@ -987,21 +1172,25 @@ def _local_branches_from_audit(audit: dict,
         except (KeyError, TypeError, ValueError):
             raise SlotStyleDegrade(
                 f'local form discriminator row #{index} has no component id')
-        if (slot_eligible_components is not None
-                and comp_id not in slot_eligible_components):
-            continue
         signature = _signature_from_audit(row.get('signature'))
         if not signature:
             continue
         source = _source_from(row, f'row#{index}')
         _assign, _assign_key = _effective_assignment(
             row.get('assign_hashes'), comp_id, source)
+        row_assign_key = tuple(sorted(
+            (int(slot), canon_fn(tex_hash))
+            for slot, tex_hash in (row.get('assign_hashes') or {}).items()
+            if str(slot).isdigit()
+            and isinstance(tex_hash, str)
+            and canon_fn(tex_hash) in mod_hashes
+        ))
         branch_records.append({
             'kind': 'row',
             'component': comp_id,
             'signature': signature,
             'negative_signature': (),
-            'assign_key': _assign_key,
+            'assign_key': row_assign_key,
             'source': source,
         })
 
@@ -1042,27 +1231,51 @@ def _local_branches_from_audit(audit: dict,
     row_records = [record for record in branch_records
                    if record.get('kind') == 'row']
     kept_branch_records: List[dict] = []
-    for comp_id, entry, assign, assign_key, source in pending_branches:
-        signature = _signature_from_audit(
-            entry.get('positive_signature') or entry.get('signature'))
-        negative_signature = _signature_from_audit(entry.get('negative_signature'))
+    grouped_pending: Dict[
+        Tuple[int, Tuple[Tuple[int, str], ...], str],
+        List[Tuple[int, dict, Dict[int, str], Tuple[Tuple[int, str], ...], str]],
+    ] = {}
+    for item in pending_branches:
+        comp_id, entry, _assign, assign_key, _source = item
         pass_role = str(entry.get('pass_role') or '')
-        matched_assignments = {
-            record.get('assign_key') or ()
-            for record in row_records
-            if int(record.get('component')) == comp_id
-            and _local_condition_matches(
-                signature, negative_signature, record['signature'])
-        }
-        weak_problem = any(key != assign_key for key in matched_assignments)
-        if (weak_problem and _local_branch_is_weak(
+        grouped_pending.setdefault((comp_id, assign_key, pass_role), []).append(item)
+
+    row_signatures: Dict[
+        int,
+        Dict[Tuple[Tuple[int, str], ...], Set[Tuple[Tuple[int, float], ...]]],
+    ] = {}
+    for record in row_records:
+        comp_id = int(record.get('component'))
+        row_signatures.setdefault(comp_id, {}).setdefault(
+            record.get('assign_key') or (), set()).add(record['signature'])
+
+    for (comp_id, assign_key, pass_role), items in sorted(grouped_pending.items()):
+        entry_signatures = [
+            _signature_from_audit(item[1].get('positive_signature')
+                                  or item[1].get('signature'))
+            for item in items
+        ]
+        own_signatures = list(
+            row_signatures.get(comp_id, {}).get(assign_key, set()))
+        if not own_signatures:
+            own_signatures = [sig for sig in entry_signatures if sig]
+        other_signatures = [
+            sig for other_key, values in row_signatures.get(comp_id, {}).items()
+            if other_key != assign_key for sig in values
+        ]
+        signature, negative_signature = _minimal_condition_signature(
+            own_signatures, other_signatures,
+            {slot for slot, _tex_hash in assign_key})
+        assign = dict(items[0][2])
+        source = ','.join(item[4] for item in items)
+        component_excluded = (
+            slot_eligible_components is not None
+            and comp_id not in slot_eligible_components)
+        if (not component_excluded and _local_branch_is_weak(
                 signature, negative_signature, assign, pass_role)):
             suppressed_weak_branches += 1
-            for tex_hash in (entry.get('assign_hashes') or {}).values():
-                if isinstance(tex_hash, str):
-                    canon = canon_fn(tex_hash)
-                    if canon in mod_hashes:
-                        suppressed_weak_hashes.add(canon)
+            for _slot, tex_hash in assign_key:
+                suppressed_weak_hashes.add(tex_hash)
             continue
         kept_branch_records.append({
             'kind': 'branch',
@@ -1086,17 +1299,6 @@ def _local_branches_from_audit(audit: dict,
     problems = _local_conflict_messages(branch_records, slot_eligible_components)
     if problems:
         raise SlotStyleDegrade(_format_local_conflict_message(problems))
-    if not component_branches:
-        if suppressed_weak_branches:
-            comps = sorted({
-                item[0] for item in pending_branches
-                if slot_eligible_components is None or item[0] in slot_eligible_components
-            })
-            comp_text = ', '.join(f'Component {comp}' for comp in comps)
-            raise SlotStyleDegrade(
-                f'{comp_text}: all local slot branches were weak single-slot '
-                'conditions and were suppressed')
-        raise SlotStyleDegrade('no component produced any slot assignment')
     return (component_branches, assigned_hashes,
             suppressed_weak_branches, suppressed_weak_hashes)
 
@@ -1161,6 +1363,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             f'suppressed {suppressed_weak_branches} weak local slot branch(es); '
             'single-slot positive conditions without a negative discriminator '
             'are unsafe for same-IB multi-instance rendering')
+    for tex_hash in sorted(suppressed_weak_hashes):
+        _route_live(tex_hash, 'not represented by a safe local slot branch')
     if slot_eligible_components is not None:
         resource_to_hash_for_exclusion = {res: h for h, res in textures}
         excluded_hashes: Set[str] = set()
@@ -1183,10 +1387,47 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             _route_live(h, 'component excluded from slot layer')
     if not component_branches:
         if live_fallback:
-            raise SlotStyleDegrade(
-                'all slot candidates were routed to stock hash sections; no '
-                'slot command lists were emitted')
-        raise SlotStyleDegrade('no component produced any slot assignment')
+            return SlotPlan(
+                block_text='',
+                component_list_names={},
+                covered_resource_indices=set(),
+                blind_zone=[],
+                multi_form=False,
+                used_slots=[],
+                phantom_only_resource_indices=set(),
+                phantom_suppressed=[],
+                extra_globals=[],
+                watchdog_lines=[],
+                default_form_id=1,
+                live_fallback=dict(live_fallback),
+                warnings=warnings,
+                stats={
+                    'forms': len(forms),
+                    'components': 0,
+                    'branches': 0,
+                    'conflicts': 0,
+                    'marks': 0,
+                    'fork_latches': 0,
+                    'anchors': 0,
+                    'anchor_watchdog': 0,
+                    'probes': 0,
+                    'live_fallback': len(live_fallback),
+                    'format_sections': 0,
+                    'format_sections_raw': 0,
+                    'format_sections_unique': 0,
+                    'format_sections_removed': 0,
+                    'covered_textures': 0,
+                    'blind_zone_textures': 0,
+                    'phantom_suppressed_textures': 0,
+                    'phantom_pairs': phantom_pairs,
+                    'dirty_slots': dirty_slots,
+                    'service_slots': 0,
+                    'suppressed_latches': 0,
+                    'local_form_discriminator': 1,
+                    'suppressed_weak_branches': suppressed_weak_branches,
+                },
+            )
+        raise SlotStyleDegrade('no component produced any safe slot assignment')
 
     merged_component_branches: Dict[int, List[_LocalBranch]] = {}
     for comp_id, branches in component_branches.items():
@@ -1263,8 +1504,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         chunk: List[str] = ['', f'[{name}]', 'if $object_detected == 1']
         ordered = sorted(
             component_branches[comp_id],
-            key=lambda b: (-len(b.signature), b.form_id, b.signature,
-                           tuple(sorted(b.assign.items()))))
+            key=lambda b: (-len(b.assign), -len(b.signature), b.form_id,
+                           b.signature, tuple(sorted(b.assign.items()))))
         first = True
         for branch in ordered:
             terms = _terms(comp_id, branch)
@@ -1279,9 +1520,6 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             body_chunks.append('\n'.join(chunk))
         else:
             component_list_names.pop(comp_id, None)
-
-    if not body_chunks:
-        raise SlotStyleDegrade('no component produced a complete slot condition')
 
     covered_resource_indices: Set[int] = set()
     blind_zone: List[Tuple[str, str]] = []
@@ -1305,6 +1543,48 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                 phantom_suppressed.append((h, section))
             else:
                 blind_zone.append((h, section))
+
+    if not body_chunks:
+        return SlotPlan(
+            block_text='',
+            component_list_names={},
+            covered_resource_indices=covered_resource_indices,
+            blind_zone=blind_zone,
+            multi_form=False,
+            used_slots=[],
+            phantom_only_resource_indices=phantom_only_resource_indices,
+            phantom_suppressed=phantom_suppressed,
+            extra_globals=[],
+            watchdog_lines=[],
+            default_form_id=1,
+            live_fallback=dict(live_fallback),
+            warnings=warnings,
+            stats={
+                'forms': len(forms),
+                'components': 0,
+                'branches': 0,
+                'conflicts': 0,
+                'marks': 0,
+                'fork_latches': 0,
+                'anchors': 0,
+                'anchor_watchdog': 0,
+                'probes': 0,
+                'live_fallback': len(live_fallback),
+                'format_sections': 0,
+                'format_sections_raw': 0,
+                'format_sections_unique': 0,
+                'format_sections_removed': 0,
+                'covered_textures': len(covered_resource_indices),
+                'blind_zone_textures': len(blind_zone),
+                'phantom_suppressed_textures': len(phantom_only_resource_indices),
+                'phantom_pairs': phantom_pairs,
+                'dirty_slots': dirty_slots,
+                'service_slots': 0,
+                'suppressed_latches': 0,
+                'local_form_discriminator': 1,
+                'suppressed_weak_branches': suppressed_weak_branches,
+            },
+        )
 
     out: List[str] = []
     form_sources = ', '.join(label for label, _ in forms)
@@ -1520,7 +1800,9 @@ def build_plan(forms: List[Tuple[str, FormData]],
         if re.fullmatch(r'[0-9a-f]{8}', h):
             anchor_resources.append((h, form_id))
         elif re.fullmatch(r'[0-9a-f]{16}', h):
-            anchor_shaders.append((h, form_id))
+            warnings.append(
+                f'form anchor {anchor_hash!r} skipped (shader-hash anchors are '
+                'audit-only and cannot be emitted as runtime slot conditions)')
         else:
             warnings.append(
                 f'form anchor {anchor_hash!r} skipped (expected an 8-hex '
@@ -1594,6 +1876,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     assign=assigned,
                     form_gate=form_id if multi_form else None,
                     source=f'{label}/ps={ps}',
+                    full_signature=tuple(signature),
                     pass_role=pass_role,
                     condition_slots=tuple(slot for slot, _key in signature),
                     assignment_slots=tuple(sorted(assigned)),
@@ -1657,6 +1940,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     for form_id in gate_ids:
                         merged.append(_branch_with_assign(
                             member, dict(common), form_id or None))
+                    _minimize_anchor_branches(merged)
                     continue
                 if not multi_form or not forms_fully_covered:
                     raise SlotStyleDegrade(
@@ -1679,6 +1963,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                                 f'a multi-form conflict')
                         merged.append(_branch_with_assign(
                             member, dict(assign_key), form_id))
+                _minimize_anchor_branches(merged)
                 continue
             assign_key, form_ids = next(iter(by_assign.items()))
             member = sample[assign_key]
@@ -1694,6 +1979,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             else:
                 merged.append(_branch_with_assign(
                     member, dict(assign_key), None))
+        _minimize_anchor_branches(merged)
         kept: List[_Branch] = []
         for branch in merged:
             if _is_weak_anchor_branch(branch, needs_form_gate=False):
@@ -1750,6 +2036,12 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 continue
             used_families.setdefault(comp_id, set()).add(key)
             terms.append(f'ps-t{slot} == {text}')
+        for slot, key in branch.negative_signature:
+            text = fi_text.get(key)
+            if text is None:
+                continue
+            used_families.setdefault(comp_id, set()).add(key)
+            terms.append(f'ps-t{slot} != {text}')
         return terms
 
     def _condition(terms: List[str], form_gate: Optional[int] = None) -> str:
@@ -1768,39 +2060,22 @@ def build_plan(forms: List[Tuple[str, FormData]],
         name = constants.CMDLIST_SET_TEXTURES.format(component_id=comp_id)
         component_list_names[comp_id] = name
         chunk: List[str] = ['', f'[{name}]']
-        for h, form_id in sorted(anchor_shaders):
-            value = constants.ps_mark_value(h)
-            chunk.append(f'if ps == {value} || vs == {value}')
-            chunk.append(f'    {constants.VAR_FORM} = {form_id}')
-            if watchdog_form is not None:
-                chunk.append(f'    {constants.VAR_ANCHOR_SEEN} = 1')
-            chunk.append('endif')
 
         ordered = sorted(
             component_branches[comp_id],
-            key=lambda b: (-len(b.signature), b.form_gate or 0,
-                           b.signature, tuple(sorted(b.assign.items()))))
+            key=lambda b: (-len(b.assign), -len(b.signature), b.form_gate or 0,
+                           b.signature, b.negative_signature,
+                           tuple(sorted(b.assign.items()))))
         first = True
-        by_signature: Dict[Tuple[Tuple[int, float], ...], List[_Branch]] = {}
-        signature_order: List[Tuple[Tuple[int, float], ...]] = []
         for branch in ordered:
-            if branch.signature not in by_signature:
-                signature_order.append(branch.signature)
-            by_signature.setdefault(branch.signature, []).append(branch)
-
-        for signature in signature_order:
-            branches = sorted(
-                by_signature[signature],
-                key=lambda b: (b.form_gate or 0, tuple(sorted(b.assign.items()))))
-            terms = _terms(comp_id, branches[0])
+            terms = _terms(comp_id, branch)
             if not terms:
                 continue
 
-            for branch in branches:
-                chunk.append(f'{"if" if first else "else if"} '
-                             f'{_condition(terms, branch.form_gate)}')
-                _append_assignments(chunk, branch.assign, '    ')
-                first = False
+            chunk.append(f'{"if" if first else "else if"} '
+                         f'{_condition(terms, branch.form_gate)}')
+            _append_assignments(chunk, branch.assign, '    ')
+            first = False
         if not first:
             chunk.append('endif')
             body_chunks.append('\n'.join(chunk))
@@ -1852,12 +2127,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
             out.append(f'{constants.VAR_FORM} = {form_id}')
             if watchdog_form is not None:
                 out.append(f'{constants.VAR_ANCHOR_SEEN} = 1')
-        for h, form_id in sorted(anchor_shaders):
-            out.append('')
-            out.append(f'[{constants.SEC_SHADER_ANCHOR.format(anchor_hash=h)}]')
-            out.append(f'hash = {h}')
-            out.append('allow_duplicate_hash = true')
-            out.append(f'filter_index = {constants.ps_mark_value(h)}')
 
     out.extend(body_chunks)
 
