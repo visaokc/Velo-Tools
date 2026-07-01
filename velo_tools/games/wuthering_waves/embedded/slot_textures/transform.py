@@ -153,6 +153,10 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             continue
         for i in trigger_indices:
             indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+            reset_vars = getattr(plan, 'marker_reset_vars_by_component', {}).get(comp_id, [])
+            if reset_vars:
+                insert_before.setdefault(i, []).extend(
+                    f'{indent}{var} = 0' for var in reset_vars)
             insert_after.setdefault(i, []).append(f'{indent}run = {list_name}')
         injected_components.add(comp_id)
 

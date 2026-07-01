@@ -262,6 +262,7 @@ class SlotPlan:
     phantom_suppressed: List[Tuple[str, str]] = field(default_factory=list)
     extra_globals: List[str] = field(default_factory=list)
     watchdog_lines: List[str] = field(default_factory=list)
+    marker_reset_vars_by_component: Dict[int, List[str]] = field(default_factory=dict)
     default_form_id: int = 1
     live_fallback: Dict[str, str] = field(default_factory=dict)
     slot_unrepresented: List[Dict[str, object]] = field(default_factory=list)
@@ -317,6 +318,8 @@ class _Branch:
     condition_slots: Tuple[int, ...] = ()
     assignment_slots: Tuple[int, ...] = ()
     ps: str = ''
+    observed: Dict[int, str] = field(default_factory=dict)
+    markers: Tuple[str, ...] = ()
 
 
 @dataclass(eq=False)
@@ -332,7 +335,8 @@ class _LocalBranch:
 
 def _branch_with_assign(branch: _Branch,
                         assign: Dict[int, str],
-                        form_gate: Optional[int]) -> _Branch:
+                        form_gate: Optional[int],
+                        markers: Tuple[str, ...] = ()) -> _Branch:
     return _Branch(
         signature=branch.signature,
         assign=assign,
@@ -344,11 +348,15 @@ def _branch_with_assign(branch: _Branch,
         condition_slots=branch.condition_slots,
         assignment_slots=tuple(sorted(assign)),
         ps=branch.ps,
+        observed=dict(branch.observed),
+        markers=tuple(markers or branch.markers),
     )
 
 
 def _is_weak_anchor_branch(branch: _Branch,
                            needs_form_gate: bool = True) -> bool:
+    if branch.markers:
+        return False
     condition_slots = branch.condition_slots or tuple(
         slot for slot, _key in branch.signature)
     assignment_slots = branch.assignment_slots or tuple(sorted(branch.assign))
@@ -371,11 +379,15 @@ def _local_branch_is_weak(signature: Tuple[Tuple[int, float], ...],
 
 def _branch_covered_by_stronger_layout(branch: _Branch,
                                        candidates: List[_Branch]) -> bool:
+    if branch.markers:
+        return False
     condition = _branch_key(branch)
     if not branch.signature:
         return False
     for candidate in candidates:
         if candidate is branch:
+            continue
+        if branch.markers and candidate.markers != branch.markers:
             continue
         other = _branch_key(candidate)
         if other == condition:
@@ -425,6 +437,8 @@ def _branch_resources_covered_by_stronger_layout(
     for candidate in candidates:
         if candidate is branch or candidate.form_gate != branch.form_gate:
             continue
+        if branch.markers and candidate.markers != branch.markers:
+            continue
         if _is_weak_anchor_branch(candidate, needs_form_gate=False):
             continue
         if not set(candidate.assign.values()).issuperset(resources):
@@ -440,13 +454,23 @@ def _branch_key(branch: _Branch) -> Tuple[
         Tuple[Tuple[int, float], ...],
         Tuple[Tuple[int, float], ...],
         Optional[int],
-        Tuple[Tuple[int, str], ...]]:
+        Tuple[Tuple[int, str], ...],
+        Tuple[str, ...]]:
     return (
         branch.signature,
         branch.negative_signature,
         branch.form_gate,
         tuple(sorted(branch.assign.items())),
+        branch.markers,
     )
+
+
+def _marker_var_name(comp_id: int, marker_id: int) -> str:
+    return f'$slot_tex_c{comp_id}_m{marker_id}'
+
+
+def _marker_section_name(comp_id: int, marker_id: int) -> str:
+    return f'TextureOverrideSlotMarkerComponent{comp_id}_{marker_id}'
 
 
 def _row_matches_condition(pair_map: Dict[int, Optional[str]],
@@ -467,6 +491,48 @@ def _row_matches_condition(pair_map: Dict[int, Optional[str]],
         if _family_key(tex_hash, texture_info) == forbidden:
             return False
     return True
+
+
+def _branch_observed_matches(branch: _Branch, observed: Dict[int, str]) -> bool:
+    if not branch.observed:
+        return False
+    for slot, tex_hash in branch.observed.items():
+        if observed.get(slot) != tex_hash:
+            return False
+    return True
+
+
+def _find_marker_slots_for_same_signature(
+        members: List[_Branch],
+        alias: Dict[str, str]) -> Optional[List[int]]:
+    observed_rows = [member.observed for member in members if member.observed]
+    if len(observed_rows) != len(members):
+        return None
+    slots = sorted(set().union(*(set(row) for row in observed_rows)))
+    for size in range(1, len(slots) + 1):
+        for subset in combinations(slots, size):
+            keys = []
+            for row in observed_rows:
+                key = tuple(
+                    (slot, alias.get(row.get(slot), row.get(slot)))
+                    for slot in subset
+                )
+                keys.append(key)
+            separated = True
+            for left_index, left in enumerate(members):
+                for right_index, right in enumerate(members):
+                    if right_index <= left_index:
+                        continue
+                    if left.assign == right.assign:
+                        continue
+                    if keys[left_index] == keys[right_index]:
+                        separated = False
+                        break
+                if not separated:
+                    break
+            if separated:
+                return list(subset)
+    return None
 
 
 def _branch_assignments_match_observed_scope(
@@ -774,13 +840,13 @@ def _minimal_condition_signature(
 def _minimize_anchor_branches(branches: List[_Branch]) -> None:
     scoped: Dict[Optional[int], List[_Branch]] = {}
     for branch in branches:
-        scoped.setdefault(branch.form_gate, []).append(branch)
+        scoped.setdefault(None if branch.markers else branch.form_gate, []).append(branch)
     for scope_branches in scoped.values():
-        groups: Dict[Tuple[Tuple[Tuple[int, str], ...], str], List[_Branch]] = {}
+        groups: Dict[Tuple[Tuple[Tuple[int, str], ...], str, Tuple[str, ...]], List[_Branch]] = {}
         for branch in scope_branches:
             assign_key = tuple(sorted(branch.assign.items()))
-            groups.setdefault((assign_key, branch.pass_role), []).append(branch)
-        for (assign_key, _role), members in groups.items():
+            groups.setdefault((assign_key, branch.pass_role, branch.markers), []).append(branch)
+        for (assign_key, _role, markers), members in groups.items():
             own_signatures = [
                 member.full_signature or member.signature
                 for member in members
@@ -788,8 +854,15 @@ def _minimize_anchor_branches(branches: List[_Branch]) -> None:
             other_signatures = [
                 other.full_signature or other.signature
                 for other in scope_branches
-                if tuple(sorted(other.assign.items())) != assign_key
+                if (tuple(sorted(other.assign.items())) != assign_key
+                    or other.markers != markers)
             ]
+            if markers:
+                other_signatures = [
+                    other.full_signature or other.signature
+                    for other in scope_branches
+                    if not other.markers
+                ]
             assignment_slots = {slot for slot, _res in assign_key}
             positive, negative = _minimal_condition_signature(
                 own_signatures, other_signatures, assignment_slots)
@@ -2116,6 +2189,12 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     condition_slots=tuple(slot for slot, _key in signature),
                     assignment_slots=tuple(sorted(assigned)),
                     ps=ps,
+                    observed={
+                        slot: canon for slot, canon in sorted(
+                            (_slot, _canon(_hash))
+                            for _slot, _hash in pair_map.items()
+                            if _canon(_hash) is not None)
+                    },
                 ))
                 raw_assigned_hashes.update(assigned_hashes.values())
                 for slot, tex_hash in assigned_hashes.items():
@@ -2141,6 +2220,24 @@ def build_plan(forms: List[Tuple[str, FormData]],
 
     component_branches: Dict[int, List[_Branch]] = {}
     conflict_count = 0
+    marker_defs: List[Tuple[int, int, str, str]] = []
+    marker_vars_by_component: Dict[int, Set[str]] = {}
+    marker_var_by_comp_hash: Dict[Tuple[int, str], str] = {}
+    next_marker_id: Dict[int, int] = {}
+
+    def _marker_var_for(comp_id: int, tex_hash: str) -> str:
+        key = (comp_id, tex_hash)
+        existing = marker_var_by_comp_hash.get(key)
+        if existing:
+            return existing
+        marker_id = next_marker_id.get(comp_id, 0)
+        next_marker_id[comp_id] = marker_id + 1
+        var = _marker_var_name(comp_id, marker_id)
+        marker_var_by_comp_hash[key] = var
+        marker_vars_by_component.setdefault(comp_id, set()).add(var)
+        marker_defs.append((comp_id, marker_id, tex_hash, var))
+        return var
+
     for comp_id, branches in raw_branches.items():
         by_signature: Dict[Tuple[Tuple[int, float], ...], List[_Branch]] = {}
         for branch in branches:
@@ -2162,27 +2259,37 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     overlapping_forms.update(seen_forms & form_ids)
                     seen_forms |= form_ids
                 if overlapping_forms:
-                    common = _common_assignments(by_assign)
-                    if not common:
-                        raise SlotStyleDegrade(
-                            f'component {comp_id}: one form has multiple texture '
-                            f'sets under the same format signature')
-                    warnings.append(
-                        f'component {comp_id}: ambiguous same-form texture slots '
-                        f'under one format signature were skipped; common slots '
-                        f'{sorted(common)} kept')
-                    gate_ids = sorted(seen_forms)
-                    if not multi_form:
-                        gate_ids = [0]
-                    elif not forms_fully_covered:
+                    if multi_form and not forms_fully_covered:
                         raise SlotStyleDegrade(
                             'multi-form slot branches need manual form anchors; '
                             'add vb0:label anchors with the form finder before '
                             'using concise slot export')
-                    member = sample[next(iter(by_assign))]
-                    for form_id in gate_ids:
+                    marker_slots = _find_marker_slots_for_same_signature(
+                        members, alias)
+                    if not marker_slots:
+                        raise SlotStyleDegrade(
+                            f'component {comp_id}: multiple texture sets under '
+                            'the same format signature have no marker-only '
+                            'texture discriminator; refresh STU/log evidence')
+                    marker_by_member: Dict[_Branch, Tuple[str, ...]] = {}
+                    for member in members:
+                        marker_vars: List[str] = []
+                        for slot in marker_slots:
+                            tex_hash = member.observed.get(slot)
+                            if not tex_hash:
+                                raise SlotStyleDegrade(
+                                    f'component {comp_id}: marker slot ps-t{slot} '
+                                    'has no observed texture hash')
+                            marker_vars.append(_marker_var_for(comp_id, tex_hash))
+                        marker_by_member[member] = tuple(marker_vars)
+                    warnings.append(
+                        f'component {comp_id}: same-format texture sets use '
+                        'marker-only texture discriminator(s); assignments remain '
+                        'inside component ps-t branches')
+                    for member in members:
                         merged.append(_branch_with_assign(
-                            member, dict(common), form_id or None))
+                            member, dict(member.assign), None,
+                            marker_by_member.get(member, ())))
                     _minimize_anchor_branches(merged)
                     continue
                 if not multi_form or not forms_fully_covered:
@@ -2231,6 +2338,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 Tuple[Tuple[int, float], ...],
                 Optional[int],
                 Tuple[Tuple[int, str], ...],
+                Tuple[str, ...],
             ]
         ] = set()
         for branch in merged:
@@ -2328,10 +2436,12 @@ def build_plan(forms: List[Tuple[str, FormData]],
             terms.append(f'ps-t{slot} != {text}')
         return terms
 
-    def _condition(terms: List[str], form_gate: Optional[int] = None) -> str:
+    def _condition(terms: List[str], form_gate: Optional[int] = None,
+                   markers: Tuple[str, ...] = ()) -> str:
         parts = list(terms)
         if form_gate is not None:
             parts.append(f'{constants.VAR_FORM} == {form_gate}')
+        parts.extend(f'{marker} == 1' for marker in sorted(markers))
         return ' && '.join(parts)
 
     def _append_assignments(chunk: List[str], assign: Dict[int, str],
@@ -2357,7 +2467,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 continue
 
             chunk.append(f'{"if" if first else "else if"} '
-                         f'{_condition(terms, branch.form_gate)}')
+                          f'{_condition(terms, branch.form_gate, branch.markers)}')
             _append_assignments(chunk, branch.assign, '    ')
             first = False
         if not first:
@@ -2412,6 +2522,17 @@ def build_plan(forms: List[Tuple[str, FormData]],
             if watchdog_form is not None:
                 out.append(f'{constants.VAR_ANCHOR_SEEN} = 1')
 
+    if marker_defs:
+        out.append('')
+        out.append('; -- Draw-local texture discriminators')
+        for comp_id, marker_id, tex_hash, var in marker_defs:
+            out.append('')
+            out.append(f'[{_marker_section_name(comp_id, marker_id)}]')
+            out.append(f'hash = {tex_hash}')
+            out.append('allow_duplicate_hash = true')
+            out.append('match_priority = 0')
+            out.append(f'{var} = 1')
+
     out.extend(body_chunks)
 
     format_section_count = 0
@@ -2457,6 +2578,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
             f'    {constants.VAR_FORM} = {watchdog_form}',
             'endif',
         ]
+    for _comp_id, vars_for_comp in sorted(marker_vars_by_component.items()):
+        extra_globals.extend(sorted(vars_for_comp))
 
     return SlotPlan(
         block_text='\n'.join(out),
@@ -2469,6 +2592,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
         phantom_suppressed=phantom_suppressed,
         extra_globals=extra_globals,
         watchdog_lines=watchdog_lines,
+        marker_reset_vars_by_component={
+            comp_id: sorted(values)
+            for comp_id, values in marker_vars_by_component.items()
+        },
         default_form_id=watchdog_form if watchdog_form is not None else 1,
         live_fallback=dict(live_fallback),
         warnings=warnings,

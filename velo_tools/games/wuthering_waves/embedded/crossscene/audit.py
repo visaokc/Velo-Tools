@@ -184,8 +184,51 @@ def _audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks=None):
     return errors
 
 
+def _audit_marker_resets(text):
+    errors = []
+    marker_sections = {}
+    for match in re.finditer(
+            r'^\[(TextureOverrideSlotMarkerComponent(\d+)_\d+?)(?:_ib(\d+))?\]',
+            text, re.M):
+        marker_sections.setdefault(
+            (int(match.group(2)), int(match.group(3) or 0)), []).append(match.group(1))
+    for match in re.finditer(
+            r'(\$slot_tex_c(\d+)_m\d+?)(?:_ib(\d+))?\s*==\s*1\b',
+            text):
+        var = match.group(1) + (f"_ib{match.group(3)}" if match.group(3) else "")
+        comp_id = int(match.group(2))
+        ib_id = int(match.group(3) or 0)
+        if not marker_sections.get((comp_id, ib_id)):
+            errors.append(
+                "marker discriminator %s has no TextureOverrideSlotMarker section"
+                % var)
+            continue
+        draw_header = "CommandListDrawComponent%d_ib%d" % (comp_id, ib_id)
+        draw = _section(text, draw_header)
+        if draw is None and ib_id == 0:
+            draw_header = "CommandListDrawComponent%d" % comp_id
+            draw = _section(text, draw_header)
+        if draw is None:
+            errors.append(
+                "marker discriminator %s has no %s draw section"
+                % (var, draw_header))
+            continue
+        trigger = re.search(
+            r'^\s*run\s*=\s*CommandListTriggerResourceOverrides(?:_ib%d)?\s*$'
+            % ib_id,
+            draw,
+            re.M)
+        reset = re.search(r'^\s*%s\s*=\s*0\s*$' % re.escape(var), draw, re.M)
+        if trigger and reset and reset.start() < trigger.start():
+            continue
+        errors.append(
+            "marker discriminator %s is not reset before texture override trigger"
+            % var)
+    return errors
+
+
 def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, draw_excludes=None,
-                          allowed_body_hash_fallbacks=None):
+                           allowed_body_hash_fallbacks=None):
     """Return a dict with routing errors found in the final namespace-merged INI."""
     path = Path(mod_ini_path)
     if not path.is_file():
@@ -197,6 +240,7 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
     errors = []
     errors.extend(_audit_slot_resources(text, path.parent))
     errors.extend(_audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks))
+    errors.extend(_audit_marker_resets(text))
 
     for tag, label in sorted(own_excluded.items()):
         if tag not in roles:
