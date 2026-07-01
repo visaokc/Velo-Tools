@@ -371,18 +371,141 @@ def _local_branch_is_weak(signature: Tuple[Tuple[int, float], ...],
 
 def _branch_covered_by_stronger_layout(branch: _Branch,
                                        candidates: List[_Branch]) -> bool:
-    condition = (branch.signature, branch.negative_signature,
-                 branch.form_gate, tuple(sorted(branch.assign.items())))
+    condition = _branch_key(branch)
     if not branch.signature:
         return False
     for candidate in candidates:
         if candidate is branch:
             continue
-        other = (candidate.signature, candidate.negative_signature,
-                 candidate.form_gate, tuple(sorted(candidate.assign.items())))
+        other = _branch_key(candidate)
         if other == condition:
             return True
     return False
+
+
+def _branch_observed_rows_covered_by_candidate(
+        branch: _Branch,
+        candidate: _Branch,
+        comp_id: int,
+        forms: List[Tuple[str, FormData]],
+        texture_info: TextureInfo,
+        alias: Dict[str, str]) -> bool:
+    if branch.form_gate is not None:
+        if branch.form_gate < 1 or branch.form_gate > len(forms):
+            return False
+        scoped_forms = [forms[branch.form_gate - 1]]
+    else:
+        scoped_forms = forms
+
+    matched = False
+    for _label, form_data in scoped_forms:
+        for pair_map in form_data.get(comp_id, {}).values():
+            if not _row_matches_condition(
+                    pair_map, texture_info, branch.signature,
+                    branch.negative_signature, alias):
+                continue
+            matched = True
+            if not _row_matches_condition(
+                    pair_map, texture_info, candidate.signature,
+                    candidate.negative_signature, alias):
+                return False
+    return matched
+
+
+def _branch_resources_covered_by_stronger_layout(
+        branch: _Branch,
+        comp_id: int,
+        candidates: List[_Branch],
+        forms: List[Tuple[str, FormData]],
+        texture_info: TextureInfo,
+        alias: Dict[str, str]) -> bool:
+    resources = set(branch.assign.values())
+    if not resources:
+        return False
+    for candidate in candidates:
+        if candidate is branch or candidate.form_gate != branch.form_gate:
+            continue
+        if _is_weak_anchor_branch(candidate, needs_form_gate=False):
+            continue
+        if not set(candidate.assign.values()).issuperset(resources):
+            continue
+        if not _branch_observed_rows_covered_by_candidate(
+                branch, candidate, comp_id, forms, texture_info, alias):
+            continue
+        return True
+    return False
+
+
+def _branch_key(branch: _Branch) -> Tuple[
+        Tuple[Tuple[int, float], ...],
+        Tuple[Tuple[int, float], ...],
+        Optional[int],
+        Tuple[Tuple[int, str], ...]]:
+    return (
+        branch.signature,
+        branch.negative_signature,
+        branch.form_gate,
+        tuple(sorted(branch.assign.items())),
+    )
+
+
+def _row_matches_condition(pair_map: Dict[int, Optional[str]],
+                           texture_info: TextureInfo,
+                           positive: Tuple[Tuple[int, float], ...],
+                           negative: Tuple[Tuple[int, float], ...],
+                           alias: Dict[str, str]) -> bool:
+    for slot, expected in positive:
+        tex_hash = pair_map.get(slot)
+        if tex_hash is not None:
+            tex_hash = alias.get(tex_hash, tex_hash)
+        if _family_key(tex_hash, texture_info) != expected:
+            return False
+    for slot, forbidden in negative:
+        tex_hash = pair_map.get(slot)
+        if tex_hash is not None:
+            tex_hash = alias.get(tex_hash, tex_hash)
+        if _family_key(tex_hash, texture_info) == forbidden:
+            return False
+    return True
+
+
+def _branch_assignments_match_observed_scope(
+        branch: _Branch,
+        comp_id: int,
+        forms: List[Tuple[str, FormData]],
+        texture_info: TextureInfo,
+        alias: Dict[str, str],
+        resource_to_hash: Dict[str, str]) -> bool:
+    expected: Dict[int, str] = {}
+    for slot, resource in branch.assign.items():
+        tex_hash = resource_to_hash.get(resource)
+        if not tex_hash:
+            return False
+        expected[slot] = alias.get(tex_hash, tex_hash)
+    if not expected:
+        return False
+
+    if branch.form_gate is not None:
+        if branch.form_gate < 1 or branch.form_gate > len(forms):
+            return False
+        scoped_forms = [forms[branch.form_gate - 1]]
+    else:
+        scoped_forms = forms
+
+    matched = False
+    for _label, form_data in scoped_forms:
+        for pair_map in form_data.get(comp_id, {}).values():
+            if not _row_matches_condition(
+                    pair_map, texture_info, branch.signature,
+                    branch.negative_signature, alias):
+                continue
+            matched = True
+            for slot, tex_hash in expected.items():
+                observed = pair_map.get(slot)
+                observed = alias.get(observed, observed) if observed else None
+                if observed != tex_hash:
+                    return False
+    return matched
 
 
 def _common_assignments(by_assign: Dict[Tuple[Tuple[int, str], ...], Set[int]]) -> Dict[int, str]:
@@ -2069,7 +2192,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                         f'with Skip Dirty Slot enabled')
                 for assign_key, form_ids in sorted(by_assign.items()):
                     member = sample[assign_key]
-                    if _is_weak_anchor_branch(member, needs_form_gate=True):
+                    if (not member.form_gate
+                            and _is_weak_anchor_branch(member, needs_form_gate=True)):
                         suppressed_weak_branches += len(form_ids)
                         for resource in dict(assign_key).values():
                             tex_hash = resource_to_hash.get(resource)
@@ -2101,8 +2225,39 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     member, dict(assign_key), None))
         _minimize_anchor_branches(merged)
         kept: List[_Branch] = []
+        seen_branch_keys: Set[
+            Tuple[
+                Tuple[Tuple[int, float], ...],
+                Tuple[Tuple[int, float], ...],
+                Optional[int],
+                Tuple[Tuple[int, str], ...],
+            ]
+        ] = set()
         for branch in merged:
+            key = _branch_key(branch)
+            if key in seen_branch_keys:
+                suppressed_covered_branches += 1
+                for resource in branch.assign.values():
+                    tex_hash = resource_to_hash.get(resource)
+                    if tex_hash:
+                        suppressed_covered_hashes.add(tex_hash)
+                continue
+            seen_branch_keys.add(key)
             if _is_weak_anchor_branch(branch, needs_form_gate=False):
+                if _branch_assignments_match_observed_scope(
+                        branch, comp_id, forms, texture_info, alias,
+                        resource_to_hash):
+                    if _branch_resources_covered_by_stronger_layout(
+                            branch, comp_id, merged, forms, texture_info,
+                            alias):
+                        suppressed_weak_branches += 1
+                        for resource in branch.assign.values():
+                            tex_hash = resource_to_hash.get(resource)
+                            if tex_hash:
+                                suppressed_weak_hashes.add(tex_hash)
+                        continue
+                    kept.append(branch)
+                    continue
                 suppressed_weak_branches += 1
                 for resource in branch.assign.values():
                     tex_hash = resource_to_hash.get(resource)
