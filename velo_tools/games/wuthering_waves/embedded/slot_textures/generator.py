@@ -1218,13 +1218,15 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     component_branches = merged_component_branches
 
     resource_to_hash = {res: h for h, res in textures}
-    all_assigned_hashes: Set[str] = set(suppressed_weak_hashes)
+    all_assigned_hashes: Set[str] = set()
     for branches in component_branches.values():
         for branch in branches:
             for resource in branch.assign.values():
                 tex_hash = resource_to_hash.get(resource)
                 if tex_hash:
                     all_assigned_hashes.add(tex_hash)
+    for tex_hash in sorted(suppressed_weak_hashes - all_assigned_hashes):
+        _route_live(tex_hash, 'not represented by a safe slot branch')
 
     used_slots: Set[int] = set()
     used_families: Dict[int, Set[float]] = {}
@@ -1722,8 +1724,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'by a stronger same-form layout')
 
     all_assigned_hashes: Set[str] = set()
-    for tex_hash in suppressed_weak_hashes:
-        all_assigned_hashes.add(tex_hash)
     for tex_hash in suppressed_covered_hashes:
         all_assigned_hashes.add(tex_hash)
     for branches in component_branches.values():
@@ -1732,6 +1732,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 tex_hash = resource_to_hash.get(resource)
                 if tex_hash:
                     all_assigned_hashes.add(tex_hash)
+    unrepresented_slot_hashes = (
+        raw_assigned_hashes | suppressed_weak_hashes) - all_assigned_hashes
+    for tex_hash in sorted(unrepresented_slot_hashes):
+        _route_live(tex_hash, 'not represented by a safe slot branch')
 
     used_slots: Set[int] = set()
     used_families: Dict[int, Set[float]] = {}

@@ -441,6 +441,49 @@ def _body_hash_suppressions(merged_folder, routing, keep_count, eligible):
     return reasons
 
 
+def _slot_bound_hashes_from_ini(mod_ini):
+    path = Path(mod_ini)
+    if not path.is_file():
+        return set()
+    text = path.read_text(encoding="utf-8")
+    slot_resources = set(re.findall(
+        r'\bps-t\d+\s*=\s*ref\s+(ResourceTexture\d+(?:_ib\d+)*)\b',
+        text))
+    if not slot_resources:
+        return set()
+    resource_hashes = {}
+    current = None
+    for line in text.splitlines():
+        m = re.match(r'^\[([^\]]+)\]\s*$', line)
+        if m:
+            current = m.group(1)
+            continue
+        if current not in slot_resources:
+            continue
+        fm = re.match(r'\s*filename\s*=\s*(.+\.dds)\s*$', line, re.I)
+        if not fm:
+            continue
+        hm = re.search(r't=([0-9a-fA-F]+)', fm.group(1))
+        if hm:
+            resource_hashes[current] = hm.group(1).lower()
+    return {resource_hashes[name] for name in slot_resources if name in resource_hashes}
+
+
+def _prune_unrepresented_fold_suppressions(body_mod_ini, suppressions):
+    """Keep fold-local hash fallback unless body slot resources actually represent the hash."""
+    if not suppressions:
+        return suppressions
+    slot_hashes = _slot_bound_hashes_from_ini(body_mod_ini)
+    pruned = {}
+    for tex_hash, reason in suppressions.items():
+        parts = {p for p in str(reason or "").split("+") if p}
+        if "fold-local" in parts and tex_hash not in slot_hashes:
+            parts.remove("fold-local")
+        if parts:
+            pruned[tex_hash] = "+".join(sorted(parts))
+    return pruned
+
+
 def _export_col(cfg, col, modout, name, src, eligible=_KEEP, slot_style=_KEEP):
     Path(modout).mkdir(parents=True, exist_ok=True)
     cfg.object_source_folder = src
@@ -697,6 +740,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                                       if slot_style_on else {})
             _export_body_with_trimmed_metadata(
                 cfg, body_col, work, merged_folder, keep_count, routing, eligible=body_elig)
+            body_hash_suppressions = _prune_unrepresented_fold_suppressions(
+                work / "sc" / "mod.ini", body_hash_suppressions)
 
             # body = showcase shared buffer mod (base export copied verbatim into body); all foldable IBs fold into it.
             mods = [str(_copy_body(work))]
