@@ -98,6 +98,12 @@ def install():
                 slot_eligible_components=_read_slot_eligible(context),
                 local_form_discriminator=local_discriminator,
                 local_discriminator_audit=local_audit)
+            slot_issues = (
+                list(getattr(plan, 'unsafe_fallback', None) or [])
+                + list(getattr(plan, 'slot_unrepresented', None) or []))
+            if slot_issues:
+                raise generator.SlotStyleDegrade(
+                    generator._format_slot_unrepresented(slot_issues))
             result = transform.apply(result, plan)
             if local_discriminator:
                 _report('[SlotTextures] local form discriminator active: '

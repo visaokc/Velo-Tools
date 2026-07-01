@@ -264,9 +264,45 @@ class SlotPlan:
     watchdog_lines: List[str] = field(default_factory=list)
     default_form_id: int = 1
     live_fallback: Dict[str, str] = field(default_factory=dict)
+    slot_unrepresented: List[Dict[str, object]] = field(default_factory=list)
+    unsafe_fallback: List[Dict[str, object]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     stats: Dict[str, object] = field(default_factory=dict)
     format_diagnostics: Dict[str, object] = field(default_factory=dict)
+
+
+def _slot_issue_entry(tex_hash: str, comp_id: int, reason: str,
+                      source: str, slot: Optional[int] = None) -> Dict[str, object]:
+    entry: Dict[str, object] = {
+        'hash': tex_hash,
+        'component': comp_id,
+        'reason': reason,
+        'source': source,
+    }
+    if slot is not None:
+        entry['slot'] = slot
+    return entry
+
+
+def _format_slot_unrepresented(entries: List[Dict[str, object]]) -> str:
+    lines = [
+        'slot-style texture coverage failed: the following slot-owned '
+        'texture(s) cannot be represented by a safe ps-t assignment branch. '
+        'Hash fallback is disabled for these textures because it is unstable '
+        'under shader/pass changes and same-IB multi-instance rendering.',
+    ]
+    for entry in entries[:8]:
+        slot = entry.get('slot')
+        slot_text = f' ps-t{slot}' if slot is not None else ''
+        lines.append(
+            f"Component {entry.get('component')} texture {entry.get('hash')}"
+            f"{slot_text}: {entry.get('reason')} ({entry.get('source')})")
+    if len(entries) > 8:
+        lines.append(f'... {len(entries) - 8} more unrepresented texture(s).')
+    lines.append(
+        'Refresh STU/local discriminator evidence or exclude the component '
+        'from the slot layer explicitly; do not rely on hash fallback.')
+    return '\n'.join(lines)
 
 
 @dataclass(eq=False)
@@ -287,7 +323,6 @@ class _Branch:
 class _LocalBranch:
     signature: Tuple[Tuple[int, float], ...]
     negative_signature: Tuple[Tuple[int, float], ...]
-    ps_signature: Optional[int]
     assign: Dict[int, str]
     form_id: int
     label: str
@@ -1288,7 +1323,6 @@ def _local_branches_from_audit(audit: dict,
         component_branches.setdefault(comp_id, []).append(_LocalBranch(
             signature=signature,
             negative_signature=negative_signature,
-            ps_signature=None,
             assign=assign,
             form_id=1,
             label='local',
@@ -1330,6 +1364,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         return alias.get(tex_hash, tex_hash)
 
     live_fallback: Dict[str, str] = {}
+    unsafe_fallback: List[Dict[str, object]] = []
     suppressed_weak_branches = 0
     suppressed_weak_hashes: Set[str] = set()
 
@@ -1337,6 +1372,27 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         canon = _canon(tex_hash) or tex_hash
         if canon in mod_hashes:
             live_fallback.setdefault(canon, reason)
+
+    def _flag_unsafe_live(tex_hash: str, comp_id: int, reason: str,
+                          source: str, slot: Optional[int] = None):
+        canon = _canon(tex_hash) or tex_hash
+        if canon in mod_hashes and canon in live_fallback:
+            unsafe_fallback.append(
+                _slot_issue_entry(canon, comp_id, reason, source, slot))
+
+    def _audit_source_from(entry: dict, fallback: str) -> str:
+        sources = entry.get('sources') or []
+        if isinstance(sources, list) and sources:
+            joined = ','.join(
+                f"{src.get('form', '?')}/ps={src.get('ps', '?')}"
+                for src in sources if isinstance(src, dict))
+            if joined:
+                return joined
+        form = entry.get('form')
+        ps = entry.get('ps')
+        if isinstance(form, str) or isinstance(ps, str):
+            return f'{form or "?"}/ps={ps or "?"}'
+        return fallback
 
     for h in sorted(live_seed or ()):
         _route_live(h, 'caller-routed live seed')
@@ -1363,8 +1419,37 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             f'suppressed {suppressed_weak_branches} weak local slot branch(es); '
             'single-slot positive conditions without a negative discriminator '
             'are unsafe for same-IB multi-instance rendering')
-    for tex_hash in sorted(suppressed_weak_hashes):
-        _route_live(tex_hash, 'not represented by a safe local slot branch')
+    slot_unrepresented: List[Dict[str, object]] = []
+    raw_slot_evidence: Dict[str, List[Dict[str, object]]] = {}
+    audit_rows = local_discriminator_audit.get('rows') or []
+    if isinstance(audit_rows, list):
+        for row in audit_rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                comp_id = int(row.get('component'))
+            except (TypeError, ValueError):
+                continue
+            source = _audit_source_from(row, 'row')
+            for raw_slot, tex_hash in (row.get('assign_hashes') or {}).items():
+                if not isinstance(tex_hash, str):
+                    continue
+                canon = _canon(tex_hash) or tex_hash
+                if canon not in mod_hashes:
+                    continue
+                try:
+                    slot = int(raw_slot)
+                except (TypeError, ValueError):
+                    slot = None
+                raw_slot_evidence.setdefault(canon, []).append(
+                    _slot_issue_entry(
+                        canon, comp_id,
+                        'not represented by a safe local slot branch',
+                        source, slot))
+                _flag_unsafe_live(
+                    canon, comp_id,
+                    live_fallback.get(canon, 'unsafe hash fallback'),
+                    source, slot)
     if slot_eligible_components is not None:
         resource_to_hash_for_exclusion = {res: h for h, res in textures}
         excluded_hashes: Set[str] = set()
@@ -1385,6 +1470,63 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         }
         for h in sorted(excluded_hashes - included_hashes):
             _route_live(h, 'component excluded from slot layer')
+    merged_component_branches: Dict[int, List[_LocalBranch]] = {}
+    for comp_id, branches in component_branches.items():
+        merged: List[_LocalBranch] = []
+        seen: Dict[
+            Tuple[
+                Tuple[Tuple[int, float], ...],
+                Tuple[Tuple[int, float], ...],
+                Tuple[Tuple[int, str], ...],
+            ],
+            _LocalBranch,
+        ] = {}
+        for branch in branches:
+            key = (
+                branch.signature,
+                branch.negative_signature,
+                tuple(sorted(branch.assign.items())),
+            )
+            previous = seen.get(key)
+            if previous is not None:
+                warnings.append(
+                    f'component {comp_id}: duplicate local discriminator '
+                    f'condition for {previous.source} and {branch.source}; '
+                    'kept one identical assignment branch')
+                continue
+            seen[key] = branch
+            merged.append(branch)
+        merged_component_branches[comp_id] = merged
+    component_branches = merged_component_branches
+
+    resource_to_hash = {res: h for h, res in textures}
+    all_assigned_hashes: Set[str] = set()
+    for branches in component_branches.values():
+        for branch in branches:
+            for resource in branch.assign.values():
+                tex_hash = resource_to_hash.get(resource)
+                if tex_hash:
+                    all_assigned_hashes.add(tex_hash)
+    for tex_hash in sorted(suppressed_weak_hashes - all_assigned_hashes):
+        slot_unrepresented.extend(
+            raw_slot_evidence.get(tex_hash) or [
+                _slot_issue_entry(
+                    tex_hash, -1,
+                    'not represented by a safe local slot branch',
+                    'local discriminator audit')])
+    missing_slot_hashes = (raw_assigned_hashes - all_assigned_hashes
+                           - set(live_fallback))
+    for tex_hash in sorted(missing_slot_hashes):
+        slot_unrepresented.extend(
+            raw_slot_evidence.get(tex_hash) or [
+                _slot_issue_entry(
+                    tex_hash, -1,
+                    'not represented by a safe local slot branch',
+                    'local discriminator audit')])
+    if slot_unrepresented or unsafe_fallback:
+        raise SlotStyleDegrade(
+            _format_slot_unrepresented(unsafe_fallback + slot_unrepresented))
+
     if not component_branches:
         if live_fallback:
             return SlotPlan(
@@ -1429,46 +1571,6 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             )
         raise SlotStyleDegrade('no component produced any safe slot assignment')
 
-    merged_component_branches: Dict[int, List[_LocalBranch]] = {}
-    for comp_id, branches in component_branches.items():
-        merged: List[_LocalBranch] = []
-        seen: Dict[
-            Tuple[
-                Tuple[Tuple[int, float], ...],
-                Tuple[Tuple[int, float], ...],
-                Tuple[Tuple[int, str], ...],
-            ],
-            _LocalBranch,
-        ] = {}
-        for branch in branches:
-            key = (
-                branch.signature,
-                branch.negative_signature,
-                tuple(sorted(branch.assign.items())),
-            )
-            previous = seen.get(key)
-            if previous is not None:
-                warnings.append(
-                    f'component {comp_id}: duplicate local discriminator '
-                    f'condition for {previous.source} and {branch.source}; '
-                    'kept one identical assignment branch')
-                continue
-            seen[key] = branch
-            merged.append(branch)
-        merged_component_branches[comp_id] = merged
-    component_branches = merged_component_branches
-
-    resource_to_hash = {res: h for h, res in textures}
-    all_assigned_hashes: Set[str] = set()
-    for branches in component_branches.values():
-        for branch in branches:
-            for resource in branch.assign.values():
-                tex_hash = resource_to_hash.get(resource)
-                if tex_hash:
-                    all_assigned_hashes.add(tex_hash)
-    for tex_hash in sorted(suppressed_weak_hashes - all_assigned_hashes):
-        _route_live(tex_hash, 'not represented by a safe slot branch')
-
     used_slots: Set[int] = set()
     used_families: Dict[int, Set[float]] = {}
     component_list_names: Dict[int, str] = {}
@@ -1488,9 +1590,6 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                 continue
             used_families.setdefault(comp_id, set()).add(key)
             terms.append(f'ps-t{slot} != {text}')
-        if branch.ps_signature is not None:
-            terms.append(
-                f'(ps == {branch.ps_signature} || vs == {branch.ps_signature})')
         return terms
 
     def _append_assignments(chunk: List[str], assign: Dict[int, str], indent: str):
@@ -1773,6 +1872,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
     alias = _variant_aliases(texture_info)
 
     live_fallback: Dict[str, str] = {}
+    unsafe_fallback: List[Dict[str, object]] = []
 
     def _canon(tex_hash: Optional[str]) -> Optional[str]:
         if tex_hash is None:
@@ -1783,6 +1883,13 @@ def build_plan(forms: List[Tuple[str, FormData]],
         canon = _canon(tex_hash) or tex_hash
         if canon in mod_hashes:
             live_fallback.setdefault(canon, reason)
+
+    def _flag_unsafe_live(tex_hash: str, comp_id: int, reason: str,
+                          source: str, slot: Optional[int] = None):
+        canon = _canon(tex_hash) or tex_hash
+        if canon in mod_hashes and canon in live_fallback:
+            unsafe_fallback.append(
+                _slot_issue_entry(canon, comp_id, reason, source, slot))
 
     for h in sorted(live_seed or ()):
         _route_live(h, 'caller-routed live seed')
@@ -1829,6 +1936,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
 
     raw_branches: Dict[int, List[_Branch]] = {}
     raw_assigned_hashes: Set[str] = set()
+    raw_slot_evidence: Dict[str, List[Dict[str, object]]] = {}
     excluded_component_hashes: Set[str] = set()
     suppressed_weak_hashes: Set[str] = set()
     suppressed_weak_branches = 0
@@ -1852,6 +1960,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     if canon in mod_hashes and canon not in live_fallback:
                         assigned[slot] = mod_hashes[canon]
                         assigned_hashes[slot] = canon
+                    elif canon in live_fallback:
+                        _flag_unsafe_live(
+                            canon, comp_id, live_fallback[canon],
+                            f'{label}/ps={ps}', slot)
                 if not assigned:
                     continue
                 if slot_eligible_components is not None and comp_id not in slot_eligible_components:
@@ -1883,11 +1995,19 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     ps=ps,
                 ))
                 raw_assigned_hashes.update(assigned_hashes.values())
+                for slot, tex_hash in assigned_hashes.items():
+                    raw_slot_evidence.setdefault(tex_hash, []).append(
+                        _slot_issue_entry(
+                            tex_hash, comp_id,
+                            'not represented by a safe slot branch',
+                            f'{label}/ps={ps}', slot))
 
     for h in sorted(excluded_component_hashes - raw_assigned_hashes):
         _route_live(h, 'component excluded from slot layer')
 
     if not raw_branches:
+        if unsafe_fallback:
+            raise SlotStyleDegrade(_format_slot_unrepresented(unsafe_fallback))
         if live_fallback:
             raise SlotStyleDegrade(
                 'all slot candidates were routed to stock hash sections; no '
@@ -2020,8 +2140,17 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     all_assigned_hashes.add(tex_hash)
     unrepresented_slot_hashes = (
         raw_assigned_hashes | suppressed_weak_hashes) - all_assigned_hashes
+    slot_unrepresented: List[Dict[str, object]] = []
     for tex_hash in sorted(unrepresented_slot_hashes):
-        _route_live(tex_hash, 'not represented by a safe slot branch')
+        slot_unrepresented.extend(
+            raw_slot_evidence.get(tex_hash) or [
+                _slot_issue_entry(
+                    tex_hash, -1,
+                    'not represented by a safe slot branch',
+                    'anchor-driven slot plan')])
+    if slot_unrepresented or unsafe_fallback:
+        raise SlotStyleDegrade(
+            _format_slot_unrepresented(unsafe_fallback + slot_unrepresented))
 
     used_slots: Set[int] = set()
     used_families: Dict[int, Set[float]] = {}

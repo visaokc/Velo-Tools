@@ -152,7 +152,40 @@ def _audit_slot_resources(text, mod_dir):
     return errors
 
 
-def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, draw_excludes=None):
+def _audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks=None):
+    errors = []
+    allowed = {str(h).lower() for h in (allowed_body_hash_fallbacks or set())}
+    resources = {}
+    for match in re.finditer(
+            r'(^\[(Resource_Texture_([0-9a-fA-F]{8}))\][^\[]*)',
+            text, re.M):
+        filename = re.search(
+            r'^\s*filename\s*=\s*(.+?)\s*$',
+            match.group(1), re.M)
+        if filename:
+            resources[match.group(3).lower()] = filename.group(1).strip()
+    for match in re.finditer(
+            r'(^\[TextureOverride_Texture_([0-9a-fA-F]{8})\][^\[]*)',
+            text, re.M):
+        tex_hash = match.group(2).lower()
+        if tex_hash in allowed:
+            continue
+        block = match.group(1)
+        if "$object_detected_ib0" not in block:
+            continue
+        filename = resources.get(tex_hash, "")
+        normalized = filename.replace("\\", "/")
+        if re.search(r'(^|/)Textures/Components-\d+\s+t=[0-9a-fA-F]{8}\.dds$',
+                     normalized):
+            errors.append(
+                "body slot-owned texture %s is emitted as hash fallback %s; "
+                "slot-style export requires ps-t assignment or fail-closed"
+                % (tex_hash, filename))
+    return errors
+
+
+def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, draw_excludes=None,
+                          allowed_body_hash_fallbacks=None):
     """Return a dict with routing errors found in the final namespace-merged INI."""
     path = Path(mod_ini_path)
     if not path.is_file():
@@ -163,6 +196,7 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
     draw_excludes = {int(k): set(v or set()) for k, v in (draw_excludes or {}).items()}
     errors = []
     errors.extend(_audit_slot_resources(text, path.parent))
+    errors.extend(_audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks))
 
     for tag, label in sorted(own_excluded.items()):
         if tag not in roles:
