@@ -187,6 +187,75 @@ def _audit_skip_vars_declared(text):
     return errors
 
 
+def _component_fallback_scopes(text):
+    scopes = set()
+    for _name, block in _sections(text):
+        if "component_scoped_hash_fallback" not in block.lower():
+            continue
+        for comp, ib in re.findall(
+                r'\$component_hash_fallback_c(\d+)_ib(\d+)\s*==\s*1',
+                block):
+            scopes.add((int(comp), int(ib)))
+    return scopes
+
+
+def _runs_resource_overrides(block, ib_id):
+    suffix = "_ib%d" % int(ib_id)
+    return re.search(
+        r'^\s*run\s*=\s*CommandListTriggerResourceOverrides%s\s*$'
+        % re.escape(suffix),
+        block or "",
+        re.M) is not None
+
+
+def _has_component_fallback_trigger_scope(block, component_id, ib_id):
+    var = "$component_hash_fallback_c%d_ib%d" % (int(component_id), int(ib_id))
+    lines = (block or "").splitlines()
+    for index, line in enumerate(lines):
+        if not re.match(
+                r'^\s*run\s*=\s*CommandListTriggerResourceOverrides_ib%d\s*$'
+                % int(ib_id),
+                line):
+            continue
+        before = any(
+            re.match(r'^\s*%s\s*=\s*1\s*$' % re.escape(var), prev)
+            for prev in lines[:index])
+        after = any(
+            re.match(r'^\s*%s\s*=\s*0\s*$' % re.escape(var), next_line)
+            for next_line in lines[index + 1:])
+        if before and after:
+            return True
+    return False
+
+
+def _audit_foldhost_component_fallback_scope(text, routing):
+    errors = []
+    scopes = _component_fallback_scopes(text)
+    if not scopes:
+        return errors
+    for scene in (routing or {}).get("scene_ibs") or []:
+        if not scene.get("foldable"):
+            continue
+        tag = scene.get("ib_hash")
+        comp_map = {
+            int(k): int(v)
+            for k, v in ((scene.get("fold") or {}).get("comp_map") or {}).items()
+        }
+        for fc, bc in sorted(comp_map.items()):
+            if (bc, 0) not in scopes:
+                continue
+            header = "TextureOverride_FoldHost_%s_C%d_ib0" % (tag, fc)
+            block = _section(text, header)
+            if not block or not _runs_resource_overrides(block, 0):
+                continue
+            if not _has_component_fallback_trigger_scope(block, bc, 0):
+                errors.append(
+                    "%s runs CommandListTriggerResourceOverrides_ib0 for "
+                    "$component_hash_fallback_c%d_ib0 without bracketing the "
+                    "component-scoped fallback scope" % (header, bc))
+    return errors
+
+
 def _body_draw_entries(text, component_id):
     atoms = _draw_atom_tuple_map(text)
     cmd = _section(text, "CommandListDrawComponent%d_ib0" % component_id)
@@ -427,6 +496,7 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
     errors.extend(_audit_residual_sensitive_conditions(text))
     errors.extend(_audit_skip_vars_declared(text))
     errors.extend(_audit_draw_owners(text))
+    errors.extend(_audit_foldhost_component_fallback_scope(text, routing))
     draw_atoms = _draw_atom_tuple_map(text)
     draw_owners = _draw_owner_atom_runs(text)
 

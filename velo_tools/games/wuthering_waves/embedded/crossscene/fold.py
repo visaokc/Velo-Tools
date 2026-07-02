@@ -409,6 +409,24 @@ def _fold_slot_runs(body_text, bc):
     return before_trigger, after_trigger, before_cleanup
 
 
+def _component_hash_fallback_var(body_text, bc):
+    name = "$component_hash_fallback_c%d" % int(bc)
+    if re.search(re.escape(name) + r'(?:\b|_)', body_text):
+        return name
+    return None
+
+
+def _resource_override_trigger_lines(body_text, bc, indent=""):
+    var = _component_hash_fallback_var(body_text, bc)
+    if not var:
+        return ["%srun = CommandListTriggerResourceOverrides" % indent]
+    return [
+        "%s%s = 1" % (indent, var),
+        "%srun = CommandListTriggerResourceOverrides" % indent,
+        "%s%s = 0" % (indent, var),
+    ]
+
+
 def _fold_format_tag_twins(body_text, bc, fc, tag, mfi, mic):
     """Replicate the base component's format-family tag sections (``[TextureOverrideComponent{bc}{fmt}]``)
     at the folded dungeon draw's index range so the base SetTextures conditions fire there too.
@@ -503,6 +521,7 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
     all_draws = _normalise_draw_entries(all_draws if all_draws is not None else draws)
     selected_pairs = {(cnt, off) for cnt, off, _label in selected}
     out, seen_draw, header_done, pending_comment = [], False, False, None
+    fallback_var = _component_hash_fallback_var(body_text, bc)
     for ln in native.rstrip("\n").split("\n"):
         s = ln.strip()
         if not header_done and s.startswith("[TextureOverrideComponent"):
@@ -543,7 +562,7 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             indent = ln[:len(ln) - len(ln.lstrip())]
             bt, at, bcl = _fold_slot_runs(body_text, bc)
             out.extend("%s%s" % (indent, r) for r in bt)
-            out.append("%srun = CommandListTriggerResourceOverrides" % indent)
+            out.extend(_resource_override_trigger_lines(body_text, bc, indent))
             out.extend("%s%s" % (indent, r) for r in at)
             out.append("%srun = CommandListOverrideSharedResources" % indent)
             for run_line in _draw_owner_run_lines(bc, all_draws, selected):
@@ -551,6 +570,12 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             out.extend("%s%s" % (indent, r) for r in bcl)
             out.append("%srun = CommandListCleanupSharedResources" % indent)
             seen_draw = True
+        elif fallback_var and s in ("%s = 1" % fallback_var, "%s = 0" % fallback_var):
+            pending_comment = None
+        elif s == "run = CommandListTriggerResourceOverrides":
+            indent = ln[:len(ln) - len(ln.lstrip())]
+            out.extend(_resource_override_trigger_lines(body_text, bc, indent))
+            pending_comment = None
         elif s.startswith("; Draw "):
             pending_comment = ln
         else:
@@ -719,7 +744,7 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
                      "if $mod_enabled",
                      "    handling = skip"]
             lines += ["    %s" % r for r in bt]
-            lines.append("    run = CommandListTriggerResourceOverrides")
+            lines += _resource_override_trigger_lines(body_text, bc, "    ")
             lines += ["    %s" % r for r in at]
             lines.append("    run = %s" % ovr)
             lines += _draw_owner_run_lines(bc, body_draw_plan.get(bc), selected)
