@@ -1129,8 +1129,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 static_audit = audit.audit_cross_scene_ini(
                     Path(out_folder) / "mod.ini", routing, report["roles"],
                     own_excluded=own_excluded_tags,
-                    draw_excludes=fold_draw_excludes,
-                    allowed_body_hash_fallbacks=report.get("tex_blindzone") or set())
+                    draw_excludes=fold_draw_excludes)
                 report["static_audit"] = static_audit
                 if static_audit.get("errors"):
                     report["static_audit_errors"] = static_audit["errors"]

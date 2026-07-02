@@ -64,6 +64,15 @@ _FORM_VARIANT_METADATA_KEYS = {
 }
 
 
+@dataclass(frozen=True)
+class ComponentHashFallback:
+    hash: str
+    component_id: int
+    resource: str
+    section: str
+    reason: str
+
+
 def _f32(value: float) -> float:
     """float32 round-trip: 3DMigoto ini expressions compare at that precision."""
     return struct.unpack('<f', struct.pack('<f', value))[0]
@@ -338,6 +347,7 @@ class SlotPlan:
     watchdog_lines: List[str] = field(default_factory=list)
     default_form_id: int = 1
     live_fallback: Dict[str, str] = field(default_factory=dict)
+    component_hash_fallbacks: Dict[str, List[ComponentHashFallback]] = field(default_factory=dict)
     slot_unrepresented: List[Dict[str, object]] = field(default_factory=list)
     unsafe_fallback: List[Dict[str, object]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -378,6 +388,26 @@ def _format_slot_unrepresented(entries: List[Dict[str, object]]) -> str:
         'from the slot layer explicitly; excluded components return to stock '
         'hash-style output.')
     return '\n'.join(lines)
+
+
+def _add_component_hash_fallback(
+        fallbacks: Dict[str, List[ComponentHashFallback]],
+        tex_hash: str,
+        comp_id: int,
+        resource: str,
+        section: str,
+        reason: str):
+    entries = fallbacks.setdefault(tex_hash, [])
+    for entry in entries:
+        if entry.component_id == comp_id and entry.resource == resource:
+            return
+    entries.append(ComponentHashFallback(
+        hash=tex_hash,
+        component_id=comp_id,
+        resource=resource,
+        section=section,
+        reason=reason,
+    ))
 
 
 def _anchor_runtime_state(forms: List[Tuple[str, FormData]],
@@ -1616,6 +1646,10 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         forms, freshness, warnings)
     alias = _variant_aliases(texture_info)
     mod_hashes = {h: res for h, res in textures}
+    resource_to_section_for_exclusion = {
+        res: f'TextureOverrideTexture{index}'
+        for index, (_h, res) in enumerate(textures)
+    }
     if not mod_hashes:
         raise SlotStyleDegrade('mod has no textures, nothing to do')
 
@@ -1625,6 +1659,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         return alias.get(tex_hash, tex_hash)
 
     live_fallback: Dict[str, str] = {}
+    component_hash_fallbacks: Dict[str, List[ComponentHashFallback]] = {}
     unsafe_fallback: List[Dict[str, object]] = []
     suppressed_weak_branches = 0
     suppressed_weak_hashes: Set[str] = set()
@@ -1687,6 +1722,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             'are unsafe for same-IB multi-instance rendering')
     slot_unrepresented: List[Dict[str, object]] = []
     raw_slot_evidence: Dict[str, List[Dict[str, object]]] = {}
+    raw_eligible_hashes: Set[str] = set()
     audit_rows = local_discriminator_audit.get('rows') or []
     if isinstance(audit_rows, list):
         for row in audit_rows:
@@ -1712,13 +1748,24 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                         canon, comp_id,
                         'not represented by a safe local slot branch',
                         source, slot))
-                _flag_unsafe_live(
-                    canon, comp_id,
-                    live_fallback.get(canon, 'unsafe hash fallback'),
-                    source, slot)
+                if (slot_eligible_components is not None
+                        and comp_id not in slot_eligible_components):
+                    resource = mod_hashes[canon]
+                    _add_component_hash_fallback(
+                        component_hash_fallbacks,
+                        canon,
+                        comp_id,
+                        resource,
+                        resource_to_section_for_exclusion.get(resource, ''),
+                        'component excluded from slot layer')
+                else:
+                    raw_eligible_hashes.add(canon)
+                    _flag_unsafe_live(
+                        canon, comp_id,
+                        live_fallback.get(canon, 'unsafe hash fallback'),
+                        source, slot)
     if slot_eligible_components is not None:
         resource_to_hash_for_exclusion = {res: h for h, res in textures}
-        excluded_hashes: Set[str] = set()
         for comp_id in list(component_branches):
             if comp_id in slot_eligible_components:
                 continue
@@ -1726,16 +1773,14 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                 for resource in branch.assign.values():
                     tex_hash = resource_to_hash_for_exclusion.get(resource)
                     if tex_hash:
-                        excluded_hashes.add(tex_hash)
-        included_hashes = {
-            resource_to_hash_for_exclusion[resource]
-            for branches in component_branches.values()
-            for branch in branches
-            for resource in branch.assign.values()
-            if resource in resource_to_hash_for_exclusion
-        }
-        for h in sorted(excluded_hashes - included_hashes):
-            _route_live(h, 'component excluded from slot layer')
+                        _add_component_hash_fallback(
+                            component_hash_fallbacks,
+                            tex_hash,
+                            comp_id,
+                            resource,
+                            resource_to_section_for_exclusion.get(
+                                resource, ''),
+                            'component excluded from slot layer')
     merged_component_branches: Dict[int, List[_LocalBranch]] = {}
     for comp_id, branches in component_branches.items():
         merged: List[_LocalBranch] = []
@@ -1773,6 +1818,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                 tex_hash = resource_to_hash.get(resource)
                 if tex_hash:
                     all_assigned_hashes.add(tex_hash)
+    for tex_hash in sorted(set(component_hash_fallbacks) & all_assigned_hashes):
+        live_fallback.pop(tex_hash, None)
     for tex_hash in sorted(suppressed_weak_hashes - all_assigned_hashes):
         slot_unrepresented.extend(
             raw_slot_evidence.get(tex_hash) or [
@@ -1780,7 +1827,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                     tex_hash, -1,
                     'not represented by a safe local slot branch',
                     'local discriminator audit')])
-    missing_slot_hashes = (raw_assigned_hashes - all_assigned_hashes
+    missing_slot_hashes = (raw_eligible_hashes - all_assigned_hashes
                            - set(live_fallback))
     for tex_hash in sorted(missing_slot_hashes):
         slot_unrepresented.extend(
@@ -1794,7 +1841,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             _format_slot_unrepresented(unsafe_fallback + slot_unrepresented))
 
     if not component_branches:
-        if live_fallback:
+        if live_fallback or component_hash_fallbacks:
             return SlotPlan(
                 block_text='',
                 component_list_names={},
@@ -1808,6 +1855,10 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                 watchdog_lines=[],
                 default_form_id=1,
                 live_fallback=dict(live_fallback),
+                component_hash_fallbacks={
+                    h: list(entries)
+                    for h, entries in component_hash_fallbacks.items()
+                },
                 warnings=warnings,
                 stats={
                     'forms': len(forms),
@@ -1903,6 +1954,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         canon = _canon(h) or h
         if canon in all_assigned_hashes and canon not in live_fallback:
             covered_resource_indices.add(index)
+        elif canon in component_hash_fallbacks:
+            pass
         elif canon in dirty_only_hashes:
             section = f'TextureOverrideTexture{index}'
             phantom_only_resource_indices.add(index)
@@ -1929,6 +1982,10 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             watchdog_lines=[],
             default_form_id=1,
             live_fallback=dict(live_fallback),
+            component_hash_fallbacks={
+                h: list(entries)
+                for h, entries in component_hash_fallbacks.items()
+            },
             warnings=warnings,
             stats={
                 'forms': len(forms),
@@ -2045,6 +2102,10 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         watchdog_lines=watchdog_lines,
         default_form_id=watchdog_form if watchdog_form is not None else 1,
         live_fallback=dict(live_fallback),
+        component_hash_fallbacks={
+            h: list(entries)
+            for h, entries in component_hash_fallbacks.items()
+        },
         warnings=warnings,
         stats={
             'forms': len(forms),
@@ -2177,7 +2238,12 @@ def build_plan(forms: List[Tuple[str, FormData]],
     alias = _variant_aliases(texture_info)
 
     live_fallback: Dict[str, str] = {}
+    component_hash_fallbacks: Dict[str, List[ComponentHashFallback]] = {}
     unsafe_fallback: List[Dict[str, object]] = []
+    resource_to_section_for_exclusion = {
+        res: f'TextureOverrideTexture{index}'
+        for index, (_h, res) in enumerate(textures)
+    }
 
     def _canon(tex_hash: Optional[str]) -> Optional[str]:
         if tex_hash is None:
@@ -2242,7 +2308,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
     raw_branches: Dict[int, List[_Branch]] = {}
     raw_assigned_hashes: Set[str] = set()
     raw_slot_evidence: Dict[str, List[Dict[str, object]]] = {}
-    excluded_component_hashes: Set[str] = set()
     suppressed_weak_hashes: Set[str] = set()
     suppressed_weak_branches = 0
     suppressed_covered_hashes: Set[str] = set()
@@ -2272,7 +2337,15 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 if not assigned:
                     continue
                 if slot_eligible_components is not None and comp_id not in slot_eligible_components:
-                    excluded_component_hashes.update(assigned_hashes.values())
+                    for tex_hash in assigned_hashes.values():
+                        _add_component_hash_fallback(
+                            component_hash_fallbacks,
+                            tex_hash,
+                            comp_id,
+                            mod_hashes[tex_hash],
+                            resource_to_section_for_exclusion.get(
+                                mod_hashes[tex_hash], ''),
+                            'component excluded from slot layer')
                     continue
 
                 sig_slots = eligible_slots
@@ -2313,12 +2386,48 @@ def build_plan(forms: List[Tuple[str, FormData]],
                             'not represented by a safe slot branch',
                             f'{label}/ps={ps}', slot))
 
-    for h in sorted(excluded_component_hashes - raw_assigned_hashes):
-        _route_live(h, 'component excluded from slot layer')
-
     if not raw_branches:
         if unsafe_fallback:
             raise SlotStyleDegrade(_format_slot_unrepresented(unsafe_fallback))
+        if component_hash_fallbacks:
+            return SlotPlan(
+                block_text='',
+                component_list_names={},
+                covered_resource_indices=set(),
+                blind_zone=[],
+                multi_form=multi_form,
+                used_slots=[],
+                phantom_only_resource_indices=set(),
+                phantom_suppressed=[],
+                extra_globals=[],
+                watchdog_lines=[],
+                default_form_id=1,
+                live_fallback=dict(live_fallback),
+                component_hash_fallbacks={
+                    h: list(entries)
+                    for h, entries in component_hash_fallbacks.items()
+                },
+                warnings=warnings,
+                stats={
+                    'forms': len(forms),
+                    'components': 0,
+                    'branches': 0,
+                    'conflicts': 0,
+                    'anchors': len(anchor_resources) + len(anchor_shaders),
+                    'probes': 0,
+                    'live_fallback': len(live_fallback),
+                    'format_sections': 0,
+                    'format_sections_raw': 0,
+                    'format_sections_removed': 0,
+                    'branch_writes': 0,
+                    'dirty_ignored': 0,
+                    'dirty_slot_hashes': 0,
+                    'phantom_suppressed': 0,
+                    'suppressed_latches': 0,
+                    'local_form_discriminator': 0,
+                    'suppressed_weak_branches': suppressed_weak_branches,
+                },
+            )
         if live_fallback:
             raise SlotStyleDegrade(
                 'all slot candidates were routed to stock hash sections; no '
@@ -2530,6 +2639,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
         canon = _canon(h) or h
         if canon in all_assigned_hashes and canon not in live_fallback:
             covered_resource_indices.add(index)
+        elif canon in component_hash_fallbacks:
+            pass
         elif canon in dirty_only_hashes:
             section = f'TextureOverrideTexture{index}'
             phantom_only_resource_indices.add(index)
@@ -2624,6 +2735,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
         watchdog_lines=watchdog_lines,
         default_form_id=watchdog_form if watchdog_form is not None else 1,
         live_fallback=dict(live_fallback),
+        component_hash_fallbacks={
+            h: list(entries)
+            for h, entries in component_hash_fallbacks.items()
+        },
         warnings=warnings,
         stats={
             'forms': len(forms),

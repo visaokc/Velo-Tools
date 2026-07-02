@@ -39,6 +39,7 @@
 
 VAR_FORM = "$form_id"
 CMDLIST_SET_TEXTURES = "CommandListSetTexturesComponent{component_id}"
+COMPONENT_HASH_FALLBACK_VAR = "$component_hash_fallback_c{component_id}"
 LOCAL_FORM_DISCRIMINATOR_KEY = "local_form_discriminator"
 LOCAL_FORM_DISCRIMINATOR_SCHEMA = 4
 LOCAL_COMPONENT_SOURCES_KEY = "_velo_local_component_sources"

@@ -338,17 +338,23 @@ def _audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks=None):
         tex_hash = match.group(2).lower()
         if tex_hash in allowed:
             continue
-        block = match.group(1)
-        if "$object_detected_ib0" not in block:
-            continue
         filename = resources.get(tex_hash, "")
         normalized = filename.replace("\\", "/")
-        if re.search(r'(^|/)Textures/Components-\d+\s+t=[0-9a-fA-F]{8}\.dds$',
-                     normalized):
-            errors.append(
-                "body slot-owned texture %s is emitted as hash fallback %s; "
-                "slot-style export requires ps-t assignment or fail-closed"
-                % (tex_hash, filename))
+        if not re.search(r'(^|/)Textures/Components-\d+\s+t=[0-9a-fA-F]{8}\.dds$',
+                         normalized):
+            continue
+        block = match.group(1)
+        scoped = re.findall(r'\$component_hash_fallback_c\d+_ib\d+\s*==\s*1', block)
+        tagged = 'component_scoped_hash_fallback' in block.lower()
+        if tagged and scoped and "$object_detected_ib0" not in block:
+            continue
+        if "$object_detected_ib0" not in block and "$object_detected_ib" in block and not scoped:
+            continue
+        errors.append(
+            "body slot-owned texture %s is emitted as unscoped hash fallback %s; "
+            "slot-style export requires ps-t assignment, explicit component-scoped "
+            "excluded-component fallback, or fail-closed"
+            % (tex_hash, filename))
     return errors
 
 

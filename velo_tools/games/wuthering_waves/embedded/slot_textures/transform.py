@@ -8,8 +8,8 @@
 #
 #   1. [TextureOverrideTexture{i}] hash sections whose texture is covered by
 #      the slot maps, or only came from stale-inherited phantom pairs, are
-#      removed ([ResourceTexture{i}] filename sections stay; blind-zone
-#      textures keep their stock hash section as a fallback).
+#      removed ([ResourceTexture{i}] filename sections stay; blind-zone and
+#      excluded-component fallback textures keep their stock hash section).
 #      The global per-slot `CheckTextureOverride = ps-tN` trigger lines stay
 #      for ordinary format tags.
 #   2. Every non-comment `run = CommandListTriggerResourceOverrides` line that
@@ -86,14 +86,27 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
     if not spans:
         raise SlotStyleDegrade('rendered ini has no sections')
 
+    component_fallbacks = getattr(plan, 'component_hash_fallbacks', None) or {}
+    fallback_by_section = {}
+    fallback_components = set()
+    for entries in component_fallbacks.values():
+        for entry in entries:
+            section = str(getattr(entry, 'section', '') or '').strip().lower()
+            if not section:
+                continue
+            fallback_by_section.setdefault(section, []).append(entry)
+            fallback_components.add(int(getattr(entry, 'component_id')))
+
     drop_indices = (set(plan.covered_resource_indices)
                     | set(getattr(plan, 'phantom_only_resource_indices', set())))
     drop_sections = {f'textureoverridetexture{i}' for i in drop_indices}
+    drop_sections.difference_update(fallback_by_section)
 
     deleted: Set[int] = set()
     # after-insertions keyed by line index -> list of new lines, before- likewise.
     insert_after: Dict[int, List[str]] = {}
     insert_before: Dict[int, List[str]] = {}
+    replace_line: Dict[int, List[str]] = {}
 
     removed_sections = set()
     injected_components = set()
@@ -116,6 +129,9 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
                     f'global {constants.VAR_FORM} = {plan.default_form_id}')
             globals_to_add.extend(f'global {var} = 0'
                                   for var in plan.extra_globals)
+            for comp_id in sorted(fallback_components):
+                globals_to_add.append(
+                    f'global {constants.COMPONENT_HASH_FALLBACK_VAR.format(component_id=comp_id)} = 0')
             if globals_to_add:
                 insert_after.setdefault(start, []).extend(globals_to_add)
             continue
@@ -132,12 +148,38 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
                 insert_after.setdefault(last, []).extend(plan.watchdog_lines)
             continue
 
+        if lname in fallback_by_section:
+            entries = sorted(fallback_by_section[lname],
+                             key=lambda e: int(getattr(e, 'component_id')))
+            gates = [
+                f'{constants.COMPONENT_HASH_FALLBACK_VAR.format(component_id=int(getattr(entry, "component_id")))} == 1'
+                for entry in entries
+            ]
+            gate = ' || '.join(gates)
+            comments = [
+                '; component_scoped_hash_fallback = 1',
+                '; fallback_component = ' + ','.join(
+                    str(int(getattr(entry, 'component_id'))) for entry in entries),
+            ]
+            insert_after.setdefault(start, []).extend(comments)
+            for i in range(start + 1, end):
+                line = lines[i]
+                if re.match(r'\s*this\s*=\s*ResourceTexture\d+\b', line, re.I):
+                    indent = line[:len(line) - len(line.lstrip())]
+                    replace_line[i] = [
+                        f'{indent}if {gate}',
+                        f'{indent}    {line.strip()}',
+                        f'{indent}endif',
+                    ]
+            continue
+
         comp_match = _COMP_ID_RE.search(name.strip())
         if not comp_match:
             continue
         comp_id = int(comp_match.group(1))
         list_name = plan.component_list_names.get(comp_id)
-        if list_name is None:
+        has_component_fallback = comp_id in fallback_components
+        if list_name is None and not has_component_fallback:
             continue
 
         trigger_indices = []
@@ -152,7 +194,12 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             continue
         for i in trigger_indices:
             indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
-            insert_after.setdefault(i, []).append(f'{indent}run = {list_name}')
+            if has_component_fallback:
+                var = constants.COMPONENT_HASH_FALLBACK_VAR.format(component_id=comp_id)
+                insert_before.setdefault(i, []).append(f'{indent}{var} = 1')
+                insert_after.setdefault(i, []).append(f'{indent}{var} = 0')
+            if list_name is not None:
+                insert_after.setdefault(i, []).append(f'{indent}run = {list_name}')
         injected_components.add(comp_id)
 
     if not injected_components:
@@ -162,13 +209,19 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
     if plan.multi_form and not found_constants:
         raise SlotStyleDegrade(
             f'[Constants] section not found for {constants.VAR_FORM}')
+    if fallback_components and not found_constants:
+        raise SlotStyleDegrade(
+            '[Constants] section not found for component-scoped hash fallback')
 
     out: List[str] = []
     for i, line in enumerate(lines):
         if i in insert_before:
             out.extend(insert_before[i])
         if i not in deleted:
-            out.append(line)
+            if i in replace_line:
+                out.extend(replace_line[i])
+            else:
+                out.append(line)
         if i in insert_after:
             out.extend(insert_after[i])
 
