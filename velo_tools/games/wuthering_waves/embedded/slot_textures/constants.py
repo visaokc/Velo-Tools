@@ -13,7 +13,8 @@
 #
 # Character-level data (slot maps, formats, form sets) is NEVER
 # hardcoded — generator.py derives everything from ShaderTextureUsage.json
-# (+ its extra_forms key) and the source-folder texture files at export time.
+# (including component-local form variants) and the source-folder texture files
+# at export time.
 #
 # Generated section/variable names are brand-free (project rule since the LOD
 # round). Sections and ini variables are namespaced per ini file by 3DMigoto,
@@ -41,8 +42,10 @@ CMDLIST_SET_TEXTURES = "CommandListSetTexturesComponent{component_id}"
 LOCAL_FORM_DISCRIMINATOR_KEY = "local_form_discriminator"
 LOCAL_FORM_DISCRIMINATOR_SCHEMA = 4
 LOCAL_COMPONENT_SOURCES_KEY = "_velo_local_component_sources"
+COMPONENT_SOURCES_KEY = "component_sources"
 FORM_COMPONENT_MODE_KEY = "form_component_mode"
 LEGACY_FORM_COMPONENT_MODE_KEYS = ("_velo_form_component_mode",)
+FORM_VARIANTS_KEY = "form_variants"
 FORM_ANCHORS_KEY = "form_anchors"
 # USER-SPECIFIED form anchors (detection only, optional): a form-exclusive
 # resource (a vb0 — geometry never streams, so the latch is instant and far
@@ -210,9 +213,10 @@ LOCAL_DISCRIMINATOR_SLOTS = tuple(range(9))
 # requirement is NOT usable). Unknown descriptors never block.
 MATERIAL_REQUIRE_SQUARE = True
 
-# Single data file: base form maps live in the top-level "Component N" keys,
-# extra forms under the reserved top-level key below (preserved across
-# re-extraction by the _shader_texture_usage patch).
+# Single data file: base form maps live in the top-level "Component N" keys.
+# New writes store additional forms in each affected component's
+# "form_variants" block. The top-level key below is read-only compatibility for
+# older extra-form STU files and legacy sidecars.
 BASE_USAGE_FILENAME = "ShaderTextureUsage.json"
 EXTRA_FORMS_KEY = "extra_forms"
 # Pre-v2 sidecar (auto-migrated into the single file, then deleted).

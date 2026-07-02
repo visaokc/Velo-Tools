@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from copy import deepcopy
 from pathlib import Path
 
 from .embedded.slot_textures import constants as slot_constants
@@ -71,8 +72,9 @@ def _remap_block_filenames(obj, id_map: dict) -> None:
 def remap_editable_stu(eib_stu: dict, id_map: dict) -> dict:
     """Return {merged 'Component N' key: block} from an editable IB's ShaderTextureUsage.json,
     remapping 'Component {local}' top-level keys to merged ids (via id_map) and rewriting any
-    nested record 'filename' field's prefix. Non-component keys (version / extra_forms) are
-    skipped; components whose local id is not in id_map are skipped."""
+    nested record 'filename' field's prefix. Non-component keys (version /
+    form_anchors / legacy extra_forms) are skipped; components whose local id is
+    not in id_map are skipped."""
     out = {}
     for key, block in (eib_stu or {}).items():
         m = _COMPONENT_KEY_RE.match(str(key))
@@ -81,6 +83,7 @@ def remap_editable_stu(eib_stu: dict, id_map: dict) -> dict:
         local = int(m.group(1))
         if local not in id_map:
             continue
+        block = deepcopy(block)
         _remap_block_filenames(block, id_map)
         out[f"Component {id_map[local]}"] = block
     return out
@@ -88,6 +91,8 @@ def remap_editable_stu(eib_stu: dict, id_map: dict) -> dict:
 
 def remap_form_component_modes(stu: dict, id_map: dict) -> dict:
     """Return remapped per-component form modes for component ids present in id_map."""
+    stu = deepcopy(stu or {})
+    stu_metadata.sync_form_component_modes(stu)
     out = {}
     for local, merged in sorted((id_map or {}).items()):
         value = "single"
@@ -108,7 +113,7 @@ def remap_form_component_modes(stu: dict, id_map: dict) -> dict:
 def merge_fold_form_component_modes(root_stu: dict,
                                     scene_root: Path,
                                     fold_data: dict) -> bool:
-    """Mark root components as multi when a fold source STU has extra forms."""
+    """Fold source form variants into the remapped root component blocks."""
     if isinstance(root_stu, dict):
         before_modes = {
             key: (block.get(slot_constants.FORM_COMPONENT_MODE_KEY)
@@ -132,13 +137,16 @@ def merge_fold_form_component_modes(root_stu: dict,
         if not comp_map:
             continue
         stu = _read_stu(Path(scene_root) / str(ib_hash))
-        for entry in (stu or {}).get("extra_forms") or []:
+        for entry in stu_metadata.form_entries(stu):
             if not isinstance(entry, dict):
+                continue
+            label = str(entry.get("label") or entry.get("source") or "").strip().lower()
+            if not label:
                 continue
             components = entry.get("components") or {}
             if not isinstance(components, dict):
                 continue
-            for comp_name in components:
+            for comp_name, comp_block in components.items():
                 local = _component_id(comp_name)
                 if local is None or local not in comp_map:
                     continue
@@ -148,6 +156,28 @@ def merge_fold_form_component_modes(root_stu: dict,
                     continue
                 if block.get(slot_constants.FORM_COMPONENT_MODE_KEY) != "multi":
                     block[slot_constants.FORM_COMPONENT_MODE_KEY] = "multi"
+                    changed = True
+                sources = block.setdefault(slot_constants.COMPONENT_SOURCES_KEY, [])
+                if isinstance(sources, str):
+                    sources = [sources]
+                    block[slot_constants.COMPONENT_SOURCES_KEY] = sources
+                source_note = (
+                    f"merged {root_key} <- fold {ib_hash} local Component {local}")
+                if source_note not in sources:
+                    sources.append(source_note)
+                    changed = True
+                variants = block.setdefault(slot_constants.FORM_VARIANTS_KEY, {})
+                if not isinstance(variants, dict):
+                    variants = {}
+                    block[slot_constants.FORM_VARIANTS_KEY] = variants
+                    changed = True
+                variant = deepcopy(comp_block) if isinstance(comp_block, dict) else {}
+                _remap_block_filenames(variant, comp_map)
+                for meta_key in ("source", "matched_by", "vb0_hash"):
+                    if meta_key not in variant and entry.get(meta_key) not in (None, ""):
+                        variant[meta_key] = entry.get(meta_key)
+                if variants.get(label) != variant:
+                    variants[label] = variant
                     changed = True
     return changed
 
@@ -251,7 +281,7 @@ def _component_map(stu: dict, predicate=None) -> dict:
 
 
 def _extra_form_component_maps(stu: dict):
-    for entry in (stu or {}).get("extra_forms") or []:
+    for entry in stu_metadata.form_entries(stu):
         if isinstance(entry, dict):
             components = entry.get("components") or {}
             if isinstance(components, dict):
@@ -411,8 +441,8 @@ def cross_scene_root_texture_keep_set(merge_root: Path, routing: dict) -> tuple[
     The keep set is intentionally broader than the body slot plan: editable and
     own-buffer scene IBs keep their own slot resources, while foldable native
     local textures do not keep root DDS unless they are remapped through
-    extra_forms into the body form plan. Files absent from every STU are kept as
-    legacy blind-zone fallbacks.
+    component-local form variants into the body form plan. Files absent from
+    every STU are kept as legacy blind-zone fallbacks.
     """
     merge_root = Path(merge_root)
     root_files = _root_texture_files(merge_root)

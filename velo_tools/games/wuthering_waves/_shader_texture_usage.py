@@ -258,16 +258,14 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
 
             _stu_metadata.sync_form_component_modes(shader_texture_usage)
 
-            # Preserve the slot-texture layer's "extra_forms" key (merged
-            # extra-form maps) across re-extraction.
+            # Preserve the slot-texture layer's user-editable lean metadata
+            # across re-extraction.
             usage_path = object_directory / 'ShaderTextureUsage.json'
             if usage_path.is_file():
                 try:
                     with open(usage_path, encoding='utf-8') as f:
                         previous = json.load(f)
-                    extra_forms = previous.get('extra_forms')
-                    if isinstance(extra_forms, list) and extra_forms:
-                        shader_texture_usage['extra_forms'] = extra_forms
+                    previous = _stu_metadata.canonicalize_lean_usage(previous)
                     form_anchors = previous.get('form_anchors')
                     if isinstance(form_anchors, str) and form_anchors.strip():
                         shader_texture_usage['form_anchors'] = form_anchors
@@ -286,6 +284,18 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                             current_block[
                                 _stu_metadata.constants.FORM_COMPONENT_MODE_KEY
                             ] = 'multi'
+                        sources = previous_block.get(
+                            _stu_metadata.constants.COMPONENT_SOURCES_KEY)
+                        if sources:
+                            current_block[
+                                _stu_metadata.constants.COMPONENT_SOURCES_KEY
+                            ] = sources
+                        variants = previous_block.get(
+                            _stu_metadata.constants.FORM_VARIANTS_KEY)
+                        if variants:
+                            current_block[
+                                _stu_metadata.constants.FORM_VARIANTS_KEY
+                            ] = variants
                 except Exception:
                     pass  # unreadable previous file: write fresh maps only
             _stu_metadata.sync_form_component_modes(shader_texture_usage)

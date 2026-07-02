@@ -44,6 +44,25 @@ _RESERVED_KEYS = {
     'version',
 }
 
+_COMPONENT_METADATA_KEYS = {
+    constants.FORM_COMPONENT_MODE_KEY,
+    constants.COMPONENT_SOURCES_KEY,
+    constants.FORM_VARIANTS_KEY,
+    *constants.LEGACY_FORM_COMPONENT_MODE_KEYS,
+}
+
+_FORM_VARIANT_METADATA_KEYS = {
+    'label',
+    'source',
+    'matched_by',
+    'vb0_hash',
+    constants.FORM_ANCHOR_VB0_KEY,
+    constants.FORM_ANCHOR_LABEL_KEY,
+    constants.FORM_ANCHOR_SOURCE_KEY,
+    constants.FORM_ANCHOR_RANK_KEY,
+    constants.COMPONENT_SOURCES_KEY,
+}
+
 
 def _f32(value: float) -> float:
     """float32 round-trip: 3DMigoto ini expressions compare at that precision."""
@@ -79,9 +98,9 @@ def normalize_usage(raw: dict, source: str, warnings: List[str],
         comp_id = int(found.group(1))
         comp_out = out.setdefault(comp_id, {})
         for pair_key, value in (pairs or {}).items():
-            if pair_key == constants.FORM_COMPONENT_MODE_KEY:
+            if pair_key in _COMPONENT_METADATA_KEYS:
                 continue
-            if pair_key in constants.LEGACY_FORM_COMPONENT_MODE_KEYS:
+            if pair_key in _FORM_VARIANT_METADATA_KEYS:
                 continue
             if _VS_KEY_RE.match(pair_key) and isinstance(value, dict):
                 for ps_key, slots in value.items():
@@ -201,13 +220,16 @@ def load_forms(object_source_folder: Path,
     if freshness_out is not None:
         freshness_out.append(base_fresh)
 
-    extra_entries = base_raw.get(constants.EXTRA_FORMS_KEY)
+    extra_entries = stu_metadata.form_entries(base_raw)
     if not extra_entries:
         legacy_path = Path(object_source_folder) / constants.LEGACY_SIDECAR_FILENAME
         if legacy_path.is_file():
             try:
                 with open(legacy_path, encoding='utf-8') as f:
-                    extra_entries = (json.load(f) or {}).get(constants.EXTRA_FORMS_KEY)
+                    extra_entries = stu_metadata.form_entries({
+                        constants.EXTRA_FORMS_KEY:
+                            (json.load(f) or {}).get(constants.EXTRA_FORMS_KEY)
+                    })
                 warnings.append(
                     f'legacy {constants.LEGACY_SIDECAR_FILENAME} used - re-run the form '
                     f'merge once to migrate it into {constants.BASE_USAGE_FILENAME}')
@@ -232,6 +254,7 @@ def load_forms(object_source_folder: Path,
 
 
 def read_local_discriminator_audit(object_source_folder: Path) -> object:
+    """Build the local discriminator audit from current STU facts at export time."""
     base_path = Path(object_source_folder) / constants.BASE_USAGE_FILENAME
     try:
         with open(base_path, encoding='utf-8') as f:
@@ -241,7 +264,7 @@ def read_local_discriminator_audit(object_source_folder: Path) -> object:
     if not isinstance(raw, dict):
         raise SlotStyleDegrade(
             f'{constants.BASE_USAGE_FILENAME} has an unexpected shape')
-    return raw.get(constants.LOCAL_FORM_DISCRIMINATOR_KEY)
+    return build_local_discriminator_audit_from_usage(raw)
 
 
 def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
@@ -256,28 +279,37 @@ def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
         freshness.append(fresh)
         return fresh
 
-    def _collect_source_meta(label: str, container: dict):
-        raw = (container.get(constants.LOCAL_COMPONENT_SOURCES_KEY)
-               if isinstance(container, dict) else None)
-        if not isinstance(raw, dict):
+    def _add_source_meta(label: str, comp_name: str, values):
+        found = _COMP_RE.search(str(comp_name))
+        if not found:
             return
-        for comp_name, values in raw.items():
+        if isinstance(values, str):
+            items = [values]
+        elif isinstance(values, list):
+            items = [item for item in values if isinstance(item, str)]
+        else:
+            return
+        if items:
+            source_meta.setdefault((label, int(found.group(1))), []).extend(items)
+
+    def _collect_source_meta(label: str, container: dict):
+        if not isinstance(container, dict):
+            return
+        raw = container.get(constants.LOCAL_COMPONENT_SOURCES_KEY)
+        if isinstance(raw, dict):
+            for comp_name, values in raw.items():
+                _add_source_meta(label, comp_name, values)
+        for comp_name, block in container.items():
             found = _COMP_RE.search(str(comp_name))
-            if not found:
+            if not found or not isinstance(block, dict):
                 continue
-            if isinstance(values, str):
-                items = [values]
-            elif isinstance(values, list):
-                items = [item for item in values if isinstance(item, str)]
-            else:
-                continue
-            if items:
-                source_meta.setdefault((label, int(found.group(1))), []).extend(items)
+            _add_source_meta(
+                label, comp_name, block.get(constants.COMPONENT_SOURCES_KEY))
 
     forms: List[Tuple[str, FormData]] = [
         ('base', normalize_usage(usage, 'base', warnings, texture_info, _freshness()))]
     _collect_source_meta('base', usage)
-    for entry in usage.get(constants.EXTRA_FORMS_KEY) or []:
+    for entry in stu_metadata.form_entries(usage):
         if not isinstance(entry, dict):
             continue
         label = entry.get('label') or entry.get('source') or f'form{len(forms) + 1}'

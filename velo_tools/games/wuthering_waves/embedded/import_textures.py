@@ -27,6 +27,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by non-Blender unit 
     bpy = None
 
 _FORM_COMPONENT_MODE_KEY = "form_component_mode"
+_COMPONENT_METADATA_KEYS = {
+    _FORM_COMPONENT_MODE_KEY,
+    "component_sources",
+    "form_variants",
+}
 _LEGACY_FORM_COMPONENT_MODE_KEYS = ("_velo_form_component_mode",)
 
 
@@ -174,7 +179,7 @@ def load_component_candidates(folder: Path) -> dict[str, dict[str, dict]]:
                 continue
             comp = out.setdefault(comp_match.group(1), {})
             for pair_key, value in pairs.items():
-                if str(pair_key) == _FORM_COMPONENT_MODE_KEY:
+                if str(pair_key) in _COMPONENT_METADATA_KEYS:
                     continue
                 if str(pair_key) in _LEGACY_FORM_COMPONENT_MODE_KEYS:
                     continue

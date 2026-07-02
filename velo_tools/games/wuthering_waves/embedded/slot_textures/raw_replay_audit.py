@@ -10,6 +10,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 from . import constants
 from . import dds_meta
 from . import log_freshness
+from . import stu_metadata
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,7 @@ def _load_stu(stu) -> dict:
 def _iter_component_maps(stu):
     if isinstance(stu, dict):
         yield stu
-        for entry in stu.get("extra_forms") or []:
+        for entry in stu_metadata.form_entries(stu):
             if isinstance(entry, dict) and isinstance(entry.get("components"), dict):
                 yield entry["components"]
 
@@ -378,12 +379,14 @@ def _texture_record(slot: RawSlot) -> dict:
 
 
 def _upsert_source_note(usage: dict, comp_id: int, note: str):
-    sources = usage.setdefault(constants.LOCAL_COMPONENT_SOURCES_KEY, {})
     key = f"Component {comp_id}"
-    values = sources.setdefault(key, [])
+    block = usage.setdefault(key, {})
+    if not isinstance(block, dict):
+        return
+    values = block.setdefault(constants.COMPONENT_SOURCES_KEY, [])
     if isinstance(values, str):
         values = [values]
-        sources[key] = values
+        block[constants.COMPONENT_SOURCES_KEY] = values
     if isinstance(values, list) and note not in values:
         values.append(note)
 

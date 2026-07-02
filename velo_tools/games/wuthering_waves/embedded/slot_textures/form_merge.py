@@ -10,8 +10,8 @@
 # OutputBuilder; mirrors embedded/lod/extract.py), picks the object matching
 # the already-extracted one (vb0 hash first, skeleton cb4 hash as fallback)
 # and persists its per-(component x shader-pair x slot) texture records under
-# the "extra_forms" key INSIDE ShaderTextureUsage.json (single file; a legacy
-# ShaderTextureUsageForms.json sidecar is auto-migrated in and deleted).
+# each affected component's "form_variants" block inside ShaderTextureUsage.json
+# (single file; legacy extra_forms sidecars are auto-migrated in and deleted).
 #
 # Schema v3: slot records are rich objects {filename, hash, format, width,
 # height} (XQFA-fork compatible), with format/size read from the dump DDS
@@ -356,10 +356,8 @@ def _merge_variant_records(dst_components, src_components):
 
 def _upsert_extra_form(usage, components_usage, form_label, source,
                        matched_by, vb0_hash):
-    """Insert or merge one extra-form entry inside ShaderTextureUsage.json."""
-    extra_forms = usage.get(constants.EXTRA_FORMS_KEY)
-    if not isinstance(extra_forms, list):
-        extra_forms = []
+    """Insert or merge one form entry before canonical component-local write."""
+    extra_forms = stu_metadata.form_entries(usage)
 
     label = form_label.strip()
     entry = {
@@ -432,13 +430,12 @@ def _usage_paths_for_anchor_write(object_source_folder):
 
 
 def refresh_local_discriminator_audit_in_usage(usage):
-    """Refresh only the local discriminator audit block of an STU dict."""
+    """Return a fresh runtime audit without persisting it in the STU dict."""
     from . import generator
     stu_metadata.sync_form_component_modes(usage)
-    usage[constants.LOCAL_FORM_DISCRIMINATOR_KEY] = (
-        generator.build_local_discriminator_audit_from_usage(usage))
+    usage.pop(constants.LOCAL_FORM_DISCRIMINATOR_KEY, None)
     stu_metadata.sync_form_anchors_field(usage)
-    return usage[constants.LOCAL_FORM_DISCRIMINATOR_KEY]
+    return generator.build_local_discriminator_audit_from_usage(usage)
 
 
 def refresh_local_discriminator_audit_file(usage_path):
@@ -461,7 +458,7 @@ def refresh_local_discriminator_audits(object_source_folder):
 
 def write_trusted_form_anchor(object_source_folder, form_label, anchor_hash,
                               rank=1, source=constants.FORM_ANCHOR_SOURCE_TRUSTED):
-    """Write trusted form-anchor metadata into matching STU extra_forms."""
+    """Write trusted form-anchor metadata into matching STU form variants."""
     anchor_hash = str(anchor_hash or '').strip().lower()
     if not _valid_hash8(anchor_hash):
         raise FormMergeError(f'invalid form anchor vb0 hash: {anchor_hash!r}')
@@ -486,8 +483,8 @@ def write_trusted_form_anchor(object_source_folder, form_label, anchor_hash,
             usage[constants.FORM_ANCHOR_RANK_KEY] = int(rank)
             changed = True
         else:
-            forms = usage.get(constants.EXTRA_FORMS_KEY)
-            if not isinstance(forms, list):
+            forms = stu_metadata.form_entries(usage)
+            if not forms:
                 continue
             for entry in forms:
                 if not isinstance(entry, dict) or _entry_label(entry) != label:
@@ -497,6 +494,8 @@ def write_trusted_form_anchor(object_source_folder, form_label, anchor_hash,
                 entry[constants.FORM_ANCHOR_SOURCE_KEY] = source
                 entry[constants.FORM_ANCHOR_RANK_KEY] = int(rank)
                 changed = True
+            if changed:
+                usage[constants.EXTRA_FORMS_KEY] = forms
         if changed:
             stu_metadata.write_usage(usage_path, usage)
             updated.append(str(usage_path))
@@ -556,7 +555,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
     mesh_objects, surviving = collect_mesh_objects(dump_path, texture_filter)
 
     # Cross-scene merged root: still lift every routed form texture into the root for legacy
-    # hash-style compatibility, but preserve foldable scene-IB extra_forms locally. The export
+    # hash-style compatibility, but preserve foldable scene-IB form variants locally. The export
     # orchestrator remaps those local form records back onto body/base component ids for slot-style
     # form switching.
     routing_path = object_source_folder / 'CrossSceneRouting.json'
@@ -667,7 +666,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             'variants_added': variants_added,
             'conflicts_marked': conflicts_marked,
             'freshness': evidence is not None,
-            'total_forms': 1 + len(usage.get(constants.EXTRA_FORMS_KEY) or []),
+            'total_forms': 1 + len(stu_metadata.form_entries(usage)),
         }
 
     # Single-file schema v2: extra forms live INSIDE ShaderTextureUsage.json.
@@ -681,9 +680,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
     if not isinstance(usage, dict):
         raise FormMergeError(f'{constants.BASE_USAGE_FILENAME} has an unexpected shape')
 
-    extra_forms = usage.get(constants.EXTRA_FORMS_KEY)
-    if not isinstance(extra_forms, list):
-        extra_forms = []
+    extra_forms = stu_metadata.form_entries(usage)
 
     # Migrate a pre-v2 sidecar (fold its entries in, then delete the file).
     migrated = False
@@ -692,7 +689,9 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         try:
             with open(legacy_path, encoding='utf-8') as f:
                 legacy = json.load(f)
-            for legacy_entry in (legacy or {}).get(constants.EXTRA_FORMS_KEY) or []:
+            for legacy_entry in stu_metadata.form_entries({
+                    constants.EXTRA_FORMS_KEY:
+                        (legacy or {}).get(constants.EXTRA_FORMS_KEY)}) or []:
                 if not any(e.get('source') == legacy_entry.get('source')
                            for e in extra_forms):
                     extra_forms.append(legacy_entry)
@@ -757,5 +756,5 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         'textures_copied': textures_copied,
         'variants_added': variants_added,
         'freshness': evidence is not None,
-        'total_forms': 1 + len(extra_forms),
+        'total_forms': 1 + len(stu_metadata.form_entries(usage)),
     }

@@ -16,9 +16,10 @@
 #   generator.py   pure: per-form maps + texture list -> slot-style ini block
 #   transform.py   pure: rendered mod.ini -> slot-style mod.ini (anchor-based,
 #                  template-agnostic: stock + LOD fork + future templates)
-#   form_merge.py  raw extra-form FrameAnalysis dump -> "extra_forms" key inside
-#                  ShaderTextureUsage.json (multi-form characters need one dump
-#                  per form; any form count supported)
+#   form_merge.py  raw extra-form FrameAnalysis dump -> component-local
+#                  "form_variants" blocks inside ShaderTextureUsage.json
+#                  (multi-form characters need one dump per form; any form
+#                  count supported)
 #   hook.py        IniMaker.build_from_template wrap (installed after the LOD
 #                  hook so it post-processes the final rendered text)
 #   ui.py          export/extract option patches + form-merge sub-panel/operator

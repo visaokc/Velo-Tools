@@ -24,10 +24,9 @@ from pathlib import Path
 
 import bpy
 
+from ..slot_textures import constants as slot_constants
 from ..slot_textures import stu_metadata
 import bmesh
-
-_LOCAL_COMPONENT_SOURCES_KEY = "_velo_local_component_sources"
 
 
 @contextmanager
@@ -324,9 +323,14 @@ def _remap_stu_components(components, comp_map, keep_count, source_label=None):
 def _merge_local_component_sources(target, sources):
     if not sources:
         return
-    out = target.setdefault(_LOCAL_COMPONENT_SOURCES_KEY, {})
     for comp_name, values in sources.items():
-        bucket = out.setdefault(comp_name, [])
+        block = target.get(comp_name)
+        if not isinstance(block, dict):
+            continue
+        bucket = block.setdefault(slot_constants.COMPONENT_SOURCES_KEY, [])
+        if isinstance(bucket, str):
+            bucket = [bucket]
+            block[slot_constants.COMPONENT_SOURCES_KEY] = bucket
         for value in values:
             if value not in bucket:
                 bucket.append(value)
@@ -343,7 +347,7 @@ def _merge_form_component_modes(target, modes):
 
 
 def _body_stu_for_export(root_stu, merged_folder, routing, keep_count):
-    """Body export STU: base components plus foldable scene-IB extra_forms remapped to base ids."""
+    """Body export STU: base components plus foldable scene-IB form variants remapped to base ids."""
     trimmed = {}
     for k, v in (root_stu or {}).items():
         cid = _component_id(k)
@@ -351,11 +355,11 @@ def _body_stu_for_export(root_stu, merged_folder, routing, keep_count):
             if cid < keep_count:
                 trimmed[k] = v
             continue
-        if k != "extra_forms":
+        if k != slot_constants.EXTRA_FORMS_KEY:
             trimmed[k] = v
 
     extra_by_label = {}
-    for entry in (root_stu or {}).get("extra_forms") or []:
+    for entry in stu_metadata.form_entries(root_stu or {}):
         if not isinstance(entry, dict):
             continue
         label = entry.get("label") or entry.get("source") or f"form{len(extra_by_label) + 2}"
@@ -376,7 +380,7 @@ def _body_stu_for_export(root_stu, merged_folder, routing, keep_count):
             scene_stu = json.loads(stu_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        for entry in scene_stu.get("extra_forms") or []:
+        for entry in stu_metadata.form_entries(scene_stu):
             if not isinstance(entry, dict):
                 continue
             source_label = (scene.get("tag") or scene.get("source_folder")
@@ -395,7 +399,7 @@ def _body_stu_for_export(root_stu, merged_folder, routing, keep_count):
                 {comp_name: "multi" for comp_name in remapped})
 
     if extra_by_label:
-        trimmed["extra_forms"] = list(extra_by_label.values())
+        trimmed[slot_constants.EXTRA_FORMS_KEY] = list(extra_by_label.values())
     if isinstance(trimmed, dict):
         stu_metadata.sync_form_component_modes(trimmed)
         stu_metadata.sync_form_anchors_field(trimmed)
@@ -437,7 +441,7 @@ def _fold_redundant_hashes(merged_folder, routing, keep_count, eligible):
         except Exception:
             continue
         component_sets = [scene_stu]
-        component_sets.extend((entry.get("components") or {}) for entry in scene_stu.get("extra_forms") or []
+        component_sets.extend((entry.get("components") or {}) for entry in stu_metadata.form_entries(scene_stu)
                               if isinstance(entry, dict))
         for components in component_sets:
             for comp_name, comp_pairs in (components or {}).items():
@@ -465,7 +469,7 @@ def _root_non_body_hashes(merged_folder, keep_count):
     body_hashes = set()
     non_body_hashes = set()
     component_sets = [root_stu]
-    component_sets.extend((entry.get("components") or {}) for entry in root_stu.get("extra_forms") or []
+    component_sets.extend((entry.get("components") or {}) for entry in stu_metadata.form_entries(root_stu)
                           if isinstance(entry, dict))
     for components in component_sets:
         for comp_name, comp_pairs in (components or {}).items():

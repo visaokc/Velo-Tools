@@ -657,7 +657,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     if (base / "Metadata.json").exists():
         shutil.copy2(base / "Metadata.json", out / "Metadata.json")
     # The slot-style texture export layer reads ShaderTextureUsage.json from the
-    # export source folder; carry the base's copy (incl. extra_forms) along.
+    # export source folder; carry the base's lean STU metadata along.
     if (base / "ShaderTextureUsage.json").exists():
         shutil.copy2(base / "ShaderTextureUsage.json", out / "ShaderTextureUsage.json")
     base_tex = _copy_textures(base, out)
@@ -788,10 +788,14 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     if editable_stu_additions or editable_stu_sources or editable_form_modes or anchors_changed:
         root_stu.update(editable_stu_additions)  # Component 8/9.. keys, no collision with base 0..N-1
         if editable_stu_sources:
-            existing_sources = root_stu.setdefault(
-                slot_constants.LOCAL_COMPONENT_SOURCES_KEY, {})
             for comp_name, values in editable_stu_sources.items():
-                bucket = existing_sources.setdefault(comp_name, [])
+                block = root_stu.get(comp_name)
+                if not isinstance(block, dict):
+                    continue
+                bucket = block.setdefault(slot_constants.COMPONENT_SOURCES_KEY, [])
+                if isinstance(bucket, str):
+                    bucket = [bucket]
+                    block[slot_constants.COMPONENT_SOURCES_KEY] = bucket
                 for value in values:
                     if value not in bucket:
                         bucket.append(value)

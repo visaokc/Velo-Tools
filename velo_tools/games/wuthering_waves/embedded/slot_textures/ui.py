@@ -5,9 +5,9 @@
 #     EFMI-style; restored on unregister) shown in a "Velo 兼容选项" box
 #     appended to the stock Export Mod menu (method wrap, original restored).
 #   - A standalone helper sub-panel merges extra-form RAW frame dumps into
-#     ShaderTextureUsage.json's "extra_forms" key and copies the form's
-#     textures into the object folder (multi-form characters need one dump per
-#     form; see ADR 0006/0007).
+#     ShaderTextureUsage.json's component-local form_variants blocks and copies
+#     the form's textures into the object folder (multi-form characters need one
+#     dump per form; see ADR 0006/0007).
 
 import traceback
 
@@ -273,8 +273,8 @@ class VTWW_OT_merge_form_textures(bpy.types.Operator):
     bl_idname = "vtww.merge_form_textures"
     bl_label = "合并形态贴图数据"
     bl_description = ("解析另一形态的原始帧转储，把它的 (组件 x 着色器对 x 槽位) 贴图表"
-                      "合并进模型文件夹 ShaderTextureUsage.json 的 extra_forms 键（支持任意"
-                      "数量形态），供插槽风格导出生成形态检测与 per-form 分支。"
+                      "合并进模型文件夹 ShaderTextureUsage.json 的组件 form_variants 字段"
+                      "（支持任意数量形态），供插槽风格导出生成 per-form 分支。"
                       "同名 dump 重复合并会覆盖旧条目")
 
     def execute(self, context):

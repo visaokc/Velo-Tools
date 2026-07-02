@@ -236,7 +236,12 @@ def _auto_form_anchors_from_stu(source_folder, forms, anchors, warnings):
             raw = json.load(f)
     except Exception:
         return out
-    for entry in raw.get(generator.constants.EXTRA_FORMS_KEY) or []:
+    metadata = getattr(generator, 'stu_metadata', None)
+    if metadata is not None and hasattr(metadata, 'form_entries'):
+        form_entries = metadata.form_entries(raw)
+    else:
+        form_entries = raw.get(generator.constants.EXTRA_FORMS_KEY) or []
+    for entry in form_entries:
         if not isinstance(entry, dict):
             continue
         label = entry.get('label') or entry.get('source')
