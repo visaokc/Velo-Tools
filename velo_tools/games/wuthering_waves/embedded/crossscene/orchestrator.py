@@ -173,6 +173,47 @@ def _translate_host_vgs(obj, split_rec, tag):
             vg.name = vg.name[len(vg_translate.TMP_PREFIX):]
 
 
+def _rename_digit_vertex_groups(obj, renames):
+    if not renames:
+        return
+    from . import vg_translate
+    by_name = {vg.name: vg for vg in obj.vertex_groups}
+    for old, new in renames.items():
+        vg = by_name.get(old)
+        if vg is not None:
+            vg.name = vg_translate.TMP_PREFIX + new
+    for vg in obj.vertex_groups:
+        if vg.name.startswith(vg_translate.TMP_PREFIX):
+            vg.name = vg.name[len(vg_translate.TMP_PREFIX):]
+
+
+def _weighted_vg_entries(obj):
+    weighted = set()
+    for v in obj.data.vertices:
+        for g in v.groups:
+            if g.weight > 1e-6:
+                weighted.add(g.group)
+    return [(vg.name, vg.index in weighted) for vg in obj.vertex_groups]
+
+
+def _prepare_own_buffer_vgs(obj, split_rec, component_vg_map, tag):
+    from . import vg_translate
+    chk = split_rec.get("host_vg_selfcheck") or {}
+    renames, skip_host, strays = vg_translate.plan_own_buffer_vg_normalization(
+        _weighted_vg_entries(obj),
+        component_vg_map,
+        split_rec.get("host_vg_remap"),
+        chk.get("host_vg_count"))
+    if strays:
+        raise RuntimeError(
+            "own-buffer 部件 %s（IB %s）的顶点组 %s 权重越界——它们既不属于 host 骨表，"
+            "也无法通过该部件的 vg_map 翻译成本部件骨。请把这些权重转回本部件的骨，或刷零后再导出。"
+            % (split_rec.get("split_object"), tag, strays))
+    _rename_digit_vertex_groups(obj, renames)
+    if not skip_host:
+        _translate_host_vgs(obj, split_rec, tag)
+
+
 def _import_one(cfg, src, want_hash):
     before = set(c.name for c in bpy.data.collections)
     cfg.object_source_folder = src
@@ -907,15 +948,12 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     own_col.objects.link(cp)
                     try:
                         _bake_shapekeys(cp)
-                        if saved_import_type == 'MERGED':
-                            # MERGED import names VGs by UNIFIED ids; bring them back to the base
-                            # component's local numbering first (host_vg_remap's domain), even when
-                            # the final sub-export is COMPONENT_FROM_MERGED -> COMPONENT.
-                            meta = json.loads((merged_folder / "Metadata.json").read_text(encoding="utf-8"))
-                            comp_meta = (meta.get("components") or [])[sp["base_component"]]
-                            _translate_unified_to_local(cp, comp_meta.get("vg_map") or {},
-                                                        sp["split_object"], tag)
-                        _translate_host_vgs(cp, sp, tag)
+                        # Some saved files or headless scripts can disagree about the UI import
+                        # skeleton mode even though the split copy still carries MERGED unified
+                        # VG names. Decide from the weighted digit VGs themselves, not from UI state.
+                        meta = json.loads((merged_folder / "Metadata.json").read_text(encoding="utf-8"))
+                        comp_meta = (meta.get("components") or [])[sp["base_component"]]
+                        _prepare_own_buffer_vgs(cp, sp, comp_meta.get("vg_map") or {}, tag)
                         if hole:
                             _pos_hole(cp, frac=hole_frac)
                         _export_col(

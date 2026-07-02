@@ -117,19 +117,47 @@ def _skip_var_name(component_id, ordinal):
     return "$xscene_skip_draw_c%d_%d" % (int(component_id), int(ordinal))
 
 
-def _draw_owner_run_lines(component_id, draws, selected):
+def _skip_var_names_for_selection(component_id, draws, selected):
     selected_pairs = {
         (int(cnt), int(off))
         for cnt, off, _label in _normalise_draw_entries(selected)
     }
+    return [
+        _skip_var_name(component_id, ordinal)
+        for ordinal, (cnt, off, _label) in enumerate(_normalise_draw_entries(draws))
+        if (cnt, off) not in selected_pairs
+    ]
+
+
+def _inject_skip_var_globals(body_text, skip_vars):
+    names = sorted({str(var).lstrip("$") for var in (skip_vars or [])})
+    if not names:
+        return body_text
+    existing = {
+        m.group(1)
+        for m in re.finditer(r'^\s*global\s+\$([A-Za-z0-9_]+)\b', body_text, re.M)
+    }
+    lines = [
+        "global $%s = 0" % name
+        for name in names
+        if name not in existing
+    ]
+    if not lines:
+        return body_text
+    const = re.search(r'^\[Constants\]\s*\n', body_text, re.M)
+    if const:
+        insert = "".join(line + "\n" for line in lines)
+        return body_text[:const.end()] + insert + body_text[const.end():]
+    return "[Constants]\n%s\n\n%s" % ("\n".join(lines), body_text)
+
+
+def _draw_owner_run_lines(component_id, draws, selected):
     lines = []
-    for ordinal, (cnt, off, _label) in enumerate(_normalise_draw_entries(draws)):
-        if (cnt, off) not in selected_pairs:
-            lines.append("    %s = 1" % _skip_var_name(component_id, ordinal))
+    for skip_var in _skip_var_names_for_selection(component_id, draws, selected):
+        lines.append("    %s = 1" % skip_var)
     lines.append("    run = %s" % _draw_owner_name(component_id))
-    for ordinal, (cnt, off, _label) in enumerate(_normalise_draw_entries(draws)):
-        if (cnt, off) not in selected_pairs:
-            lines.append("    %s = 0" % _skip_var_name(component_id, ordinal))
+    for skip_var in _skip_var_names_for_selection(component_id, draws, selected):
+        lines.append("    %s = 0" % skip_var)
     return lines
 
 
@@ -641,6 +669,12 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
     _fold_targets = set(comp_map.values())
     remap_cmd = {} if is_merged else {int(k): ("CommandListOverrideSharedResources_c%dremap" % int(k), "c%dremap" % int(k))
                                       for k in vg_remap_all if int(k) in _fold_targets}
+
+    skip_vars = []
+    for bc in sorted(set(comp_map.values())):
+        selected = select_fold_draws(body_draw_plan.get(bc), draw_excludes.get(bc))
+        skip_vars.extend(_skip_var_names_for_selection(bc, body_draw_plan.get(bc), selected))
+    body_text = _inject_skip_var_globals(body_text, skip_vars)
 
     if has_morph and batch_counts:
         consts, off = "", 0

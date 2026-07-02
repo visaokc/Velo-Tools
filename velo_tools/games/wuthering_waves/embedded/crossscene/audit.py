@@ -169,6 +169,24 @@ def _audit_draw_owners(text):
     return errors
 
 
+def _audit_skip_vars_declared(text):
+    errors = []
+    declared = {
+        match.group(1)
+        for match in re.finditer(r'^\s*global\s+\$([A-Za-z0-9_]+)\b', text, re.M)
+    }
+    used = sorted({
+        match.group(1)
+        for match in re.finditer(r'\$(xscene_skip_draw_c\d+_\d+(?:_ib\d+)*)\b', text)
+    })
+    for name in used:
+        if name not in declared:
+            errors.append(
+                "$%s is used as a FoldHost draw skip guard but is not declared global"
+                % name)
+    return errors
+
+
 def _body_draw_entries(text, component_id):
     atoms = _draw_atom_tuple_map(text)
     cmd = _section(text, "CommandListDrawComponent%d_ib0" % component_id)
@@ -507,6 +525,7 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
     errors.extend(_audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks))
     errors.extend(_audit_marker_resets(text))
     errors.extend(_audit_residual_sensitive_conditions(text))
+    errors.extend(_audit_skip_vars_declared(text))
     errors.extend(_audit_draw_owners(text))
     draw_atoms = _draw_atom_tuple_map(text)
     draw_owners = _draw_owner_atom_runs(text)

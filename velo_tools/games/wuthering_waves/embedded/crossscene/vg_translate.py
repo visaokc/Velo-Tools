@@ -9,6 +9,75 @@ it can be unit-tested without Blender; the orchestrator applies the plan to the 
 TMP_PREFIX = "__xsvg_tmp_"
 
 
+def build_inverse_vg_map(vg_map):
+    inverse = {}
+    for key, value in (vg_map or {}).items():
+        local_id = int(key)
+        unified_id = int(value)
+        current = inverse.get(unified_id)
+        if current is None or local_id < current:
+            inverse[unified_id] = local_id
+    return inverse
+
+
+def _weighted_digit_ids(vg_entries):
+    out = []
+    for name, has_weight in vg_entries:
+        if has_weight and str(name).lstrip("-").isdigit():
+            out.append((str(name), int(name)))
+    return out
+
+
+def plan_own_buffer_vg_normalization(vg_entries, component_vg_map, host_remap,
+                                     host_vg_count=None):
+    """Plan the pre-host normalization for an own-buffer split copy.
+
+    Returns ``(renames, skip_host_translation, strays)``. ``renames`` maps
+    MERGED unified digit names to base-component-local digit names before the
+    existing host translation runs. ``skip_host_translation`` is only used for
+    copies that are already host-local while a non-identity host table would
+    otherwise misread those names as base-local ids.
+    """
+    entries = [(str(name), bool(has_weight)) for name, has_weight in vg_entries]
+    weighted = _weighted_digit_ids(entries)
+    if not weighted:
+        return {}, False, []
+
+    _renames, _drops, host_strays = plan_host_vg_translation(
+        entries, host_remap, host_vg_count)
+    if not host_strays:
+        return {}, False, []
+
+    table = {int(k): int(v) for k, v in host_remap.items()} if host_remap else None
+    if table is not None and host_vg_count is not None:
+        host_ready = all(0 <= vid < int(host_vg_count) for _name, vid in weighted)
+        overlaps_base_keys = any(vid in table for _name, vid in weighted)
+        if host_ready and not overlaps_base_keys:
+            return {}, True, []
+
+    inverse = build_inverse_vg_map(component_vg_map)
+    strays = []
+    renames = {}
+    for name, has_weight in entries:
+        if not name.lstrip("-").isdigit():
+            continue
+        local = inverse.get(int(name))
+        if local is None:
+            if has_weight:
+                strays.append(name)
+        else:
+            renames[name] = str(local)
+    if strays:
+        return {}, False, sorted(strays, key=int)
+
+    adjusted = [(renames.get(name, name), has_weight) for name, has_weight in entries]
+    _renames, _drops, remaining = plan_host_vg_translation(
+        adjusted, host_remap, host_vg_count)
+    if remaining:
+        return {}, False, sorted(remaining, key=int)
+    return renames, False, []
+
+
 def plan_host_vg_translation(vg_entries, remap, host_vg_count=None):
     """Plan the split copy's VG renames toward host-local numbering.
 
