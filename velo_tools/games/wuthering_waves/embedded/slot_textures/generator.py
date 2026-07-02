@@ -8,7 +8,6 @@ import json
 import re
 from dataclasses import dataclass, field
 from itertools import combinations
-import struct
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -71,11 +70,6 @@ class ComponentHashFallback:
     resource: str
     section: str
     reason: str
-
-
-def _f32(value: float) -> float:
-    """float32 round-trip: 3DMigoto ini expressions compare at that precision."""
-    return struct.unpack('<f', struct.pack('<f', value))[0]
 
 
 # ---------------------------------------------------------------- loading --
@@ -762,7 +756,7 @@ def _family_key(tex_hash: Optional[str], texture_info: TextureInfo) -> Optional[
     fmt = (texture_info.get(tex_hash) or {}).get('format')
     if not fmt:
         return None
-    return _f32(constants.format_filter_index(fmt))
+    return constants.format_filter_index(fmt)
 
 
 def _fi_str(value: float) -> str:
@@ -1044,7 +1038,7 @@ def _signature_from_audit(value: object) -> Tuple[Tuple[int, float], ...]:
         if not isinstance(item, list) or len(item) != 2:
             return ()
         try:
-            out.append((int(item[0]), _f32(float(item[1]))))
+            out.append((int(item[0]), float(item[1])))
         except (TypeError, ValueError):
             return ()
     return tuple(out)
@@ -1703,7 +1697,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         if not fmt:
             continue
         fi = constants.format_filter_index(fmt)
-        key = _f32(fi)
+        key = fi
         fi_text.setdefault(key, _fi_str(fi))
         group_families.setdefault(key, {}).setdefault(
             constants.format_prefix(fmt), (fmt, _fi_str(fi)))
@@ -2300,7 +2294,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
         if not fmt:
             continue
         fi = constants.format_filter_index(fmt)
-        key = _f32(fi)
+        key = fi
         fi_text.setdefault(key, _fi_str(fi))
         group_families.setdefault(key, {}).setdefault(
             constants.format_prefix(fmt), (fmt, _fi_str(fi)))

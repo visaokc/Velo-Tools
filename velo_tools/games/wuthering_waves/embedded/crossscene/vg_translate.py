@@ -78,6 +78,47 @@ def plan_own_buffer_vg_normalization(vg_entries, component_vg_map, host_remap,
     return renames, False, []
 
 
+def plan_editable_vg_normalization(vg_entries, merged_component_vg_map,
+                                   source_component_vg_map,
+                                   target_scope="component"):
+    """Plan editable-IB VG renames from merged-root IDs to export-local IDs."""
+    entries = [(str(name), bool(has_weight)) for name, has_weight in vg_entries]
+    weighted = _weighted_digit_ids(entries)
+    if not weighted:
+        return {}, []
+
+    merged_to_local = build_inverse_vg_map(merged_component_vg_map)
+    source_by_local = {
+        int(key): int(value)
+        for key, value in (source_component_vg_map or {}).items()
+    }
+    source_global_to_local = {
+        int(value): int(key)
+        for key, value in (source_component_vg_map or {}).items()
+    }
+    if str(target_scope).upper() == "MERGED":
+        target_by_local = dict(source_by_local)
+    else:
+        target_by_local = {local: local for local in source_by_local}
+    target_values = set(target_by_local.values())
+    renames = {}
+    strays = []
+    for name, has_weight in entries:
+        if not name.lstrip("-").isdigit():
+            continue
+        vid = int(name)
+        if vid in target_values:
+            continue
+        local = merged_to_local.get(vid)
+        if local is None and vid in source_global_to_local:
+            local = source_global_to_local[vid]
+        if local is not None and local in target_by_local:
+            renames[name] = str(target_by_local[local])
+        elif has_weight:
+            strays.append(name)
+    return renames, sorted(strays, key=int)
+
+
 def plan_host_vg_translation(vg_entries, remap, host_vg_count=None):
     """Plan the split copy's VG renames toward host-local numbering.
 

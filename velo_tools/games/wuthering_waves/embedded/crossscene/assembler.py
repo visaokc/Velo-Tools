@@ -36,29 +36,103 @@ _format_tags = _load_format_tags()
 
 _RE_GLOBAL = re.compile(r'\$([A-Za-z]\w*)')
 _RE_RESCMD = re.compile(r'\b(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)\b')
-_RE_RESTEX = re.compile(r'ResourceTexture\d+(?:_ib\d+)*$')
+_RE_RESTEX = re.compile(r'ResourceTexture(?:\d+|_C\d+_[0-9a-fA-F]+)(?:_ib\d+)*$')
 _RE_OVRTEX = re.compile(r'TextureOverrideTexture\d+(?:_ib\d+)*$')
 _RE_TEXHASH = re.compile(r't=([0-9a-fA-F]+)')
 # Slot-style binds: `ps-t{n} = ref ResourceTexture{i}` (the trailing \b keeps ResourceTextureBackupT*
 # -- the per-slot backup resources -- out; suffixes cover fold-merged resources that are already
 # namespaced once before the final assembler pass).
-_RE_PST_REF = re.compile(r'ps-t\d+\s*=\s*ref\s+(ResourceTexture\d+(?:_ib\d+)*)\b')
-_RE_TEXTURE_REF = re.compile(r'\s*this\s*=\s*(ResourceTexture\d+(?:_ib\d+)*)\b', re.I)
+_RE_PST_REF = re.compile(r'ps-t\d+\s*=\s*ref\s+(ResourceTexture(?:\d+|_C\d+_[0-9a-fA-F]+)(?:_ib\d+)*)\b')
+_RE_TEXTURE_REF = re.compile(r'\s*this\s*=\s*(ResourceTexture(?:\d+|_C\d+_[0-9a-fA-F]+)(?:_ib\d+)*)\b', re.I)
 _RE_COMPONENT_FALLBACK_VAR = re.compile(r'\$component_hash_fallback_c(\d+)(?:_ib\d+)*\b')
 _SHARED_BODY_GLOBALS = {"form_id"}
 
 
-def _ns_line(line, k, *, shared_globals=None):
+def _alias_for_component(namespace_aliases, k, component_id):
+    try:
+        raw = (namespace_aliases or {}).get(k, {}).get("component_map", {})
+    except AttributeError:
+        return component_id
+    return int(raw.get(component_id, component_id))
+
+
+def _alias_enabled(namespace_aliases, k):
+    return namespace_aliases is not None and k in namespace_aliases
+
+
+def _alias_global_var_name(name, k, namespace_aliases):
+    if not _alias_enabled(namespace_aliases, k):
+        return name
+    match = re.fullmatch(r'component_hash_fallback_c(\d+)', name)
+    if match:
+        comp = _alias_for_component(namespace_aliases, k, int(match.group(1)))
+        return f'component_hash_fallback_c{comp}'
+    match = re.fullmatch(r'xscene_skip_draw_c(\d+)_(\d+)', name)
+    if match:
+        comp = _alias_for_component(namespace_aliases, k, int(match.group(1)))
+        return f'xscene_skip_draw_c{comp}_{match.group(2)}'
+    return name
+
+
+def _resource_alias_name(name, k, resource_hashes, resource_components, namespace_aliases):
+    hv = resource_hashes.get(name)
+    if not hv or not _alias_enabled(namespace_aliases, k):
+        return f'{name}_ib{k}'
+    component_id = (resource_components or {}).get(name)
+    if component_id is None:
+        try:
+            raw = (namespace_aliases or {}).get(k, {}).get("component_map", {})
+            if len(raw) == 1:
+                component_id = int(next(iter(raw.values())))
+        except (AttributeError, StopIteration, TypeError, ValueError):
+            component_id = None
+    if component_id is None:
+        return f'{name}_ib{k}'
+    return f'ResourceTexture_C{component_id}_{hv}_ib{k}'
+
+
+def _section_alias_name(name, k, resource_hashes=None, resource_components=None,
+                        namespace_aliases=None):
+    resource_hashes = resource_hashes or {}
+    comp_match = re.fullmatch(r'(CommandListSetTexturesComponent|CommandListProbeComponent|'
+                              r'CommandListDrawComponent|CommandListDrawOwnerComponent|'
+                              r'TextureOverrideComponent)(\d+)', name)
+    if comp_match:
+        comp = _alias_for_component(namespace_aliases, k, int(comp_match.group(2)))
+        return f'{comp_match.group(1)}{comp}_ib{k}'
+    atom_match = re.fullmatch(r'CommandListDrawAtomComponent(\d+)_(\d+)', name)
+    if atom_match:
+        comp = _alias_for_component(namespace_aliases, k, int(atom_match.group(1)))
+        return f'CommandListDrawAtomComponent{comp}_{atom_match.group(2)}_ib{k}'
+    fmt_match = re.fullmatch(r'(TextureOverride(?:Lod\d+)?Component)(\d+)(.*)', name)
+    if fmt_match:
+        comp = _alias_for_component(namespace_aliases, k, int(fmt_match.group(2)))
+        return f'{fmt_match.group(1)}{comp}{fmt_match.group(3)}_ib{k}'
+    if _RE_RESTEX.match(name):
+        return _resource_alias_name(
+            name, k, resource_hashes, resource_components, namespace_aliases)
+    return f'{name}_ib{k}'
+
+
+def _ns_line(line, k, *, shared_globals=None, resource_hashes=None,
+             resource_components=None, namespace_aliases=None):
     shared_globals = shared_globals or set()
+    resource_hashes = resource_hashes or {}
 
     def _sub_global(m):
         name = m.group(1)
         if name in shared_globals:
             return f'${name}'
+        name = _alias_global_var_name(name, k, namespace_aliases)
         return f'${name}_ib{k}'
 
+    def _sub_rescmd(m):
+        return _section_alias_name(
+            m.group(1), k, resource_hashes, resource_components,
+            namespace_aliases)
+
     line = _RE_GLOBAL.sub(_sub_global, line)
-    line = _RE_RESCMD.sub(lambda m: f'{m.group(1)}_ib{k}', line)
+    line = _RE_RESCMD.sub(_sub_rescmd, line)
     line = line.replace('Meshes/', f'Meshes/ib{k}_')
     return line
 
@@ -94,6 +168,19 @@ def _component_fallback_components(body):
         for match in _RE_COMPONENT_FALLBACK_VAR.finditer(line):
             components.add(int(match.group(1)))
     return components if tagged and components else set()
+
+
+def _slot_resource_components(sections, k, namespace_aliases):
+    out = {}
+    for header, body in sections:
+        match = re.fullmatch(r'CommandListSetTexturesComponent(\d+)(?:_ib\d+)*', header)
+        if not match:
+            continue
+        comp = _alias_for_component(namespace_aliases, k, int(match.group(1)))
+        for line in body:
+            for resource in _RE_PST_REF.findall(line):
+                out.setdefault(resource, comp)
+    return out
 
 
 def _draw_atom_name(component_id, ordinal, suffix):
@@ -240,7 +327,7 @@ def _atomize_draw_owner_sections(text):
 
 
 def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True, partial_export=False,
-             suppress_body_hashes=None):
+             suppress_body_hashes=None, namespace_aliases=None):
     """mods: ordered list of per-IB mod folders (each contains mod.ini + Meshes/ + Textures/).
     Writes the merged mod to out, returns a report dict.
 
@@ -327,6 +414,8 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     for k, mod in enumerate(mods):
         mod_text = open(os.path.join(mod, "mod.ini"), encoding="utf-8").read()
         sections = _parse_sections(mod_text)
+        resource_components = _slot_resource_components(
+            sections, k, namespace_aliases)
 
         # Slot-style textures are rebound inside the component draw scope as
         # `ps-t{n} = ref ResourceTexture{i}`; those resources must be namespaced PER-IB like every
@@ -337,10 +426,13 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
         res_filename, ov_pairs = {}, []
         for h, b in sections:
             if _RE_RESTEX.match(h):
+                alias_name = _section_alias_name(
+                    h, k, {}, resource_components, namespace_aliases)
                 for l in b:
                     m = re.match(r'\s*filename\s*=\s*(.+\.dds)\s*$', l, re.I)
                     if m:
                         res_filename[h] = m.group(1).strip()
+                        res_filename[alias_name] = m.group(1).strip()
             elif _RE_OVRTEX.match(h):
                 hv = tgt = None
                 for l in b:
@@ -369,7 +461,8 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             blindzone.add(hv)
             if component_scope:
                 for comp_id in component_scope:
-                    blindzone_component_mods.setdefault(hv, set()).add((k, comp_id))
+                    blindzone_component_mods.setdefault(hv, set()).add(
+                        (k, _alias_for_component(namespace_aliases, k, comp_id)))
             else:
                 blindzone_mods.setdefault(hv, set()).add(k)
             if hv not in tex:
@@ -393,6 +486,9 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                 tex[hv] = os.path.join(mod, fn)
                 tex_name[hv] = _texture_filename(fn)
         tex_hash_per_mod.append(mod_hashes)
+        resource_hashes = dict(slot_hash_by_res)
+        for hv, tgt, _component_scope in ov_pairs:
+            resource_hashes.setdefault(tgt, hv)
 
         for h, b in sections:
             if _RE_OVRTEX.match(h):
@@ -409,7 +505,11 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                             nb.append(f'filename = Textures/{shipped_name}')
                         else:
                             nb.append(l)
-                    others.append((f'{h}_ib{k}', nb))
+                    others.append((
+                        _section_alias_name(
+                            h, k, resource_hashes, resource_components,
+                            namespace_aliases),
+                        nb))
                 # else: blind-zone resource -> collapsed into a global Resource_Texture_<hash>, skip
                 continue
             if h == _MARK_BONE:
@@ -424,13 +524,23 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                     mark_bone_mismatch = True  # IBs disagree on cb4/filter_index -> NOT one character
                 continue
             shared_globals = _SHARED_BODY_GLOBALS if k == 0 else None
-            nb = [_ns_line(l, k, shared_globals=shared_globals) for l in b]
+            nb = [
+                _ns_line(
+                    l, k, shared_globals=shared_globals,
+                    resource_hashes=resource_hashes,
+                    resource_components=resource_components,
+                    namespace_aliases=namespace_aliases)
+                for l in b]
             if h == 'Constants':
                 constants += [f'; --- ib{k} ---'] + nb
             elif h == 'Present':
                 present += [f'; --- ib{k} ---'] + nb
             else:
-                others.append((f'{h}_ib{k}', nb))
+                others.append((
+                    _section_alias_name(
+                        h, k, resource_hashes, resource_components,
+                        namespace_aliases),
+                    nb))
 
         mesh_src = os.path.join(mod, "Meshes")
         if os.path.isdir(mesh_src):

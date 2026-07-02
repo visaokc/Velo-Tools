@@ -215,6 +215,24 @@ def _prepare_own_buffer_vgs(obj, split_rec, component_vg_map, tag):
         _translate_host_vgs(obj, split_rec, tag)
 
 
+def _prepare_editable_ib_vgs(obj, rec, merged_component_vg_map,
+                             source_component_vg_map, merged_component, tag,
+                             export_skeleton_type):
+    from . import vg_translate
+    renames, strays = vg_translate.plan_editable_vg_normalization(
+        _weighted_vg_entries(obj),
+        merged_component_vg_map,
+        source_component_vg_map,
+        target_scope=export_skeleton_type)
+    if strays:
+        raise RuntimeError(
+            "editable IB %s merged Component %s 的顶点组 %s 权重越界——它们既不属于 merged/root "
+            "component palette，也无法翻译到 editable source palette。请把这些权重转回该 editable "
+            "IB 的本部件骨，或刷零后再导出。"
+            % (tag, merged_component, strays))
+    _rename_digit_vertex_groups(obj, renames)
+
+
 def _import_one(cfg, src, want_hash):
     before = set(c.name for c in bpy.data.collections)
     cfg.object_source_folder = src
@@ -1045,8 +1063,11 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             #    (shape keys are per-object and must be exported separately; mesh.copy() carries the form2 shape keys -> export re-emits them automatically).
             eib_roles = []
             eib_excluded = []
+            merged_meta = json.loads((merged_folder / "Metadata.json").read_text(encoding="utf-8"))
             for rec in editable_ibs:
                 tag = rec["ib_hash"]
+                eib_src = str(merged_folder / rec["source_folder"])
+                source_meta = json.loads((Path(eib_src) / "Metadata.json").read_text(encoding="utf-8"))
                 eib_col = bpy.data.collections.new("xs_eib_" + rec["ib_hash"])
                 bpy.context.scene.collection.children.link(eib_col)
                 temp_cols.append(eib_col)
@@ -1059,6 +1080,13 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     cp.data = src_obj.data.copy()
                     cp.name = f"Component {li}"
                     eib_col.objects.link(cp)
+                    merged_comp_meta = (merged_meta.get("components") or [])[mi]
+                    source_comp_meta = (source_meta.get("components") or [])[li]
+                    _prepare_editable_ib_vgs(
+                        cp, rec,
+                        merged_comp_meta.get("vg_map") or {},
+                        source_comp_meta.get("vg_map") or {},
+                        mi, tag, export_skeleton_type)
                     temp_objs.append(cp)
                 if not temp_objs:
                     # every component of this editable IB was excluded (hidden / Ignore Hidden Objects)
@@ -1066,21 +1094,9 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     eib_excluded.append(tag)
                     print("[velo.xscene] editable IB %s 的所有组件都被忽略（隐藏/排除/缺失），跳过该子 IB。" % tag)
                     continue
-                # MERGED: the editable IB was imported with UNIFIED VG names (vg_base_offset + its own 0-based
-                # numbering). Its export runs against the IB's own 0-based source, where object_merger fills VG
-                # gaps by name and then drops VGs whose collection index >= the source's total_vg_count; unified
-                # names (e.g. 355+) gap-fill to high indices and get dropped (the whole skeleton is lost, Blend
-                # collapses to bone 0). Re-base the temp objects' VG names to the IB's own numbering first.
-                base_off = int(rec.get("vg_base_offset") or 0)
-                if export_skeleton_type == 'MERGED' and base_off:
-                    for cp in temp_objs:
-                        for vg in cp.vertex_groups:
-                            if vg.name.lstrip("-").isdigit():
-                                vg.name = str(int(vg.name) - base_off)
                 if hole:
                     for cp in temp_objs:
                         _pos_hole(cp, frac=hole_frac)
-                eib_src = str(merged_folder / rec["source_folder"])
                 eib_elig = (None if merged_eligible is None
                             else {li for li, mi in zip(rec["local_components"], rec["merged_components"])
                                   if mi in merged_eligible})
@@ -1107,12 +1123,25 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             # The merged root is the single authoritative texture allowlist: only hashes still present
             # at merged_folder root ship (sub-IB scene_ibs/<hash>/ no longer re-supply a pruned hash).
             from . import assembler
+            namespace_aliases = {}
+            for rec in editable_ibs:
+                tag = rec["ib_hash"]
+                if tag in eib_excluded or tag not in eib_roles:
+                    continue
+                ib_index = 1 + len(own_ibs) + eib_roles.index(tag)
+                namespace_aliases[ib_index] = {
+                    "component_map": {
+                        int(li): int(mi)
+                        for li, mi in zip(rec["local_components"], rec["merged_components"])
+                    }
+                }
             report = assembler.assemble(
                 str(out_folder), mods, texture_root=str(merged_folder),
                 write_ini=saved_gating["write_ini"],
                 partial_export=saved_gating["partial_export"],
                 copy_textures=saved_gating["copy_textures"],
-                suppress_body_hashes=body_hash_suppressions)
+                suppress_body_hashes=body_hash_suppressions,
+                namespace_aliases=namespace_aliases)
             report["ib_count"] = len(mods)
             report["roles"] = ["body"] + [s["ib_hash"] for s in own_ibs] + eib_roles
             report["slot_style"] = slot_style_on
