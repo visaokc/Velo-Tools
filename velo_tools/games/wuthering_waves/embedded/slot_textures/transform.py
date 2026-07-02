@@ -33,6 +33,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from . import constants
 from . import format_tags
+from . import ps_resource_scope
 from .generator import SlotPlan, SlotStyleDegrade
 
 _SECTION_RE = re.compile(r'^\[([^\]]+)\]\s*$')
@@ -235,6 +236,7 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
     if not result.endswith('\n'):
         result += '\n'
     result, format_stats = format_tags.dedupe_format_tag_sections(result)
+    result = ps_resource_scope.apply_ps_resource_scope(result)
     plan.format_diagnostics = format_stats
     plan.stats.update({
         key: value for key, value in format_stats.items()

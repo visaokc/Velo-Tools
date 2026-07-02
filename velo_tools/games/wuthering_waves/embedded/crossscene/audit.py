@@ -10,10 +10,12 @@ from pathlib import Path
 try:
     from ..slot_textures import constants as _slot_constants
     from ..slot_textures import dds_meta as _dds_meta
+    from ..slot_textures import ps_resource_scope as _ps_resource_scope
 except ImportError:  # pragma: no cover - direct import fallback for pure tests
     try:
         from velo_tools.games.wuthering_waves.embedded.slot_textures import constants as _slot_constants
         from velo_tools.games.wuthering_waves.embedded.slot_textures import dds_meta as _dds_meta
+        from velo_tools.games.wuthering_waves.embedded.slot_textures import ps_resource_scope as _ps_resource_scope
     except ImportError:
         _slot_pkg = "_velo_audit_slot_textures"
         _slot_dir = Path(__file__).resolve().parents[1] / "slot_textures"
@@ -33,9 +35,16 @@ except ImportError:  # pragma: no cover - direct import fallback for pure tests
             sys.modules[_slot_pkg + ".dds_meta"] = _dds_meta
             assert _spec and _spec.loader
             _spec.loader.exec_module(_dds_meta)
+            _spec = importlib.util.spec_from_file_location(
+                _slot_pkg + ".ps_resource_scope", _slot_dir / "ps_resource_scope.py")
+            _ps_resource_scope = importlib.util.module_from_spec(_spec)
+            sys.modules[_slot_pkg + ".ps_resource_scope"] = _ps_resource_scope
+            assert _spec and _spec.loader
+            _spec.loader.exec_module(_ps_resource_scope)
         except Exception:
             _slot_constants = None
             _dds_meta = None
+            _ps_resource_scope = None
 
 
 def _section(text, header):
@@ -494,6 +503,8 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
     errors.extend(_audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks))
     errors.extend(_audit_no_slot_markers(text))
     errors.extend(_audit_residual_sensitive_conditions(text))
+    if _ps_resource_scope is not None:
+        errors.extend(_ps_resource_scope.audit_ps_resource_scope(text))
     errors.extend(_audit_skip_vars_declared(text))
     errors.extend(_audit_draw_owners(text))
     errors.extend(_audit_foldhost_component_fallback_scope(text, routing))

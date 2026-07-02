@@ -32,7 +32,17 @@ def _load_format_tags():
     return module
 
 
+def _load_ps_resource_scope():
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                        "slot_textures", "ps_resource_scope.py")
+    spec = importlib.util.spec_from_file_location("_velo_wwmi_ps_resource_scope", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _format_tags = _load_format_tags()
+_ps_resource_scope = _load_ps_resource_scope()
 
 _RE_GLOBAL = re.compile(r'\$([A-Za-z]\w*)')
 _RE_RESCMD = re.compile(r'\b(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)\b')
@@ -602,6 +612,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     text_before_postprocess = open(ini_path, encoding="utf-8").read()
     text = _atomize_draw_owner_sections(text_before_postprocess)
     text, format_stats = _format_tags.dedupe_format_tag_sections(text)
+    text = _ps_resource_scope.apply_ps_resource_scope(text)
     if text != text_before_postprocess:
         with open(ini_path, "w", encoding="utf-8") as f:
             f.write(text)
