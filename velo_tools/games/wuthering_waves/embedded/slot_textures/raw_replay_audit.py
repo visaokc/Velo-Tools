@@ -498,7 +498,6 @@ def graft_raw_passes_into_file(dump_path, usage_path, metadata_path,
         if refresh_audit:
             from . import form_merge
             form_merge.refresh_local_discriminator_audit_in_usage(usage)
-        usage_path.write_text(
-            json.dumps(usage, indent=4, ensure_ascii=False),
-            encoding="utf-8")
+        from . import stu_metadata
+        stu_metadata.write_usage(usage_path, usage)
     return result

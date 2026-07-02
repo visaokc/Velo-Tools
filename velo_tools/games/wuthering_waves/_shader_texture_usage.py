@@ -69,6 +69,7 @@ from ._wwmi_core.migoto_io.dump_parser.filename_parser import ShaderType
 
 from .embedded.slot_textures import dds_meta as _dds_meta
 from .embedded.slot_textures import log_freshness as _log_freshness
+from .embedded.slot_textures import stu_metadata as _stu_metadata
 
 _INSTALLED = False
 _ORIG_BUILD_COMPONENTS = None
@@ -255,6 +256,8 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                       f'{skipped_dirty_slots} stale-inherited slot record(s) from '
                       f'ShaderTextureUsage.json')
 
+            _stu_metadata.sync_form_component_modes(shader_texture_usage)
+
             # Preserve the slot-texture layer's "extra_forms" key (merged
             # extra-form maps) across re-extraction.
             usage_path = object_directory / 'ShaderTextureUsage.json'
@@ -265,11 +268,30 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                     extra_forms = previous.get('extra_forms')
                     if isinstance(extra_forms, list) and extra_forms:
                         shader_texture_usage['extra_forms'] = extra_forms
+                    form_anchors = previous.get('form_anchors')
+                    if isinstance(form_anchors, str) and form_anchors.strip():
+                        shader_texture_usage['form_anchors'] = form_anchors
+                    for comp_name in _stu_metadata.component_ids_in_usage(
+                            previous):
+                        key = _stu_metadata.component_key(comp_name)
+                        previous_block = previous.get(key)
+                        current_block = shader_texture_usage.get(key)
+                        if not isinstance(previous_block, dict):
+                            continue
+                        if not isinstance(current_block, dict):
+                            continue
+                        mode = previous_block.get(
+                            _stu_metadata.constants.FORM_COMPONENT_MODE_KEY)
+                        if str(mode).strip().lower() == 'multi':
+                            current_block[
+                                _stu_metadata.constants.FORM_COMPONENT_MODE_KEY
+                            ] = 'multi'
                 except Exception:
                     pass  # unreadable previous file: write fresh maps only
+            _stu_metadata.sync_form_component_modes(shader_texture_usage)
 
             with open(usage_path, "w") as f:
-                f.write(json.dumps(shader_texture_usage, indent=4))
+                f.write(_stu_metadata.dumps_usage(shader_texture_usage))
     finally:
         # Bound the side-channel lifetime (also prevents cross-round leftovers). The next build round refills it.
         _CAPTURE.clear()

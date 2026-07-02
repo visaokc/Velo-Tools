@@ -352,127 +352,21 @@ def _audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks=None):
     return errors
 
 
-def _audit_marker_resets(text):
+def _audit_no_slot_markers(text):
     errors = []
-    marker_sections = {}
-    marker_slots = {}
-    scoped_triggers = {}
-    scoped_trigger_re = re.compile(
-        r'^\[(CommandListTriggerSlotMarkersComponent(\d+)_(\d+)(?:_ib(\d+))?)\]\n([^\[]*)',
-        re.M)
-    for match in scoped_trigger_re.finditer(text):
-        slots = {
-            int(slot)
-            for slot in re.findall(
-                r'^\s*CheckTextureOverride\s*=\s*ps-t(\d+)\s*$',
-                match.group(5), re.M)
-        }
-        scoped_triggers.setdefault(
-            (int(match.group(2)), int(match.group(4) or 0)), {})[
-                match.group(1)] = slots
-    for match in re.finditer(
-            r'^\[(TextureOverrideSlotMarkerComponent(\d+)_\d+?)(?:_ib(\d+))?\]\n([^\[]*)',
-            text, re.M):
-        marker_name = match.group(1)
-        marker_slot_match = re.search(
-            r'^\s*;\s*marker_slot\s*=\s*ps-t(\d+)\s*$',
-            match.group(4), re.M)
-        if marker_slot_match:
-            marker_slots[marker_name] = int(marker_slot_match.group(1))
-        marker_sections.setdefault(
-            (int(match.group(2)), int(match.group(3) or 0)), []).append(marker_name)
-    marker_conditions = re.finditer(
-        r'^\s*(?:else\s+)?if\b(?P<line>[^\n]*\bps-t\d+\s*==[^\n]*?(?P<var>\$slot_tex_c(?P<comp>\d+)_m\d+?)(?:_ib(?P<ib>\d+))?\s*==\s*1\b[^\n]*)$',
-        text, re.M)
-    for match in marker_conditions:
-        line = match.group('line')
-        var = match.group('var') + (f"_ib{match.group('ib')}" if match.group('ib') else "")
-        comp_id = int(match.group('comp'))
-        ib_id = int(match.group('ib') or 0)
-        section_names = marker_sections.get((comp_id, ib_id)) or []
-        if not section_names:
-            errors.append(
-                "marker discriminator %s has no TextureOverrideSlotMarker section"
-                % var)
-            continue
-        matching_section = None
-        for section_name in section_names:
-            suffix = section_name.split('Component', 1)[-1]
-            expected_prefix = f'{comp_id}_'
-            if not suffix.startswith(expected_prefix):
-                continue
-            marker_id = suffix[len(expected_prefix):].split('_ib', 1)[0]
-            if var.startswith(f'$slot_tex_c{comp_id}_m{marker_id}'):
-                matching_section = section_name
-                break
-        if matching_section is None:
-            errors.append(
-                "marker discriminator %s has no matching TextureOverrideSlotMarker section"
-                % var)
-            continue
-        declared_slot = marker_slots.get(matching_section)
-        if declared_slot is not None:
-            marker_slot = declared_slot
-            if not re.search(r'\bps-t%d\s*==' % marker_slot, line):
-                found = re.findall(r'\bps-t(\d+)\s*==', line)
-                used = int(found[-1]) if found else -1
-                errors.append(
-                    "marker discriminator %s declares ps-t%d but branch uses ps-t%d"
-                    % (var, declared_slot, used))
-                continue
-        else:
-            slot_match = re.search(r'\bps-t(\d+)\s*==', line)
-            if not slot_match:
-                errors.append(
-                    "marker discriminator %s has no ps-t slot condition" % var)
-                continue
-            marker_slot = int(slot_match.group(1))
-        draw_header = "CommandListDrawComponent%d_ib%d" % (comp_id, ib_id)
-        draw = _section(text, draw_header)
-        if draw is None and ib_id == 0:
-            draw_header = "CommandListDrawComponent%d" % comp_id
-            draw = _section(text, draw_header)
-        if draw is None:
-            errors.append(
-                "marker discriminator %s has no %s draw section"
-                % (var, draw_header))
-            continue
-        scoped = scoped_triggers.get((comp_id, ib_id), {})
-        scoped_names = [
-            name for name, slots in scoped.items()
-            if marker_slot in slots and len(slots) == 1
-        ]
-        if not scoped_names:
-            errors.append(
-                "marker discriminator %s for ps-t%d has no scoped marker trigger"
-                % (var, marker_slot))
-            continue
-        scoped_ok = False
-        trigger = re.search(
-            r'^\s*run\s*=\s*CommandListTriggerResourceOverrides(?:_ib%d)?\s*$'
-            % ib_id,
-            draw,
-            re.M)
-        reset = re.search(r'^\s*%s\s*=\s*0\s*$' % re.escape(var), draw, re.M)
-        set_textures = re.search(
-            r'^\s*run\s*=\s*CommandListSetTexturesComponent%d(?:_ib%d)?\s*$'
-            % (comp_id, ib_id),
-            draw,
-            re.M)
-        for name in scoped_names:
-            run_re = re.compile(
-                r'^\s*run\s*=\s*%s\s*$' % re.escape(name), re.M)
-            scoped_run = run_re.search(draw)
-            if (trigger and reset and scoped_run and set_textures
-                    and trigger.start() < reset.start() < scoped_run.start()
-                    < set_textures.start()):
-                scoped_ok = True
-                break
-        if not scoped_ok:
-            errors.append(
-                "marker discriminator %s must run global trigger, reset, "
-                "scoped marker trigger, then SetTextures" % var)
-            continue
+    forbidden = (
+        ('TextureOverrideSlotMarkerComponent',
+         'slot marker TextureOverride sections are not allowed in pure 0hash slot mode'),
+        ('CommandListTriggerSlotMarkersComponent',
+         'scoped slot marker trigger command lists are not allowed in pure 0hash slot mode'),
+        ('$slot_tex_c',
+         'slot marker variables are not allowed in pure 0hash slot mode'),
+        ('marker_mode = hash-marker + slot-write',
+         'hash-marker + slot-write mode is disabled for pure 0hash slot export'),
+    )
+    for needle, message in forbidden:
+        if needle in text:
+            errors.append(message)
     return errors
 
 
@@ -505,7 +399,7 @@ def _audit_residual_sensitive_conditions(text):
                 errors.append(
                     "%s uses residual-sensitive ps-t%d != %s after the same "
                     "command list assigns ps-t%d; require a fresh positive "
-                    "slot condition or marker-only discriminator"
+                    "slot condition or exclude the component from the slot layer"
                     % (header, slot, expected, slot))
     return errors
 
@@ -523,7 +417,7 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
     errors = []
     errors.extend(_audit_slot_resources(text, path.parent))
     errors.extend(_audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks))
-    errors.extend(_audit_marker_resets(text))
+    errors.extend(_audit_no_slot_markers(text))
     errors.extend(_audit_residual_sensitive_conditions(text))
     errors.extend(_audit_skip_vars_declared(text))
     errors.extend(_audit_draw_owners(text))

@@ -35,6 +35,7 @@ from ..._wwmi_core.extract_frame_data.output_builder import OutputBuilder, Textu
 from . import constants
 from . import dds_meta
 from . import log_freshness
+from . import stu_metadata
 
 # Same exclusion list the stock extraction / export use for well-known cubemaps.
 KNOWN_CUBEMAP_HASHES = ['af26db30', '1320a071', '10d7937d', '87505b2b',
@@ -406,8 +407,7 @@ def _preserve_anchor_metadata(existing, replacement):
 
 
 def _valid_hash8(value):
-    text = str(value or '').strip().lower()
-    return len(text) == 8 and all(c in '0123456789abcdef' for c in text)
+    return stu_metadata._valid_hash8(value)
 
 
 def _entry_label(entry):
@@ -434,8 +434,10 @@ def _usage_paths_for_anchor_write(object_source_folder):
 def refresh_local_discriminator_audit_in_usage(usage):
     """Refresh only the local discriminator audit block of an STU dict."""
     from . import generator
+    stu_metadata.sync_form_component_modes(usage)
     usage[constants.LOCAL_FORM_DISCRIMINATOR_KEY] = (
         generator.build_local_discriminator_audit_from_usage(usage))
+    stu_metadata.sync_form_anchors_field(usage)
     return usage[constants.LOCAL_FORM_DISCRIMINATOR_KEY]
 
 
@@ -445,8 +447,7 @@ def refresh_local_discriminator_audit_file(usage_path):
     if not isinstance(usage, dict):
         raise FormMergeError(f'{usage_path} has an unexpected shape')
     audit = refresh_local_discriminator_audit_in_usage(usage)
-    usage_path.write_text(json.dumps(usage, indent=4, ensure_ascii=False),
-                          encoding='utf-8')
+    stu_metadata.write_usage(usage_path, usage)
     return audit
 
 
@@ -497,8 +498,7 @@ def write_trusted_form_anchor(object_source_folder, form_label, anchor_hash,
                 entry[constants.FORM_ANCHOR_RANK_KEY] = int(rank)
                 changed = True
         if changed:
-            usage_path.write_text(json.dumps(usage, indent=4, ensure_ascii=False),
-                                  encoding='utf-8')
+            stu_metadata.write_usage(usage_path, usage)
             updated.append(str(usage_path))
     return updated
 
@@ -512,30 +512,11 @@ def read_trusted_form_anchors(object_source_folder):
             usage = json.loads(usage_path.read_text(encoding='utf-8'))
         except Exception:
             continue
-        label = str(usage.get(constants.FORM_ANCHOR_LABEL_KEY) or '').strip().lower()
-        anchor_hash = str(usage.get(constants.FORM_ANCHOR_VB0_KEY) or '').strip().lower()
-        if not label and _valid_hash8(anchor_hash):
-            label = 'base'
-        if label and _valid_hash8(anchor_hash):
+        for label, anchor_hash in stu_metadata.collect_anchor_pairs(usage):
             key = (label, anchor_hash)
             if key not in seen:
                 seen.add(key)
                 out.append(key)
-        forms = usage.get(constants.EXTRA_FORMS_KEY)
-        if not isinstance(forms, list):
-            continue
-        for entry in forms:
-            if not isinstance(entry, dict):
-                continue
-            label = _entry_label(entry)
-            anchor_hash = str(entry.get(constants.FORM_ANCHOR_VB0_KEY) or '').strip().lower()
-            if not label or not _valid_hash8(anchor_hash):
-                continue
-            key = (label, anchor_hash)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(key)
     return out
 
 
@@ -619,9 +600,14 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             entry, replaced, variants_added = _upsert_extra_form(
                 usage, components_usage, form_label, dump_path.name,
                 'vb0', route.get('vb0_hash') or vb0)
+            stu_metadata.sync_form_component_modes(
+                usage, multi_components=[
+                    int(c.rsplit(' ', 1)[-1])
+                    for c in components_usage
+                    if str(c).startswith('Component ')
+                ])
             refresh_local_discriminator_audit_in_usage(usage)
-            with open(usage_path, 'w', encoding='utf-8') as f:
-                f.write(json.dumps(usage, indent=4, ensure_ascii=False))
+            stu_metadata.write_usage(usage_path, usage)
             fold_forms_written.append({
                 'ib_hash': vb0,
                 'usage_file': str(usage_path),
@@ -666,8 +652,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             base_components, components_usage)
         usage.update(base_components)
         refresh_local_discriminator_audit_in_usage(usage)
-        with open(usage_path, 'w', encoding='utf-8') as f:
-            f.write(json.dumps(usage, indent=4, ensure_ascii=False))
+        stu_metadata.write_usage(usage_path, usage)
         return {
             'usage_file': str(usage_path),
             'label': 'base',
@@ -747,9 +732,14 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         extra_forms.append(entry)
 
     usage[constants.EXTRA_FORMS_KEY] = extra_forms
+    stu_metadata.sync_form_component_modes(
+        usage, multi_components=[
+            int(c.rsplit(' ', 1)[-1])
+            for c in components_usage
+            if str(c).startswith('Component ')
+        ])
     refresh_local_discriminator_audit_in_usage(usage)
-    with open(usage_path, 'w', encoding='utf-8') as f:
-        f.write(json.dumps(usage, indent=4, ensure_ascii=False))
+    stu_metadata.write_usage(usage_path, usage)
     if legacy_path.is_file():
         legacy_path.unlink()
 

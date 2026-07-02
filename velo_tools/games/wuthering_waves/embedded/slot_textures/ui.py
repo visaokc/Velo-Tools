@@ -90,10 +90,10 @@ def _patch_export_menu():
             box.prop(cfg, "velo_slot_style_textures")
             slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
             if (slot_cfg is not None and cfg.velo_slot_style_textures):
-                box.prop(slot_cfg, "local_form_discriminator")
                 box.prop(slot_cfg, "slot_audit_dump_folder")
                 _draw_slot_components(box, slot_cfg)
-                if not slot_cfg.local_form_discriminator:
+                box.prop(slot_cfg, "formid_auxiliary_gate")
+                if slot_cfg.formid_auxiliary_gate:
                     box.prop(slot_cfg, "form_anchors")
                     _draw_anchor_finder(box, slot_cfg, cfg)
 
@@ -243,15 +243,13 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
         default='',
     )
 
-    local_form_discriminator: bpy.props.BoolProperty(
-        name="局部形态判据",
+    formid_auxiliary_gate: bpy.props.BoolProperty(
+        name="formid 辅助判据",
         description=(
-            "开启后，多形态插槽贴图不再输出全局 $form_id 或 TextureOverrideFormAnchor；"
-            "导出只消费 ShaderTextureUsage.json 内最新 local_form_discriminator v3 审计的"
-            "slot override branch。ps-t0..8 可作为 ==/!= 条件槽位，实际写入只限有"
-            "mod 资源的 canonical assignment slot；相同有效替换会合并，冲突则列出 Component 并阻断导出。"
+            "可选：在已经能用本地 ps-t slot-layout 安全区分的多形态分支末尾追加 $form_id 条件。"
+            "默认关闭以保持纯 0hash slot；该选项不能挽救 C0 这类 slot-layout 完全相同的组件。"
         ),
-        default=True,
+        default=False,
     )
 
     slot_audit_dump_folder: bpy.props.StringProperty(

@@ -26,8 +26,14 @@ from ._wwmi_core.migoto_io.data_model.byte_buffer import (
     MigotoFormat, NumpyBuffer, Semantic, AbstractSemantic,
 )
 from .embedded.lod import cross_scene as lod_cross_scene
+from .embedded.slot_textures import constants as slot_constants
+from .embedded.slot_textures import form_merge as slot_form_merge
+from .embedded.slot_textures import stu_metadata
 from .xscene_textures import (canonicalize_cross_scene_root_textures, copy_textures_remapped,
-                              prune_cross_scene_root_textures, remap_editable_stu)
+                              editable_stu_component_sources,
+                              merge_fold_form_component_modes,
+                              prune_cross_scene_root_textures,
+                              remap_editable_stu, remap_form_component_modes)
 
 GRID = 0.001
 TOL = 0.0015
@@ -49,6 +55,41 @@ def _hash8_or_empty(value):
 def _editable_record_vb0_hash(eib, metadata):
     return (_hash8_or_empty((eib or {}).get("vb0_hash"))
             or _hash8_or_empty((metadata or {}).get("vb0_hash")))
+
+
+def _merge_form_anchors_into_root(root_stu, source_folders):
+    """Carry user-editable top-level form anchors from source STUs into the merged root."""
+    pairs = []
+    seen = set()
+
+    def add(label, anchor_hash):
+        label = str(label or "").strip().lower()
+        anchor_hash = str(anchor_hash or "").strip().lower()
+        if not label or not _hash8_or_empty(anchor_hash):
+            return
+        key = (label, anchor_hash)
+        if key in seen:
+            return
+        seen.add(key)
+        pairs.append(key)
+
+    for label, anchor_hash in stu_metadata.collect_anchor_pairs(root_stu):
+        add(label, anchor_hash)
+    for folder in source_folders:
+        usage_path = Path(folder) / "ShaderTextureUsage.json"
+        if not usage_path.is_file():
+            continue
+        try:
+            usage = json.loads(usage_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for label, anchor_hash in stu_metadata.collect_anchor_pairs(usage):
+            add(label, anchor_hash)
+    if pairs:
+        root_stu["form_anchors"] = ", ".join(
+            "%s:%s" % (anchor_hash, label) for label, anchor_hash in pairs)
+    stu_metadata.sync_form_anchors_field(root_stu)
+    return bool(pairs)
 
 
 # --------------------------------------------------------------------------- IO
@@ -678,6 +719,8 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     editable_ib_records = []
     editable_warnings = []
     editable_stu_additions = {}
+    editable_stu_sources = {}
+    editable_form_modes = {}
     next_idx = len(base_comps)
     for eib in (editable_ibs or []):
         h = eib["hash"]
@@ -696,6 +739,10 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
             merged_comps.append(mi)
         # local extraction index -> merged component index (e.g. {0: 8, 1: 9})
         id_map = {li: merged_comps[li] for li in range(len(merged_comps))}
+        role = str(eib.get("role") or "").strip()
+        source_label = f"{role} {h}" if role else h
+        editable_stu_sources.update(
+            editable_stu_component_sources(source_label, id_map))
         eib_meta = json.loads((src / "Metadata.json").read_text()) if (src / "Metadata.json").exists() else {}
         sk = eib_meta.get("shapekeys", {}) or {}
         # Gather the extra IB's textures into the merge root (deduplicated), re-basing their
@@ -707,8 +754,11 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         eib_stu_path = src / "ShaderTextureUsage.json"
         if eib_stu_path.exists():
             try:
+                eib_stu = json.loads(eib_stu_path.read_text(encoding="utf-8"))
                 editable_stu_additions.update(
-                    remap_editable_stu(json.loads(eib_stu_path.read_text(encoding="utf-8")), id_map))
+                    remap_editable_stu(eib_stu, id_map))
+                editable_form_modes.update(
+                    remap_form_component_modes(eib_stu, id_map))
             except (OSError, ValueError):
                 editable_warnings.append(
                     "editable IB %s 的 ShaderTextureUsage.json 解析失败——其组件（%s）的编辑期自动贴图绑定已跳过。"
@@ -728,11 +778,31 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
 
     # 3.5b) Merge the re-based editable STU entries into the merge-root ShaderTextureUsage.json so the
     #       import-time texture assignment (keyed by 'Component N') covers the editable components too.
-    if editable_stu_additions:
-        root_stu_path = out / "ShaderTextureUsage.json"
-        root_stu = json.loads(root_stu_path.read_text(encoding="utf-8")) if root_stu_path.exists() else {}
+    root_stu_path = out / "ShaderTextureUsage.json"
+    root_stu = json.loads(root_stu_path.read_text(encoding="utf-8")) if root_stu_path.exists() else {}
+    source_anchor_folders = (
+        [base]
+        + [Path(spec["folder"]) for spec in dungeon_specs]
+        + [Path(eib["folder"]) for eib in (editable_ibs or [])])
+    anchors_changed = _merge_form_anchors_into_root(root_stu, source_anchor_folders)
+    if editable_stu_additions or editable_stu_sources or editable_form_modes or anchors_changed:
         root_stu.update(editable_stu_additions)  # Component 8/9.. keys, no collision with base 0..N-1
-        root_stu_path.write_text(json.dumps(root_stu, indent=4, ensure_ascii=False), encoding="utf-8")
+        if editable_stu_sources:
+            existing_sources = root_stu.setdefault(
+                slot_constants.LOCAL_COMPONENT_SOURCES_KEY, {})
+            for comp_name, values in editable_stu_sources.items():
+                bucket = existing_sources.setdefault(comp_name, [])
+                for value in values:
+                    if value not in bucket:
+                        bucket.append(value)
+        if editable_form_modes:
+            for comp_name, mode in editable_form_modes.items():
+                block = root_stu.get(comp_name)
+                if isinstance(block, dict):
+                    block[slot_constants.FORM_COMPONENT_MODE_KEY] = mode
+        stu_metadata.sync_form_component_modes(root_stu)
+        slot_form_merge.refresh_local_discriminator_audit_in_usage(root_stu)
+        stu_metadata.write_usage(root_stu_path, root_stu)
 
     # 3.6) Extend the merged Metadata.json with the editable IBs' component entries so that MERGED import
     #      resolves Components 8..N. blender_import reads extracted_object.components[id].vg_map by component
@@ -821,6 +891,18 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     # 4) Write CrossSceneRouting.json.
     routing = _build_routing(base, base_comps, info, splits, editable_ib_records, fold_data)
     (out / "CrossSceneRouting.json").write_text(json.dumps(routing, indent=2, ensure_ascii=False))
+
+    root_stu_path = out / "ShaderTextureUsage.json"
+    if root_stu_path.exists():
+        try:
+            root_stu = json.loads(root_stu_path.read_text(encoding="utf-8"))
+        except Exception:
+            root_stu = {}
+        if isinstance(root_stu, dict):
+            changed = merge_fold_form_component_modes(root_stu, scene_root, fold_data)
+            if changed:
+                slot_form_merge.refresh_local_discriminator_audit_in_usage(root_stu)
+                stu_metadata.write_usage(root_stu_path, root_stu)
 
     # 4.5) Merge per-IB "lods" entries into the merged root Metadata.json (mirrors the
     #      automatic vg merge feel; see embedded/lod/cross_scene.py for the chain

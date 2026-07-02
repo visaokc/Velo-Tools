@@ -23,6 +23,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import bpy
+
+from ..slot_textures import stu_metadata
 import bmesh
 
 _LOCAL_COMPONENT_SOURCES_KEY = "_velo_local_component_sources"
@@ -330,6 +332,16 @@ def _merge_local_component_sources(target, sources):
                 bucket.append(value)
 
 
+def _merge_form_component_modes(target, modes):
+    if not modes:
+        return
+    for comp_name, mode in modes.items():
+        block = target.get(comp_name)
+        if isinstance(block, dict):
+            block[stu_metadata.constants.FORM_COMPONENT_MODE_KEY] = (
+                "multi" if str(mode).lower() == "multi" else "single")
+
+
 def _body_stu_for_export(root_stu, merged_folder, routing, keep_count):
     """Body export STU: base components plus foldable scene-IB extra_forms remapped to base ids."""
     trimmed = {}
@@ -378,10 +390,15 @@ def _body_stu_for_export(root_stu, merged_folder, routing, keep_count):
             target = extra_by_label.setdefault(label, dict(entry, label=label, components={}))
             _merge_component_usage(target["components"], remapped)
             _merge_local_component_sources(target, remap_sources)
+            _merge_form_component_modes(
+                trimmed,
+                {comp_name: "multi" for comp_name in remapped})
 
     if extra_by_label:
         trimmed["extra_forms"] = list(extra_by_label.values())
     if isinstance(trimmed, dict):
+        stu_metadata.sync_form_component_modes(trimmed)
+        stu_metadata.sync_form_anchors_field(trimmed)
         try:
             from ..slot_textures import form_merge as slot_form_merge
         except ImportError:
@@ -677,7 +694,7 @@ def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_
             s = json.loads(stu_full)
             trimmed = _body_stu_for_export(s, merged_folder, routing, keep_count)
             if trimmed != s:
-                stu_p.write_text(json.dumps(trimmed, indent=4, ensure_ascii=False), encoding="utf-8")
+                stu_metadata.write_usage(stu_p, trimmed)
         _export_col(cfg, body_col, str(work / "sc"), "om_sc", str(merged_folder),
                     eligible=eligible, raw_graft_context=raw_graft_context)
     finally:
@@ -1108,7 +1125,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 static_audit = audit.audit_cross_scene_ini(
                     Path(out_folder) / "mod.ini", routing, report["roles"],
                     own_excluded=own_excluded_tags,
-                    draw_excludes=fold_draw_excludes)
+                    draw_excludes=fold_draw_excludes,
+                    allowed_body_hash_fallbacks=report.get("tex_blindzone") or set())
                 report["static_audit"] = static_audit
                 if static_audit.get("errors"):
                     report["static_audit_errors"] = static_audit["errors"]

@@ -15,6 +15,9 @@ import re
 import shutil
 from pathlib import Path
 
+from .embedded.slot_textures import constants as slot_constants
+from .embedded.slot_textures import stu_metadata
+
 # Stock texture filename shape: "Components-{ids} t=<hash> [<encoding>-<colorspace>].dds".
 _TEX_NAME_RE = re.compile(r'^Components-([0-9-]+)(\s+t=.*)$', re.IGNORECASE)
 _COMPONENT_KEY_RE = re.compile(r'component[ _-]*([0-9]+)', re.IGNORECASE)
@@ -80,6 +83,83 @@ def remap_editable_stu(eib_stu: dict, id_map: dict) -> dict:
             continue
         _remap_block_filenames(block, id_map)
         out[f"Component {id_map[local]}"] = block
+    return out
+
+
+def remap_form_component_modes(stu: dict, id_map: dict) -> dict:
+    """Return remapped per-component form modes for component ids present in id_map."""
+    out = {}
+    for local, merged in sorted((id_map or {}).items()):
+        value = "single"
+        block = (stu or {}).get(f"Component {int(local)}")
+        if isinstance(block, dict):
+            value = str(block.get(slot_constants.FORM_COMPONENT_MODE_KEY)
+                        or "single").lower()
+            for legacy_key in slot_constants.LEGACY_FORM_COMPONENT_MODE_KEYS:
+                value = str(block.get(legacy_key) or value).lower()
+        legacy = (stu or {}).get("form_component_modes")
+        if isinstance(legacy, dict):
+            value = str(legacy.get(f"Component {int(local)}") or value).lower()
+        out[f"Component {int(merged)}"] = (
+            "multi" if value == "multi" else "single")
+    return out
+
+
+def merge_fold_form_component_modes(root_stu: dict,
+                                    scene_root: Path,
+                                    fold_data: dict) -> bool:
+    """Mark root components as multi when a fold source STU has extra forms."""
+    if isinstance(root_stu, dict):
+        before_modes = {
+            key: (block.get(slot_constants.FORM_COMPONENT_MODE_KEY)
+                  if isinstance(block, dict) else None)
+            for key, block in root_stu.items()
+            if _component_id(key) is not None
+        }
+        stu_metadata.sync_form_component_modes(root_stu)
+        changed = any(
+            isinstance(root_stu.get(key), dict)
+            and root_stu[key].get(slot_constants.FORM_COMPONENT_MODE_KEY)
+            != before_modes.get(key)
+            for key in before_modes)
+    else:
+        changed = False
+    for ib_hash, fold in (fold_data or {}).items():
+        comp_map = {
+            int(local): int(base)
+            for local, base in ((fold or {}).get("comp_map") or {}).items()
+        }
+        if not comp_map:
+            continue
+        stu = _read_stu(Path(scene_root) / str(ib_hash))
+        for entry in (stu or {}).get("extra_forms") or []:
+            if not isinstance(entry, dict):
+                continue
+            components = entry.get("components") or {}
+            if not isinstance(components, dict):
+                continue
+            for comp_name in components:
+                local = _component_id(comp_name)
+                if local is None or local not in comp_map:
+                    continue
+                root_key = f"Component {comp_map[local]}"
+                block = (root_stu or {}).get(root_key)
+                if not isinstance(block, dict):
+                    continue
+                if block.get(slot_constants.FORM_COMPONENT_MODE_KEY) != "multi":
+                    block[slot_constants.FORM_COMPONENT_MODE_KEY] = "multi"
+                    changed = True
+    return changed
+
+
+def editable_stu_component_sources(source_label: str, id_map: dict) -> dict:
+    """Return merged-component provenance for an editable IB STU rebase."""
+    out = {}
+    label = str(source_label or "editable")
+    for local, merged in sorted((id_map or {}).items()):
+        out[f"Component {int(merged)}"] = [
+            f"merged Component {int(merged)} <- {label} local Component {int(local)}"
+        ]
     return out
 
 
@@ -309,7 +389,7 @@ def canonicalize_cross_scene_root_textures(merge_root: Path, routing: dict) -> d
             import json
             usage = json.loads(usage_path.read_text(encoding="utf-8"))
             _rewrite_usage_filenames(usage, canonical_names)
-            usage_path.write_text(json.dumps(usage, indent=4, ensure_ascii=False), encoding="utf-8")
+            stu_metadata.write_usage(usage_path, usage)
         except Exception:
             pass
 

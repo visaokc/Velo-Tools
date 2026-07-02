@@ -6,14 +6,14 @@
 
 import json
 import re
-import struct
-
 from dataclasses import dataclass, field
 from itertools import combinations
+import struct
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from . import constants
+from . import stu_metadata
 
 
 class SlotStyleDegrade(Exception):
@@ -35,6 +35,12 @@ _RESERVED_KEYS = {
     constants.EXTRA_FORMS_KEY,
     constants.LOCAL_FORM_DISCRIMINATOR_KEY,
     constants.LOCAL_COMPONENT_SOURCES_KEY,
+    'form_component_modes',
+    constants.FORM_ANCHORS_KEY,
+    constants.FORM_ANCHOR_VB0_KEY,
+    constants.FORM_ANCHOR_LABEL_KEY,
+    constants.FORM_ANCHOR_SOURCE_KEY,
+    constants.FORM_ANCHOR_RANK_KEY,
     'version',
 }
 
@@ -73,6 +79,10 @@ def normalize_usage(raw: dict, source: str, warnings: List[str],
         comp_id = int(found.group(1))
         comp_out = out.setdefault(comp_id, {})
         for pair_key, value in (pairs or {}).items():
+            if pair_key == constants.FORM_COMPONENT_MODE_KEY:
+                continue
+            if pair_key in constants.LEGACY_FORM_COMPONENT_MODE_KEYS:
+                continue
             if _VS_KEY_RE.match(pair_key) and isinstance(value, dict):
                 for ps_key, slots in value.items():
                     ps_found = _PS_RE.search(ps_key)
@@ -138,6 +148,32 @@ def normalize_usage(raw: dict, source: str, warnings: List[str],
     return out
 
 
+def _multi_component_ids_from_usage(raw: dict) -> Set[int]:
+    stu_metadata.sync_form_component_modes(raw)
+    out: Set[int] = set()
+    for comp_id in stu_metadata.component_ids_in_usage(raw):
+        block = raw.get(stu_metadata.component_key(comp_id))
+        if not isinstance(block, dict):
+            continue
+        mode = str(block.get(constants.FORM_COMPONENT_MODE_KEY)
+                   or '').strip().lower()
+        if mode == 'multi':
+            out.add(comp_id)
+    return out
+
+
+def _filter_extra_form_components(components: object,
+                                  multi_components: Set[int]) -> object:
+    if not isinstance(components, dict):
+        return components
+    out = {}
+    for comp_name, block in components.items():
+        found = _COMP_RE.search(str(comp_name))
+        if found and int(found.group(1)) in multi_components:
+            out[comp_name] = block
+    return out
+
+
 def load_forms(object_source_folder: Path,
                freshness_out: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
                ) -> Tuple[List[Tuple[str, FormData]], TextureInfo, List[str]]:
@@ -154,6 +190,7 @@ def load_forms(object_source_folder: Path,
             base_raw = json.load(f)
     except Exception as e:
         raise SlotStyleDegrade(f'failed to read {constants.BASE_USAGE_FILENAME}: {e}')
+    multi_components = _multi_component_ids_from_usage(base_raw)
 
     def _form_freshness() -> Optional[Dict[Tuple[int, str, int], bool]]:
         return {} if freshness_out is not None else None
@@ -180,7 +217,9 @@ def load_forms(object_source_folder: Path,
     for entry in extra_entries or []:
         label = entry.get('label') or entry.get('source') or f'form{len(forms) + 1}'
         entry_fresh = _form_freshness()
-        forms.append((label, normalize_usage(entry.get('components'), label,
+        components = _filter_extra_form_components(
+            entry.get('components'), multi_components)
+        forms.append((label, normalize_usage(components, label,
                                              warnings, texture_info, entry_fresh)))
         if freshness_out is not None:
             freshness_out.append(entry_fresh)
@@ -210,6 +249,7 @@ def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
     texture_info: TextureInfo = {}
     freshness: List[Dict[Tuple[int, str, int], bool]] = []
     source_meta: Dict[Tuple[str, int], List[str]] = {}
+    multi_components = _multi_component_ids_from_usage(usage)
 
     def _freshness() -> Dict[Tuple[int, str, int], bool]:
         fresh: Dict[Tuple[int, str, int], bool] = {}
@@ -241,7 +281,9 @@ def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
         if not isinstance(entry, dict):
             continue
         label = entry.get('label') or entry.get('source') or f'form{len(forms) + 1}'
-        forms.append((label, normalize_usage(entry.get('components'), label,
+        components = _filter_extra_form_components(
+            entry.get('components'), multi_components)
+        forms.append((label, normalize_usage(components, label,
                                              warnings, texture_info, _freshness())))
         _collect_source_meta(label, entry)
     return build_local_discriminator_audit(
@@ -262,8 +304,6 @@ class SlotPlan:
     phantom_suppressed: List[Tuple[str, str]] = field(default_factory=list)
     extra_globals: List[str] = field(default_factory=list)
     watchdog_lines: List[str] = field(default_factory=list)
-    marker_reset_vars_by_component: Dict[int, List[str]] = field(default_factory=dict)
-    trigger_sequences_by_component: Dict[int, List[Dict[str, object]]] = field(default_factory=dict)
     default_form_id: int = 1
     live_fallback: Dict[str, str] = field(default_factory=dict)
     slot_unrepresented: List[Dict[str, object]] = field(default_factory=list)
@@ -302,9 +342,40 @@ def _format_slot_unrepresented(entries: List[Dict[str, object]]) -> str:
     if len(entries) > 8:
         lines.append(f'... {len(entries) - 8} more unrepresented texture(s).')
     lines.append(
-        'Refresh STU/local discriminator evidence or exclude the component '
-        'from the slot layer explicitly; do not rely on hash fallback.')
+        'Refresh STU/local slot-layout evidence or exclude the component '
+        'from the slot layer explicitly; excluded components return to stock '
+        'hash-style output.')
     return '\n'.join(lines)
+
+
+def _anchor_runtime_state(forms: List[Tuple[str, FormData]],
+                          manual_anchors: Optional[List[Tuple[str, int]]],
+                          warnings: List[str]) -> Tuple[List[Tuple[str, int]], Optional[int], Set[int]]:
+    anchor_resources: List[Tuple[str, int]] = []
+    for anchor_hash, form_id in (manual_anchors or []):
+        if not isinstance(anchor_hash, str) or form_id < 1 or form_id > len(forms):
+            warnings.append(f'form anchor {anchor_hash!r} skipped (bad form id)')
+            continue
+        h = anchor_hash.strip().lower()
+        if re.fullmatch(r'[0-9a-f]{8}', h):
+            anchor_resources.append((h, form_id))
+        elif re.fullmatch(r'[0-9a-f]{16}', h):
+            warnings.append(
+                f'form anchor {anchor_hash!r} skipped (shader-hash anchors are '
+                'audit-only and cannot be emitted as runtime slot conditions)')
+        else:
+            warnings.append(
+                f'form anchor {anchor_hash!r} skipped (expected an 8-hex '
+                f'vb0 hash or a 16-hex ps hash)')
+    anchored_forms = {f for _, f in anchor_resources}
+    unanchored_forms = set(range(1, len(forms) + 1)) - anchored_forms
+    watchdog_form = None
+    if len(forms) > 1 and anchored_forms and len(unanchored_forms) == 1:
+        watchdog_form = next(iter(unanchored_forms))
+    gated_forms = set(anchored_forms)
+    if watchdog_form is not None:
+        gated_forms.add(watchdog_form)
+    return anchor_resources, watchdog_form, gated_forms
 
 
 @dataclass(eq=False)
@@ -320,8 +391,6 @@ class _Branch:
     assignment_slots: Tuple[int, ...] = ()
     ps: str = ''
     observed: Dict[int, str] = field(default_factory=dict)
-    markers: Tuple[str, ...] = ()
-    marker_slots: Tuple[int, ...] = ()
 
 
 @dataclass(eq=False)
@@ -329,7 +398,7 @@ class _LocalBranch:
     signature: Tuple[Tuple[int, float], ...]
     negative_signature: Tuple[Tuple[int, float], ...]
     assign: Dict[int, str]
-    form_id: int
+    form_id: Optional[int]
     label: str
     ps: str
     source: str
@@ -337,9 +406,7 @@ class _LocalBranch:
 
 def _branch_with_assign(branch: _Branch,
                         assign: Dict[int, str],
-                        form_gate: Optional[int],
-                        markers: Tuple[str, ...] = (),
-                        marker_slots: Tuple[int, ...] = ()) -> _Branch:
+                        form_gate: Optional[int]) -> _Branch:
     return _Branch(
         signature=branch.signature,
         assign=assign,
@@ -352,15 +419,11 @@ def _branch_with_assign(branch: _Branch,
         assignment_slots=tuple(sorted(assign)),
         ps=branch.ps,
         observed=dict(branch.observed),
-        markers=tuple(markers or branch.markers),
-        marker_slots=tuple(marker_slots or branch.marker_slots),
     )
 
 
 def _is_weak_anchor_branch(branch: _Branch,
                            needs_form_gate: bool = True) -> bool:
-    if branch.markers:
-        return False
     condition_slots = branch.condition_slots or tuple(
         slot for slot, _key in branch.signature)
     assignment_slots = branch.assignment_slots or tuple(sorted(branch.assign))
@@ -383,15 +446,11 @@ def _local_branch_is_weak(signature: Tuple[Tuple[int, float], ...],
 
 def _branch_covered_by_stronger_layout(branch: _Branch,
                                        candidates: List[_Branch]) -> bool:
-    if branch.markers:
-        return False
     condition = _branch_key(branch)
     if not branch.signature:
         return False
     for candidate in candidates:
         if candidate is branch:
-            continue
-        if branch.markers and candidate.markers != branch.markers:
             continue
         other = _branch_key(candidate)
         if other == condition:
@@ -441,8 +500,6 @@ def _branch_resources_covered_by_stronger_layout(
     for candidate in candidates:
         if candidate is branch or candidate.form_gate != branch.form_gate:
             continue
-        if branch.markers and candidate.markers != branch.markers:
-            continue
         if _is_weak_anchor_branch(candidate, needs_form_gate=False):
             continue
         if not set(candidate.assign.values()).issuperset(resources):
@@ -458,23 +515,13 @@ def _branch_key(branch: _Branch) -> Tuple[
         Tuple[Tuple[int, float], ...],
         Tuple[Tuple[int, float], ...],
         Optional[int],
-        Tuple[Tuple[int, str], ...],
-        Tuple[str, ...]]:
+        Tuple[Tuple[int, str], ...]]:
     return (
         branch.signature,
         branch.negative_signature,
         branch.form_gate,
         tuple(sorted(branch.assign.items())),
-        branch.markers,
     )
-
-
-def _marker_var_name(comp_id: int, marker_id: int) -> str:
-    return f'$slot_tex_c{comp_id}_m{marker_id}'
-
-
-def _marker_section_name(comp_id: int, marker_id: int) -> str:
-    return f'TextureOverrideSlotMarkerComponent{comp_id}_{marker_id}'
 
 
 def _row_matches_condition(pair_map: Dict[int, Optional[str]],
@@ -504,39 +551,6 @@ def _branch_observed_matches(branch: _Branch, observed: Dict[int, str]) -> bool:
         if observed.get(slot) != tex_hash:
             return False
     return True
-
-
-def _find_marker_slots_for_same_signature(
-        members: List[_Branch],
-        alias: Dict[str, str]) -> Optional[List[int]]:
-    observed_rows = [member.observed for member in members if member.observed]
-    if len(observed_rows) != len(members):
-        return None
-    slots = sorted(set().union(*(set(row) for row in observed_rows)))
-    for size in range(1, len(slots) + 1):
-        for subset in combinations(slots, size):
-            keys = []
-            for row in observed_rows:
-                key = tuple(
-                    (slot, alias.get(row.get(slot), row.get(slot)))
-                    for slot in subset
-                )
-                keys.append(key)
-            separated = True
-            for left_index, left in enumerate(members):
-                for right_index, right in enumerate(members):
-                    if right_index <= left_index:
-                        continue
-                    if left.assign == right.assign:
-                        continue
-                    if keys[left_index] == keys[right_index]:
-                        separated = False
-                        break
-                if not separated:
-                    break
-            if separated:
-                return list(subset)
-    return None
 
 
 def _branch_assignments_match_observed_scope(
@@ -608,17 +622,23 @@ def _canonical_override_slots(pair_map: Dict[int, Optional[str]],
 def _component_hash_canonical_slots(forms: List[Tuple[str, FormData]],
                                     alias: Dict[str, str]) -> Dict[Tuple[int, str], int]:
     out: Dict[Tuple[int, str], int] = {}
+    score_by_key: Dict[Tuple[int, str], Tuple[int, int, int]] = {}
     for _label, form_data in forms:
         for comp_id, comp_pairs in form_data.items():
             for pair_map in comp_pairs.values():
+                role = _pass_role(pair_map, {})
+                role_score = 2 if role == 'material' else (1 if role == 'outline' else 0)
+                layout_score = len(_eligible_slots(pair_map))
                 for slot, tex_hash in pair_map.items():
                     if not isinstance(tex_hash, str):
                         continue
                     canon = alias.get(tex_hash, tex_hash)
                     key = (comp_id, canon)
-                    previous = out.get(key)
-                    if previous is None or slot < previous:
+                    score = (role_score, layout_score, -slot)
+                    previous = score_by_key.get(key)
+                    if previous is None or score > previous:
                         out[key] = slot
+                        score_by_key[key] = score
     return out
 
 
@@ -802,12 +822,16 @@ def _minimal_condition_signature(
         other_signatures: List[Tuple[Tuple[int, float], ...]],
         assignment_slots: Set[int],
         blocked_negative_slots: Optional[Set[int]] = None,
+        allow_negative: bool = True,
         ) -> Tuple[Tuple[Tuple[int, float], ...], Tuple[Tuple[int, float], ...]]:
     common = _signature_common(own_signatures)
     if not common:
         return (), ()
     if not other_signatures:
-        return _default_condition_signature(common, assignment_slots), ()
+        default = _default_condition_signature(common, assignment_slots)
+        if not _safe_condition_shape(default, ()) and len(common) > 1:
+            return common, ()
+        return default, ()
 
     ordered_terms = sorted(common, key=lambda term: _condition_term_sort_key(
         term, assignment_slots))
@@ -820,18 +844,32 @@ def _minimal_condition_signature(
                 other for other in other_set
                 if all(term in other for term in subset)
             ]
-            negative: Tuple[Tuple[int, float], ...] = ()
-            if blockers:
-                found = _minimal_negative_signature(
-                    subset, own_set, set(blockers), blocked_negative_slots)
-                if found is None:
-                    continue
-                negative = found
-            if not _safe_condition_shape(subset, negative):
+            if blockers or not _safe_condition_shape(subset, ()):
                 continue
-            return subset, negative
+            return subset, ()
+
+    if allow_negative:
+        for size in range(1, len(ordered_terms) + 1):
+            for subset_raw in combinations(ordered_terms, size):
+                subset = _ordered_signature(tuple(subset_raw))
+                blockers = [
+                    other for other in other_set
+                    if all(term in other for term in subset)
+                ]
+                if not blockers:
+                    continue
+                negative = _minimal_negative_signature(
+                    subset, own_set, set(blockers), blocked_negative_slots)
+                if negative is None or not _safe_condition_shape(subset, negative):
+                    continue
+                return subset, negative
 
     fallback = _default_condition_signature(common, assignment_slots)
+    if not allow_negative:
+        if not _safe_condition_shape(fallback, ()) and len(common) > 1:
+            return common, ()
+        return fallback, ()
+
     blockers = [
         other for other in other_set
         if all(term in other for term in fallback)
@@ -840,6 +878,8 @@ def _minimal_condition_signature(
         negative = _minimal_negative_signature(
             fallback, own_set, set(blockers), blocked_negative_slots)
         return fallback, negative or ()
+    if not _safe_condition_shape(fallback, ()) and len(common) > 1:
+        return common, ()
     return fallback, ()
 
 
@@ -851,13 +891,13 @@ def _minimize_anchor_branches(branches: List[_Branch]) -> None:
     }
     scoped: Dict[Optional[int], List[_Branch]] = {}
     for branch in branches:
-        scoped.setdefault(None if branch.markers else branch.form_gate, []).append(branch)
+        scoped.setdefault(branch.form_gate, []).append(branch)
     for scope_branches in scoped.values():
-        groups: Dict[Tuple[Tuple[Tuple[int, str], ...], str, Tuple[str, ...]], List[_Branch]] = {}
+        groups: Dict[Tuple[Tuple[Tuple[int, str], ...], str], List[_Branch]] = {}
         for branch in scope_branches:
             assign_key = tuple(sorted(branch.assign.items()))
-            groups.setdefault((assign_key, branch.pass_role, branch.markers), []).append(branch)
-        for (assign_key, _role, markers), members in groups.items():
+            groups.setdefault((assign_key, branch.pass_role), []).append(branch)
+        for (assign_key, _role), members in groups.items():
             own_signatures = [
                 member.full_signature or member.signature
                 for member in members
@@ -865,15 +905,8 @@ def _minimize_anchor_branches(branches: List[_Branch]) -> None:
             other_signatures = [
                 other.full_signature or other.signature
                 for other in scope_branches
-                if (tuple(sorted(other.assign.items())) != assign_key
-                    or other.markers != markers)
+                if tuple(sorted(other.assign.items())) != assign_key
             ]
-            if markers:
-                other_signatures = [
-                    other.full_signature or other.signature
-                    for other in scope_branches
-                    if not other.markers
-                ]
             assignment_slots = {slot for slot, _res in assign_key}
             positive, negative = _minimal_condition_signature(
                 own_signatures, other_signatures, assignment_slots,
@@ -1105,57 +1138,6 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                             sample['forms'].append(label)
                         sample['sources'].append({'form': label, 'ps': ps})
 
-    minimized_branch_samples: Dict[
-        Tuple[int, Tuple[Tuple[int, str], ...], Tuple[Tuple[int, float], ...]],
-        dict,
-    ] = {}
-    for comp_id, by_assign in sorted(component_assignments.items()):
-        for assign_key, signatures in sorted(by_assign.items()):
-            other_signatures = [
-                sig for other_key, values in by_assign.items()
-                if other_key != assign_key for sig in values
-            ]
-            positive, negative = _minimal_condition_signature(
-                list(signatures), other_signatures,
-                {slot for slot, _tex_hash in assign_key})
-            samples = [
-                branch_samples[(comp_id, assign_key, sig)]
-                for sig in signatures
-                if (comp_id, assign_key, sig) in branch_samples
-            ]
-            if not samples:
-                continue
-            sample = dict(samples[0])
-            forms_seen: Set[str] = set()
-            sources: List[dict] = []
-            remap_sources: List[str] = []
-            condition_sources: Set[str] = set()
-            pass_roles: Set[str] = set()
-            for item in samples:
-                forms_seen.update(item.get('forms') or [])
-                sources.extend(src for src in (item.get('sources') or [])
-                               if isinstance(src, dict))
-                condition_sources.add(str(item.get('condition_source') or ''))
-                pass_roles.add(str(item.get('pass_role') or ''))
-                for remap in item.get('remap_sources') or []:
-                    if isinstance(remap, str) and remap not in remap_sources:
-                        remap_sources.append(remap)
-            sample['signature'] = _serialized_signature(positive)
-            sample['positive_signature'] = _serialized_signature(positive)
-            sample['negative_signature'] = _serialized_signature(negative)
-            sample['condition_slots'] = [slot for slot, _key in positive]
-            sample['forms'] = sorted(forms_seen)
-            sample['sources'] = sources
-            sample['condition_source'] = (
-                condition_sources.pop() if len(condition_sources) == 1
-                else 'mixed')
-            if len(pass_roles) == 1:
-                sample['pass_role'] = pass_roles.pop()
-            if remap_sources:
-                sample['remap_sources'] = remap_sources
-            minimized_branch_samples[(comp_id, assign_key, positive)] = sample
-    branch_samples = minimized_branch_samples
-
     conflicts = []
 
     unresolved_components: Set[int] = set()
@@ -1339,8 +1321,7 @@ def _format_local_conflict_message(problems: List[dict]) -> str:
     lines.extend([
         '可选补救：',
         '1. 在“按组件选插槽风格”里取消上述 Component，只让它们回到 hash-style。',
-        '2. 关闭“局部形态判据”，回到旧 form anchor 导出。',
-        '3. 关闭“插槽风格贴图”，整体回到 hash-style。',
+        '2. 关闭“插槽风格贴图”，整体回到 hash-style。',
         '工具不会自动取消这些 Component，以免误以为它们仍在 local slot layer。',
     ])
     return '\n'.join(lines)
@@ -1349,6 +1330,7 @@ def _format_local_conflict_message(problems: List[dict]) -> str:
 def _local_branches_from_audit(audit: dict,
                                mod_hashes: Dict[str, str],
                                canon_fn,
+                               form_label_to_id: Optional[Dict[str, int]] = None,
                                slot_eligible_components: Optional[Set[int]] = None,
                                ) -> Tuple[Dict[int, List[_LocalBranch]], Set[str], int, Set[str]]:
     component_branches: Dict[int, List[_LocalBranch]] = {}
@@ -1508,16 +1490,50 @@ def _local_branches_from_audit(audit: dict,
             sig for other_key, values in row_signatures.get(comp_id, {}).items()
             if other_key != assign_key for sig in values
         ]
+        blocked_negative_slots = {
+            slot for other_key in row_signatures.get(comp_id, {})
+            for slot, _tex_hash in other_key
+        }
         signature, negative_signature = _minimal_condition_signature(
             own_signatures, other_signatures,
-            {slot for slot, _tex_hash in assign_key})
+            {slot for slot, _tex_hash in assign_key},
+            blocked_negative_slots,
+            allow_negative=False)
         assign = dict(items[0][2])
         source = ','.join(item[4] for item in items)
+        branch_form_id = None
+        forms_seen: Set[int] = set()
+        for _comp_id, entry, _assign, _assign_key, _source in items:
+            forms_value = entry.get('forms')
+            if isinstance(forms_value, list):
+                labels = [str(value).strip().lower()
+                          for value in forms_value if isinstance(value, str)]
+            else:
+                labels = []
+            if not labels:
+                labels = [
+                    str(src.get('form')).strip().lower()
+                    for src in (entry.get('sources') or [])
+                    if isinstance(src, dict) and src.get('form') is not None
+                ]
+            for label in labels:
+                form_id = (form_label_to_id or {}).get(label)
+                if form_id is not None:
+                    forms_seen.add(form_id)
+        if len(forms_seen) == 1:
+            branch_form_id = next(iter(forms_seen))
         component_excluded = (
             slot_eligible_components is not None
             and comp_id not in slot_eligible_components)
+        weak_blocked = False
         if (not component_excluded and _local_branch_is_weak(
                 signature, negative_signature, assign, pass_role)):
+            weak_blocked = any(
+                other != assign_key and any(
+                    all(term in other_sig for term in signature)
+                    for other_sig in values)
+                for other, values in row_signatures.get(comp_id, {}).items())
+        if weak_blocked:
             suppressed_weak_branches += 1
             for _slot, tex_hash in assign_key:
                 suppressed_weak_hashes.add(tex_hash)
@@ -1534,7 +1550,7 @@ def _local_branches_from_audit(audit: dict,
             signature=signature,
             negative_signature=negative_signature,
             assign=assign,
-            form_id=1,
+            form_id=branch_form_id,
             label='local',
             ps='',
             source=source,
@@ -1557,8 +1573,11 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                       live_seed: Optional[Set[str]] = None,
                       freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
                       slot_eligible_components: Optional[Set[int]] = None,
-                      local_discriminator_audit: Optional[dict] = None) -> SlotPlan:
+                      local_discriminator_audit: Optional[dict] = None,
+                      formid_auxiliary_anchors: Optional[List[Tuple[str, int]]] = None) -> SlotPlan:
     warnings: List[str] = list(load_warnings or [])
+    anchor_resources, watchdog_form, gated_forms = _anchor_runtime_state(
+        forms, formid_auxiliary_anchors, warnings)
     validate_local_discriminator_audit(
         local_discriminator_audit, forms, texture_info, freshness)
     forms, dirty_hashes_raw, dirty_slots, phantom_pairs = _filtered_forms(
@@ -1622,8 +1641,13 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         group_families.setdefault(key, {}).setdefault(
             constants.format_prefix(fmt), (fmt, _fi_str(fi)))
 
+    label_to_id = {
+        label.strip().lower(): form_id
+        for form_id, (label, _data) in enumerate(forms, start=1)
+    }
     component_branches, raw_assigned_hashes, suppressed_weak_branches, suppressed_weak_hashes = _local_branches_from_audit(
-        local_discriminator_audit, mod_hashes, _canon, slot_eligible_components)
+        local_discriminator_audit, mod_hashes, _canon, label_to_id,
+        slot_eligible_components)
     if suppressed_weak_branches:
         warnings.append(
             f'suppressed {suppressed_weak_branches} weak local slot branch(es); '
@@ -1802,6 +1826,12 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             terms.append(f'ps-t{slot} != {text}')
         return terms
 
+    def _condition(terms: List[str], branch: _LocalBranch) -> str:
+        parts = list(terms)
+        if branch.form_id in gated_forms:
+            parts.append(f'{constants.VAR_FORM} == {branch.form_id}')
+        return ' && '.join(parts)
+
     def _append_assignments(chunk: List[str], assign: Dict[int, str], indent: str):
         for slot, res in sorted(assign.items()):
             chunk.append(f'{indent}ps-t{slot} = ref {res}')
@@ -1813,14 +1843,14 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         chunk: List[str] = ['', f'[{name}]', 'if $object_detected == 1']
         ordered = sorted(
             component_branches[comp_id],
-            key=lambda b: (-len(b.assign), -len(b.signature), b.form_id,
+            key=lambda b: (-len(b.assign), -len(b.signature), b.form_id or 0,
                            b.signature, tuple(sorted(b.assign.items()))))
         first = True
         for branch in ordered:
             terms = _terms(comp_id, branch)
             if not terms:
                 continue
-            chunk.append(f'    {"if" if first else "else if"} ' + ' && '.join(terms))
+            chunk.append(f'    {"if" if first else "else if"} ' + _condition(terms, branch))
             _append_assignments(chunk, branch.assign, '        ')
             first = False
         if not first:
@@ -1905,8 +1935,24 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     out.append('; ps-t0..8 may be used as condition slots, while assignment')
     out.append('; slots are limited to canonical override seats with mod resources.')
     out.append('; object_detected is an outer scope gate, not a form discriminator.')
-    out.append('; no global form state or form-anchor watchdog is used.')
+    if anchor_resources:
+        out.append('; formid auxiliary gate only narrows already slot-safe branches.')
+    else:
+        out.append('; no global form state or form-anchor watchdog is used.')
     out.append('; ============================================================')
+    if anchor_resources:
+        out.append('')
+        out.append('; -- Optional formid auxiliary anchors')
+        for h, form_id in sorted(anchor_resources):
+            out.append('')
+            out.append(f'[{constants.SEC_RESOURCE_ANCHOR.format(anchor_hash=h)}]')
+            out.append(f'hash = {h}')
+            out.append('allow_duplicate_hash = true')
+            out.append('match_priority = 0')
+            out.append('match_first_index = 0')
+            out.append(f'{constants.VAR_FORM} = {form_id}')
+            if watchdog_form is not None:
+                out.append(f'{constants.VAR_ANCHOR_SEEN} = 1')
     out.extend(body_chunks)
 
     format_section_count = 0
@@ -1939,18 +1985,33 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                         format_section_count += 1
     out.append('')
 
+    extra_globals: List[str] = []
+    watchdog_lines: List[str] = []
+    if watchdog_form is not None:
+        extra_globals.append(constants.VAR_ANCHOR_SEEN)
+        watchdog_lines = [
+            '; Form-anchor watchdog: a frame without an anchor heartbeat commits',
+            '; the one unanchored/default form by elimination.',
+            f'if {constants.VAR_ANCHOR_SEEN}',
+            f'    post {constants.VAR_ANCHOR_SEEN} = 0',
+            'else',
+            f'    {constants.VAR_FORM} = {watchdog_form}',
+            'endif',
+        ]
+    formid_active = bool(anchor_resources) or watchdog_form is not None
+
     return SlotPlan(
         block_text='\n'.join(out),
         component_list_names=component_list_names,
         covered_resource_indices=covered_resource_indices,
         blind_zone=blind_zone,
-        multi_form=False,
+        multi_form=formid_active,
         used_slots=sorted(used_slots),
         phantom_only_resource_indices=phantom_only_resource_indices,
         phantom_suppressed=phantom_suppressed,
-        extra_globals=[],
-        watchdog_lines=[],
-        default_form_id=1,
+        extra_globals=extra_globals,
+        watchdog_lines=watchdog_lines,
+        default_form_id=watchdog_form if watchdog_form is not None else 1,
         live_fallback=dict(live_fallback),
         warnings=warnings,
         stats={
@@ -1960,8 +2021,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             'conflicts': 0,
             'marks': 0,
             'fork_latches': 0,
-            'anchors': 0,
-            'anchor_watchdog': 0,
+            'anchors': len(anchor_resources),
+            'anchor_watchdog': 1 if watchdog_form is not None else 0,
             'probes': 0,
             'live_fallback': len(live_fallback),
             'format_sections': format_section_count,
@@ -2049,7 +2110,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
                slot_eligible_components: Optional[Set[int]] = None,
                local_form_discriminator: bool = False,
-               local_discriminator_audit: Optional[dict] = None) -> SlotPlan:
+               local_discriminator_audit: Optional[dict] = None,
+               formid_auxiliary_anchors: Optional[List[Tuple[str, int]]] = None) -> SlotPlan:
     """Build a concise XQFA-style slot plan.
 
     The legacy probe/mark/backup/restore machinery is intentionally absent:
@@ -2069,7 +2131,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
             live_seed=live_seed,
             freshness=freshness,
             slot_eligible_components=slot_eligible_components,
-            local_discriminator_audit=local_discriminator_audit)
+            local_discriminator_audit=local_discriminator_audit,
+            formid_auxiliary_anchors=formid_auxiliary_anchors)
     warnings: List[str] = list(load_warnings or [])
     multi_form = len(forms) > 1
     mod_hashes = {h: res for h, res in textures}
@@ -2234,23 +2297,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
 
     component_branches: Dict[int, List[_Branch]] = {}
     conflict_count = 0
-    marker_defs: List[Tuple[int, int, int, str, str]] = []
-    marker_vars_by_component: Dict[int, Set[str]] = {}
-    marker_var_by_comp_slot_hash: Dict[Tuple[int, int, str], str] = {}
-    next_marker_id: Dict[int, int] = {}
-
-    def _marker_var_for(comp_id: int, slot: int, tex_hash: str) -> str:
-        key = (comp_id, slot, tex_hash)
-        existing = marker_var_by_comp_slot_hash.get(key)
-        if existing:
-            return existing
-        marker_id = next_marker_id.get(comp_id, 0)
-        next_marker_id[comp_id] = marker_id + 1
-        var = _marker_var_name(comp_id, marker_id)
-        marker_var_by_comp_slot_hash[key] = var
-        marker_vars_by_component.setdefault(comp_id, set()).add(var)
-        marker_defs.append((comp_id, marker_id, slot, tex_hash, var))
-        return var
 
     for comp_id, branches in raw_branches.items():
         by_signature: Dict[Tuple[Tuple[int, float], ...], List[_Branch]] = {}
@@ -2267,36 +2313,29 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 sample.setdefault(assign_key, member)
             if len(by_assign) > 1:
                 conflict_count += len(by_assign) - 1
-                marker_slots = _find_marker_slots_for_same_signature(
-                    members, alias)
-                if not marker_slots:
-                    raise SlotStyleDegrade(
-                        f'component {comp_id}: multiple texture sets under '
-                        'the same format signature have no marker-only texture '
-                        'discriminator; refresh STU/log evidence')
-                marker_by_member: Dict[_Branch, Tuple[str, ...]] = {}
+                weak_members_covered = True
                 for member in members:
-                    marker_vars: List[str] = []
-                    for slot in marker_slots:
-                        tex_hash = member.observed.get(slot)
-                        if not tex_hash:
-                            raise SlotStyleDegrade(
-                                f'component {comp_id}: marker slot ps-t{slot} '
-                                'has no observed texture hash')
-                        marker_vars.append(
-                            _marker_var_for(comp_id, slot, tex_hash))
-                    marker_by_member[member] = tuple(marker_vars)
-                warnings.append(
-                    f'component {comp_id}: same-format texture sets use '
-                    'marker-only texture discriminator(s); assignments remain '
-                    'inside component ps-t branches')
-                for member in members:
-                    merged.append(_branch_with_assign(
-                        member, dict(member.assign), None,
-                        marker_by_member.get(member, ()),
-                        tuple(marker_slots)))
-                _minimize_anchor_branches(merged)
-                continue
+                    if not _is_weak_anchor_branch(member, needs_form_gate=False):
+                        weak_members_covered = False
+                        break
+                    if not _branch_resources_covered_by_stronger_layout(
+                            member, comp_id, branches, forms, texture_info,
+                            alias):
+                        weak_members_covered = False
+                        break
+                if weak_members_covered:
+                    suppressed_weak_branches += len(members)
+                    for member in members:
+                        for resource in member.assign.values():
+                            tex_hash = resource_to_hash.get(resource)
+                            if tex_hash:
+                                suppressed_weak_hashes.add(tex_hash)
+                    continue
+                raise SlotStyleDegrade(
+                    f'component {comp_id}: multiple texture sets share the '
+                    'same slot-layout signature; pure 0hash slot export cannot '
+                    'distinguish them. Exclude this component from the slot '
+                    'layer or disable slot-style textures.')
             assign_key, form_ids = next(iter(by_assign.items()))
             member = sample[assign_key]
             if multi_form and form_ids != set(range(1, len(forms) + 1)):
@@ -2411,12 +2450,10 @@ def build_plan(forms: List[Tuple[str, FormData]],
             terms.append(f'ps-t{slot} != {text}')
         return terms
 
-    def _condition(terms: List[str], form_gate: Optional[int] = None,
-                   markers: Tuple[str, ...] = ()) -> str:
+    def _condition(terms: List[str], form_gate: Optional[int] = None) -> str:
         parts = list(terms)
         if form_gate is not None:
             parts.append(f'{constants.VAR_FORM} == {form_gate}')
-        parts.extend(f'{marker} == 1' for marker in sorted(markers))
         return ' && '.join(parts)
 
     def _append_assignments(chunk: List[str], assign: Dict[int, str],
@@ -2442,7 +2479,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 continue
 
             chunk.append(f'{"if" if first else "else if"} '
-                          f'{_condition(terms, branch.form_gate, branch.markers)}')
+                          f'{_condition(terms, branch.form_gate)}')
             _append_assignments(chunk, branch.assign, '    ')
             first = False
         if not first:
@@ -2497,20 +2534,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
             if watchdog_form is not None:
                 out.append(f'{constants.VAR_ANCHOR_SEEN} = 1')
 
-    if marker_defs:
-        out.append('')
-        out.append('; -- Hash-marker + slot-write texture discriminators')
-        for comp_id, marker_id, slot, tex_hash, var in marker_defs:
-            out.append('')
-            out.append(f'[{_marker_section_name(comp_id, marker_id)}]')
-            out.append('; marker_mode = hash-marker + slot-write')
-            out.append(f'; marker_component = {comp_id}')
-            out.append(f'; marker_slot = ps-t{slot}')
-            out.append(f'hash = {tex_hash}')
-            out.append('allow_duplicate_hash = true')
-            out.append('match_priority = 0')
-            out.append(f'{var} = 1')
-
     out.extend(body_chunks)
 
     format_section_count = 0
@@ -2556,31 +2579,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
             f'    {constants.VAR_FORM} = {watchdog_form}',
             'endif',
         ]
-    for _comp_id, vars_for_comp in sorted(marker_vars_by_component.items()):
-        extra_globals.extend(sorted(vars_for_comp))
-
-    trigger_sequences_by_component: Dict[int, List[Dict[str, object]]] = {}
-    for comp_id, branches in sorted(component_branches.items()):
-        marker_slot_groups: List[Tuple[int, ...]] = []
-        for branch in branches:
-            if not branch.markers:
-                continue
-            group = tuple(sorted(set(branch.marker_slots)))
-            if group and group not in marker_slot_groups:
-                marker_slot_groups.append(group)
-        if not marker_slot_groups:
-            continue
-        reset_vars = sorted(marker_vars_by_component.get(comp_id, ()))
-        sequences: List[Dict[str, object]] = []
-        for index, group in enumerate(marker_slot_groups):
-            sequences.append({
-                'reset_vars': reset_vars if index == 0 else [],
-                'trigger_slots': list(group),
-                'run_set_textures': False,
-            })
-        sequences.append({'run_set_textures': True})
-        trigger_sequences_by_component[comp_id] = sequences
-
     return SlotPlan(
         block_text='\n'.join(out),
         component_list_names=component_list_names,
@@ -2592,11 +2590,6 @@ def build_plan(forms: List[Tuple[str, FormData]],
         phantom_suppressed=phantom_suppressed,
         extra_globals=extra_globals,
         watchdog_lines=watchdog_lines,
-        marker_reset_vars_by_component={
-            comp_id: sorted(values)
-            for comp_id, values in marker_vars_by_component.items()
-        },
-        trigger_sequences_by_component=trigger_sequences_by_component,
         default_form_id=watchdog_form if watchdog_form is not None else 1,
         live_fallback=dict(live_fallback),
         warnings=warnings,
@@ -2624,7 +2617,5 @@ def build_plan(forms: List[Tuple[str, FormData]],
             'suppressed_latches': 0,
             'suppressed_weak_branches': suppressed_weak_branches,
             'suppressed_covered_branches': suppressed_covered_branches,
-            'hash_marker_slot_write': len(marker_defs),
-            'marker_trigger_scoped_components': len(trigger_sequences_by_component),
         },
     )

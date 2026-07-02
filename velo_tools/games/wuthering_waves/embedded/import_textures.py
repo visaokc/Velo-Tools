@@ -26,6 +26,9 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - exercised by non-Blender unit tests
     bpy = None
 
+_FORM_COMPONENT_MODE_KEY = "form_component_mode"
+_LEGACY_FORM_COMPONENT_MODE_KEYS = ("_velo_form_component_mode",)
+
 
 # Diffuse candidates at or above this area compete on component-exclusivity
 # first (a component's own texture beats a shared atlas); below it, area
@@ -171,6 +174,10 @@ def load_component_candidates(folder: Path) -> dict[str, dict[str, dict]]:
                 continue
             comp = out.setdefault(comp_match.group(1), {})
             for pair_key, value in pairs.items():
+                if str(pair_key) == _FORM_COMPONENT_MODE_KEY:
+                    continue
+                if str(pair_key) in _LEGACY_FORM_COMPONENT_MODE_KEYS:
+                    continue
                 if not isinstance(value, dict):
                     continue
                 if _NESTED_VS_RE.match(str(pair_key)):

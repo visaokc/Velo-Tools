@@ -11,7 +11,7 @@
 # tags are residency-invariant (every streaming mip level of a texture shares
 # the format family), which is what makes the scheme immune to streaming.
 #
-# Character-level data (slot maps, formats, form sets, marker hashes) is NEVER
+# Character-level data (slot maps, formats, form sets) is NEVER
 # hardcoded — generator.py derives everything from ShaderTextureUsage.json
 # (+ its extra_forms key) and the source-folder texture files at export time.
 #
@@ -39,8 +39,11 @@
 VAR_FORM = "$form_id"
 CMDLIST_SET_TEXTURES = "CommandListSetTexturesComponent{component_id}"
 LOCAL_FORM_DISCRIMINATOR_KEY = "local_form_discriminator"
-LOCAL_FORM_DISCRIMINATOR_SCHEMA = 3
+LOCAL_FORM_DISCRIMINATOR_SCHEMA = 4
 LOCAL_COMPONENT_SOURCES_KEY = "_velo_local_component_sources"
+FORM_COMPONENT_MODE_KEY = "form_component_mode"
+LEGACY_FORM_COMPONENT_MODE_KEYS = ("_velo_form_component_mode",)
+FORM_ANCHORS_KEY = "form_anchors"
 # USER-SPECIFIED form anchors (detection only, optional): a form-exclusive
 # resource (a vb0 — geometry never streams, so the latch is instant and far
 # more version-stable than shaders) or shader latches $form_id the moment

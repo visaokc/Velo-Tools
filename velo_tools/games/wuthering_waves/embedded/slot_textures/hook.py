@@ -77,14 +77,14 @@ def install():
                     'formats were read from the model-folder files instead; '
                     're-extract to record the original game formats')
             slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
-            local_discriminator = bool(
+            local_discriminator = True
+            formid_auxiliary = bool(
                 slot_cfg is not None
-                and getattr(slot_cfg, "local_form_discriminator", True))
+                and getattr(slot_cfg, "formid_auxiliary_gate", False))
             manual_anchors = []
             local_audit = None
-            if local_discriminator:
-                local_audit = generator.read_local_discriminator_audit(source_folder)
-            else:
+            local_audit = generator.read_local_discriminator_audit(source_folder)
+            if formid_auxiliary:
                 manual_anchors = _parse_form_anchors(context, forms, load_warnings)
                 if not manual_anchors:
                     manual_anchors = _auto_form_anchors_from_stu(
@@ -97,7 +97,8 @@ def install():
                 freshness=form_freshness,
                 slot_eligible_components=_read_slot_eligible(context),
                 local_form_discriminator=local_discriminator,
-                local_discriminator_audit=local_audit)
+                local_discriminator_audit=local_audit,
+                formid_auxiliary_anchors=manual_anchors)
             slot_issues = (
                 list(getattr(plan, 'unsafe_fallback', None) or [])
                 + list(getattr(plan, 'slot_unrepresented', None) or []))
@@ -105,10 +106,7 @@ def install():
                 raise generator.SlotStyleDegrade(
                     generator._format_slot_unrepresented(slot_issues))
             result = transform.apply(result, plan)
-            if local_discriminator:
-                _report('[SlotTextures] local form discriminator active: '
-                        'form anchors and global $form_id are not emitted')
-            else:
+            if formid_auxiliary:
                 for anchor_hash, form_id in manual_anchors:
                     kind = 'shader (ps)' if len(anchor_hash) == 16 else 'resource (vb0)'
                     _report(f'[SlotTextures] form anchor {anchor_hash} ({kind}) -> '
@@ -117,6 +115,9 @@ def install():
                     _report(f'[SlotTextures] anchor watchdog active: a frame without '
                             f'an anchor hit commits form '
                             f'"{forms[plan.default_form_id - 1][0]}" by elimination')
+            else:
+                _report('[SlotTextures] pure 0hash slot mode active: '
+                        'form anchors and global $form_id are not emitted')
             for warning in plan.warnings:
                 _report(f'[SlotTextures] WARNING: {warning}')
             for tex_hash, section in plan.blind_zone:
