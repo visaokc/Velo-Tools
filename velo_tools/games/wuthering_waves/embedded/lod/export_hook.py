@@ -40,6 +40,7 @@ from ..._wwmi_core.migoto_io.data_model.byte_buffer import NumpyBuffer, Abstract
 from . import remap as _remap
 
 _INSTALLED = False
+_ORIG_BUILD_DATA_BUFFERS = None
 _ORIG_BUILD_MOD_INI = None
 _ORIG_BUILD_FROM_TEMPLATE = None
 
@@ -54,12 +55,18 @@ class LodExportError(Exception):
 
 
 def install():
-    global _INSTALLED, _ORIG_BUILD_MOD_INI, _ORIG_BUILD_FROM_TEMPLATE
+    global _INSTALLED, _ORIG_BUILD_DATA_BUFFERS, _ORIG_BUILD_MOD_INI, _ORIG_BUILD_FROM_TEMPLATE
     if _INSTALLED:
         return
 
+    _ORIG_BUILD_DATA_BUFFERS = _be_module.ModExporter.build_data_buffers
     _ORIG_BUILD_MOD_INI = _be_module.ModExporter.build_mod_ini
     _ORIG_BUILD_FROM_TEMPLATE = _im_module.IniMaker.build_from_template
+
+    def _wrapped_build_data_buffers(self):
+        result = _ORIG_BUILD_DATA_BUFFERS(self)
+        _snapshot_lod_export_state(self)
+        return result
 
     def _wrapped_build_mod_ini(self):
         _prepare_lod_export(self)
@@ -72,19 +79,23 @@ def install():
                                          template_string=template_string,
                                          with_checksum=with_checksum)
 
+    _wrapped_build_data_buffers._velo_lod_hook = True
     _wrapped_build_mod_ini._velo_lod_hook = True
     _wrapped_build_from_template._velo_lod_hook = True
+    _be_module.ModExporter.build_data_buffers = _wrapped_build_data_buffers
     _be_module.ModExporter.build_mod_ini = _wrapped_build_mod_ini
     _im_module.IniMaker.build_from_template = _wrapped_build_from_template
     _INSTALLED = True
 
 
 def remove():
-    global _INSTALLED, _ORIG_BUILD_MOD_INI, _ORIG_BUILD_FROM_TEMPLATE
+    global _INSTALLED, _ORIG_BUILD_DATA_BUFFERS, _ORIG_BUILD_MOD_INI, _ORIG_BUILD_FROM_TEMPLATE
     if not _INSTALLED:
         return
+    _be_module.ModExporter.build_data_buffers = _ORIG_BUILD_DATA_BUFFERS
     _be_module.ModExporter.build_mod_ini = _ORIG_BUILD_MOD_INI
     _im_module.IniMaker.build_from_template = _ORIG_BUILD_FROM_TEMPLATE
+    _ORIG_BUILD_DATA_BUFFERS = None
     _ORIG_BUILD_MOD_INI = None
     _ORIG_BUILD_FROM_TEMPLATE = None
     _INSTALLED = False
@@ -100,6 +111,16 @@ def _load_velo_template(cfg) -> str:
         line + '\n' for line in raw_data.split('\n')
         if not line.strip().startswith('{{note')
     )
+
+
+def _snapshot_lod_export_state(exporter):
+    """Capture data that Blender invalidates before build_mod_ini runs."""
+    try:
+        exporter.extracted_object.velo_export_vg_names = [
+            vg.name for vg in exporter.merged_object.object.vertex_groups
+        ]
+    except Exception:
+        exporter.extracted_object.velo_export_vg_names = []
 
 
 def _prepare_lod_export(exporter):
@@ -171,9 +192,28 @@ def _prepare_lod_export(exporter):
     weights = blend.get_field(weights_name)
 
     index_data = index_buffer.get_field(0).ravel()
-    index_layout = [component.index_count for component in exporter.merged_object.components]
-    component_of_vertex = _remap.build_vertex_component_map(
-        index_data, index_layout, true_vg_ids.shape[0])
+    merged_components = exporter.merged_object.components
+    component_object_ranges = [
+        [
+            (obj.name, obj.index_offset, obj.index_count)
+            for obj in component.objects
+        ]
+        for component in merged_components
+    ]
+    component_ranges = [
+        [
+            (index_offset, index_count)
+            for _name, index_offset, index_count in ranges
+        ]
+        for ranges in component_object_ranges
+    ]
+    if any(component_ranges):
+        component_of_vertex = _remap.build_vertex_component_map_from_ranges(
+            index_data, component_ranges, true_vg_ids.shape[0])
+    else:
+        index_layout = [component.index_count for component in exporter.merged_object.components]
+        component_of_vertex = _remap.build_vertex_component_map(
+            index_data, index_layout, true_vg_ids.shape[0])
 
     # Cross-scene split objects (parts wrapped by an own-buffer IB, e.g. X.001)
     # do not exist in the dungeon LOD objects: exclude their rows from the LOD
@@ -209,8 +249,18 @@ def _prepare_lod_export(exporter):
         key=lambda item: (-sum(e.get('vertex_count', 0) for e in item[1].values()), item[0]),
     )
 
-    merged_components = exporter.merged_object.components
     velo_lods = []
+    velo_draws = [
+        [
+            {
+                'name': temp_obj.name,
+                'index_count': int(temp_obj.index_count),
+                'index_offset': int(temp_obj.index_offset),
+            }
+            for temp_obj in component.objects
+        ]
+        for component in merged_components
+    ]
 
     try:
         for lod_index, (lod_object_name, entries) in enumerate(ordered_groups):
@@ -225,16 +275,41 @@ def _prepare_lod_export(exporter):
                     component_maps[component_id] = _remap.compose_full_to_lod_local(
                         full_components_meta[component_id], entry)
                 else:
-                    # COMPONENT mode: matcher vg_map applies to the local ids
-                    # directly (None = identity skeleton, pass ids through).
-                    entry_map = _remap._to_int_map(entry.get('vg_map'))
-                    component_maps[component_id] = (
-                        entry_map if entry_map is not None
-                        else {i: i for i in range(256)})
+                    export_vg_names = getattr(exporter.extracted_object, 'velo_export_vg_names', None)
+                    if export_vg_names is None:
+                        export_vg_names = [vg.name for vg in exporter.merged_object.object.vertex_groups]
+                    component_maps[component_id] = _remap.compose_export_indices_to_lod_local(
+                        export_vg_names,
+                        entry)
+
+            extra_excluded_names = _remap.find_unmapped_lod_object_names(
+                index_data,
+                component_object_ranges,
+                true_vg_ids,
+                weights,
+                component_maps,
+                excluded_names=excluded_names)
+            if extra_excluded_names:
+                excluded_names.update(extra_excluded_names)
+
+            active_excluded_vertex_mask = excluded_vertex_mask
+            if extra_excluded_names:
+                active_excluded_vertex_mask = (
+                    numpy.zeros(true_vg_ids.shape[0], dtype=bool)
+                    if active_excluded_vertex_mask is None
+                    else active_excluded_vertex_mask.copy()
+                )
+                for ranges in component_object_ranges:
+                    for obj_name, index_offset, index_count in ranges:
+                        if obj_name in extra_excluded_names:
+                            vertex_ids = numpy.unique(
+                                index_data[index_offset:index_offset + index_count])
+                            active_excluded_vertex_mask[vertex_ids] = True
+                excluded_vertex_mask = active_excluded_vertex_mask
 
             lod_ids = _remap.remap_blend_component_local(
                 true_vg_ids, weights, component_of_vertex, component_maps,
-                excluded_vertex_mask=excluded_vertex_mask)
+                excluded_vertex_mask=active_excluded_vertex_mask)
 
             lod_blend = NumpyBuffer(blend.layout, data=blend.data.copy())
             lod_blend.set_field(
@@ -255,6 +330,7 @@ def _prepare_lod_export(exporter):
 
     exporter.extracted_object.velo_lods = velo_lods
     exporter.extracted_object.velo_lod_excluded_objects = sorted(excluded_names)
+    exporter.extracted_object.velo_draws = velo_draws
 
     total_sections = sum(
         1 for lod in velo_lods for entry in lod['components'] if entry is not None)

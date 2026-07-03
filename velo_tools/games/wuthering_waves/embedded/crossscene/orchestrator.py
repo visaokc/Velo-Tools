@@ -602,6 +602,71 @@ def _merge_slot_branch_expectations(target, src, ib_index, component_map=None):
             target.setdefault((int(comp_id), int(ib_index)), set()).add(signature)
 
 
+def _accumulate_service_slot_hashes(components, slots_by_hash):
+    for _comp, comp_pairs in (components or {}).items():
+        if not isinstance(comp_pairs, dict):
+            continue
+        for _vs, ps_map in comp_pairs.items():
+            if not isinstance(ps_map, dict):
+                continue
+            for _ps, pair_map in ps_map.items():
+                if not isinstance(pair_map, dict):
+                    continue
+                row_slots_by_hash = {}
+                for slot_name, rec in pair_map.items():
+                    slot_match = re.fullmatch(r"ps-t(\d+)", str(slot_name))
+                    if not slot_match:
+                        continue
+                    slot = int(slot_match.group(1))
+                    if slot < 5:
+                        continue
+                    tex_hash = rec.get("hash") if isinstance(rec, dict) else rec
+                    if tex_hash:
+                        row_slots_by_hash.setdefault(
+                            str(tex_hash).lower(), set()).add(slot)
+                for tex_hash, slots in row_slots_by_hash.items():
+                    slots_by_hash.setdefault(tex_hash, set()).add(tuple(sorted(slots)))
+
+
+def _accumulate_service_slot_hashes_from_usage(usage, slots_by_hash):
+    if not isinstance(usage, dict):
+        return
+    _accumulate_service_slot_hashes(usage, slots_by_hash)
+    for entry in stu_metadata.form_entries(usage):
+        if isinstance(entry, dict):
+            _accumulate_service_slot_hashes(
+                entry.get("components") or {}, slots_by_hash)
+
+
+def _service_slot_drift_hashes_from_slots(slots_by_hash):
+    return {
+        tex_hash for tex_hash, slot_sets in slots_by_hash.items()
+        if len(slot_sets) > 1
+        and len({slot for slots in slot_sets for slot in slots}) > 1
+    }
+
+
+def _service_slot_drift_hashes_from_usage(usage):
+    slots_by_hash = {}
+    _accumulate_service_slot_hashes_from_usage(usage, slots_by_hash)
+    return _service_slot_drift_hashes_from_slots(slots_by_hash)
+
+
+def _service_slot_drift_hashes(merged_folder):
+    merged_folder = Path(merged_folder)
+    slots_by_hash = {}
+    for stu_path in [merged_folder / "ShaderTextureUsage.json", *(
+            merged_folder / "scene_ibs").glob("*/ShaderTextureUsage.json")]:
+        if not stu_path.is_file():
+            continue
+        try:
+            usage = json.loads(stu_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        _accumulate_service_slot_hashes_from_usage(usage, slots_by_hash)
+    return _service_slot_drift_hashes_from_slots(slots_by_hash)
+
+
 def _add_suppression_reason(reasons, tex_hash, reason):
     current = reasons.get(tex_hash)
     if not current:
@@ -627,7 +692,7 @@ def _slot_bound_hashes_from_ini(mod_ini):
         return set()
     text = path.read_text(encoding="utf-8")
     slot_resources = set(re.findall(
-        r'\bps-t\d+\s*=\s*ref\s+(ResourceTexture\d+(?:_ib\d+)*)\b',
+        r'\bps-t\d+\s*=\s*ref\s+(ResourceTexture(?:\d+|_C\d+_[0-9a-fA-F]+)(?:_ib\d+)*)\b',
         text))
     if not slot_resources:
         return set()
@@ -664,7 +729,8 @@ def _prune_unrepresented_fold_suppressions(body_mod_ini, suppressions):
     return pruned
 
 
-def _export_col(cfg, col, modout, name, src, eligible=_KEEP, slot_style=_KEEP):
+def _export_col(cfg, col, modout, name, src, eligible=_KEEP, slot_style=_KEEP,
+                volatile_hashes=_KEEP):
     Path(modout).mkdir(parents=True, exist_ok=True)
     cfg.object_source_folder = src
     cfg.component_collection = col
@@ -675,7 +741,10 @@ def _export_col(cfg, col, modout, name, src, eligible=_KEEP, slot_style=_KEEP):
     stu_full = stu_p.read_text(encoding="utf-8") if stu_p.is_file() else None
     if slot_style is not _KEEP and saved_slot_style is not None:
         cfg.velo_slot_style_textures = bool(slot_style)
+    from ..slot_textures import hook as slot_hook
     try:
+        if volatile_hashes is not _KEEP:
+            slot_hook.set_volatile_hash_override(volatile_hashes)
         if eligible is _KEEP:
             bpy.ops.vtww.export_mod()
             return
@@ -683,13 +752,14 @@ def _export_col(cfg, col, modout, name, src, eligible=_KEEP, slot_style=_KEEP):
         # merged-numbered slot rules, so inject the translated per-component eligibility for the slot
         # hook (set of eligible LOCAL component ids, or None = all eligible). Cleared right after so it
         # never leaks to the next sub-export.
-        from ..slot_textures import hook as slot_hook
         slot_hook.set_eligible_override(eligible)
         try:
             bpy.ops.vtww.export_mod()
         finally:
             slot_hook.clear_eligible_override()
     finally:
+        if volatile_hashes is not _KEEP:
+            slot_hook.clear_volatile_hash_override()
         if stu_full is not None:
             stu_p.write_text(stu_full, encoding="utf-8")
         if slot_style is not _KEEP and saved_slot_style is not None:
@@ -697,7 +767,8 @@ def _export_col(cfg, col, modout, name, src, eligible=_KEEP, slot_style=_KEEP):
 
 
 def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_count,
-                                       routing, eligible=_KEEP):
+                                       routing, eligible=_KEEP,
+                                       volatile_hashes=_KEEP):
     """Body export must see ONLY the body components [0, keep_count). The producer appends the editable
     form2 components (8-11) to Metadata.json AND ShaderTextureUsage.json for MERGED *import*; if the body
     export saw them it would emit spurious empty Component 8+ sections (COMPONENT) / inflate the unified
@@ -722,7 +793,7 @@ def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_
             if trimmed != s:
                 stu_metadata.write_usage(stu_p, trimmed)
         _export_col(cfg, body_col, str(work / "sc"), "om_sc", str(merged_folder),
-                    eligible=eligible)
+                    eligible=eligible, volatile_hashes=volatile_hashes)
     finally:
         if meta_full is not None:
             meta_p.write_text(meta_full, encoding="utf-8")
@@ -873,6 +944,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     # replays the base component maps onto the dungeon draws (fold.py). Just record the setting for the
     # report -- no global force-off.
     slot_style_on = bool(getattr(cfg, "velo_slot_style_textures", False))
+    volatile_slot_hashes = (_service_slot_drift_hashes(merged_folder)
+                            if slot_style_on else set())
     slot_branch_expectations = {}
     # The build runs N stock sub-exports into `work` and the assembler reads each one's mod.ini +
     # Meshes + Textures to merge them -- so every sub-export MUST write ini + textures + buffers
@@ -940,7 +1013,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     pass
             _export_body_with_trimmed_metadata(
                 cfg, body_col, work, merged_folder, keep_count, routing,
-                eligible=body_elig)
+                eligible=body_elig,
+                volatile_hashes=volatile_slot_hashes)
             body_hash_suppressions = _prune_unrepresented_fold_suppressions(
                 work / "sc" / "mod.ini", body_hash_suppressions)
 
@@ -1018,7 +1092,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                             eligible=own_elig,
                             slot_style=(False if slot_style_on
                                         and not _has_non_depth_texture_pass(src)
-                                        else _KEEP))
+                                        else _KEEP),
+                            volatile_hashes=volatile_slot_hashes)
                         if slot_style_on:
                             _merge_slot_branch_expectations(
                                 slot_branch_expectations, src, len(mods))
@@ -1053,7 +1128,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                         eligible=own_elig,
                         slot_style=(False if slot_style_on
                                     and not _has_non_depth_texture_pass(src)
-                                    else _KEEP))
+                                    else _KEEP),
+                        volatile_hashes=volatile_slot_hashes)
                     if slot_style_on:
                         _merge_slot_branch_expectations(
                             slot_branch_expectations, src, len(mods))
@@ -1131,7 +1207,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 eib_ib_index = len(mods)
                 _export_col(
                     cfg, eib_col, str(work / tag), "om_" + tag, eib_src,
-                    eligible=eib_elig)
+                    eligible=eib_elig,
+                    volatile_hashes=volatile_slot_hashes)
                 if slot_style_on:
                     _merge_slot_branch_expectations(
                         slot_branch_expectations, eib_src, eib_ib_index,

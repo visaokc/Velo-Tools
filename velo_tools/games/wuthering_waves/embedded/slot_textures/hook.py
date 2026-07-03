@@ -101,7 +101,9 @@ def install():
                 slot_eligible_components=_read_slot_eligible(context),
                 local_form_discriminator=local_discriminator,
                 local_discriminator_audit=local_audit,
-                formid_auxiliary_anchors=manual_anchors)
+                formid_auxiliary_anchors=manual_anchors,
+                volatile_assignment_hashes=_read_volatile_assignment_hashes(
+                    context))
             slot_issues = (
                 list(getattr(plan, 'unsafe_fallback', None) or [])
                 + list(getattr(plan, 'slot_unrepresented', None) or []))
@@ -307,6 +309,8 @@ def _report(message: str):
 # eligible); clear_eligible_override() restores the global-UI-rules behavior.
 _eligible_override = None
 _eligible_override_active = False
+_volatile_hash_override = None
+_volatile_hash_override_active = False
 
 
 def set_eligible_override(value):
@@ -317,6 +321,16 @@ def set_eligible_override(value):
 def clear_eligible_override():
     global _eligible_override_active
     _eligible_override_active = False
+
+
+def set_volatile_hash_override(value):
+    global _volatile_hash_override, _volatile_hash_override_active
+    _volatile_hash_override, _volatile_hash_override_active = value, True
+
+
+def clear_volatile_hash_override():
+    global _volatile_hash_override_active
+    _volatile_hash_override_active = False
 
 
 def read_global_eligible(context):
@@ -338,3 +352,19 @@ def _read_slot_eligible(context):
     if _eligible_override_active:
         return _eligible_override
     return read_global_eligible(context)
+
+
+def _read_volatile_assignment_hashes(context):
+    """Hashes proven to drift across service slots in the current runtime set."""
+    if _volatile_hash_override_active:
+        return _volatile_hash_override
+    try:
+        values = context.scene.vtww_slot_settings.volatile_assignment_hashes
+    except Exception:
+        return None
+    hashes = set()
+    for token in re.split(r'[\s,;]+', str(values or '')):
+        token = token.strip().lower()
+        if re.fullmatch(r'[0-9a-f]{8}', token):
+            hashes.add(token)
+    return hashes or None

@@ -928,6 +928,17 @@ def _default_condition_signature(common: Tuple[Tuple[int, float], ...],
     return _ordered_signature(tuple(selected))
 
 
+def _safe_default_condition_signature(
+        common: Tuple[Tuple[int, float], ...],
+        assignment_slots: Set[int]) -> Tuple[Tuple[int, float], ...]:
+    default = _default_condition_signature(common, assignment_slots)
+    if _safe_condition_shape(default, ()) or len(common) <= 1:
+        return default
+    terms = sorted(common, key=lambda term: _condition_term_sort_key(
+        term, assignment_slots))
+    return _ordered_signature(tuple(terms[:2]))
+
+
 def _minimal_condition_signature(
         own_signatures: List[Tuple[Tuple[int, float], ...]],
         other_signatures: List[Tuple[Tuple[int, float], ...]],
@@ -939,10 +950,7 @@ def _minimal_condition_signature(
     if not common:
         return (), ()
     if not other_signatures:
-        default = _default_condition_signature(common, assignment_slots)
-        if not _safe_condition_shape(default, ()) and len(common) > 1:
-            return common, ()
-        return default, ()
+        return _safe_default_condition_signature(common, assignment_slots), ()
 
     ordered_terms = sorted(common, key=lambda term: _condition_term_sort_key(
         term, assignment_slots))
@@ -977,8 +985,8 @@ def _minimal_condition_signature(
 
     fallback = _default_condition_signature(common, assignment_slots)
     if not allow_negative:
-        if not _safe_condition_shape(fallback, ()) and len(common) > 1:
-            return common, ()
+        if not _safe_condition_shape(fallback, ()):
+            return _safe_default_condition_signature(common, assignment_slots), ()
         return fallback, ()
 
     blockers = [
@@ -993,6 +1001,45 @@ def _minimal_condition_signature(
         return common, ()
     return fallback, ()
 
+
+def _minimal_condition_signature_options(
+        own_signatures: List[Tuple[Tuple[int, float], ...]],
+        other_signatures: List[Tuple[Tuple[int, float], ...]],
+        assignment_slots: Set[int],
+        blocked_negative_slots: Optional[Set[int]] = None,
+        allow_negative: bool = True,
+        ) -> List[Tuple[Tuple[Tuple[int, float], ...], Tuple[Tuple[int, float], ...]]]:
+    positive, negative = _minimal_condition_signature(
+        own_signatures, other_signatures, assignment_slots,
+        blocked_negative_slots, allow_negative)
+    options = [(positive, negative)]
+    if negative or not positive or not other_signatures:
+        return options
+
+    volatile_terms = [term for term in positive if _volatile_condition_slot(term[0])]
+    if len(volatile_terms) != 1:
+        return options
+
+    anchor_terms = tuple(term for term in positive
+                         if not _volatile_condition_slot(term[0]))
+    if not anchor_terms:
+        return options
+
+    common = _signature_common(own_signatures)
+    other_set = set(other_signatures)
+    seen = {positive}
+    for term in sorted(common, key=lambda item: _condition_term_sort_key(
+            item, assignment_slots)):
+        if term in positive or not _volatile_condition_slot(term[0]):
+            continue
+        candidate = _ordered_signature(anchor_terms + (term,))
+        if candidate in seen or not _safe_condition_shape(candidate, ()):
+            continue
+        if any(all(item in other for item in candidate) for other in other_set):
+            continue
+        seen.add(candidate)
+        options.append((candidate, ()))
+    return options
 
 def _minimize_anchor_branches(branches: List[_Branch]) -> None:
     blocked_negative_slots = {
@@ -1456,6 +1503,7 @@ def _local_branches_from_audit(audit: dict,
                                canon_fn,
                                form_label_to_id: Optional[Dict[str, int]] = None,
                                slot_eligible_components: Optional[Set[int]] = None,
+                               volatile_assignment_hashes: Optional[Set[str]] = None,
                                ) -> Tuple[Dict[int, List[_LocalBranch]], Set[str], int, Set[str]]:
     component_branches: Dict[int, List[_LocalBranch]] = {}
     assigned_hashes: Set[str] = set()
@@ -1463,6 +1511,7 @@ def _local_branches_from_audit(audit: dict,
     suppressed_weak_branches = 0
     branch_records: List[dict] = []
     pending_branches: List[Tuple[int, dict, Dict[int, str], Tuple[Tuple[int, str], ...], str]] = []
+    observed_slot_sets_by_hash: Dict[str, Set[Tuple[int, ...]]] = {}
 
     def _source_from(entry: dict, fallback: str) -> str:
         sources = entry.get('sources') or []
@@ -1507,7 +1556,6 @@ def _local_branches_from_audit(audit: dict,
                         f'has an invalid ps-t slot {raw_slot!r}')
                 assign[slot] = mod_hashes[canon]
                 assign_hashes[slot] = canon
-                assigned_hashes.add(canon)
         return assign, tuple(sorted(assign_hashes.items()))
 
     rows = audit.get('rows')
@@ -1536,6 +1584,20 @@ def _local_branches_from_audit(audit: dict,
         ps = str(row.get('ps') or '')
         if row.get('primary_pass') and form_id is not None and ps:
             primary_row_keys.add((form_id, comp_id, ps))
+        observed_hashes = row.get('observed_hashes') or {}
+        if isinstance(observed_hashes, dict):
+            slots_by_hash: Dict[str, Set[int]] = {}
+            for raw_slot, tex_hash in observed_hashes.items():
+                if not isinstance(tex_hash, str):
+                    continue
+                try:
+                    slot = int(raw_slot)
+                except (TypeError, ValueError):
+                    continue
+                slots_by_hash.setdefault(canon_fn(tex_hash), set()).add(slot)
+            for canon, slots in slots_by_hash.items():
+                observed_slot_sets_by_hash.setdefault(canon, set()).add(
+                    tuple(sorted(slots)))
         _assign, _assign_key = _effective_assignment(
             row.get('assign_hashes'), comp_id, source)
         if not row.get('primary_pass'):
@@ -1606,16 +1668,13 @@ def _local_branches_from_audit(audit: dict,
                    if record.get('kind') == 'row']
     kept_branch_records: List[dict] = []
     grouped_pending: Dict[
-        Tuple[int, Tuple[Tuple[int, str], ...], Tuple[Tuple[int, float], ...], str],
+        Tuple[int, Tuple[Tuple[int, str], ...], str],
         List[Tuple[int, dict, Dict[int, str], Tuple[Tuple[int, str], ...], str]],
     ] = {}
     for item in pending_branches:
         comp_id, entry, _assign, assign_key, _source = item
         pass_role = str(entry.get('pass_role') or '')
-        signature = _signature_from_audit(
-            entry.get('positive_signature') or entry.get('signature'))
-        grouped_pending.setdefault(
-            (comp_id, assign_key, signature, pass_role), []).append(item)
+        grouped_pending.setdefault((comp_id, assign_key, pass_role), []).append(item)
 
     row_signatures: Dict[
         int,
@@ -1625,9 +1684,39 @@ def _local_branches_from_audit(audit: dict,
         comp_id = int(record.get('component'))
         row_signatures.setdefault(comp_id, {}).setdefault(
             record.get('assign_key') or (), set()).add(record['signature'])
+    drift_hashes = {
+        tex_hash for tex_hash, slot_sets in observed_slot_sets_by_hash.items()
+        if len(slot_sets) > 1
+        and len({slot for slots in slot_sets for slot in slots}) > 1
+    }
+    for tex_hash in volatile_assignment_hashes or ():
+        canon = canon_fn(tex_hash)
+        if canon:
+            drift_hashes.add(canon)
 
-    for (comp_id, assign_key, signature, pass_role), items in sorted(grouped_pending.items()):
-        negative_signature = ()
+    for (comp_id, assign_key, pass_role), items in sorted(grouped_pending.items()):
+        entry_signatures = [
+            _signature_from_audit(item[1].get('positive_signature')
+                                  or item[1].get('signature'))
+            for item in items
+        ]
+        own_signatures = list(
+            row_signatures.get(comp_id, {}).get(assign_key, set()))
+        if not own_signatures:
+            own_signatures = [sig for sig in entry_signatures if sig]
+        other_signatures = [
+            sig for other_key, values in row_signatures.get(comp_id, {}).items()
+            if other_key != assign_key for sig in values
+        ]
+        blocked_negative_slots = {
+            slot for other_key in row_signatures.get(comp_id, {})
+            for slot, _tex_hash in other_key
+        }
+        condition_options = _minimal_condition_signature_options(
+            own_signatures, other_signatures,
+            {slot for slot, _tex_hash in assign_key},
+            blocked_negative_slots,
+            allow_negative=False)
         assign = dict(items[0][2])
         source = ','.join(item[4] for item in items)
         branch_form_id = None
@@ -1654,36 +1743,59 @@ def _local_branches_from_audit(audit: dict,
         component_excluded = (
             slot_eligible_components is not None
             and comp_id not in slot_eligible_components)
-        weak_blocked = False
-        if (not component_excluded and _local_branch_is_weak(
-                signature, negative_signature, assign, pass_role)):
-            weak_blocked = any(
-                other != assign_key and any(
-                    all(term in other_sig for term in signature)
-                    for other_sig in values)
-                for other, values in row_signatures.get(comp_id, {}).items())
-        if weak_blocked:
-            suppressed_weak_branches += 1
-            for _slot, tex_hash in assign_key:
-                suppressed_weak_hashes.add(tex_hash)
-            continue
-        kept_branch_records.append({
-            'kind': 'branch',
-            'component': comp_id,
-            'signature': signature,
-            'negative_signature': negative_signature,
-            'assign_key': assign_key,
-            'source': source,
-        })
-        component_branches.setdefault(comp_id, []).append(_LocalBranch(
-            signature=signature,
-            negative_signature=negative_signature,
-            assign=assign,
-            form_id=branch_form_id,
-            label='local',
-            ps='',
-            source=source,
-        ))
+        assign_hash_by_slot = dict(assign_key)
+        for signature, negative_signature in condition_options:
+            condition_slots = {slot for slot, _key in signature}
+            condition_hashes = {
+                tex_hash for slot, tex_hash in assign_key
+                if slot in condition_slots and _volatile_condition_slot(slot)
+            }
+            filtered_assign = {
+                slot: resource for slot, resource in sorted(assign.items())
+                if (not _volatile_condition_slot(slot)
+                    or slot in condition_slots
+                    or (
+                        assign_hash_by_slot.get(slot) not in drift_hashes
+                        and assign_hash_by_slot.get(slot) not in condition_hashes
+                    ))
+            }
+            if not filtered_assign:
+                filtered_assign = dict(assign)
+            filtered_assign_key = tuple(
+                (slot, tex_hash) for slot, tex_hash in assign_key
+                if slot in filtered_assign)
+            weak_blocked = False
+            if (not component_excluded and _local_branch_is_weak(
+                    signature, negative_signature, filtered_assign, pass_role)):
+                weak_blocked = any(
+                    other != assign_key and any(
+                        all(term in other_sig for term in signature)
+                        for other_sig in values)
+                    for other, values in row_signatures.get(comp_id, {}).items())
+            if weak_blocked:
+                suppressed_weak_branches += 1
+                for _slot, tex_hash in assign_key:
+                    suppressed_weak_hashes.add(tex_hash)
+                continue
+            kept_branch_records.append({
+                'kind': 'branch',
+                'component': comp_id,
+                'signature': signature,
+                'negative_signature': negative_signature,
+                'assign_key': filtered_assign_key,
+                'source': source,
+            })
+            for _slot, tex_hash in filtered_assign_key:
+                assigned_hashes.add(tex_hash)
+            component_branches.setdefault(comp_id, []).append(_LocalBranch(
+                signature=signature,
+                negative_signature=negative_signature,
+                assign=filtered_assign,
+                form_id=branch_form_id,
+                label='local',
+                ps='',
+                source=source,
+            ))
     branch_records.extend(kept_branch_records)
     problems = _local_conflict_messages(branch_records, slot_eligible_components)
     if problems:
@@ -1704,7 +1816,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                       pass_depth: Optional[List[PassDepth]] = None,
                       slot_eligible_components: Optional[Set[int]] = None,
                       local_discriminator_audit: Optional[dict] = None,
-                      formid_auxiliary_anchors: Optional[List[Tuple[str, int]]] = None) -> SlotPlan:
+                      formid_auxiliary_anchors: Optional[List[Tuple[str, int]]] = None,
+                      volatile_assignment_hashes: Optional[Set[str]] = None) -> SlotPlan:
     warnings: List[str] = list(load_warnings or [])
     anchor_resources, watchdog_form, gated_forms = _anchor_runtime_state(
         forms, formid_auxiliary_anchors, warnings)
@@ -1782,7 +1895,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     }
     component_branches, raw_assigned_hashes, suppressed_weak_branches, suppressed_weak_hashes = _local_branches_from_audit(
         local_discriminator_audit, mod_hashes, _canon, label_to_id,
-        slot_eligible_components)
+        slot_eligible_components, volatile_assignment_hashes)
     if suppressed_weak_branches:
         warnings.append(
             f'suppressed {suppressed_weak_branches} weak local slot branch(es); '
@@ -1801,7 +1914,11 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             except (TypeError, ValueError):
                 continue
             source = _audit_source_from(row, 'row')
-            for raw_slot, tex_hash in (row.get('assign_hashes') or {}).items():
+            hash_source = (row.get('assign_hashes') or {})
+            if (slot_eligible_components is not None
+                    and comp_id not in slot_eligible_components):
+                hash_source = row.get('observed_hashes') or hash_source
+            for raw_slot, tex_hash in hash_source.items():
                 if not isinstance(tex_hash, str):
                     continue
                 canon = _canon(tex_hash) or tex_hash
@@ -1827,7 +1944,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                         resource_to_section_for_exclusion.get(resource, ''),
                         'component excluded from slot layer')
                 else:
-                    raw_eligible_hashes.add(canon)
+                    if slot is None or not _volatile_condition_slot(slot):
+                        raw_eligible_hashes.add(canon)
                     _flag_unsafe_live(
                         canon, comp_id,
                         live_fallback.get(canon, 'unsafe hash fallback'),
@@ -2273,7 +2391,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                slot_eligible_components: Optional[Set[int]] = None,
                local_form_discriminator: bool = False,
                local_discriminator_audit: Optional[dict] = None,
-               formid_auxiliary_anchors: Optional[List[Tuple[str, int]]] = None) -> SlotPlan:
+               formid_auxiliary_anchors: Optional[List[Tuple[str, int]]] = None,
+               volatile_assignment_hashes: Optional[Set[str]] = None) -> SlotPlan:
     """Build a concise XQFA-style slot plan.
 
     The legacy probe/mark/backup/restore machinery is intentionally absent:
@@ -2295,7 +2414,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
             pass_depth=pass_depth,
             slot_eligible_components=slot_eligible_components,
             local_discriminator_audit=local_discriminator_audit,
-            formid_auxiliary_anchors=formid_auxiliary_anchors)
+            formid_auxiliary_anchors=formid_auxiliary_anchors,
+            volatile_assignment_hashes=volatile_assignment_hashes)
     warnings: List[str] = list(load_warnings or [])
     multi_form = len(forms) > 1
     mod_hashes = {h: res for h, res in textures}

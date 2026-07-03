@@ -61,7 +61,8 @@ global persist {{ formatter.format_ini_swapvar(var.name) }} = {{ var.default_sta
 {%- endfor %}
 ; Per-object state vars
 {%- for component in extracted_object.components %}
-{%- for obj in merged_object.components[loop.index0].objects %}
+{%- set velo_component_draws = extracted_object.velo_draws[loop.index0] %}
+{%- for obj in velo_component_draws %}
 global {{ formatter.format_ini_drawvar(obj.name) }} = 1
 {%- endfor %}
 {%- endfor %}
@@ -231,7 +232,8 @@ vb4 = ResourceBlendLOD{{ lod.level }}Buffer
 ; Shading: Component Draw Command Lists -------------------------
 
 {%- for component in extracted_object.components %}
-{%- if merged_object.components[loop.index0].objects | length > 0 %}
+{%- set velo_component_draws = extracted_object.velo_draws[loop.index0] %}
+{%- if velo_component_draws | length > 0 %}
 
 {{note("Shared draw calls for Component %d (used by full-model and LOD overrides)" | format(loop.index0))}}
 [CommandListDrawComponent{{ loop.index0 }}]
@@ -250,7 +252,7 @@ endif
 {{note("Do by-slot resource overrides")}}
 run = CommandListOverrideSharedResources
 {%- endif %}
-{%- for obj in merged_object.components[loop.index0].objects %}
+{%- for obj in velo_component_draws %}
 ; Draw {{ obj.name }}
 {%- set lod_excluded = extracted_object.velo_lods and obj.name in (extracted_object.velo_lod_excluded_objects or []) %}
 {%- if lod_excluded %}
@@ -287,7 +289,8 @@ $object_detected = 1
 $lod_level = 0
 {%- endif %}
 if $mod_enabled
-{%- if merged_object.components[loop.index0].objects | length > 0 %}
+{%- set velo_component_draws = extracted_object.velo_draws[loop.index0] %}
+{%- if velo_component_draws | length > 0 %}
     {{note("Skip original draw call")}}
     handling = skip
     {{note("Run self-contained shared draw calls for this component")}}
@@ -327,7 +330,8 @@ $lod_level = {{ lod.level }}
 if $mod_enabled
     {{note("Skip original LOD draw call")}}
     handling = skip
-{%- if merged_object.components[loop.index0].objects | length > 0 %}
+{%- set velo_component_draws = extracted_object.velo_draws[loop.index0] %}
+{%- if velo_component_draws | length > 0 %}
     {{note("Run self-contained shared draw calls for this component")}}
     run = CommandListDrawComponent{{ loop.index0 }}
 {%- else %}

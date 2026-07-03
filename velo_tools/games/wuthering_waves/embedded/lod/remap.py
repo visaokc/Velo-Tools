@@ -67,6 +67,42 @@ def compose_full_to_lod_local(full_component_meta: dict, entry: dict) -> dict:
     return result
 
 
+def _parse_export_vg_local_name(name):
+    text = str(name)
+    base, dot, suffix = text.partition(".")
+    if dot and not suffix.isdigit():
+        return None
+    try:
+        return int(base)
+    except (TypeError, ValueError):
+        return None
+
+
+def compose_export_indices_to_lod_local(export_vg_names, entry: dict) -> dict:
+    """Builds {current exported Blend id -> LOD component-local id}.
+
+    COMPONENT_FROM_MERGED temp copies can rename groups to local numeric names
+    while Blender keeps their collection indices sparse until the final object
+    merge. Joined objects may also contain Blender duplicate suffixes such as
+    ``7.001``; these still represent local VG ``7`` for the owning draw.
+    """
+    full_to_lod = _to_int_map(entry.get("vg_map"))
+    result = {}
+    for index, name in enumerate(export_vg_names or ()):
+        full_local = _parse_export_vg_local_name(name)
+        if full_local is None:
+            continue
+        lod_local = full_to_lod.get(full_local) if full_to_lod is not None else full_local
+        if lod_local is None:
+            continue
+        if lod_local >= 256:
+            raise LodRemapError(
+                f"LOD component-local VG id {lod_local} exceeds the 8-bit blend bound "
+                f"(corrupt LOD metadata?)")
+        result[int(index)] = int(lod_local)
+    return result
+
+
 def build_vertex_component_map(index_data, index_layout, vertex_count) -> numpy.ndarray:
     """Maps every vertex id to its component id (-1 = not referenced).
 
@@ -82,6 +118,49 @@ def build_vertex_component_map(index_data, index_layout, vertex_count) -> numpy.
         component_of_vertex[vertex_ids] = component_id
         index_offset += index_count
     return component_of_vertex
+
+
+def build_vertex_component_map_from_ranges(index_data, component_ranges, vertex_count) -> numpy.ndarray:
+    """Maps vertex ids to component ids using explicit object index ranges.
+
+    Cross-scene/PFM temp exports may contain split or excluded objects whose
+    index ranges are not represented by a simple contiguous component-size
+    prefix sum. The exporter already tracks every object's index_offset and
+    index_count, so prefer those authoritative ranges when available.
+    """
+    component_of_vertex = numpy.full(vertex_count, -1, dtype=numpy.int32)
+    for component_id, ranges in enumerate(component_ranges):
+        for index_offset, index_count in ranges:
+            if index_count == 0:
+                continue
+            vertex_ids = numpy.unique(index_data[index_offset:index_offset + index_count])
+            component_of_vertex[vertex_ids] = component_id
+    return component_of_vertex
+
+
+def find_unmapped_lod_object_names(index_data, component_object_ranges, true_vg_ids,
+                                   weights, component_maps, excluded_names=None) -> set:
+    """Find draw objects whose weighted VGs cannot be represented by their LOD map."""
+    excluded_names = set(excluded_names or ())
+    index_data = numpy.asarray(index_data)
+    true_vg_ids = numpy.asarray(true_vg_ids, dtype=numpy.int64)
+    weights = numpy.asarray(weights)
+    result = set()
+    for component_id, ranges in enumerate(component_object_ranges):
+        mapping = component_maps.get(component_id)
+        if mapping is None:
+            continue
+        covered = {int(key) for key in mapping.keys()}
+        for name, index_offset, index_count in ranges:
+            if name in excluded_names or index_count == 0:
+                continue
+            vertex_ids = numpy.unique(index_data[index_offset:index_offset + index_count])
+            if len(vertex_ids) == 0:
+                continue
+            used = numpy.unique(true_vg_ids[vertex_ids][weights[vertex_ids] > 0])
+            if any(int(vg_id) not in covered for vg_id in used):
+                result.add(name)
+    return result
 
 
 def remap_blend_component_local(true_vg_ids, weights, component_of_vertex, component_maps,

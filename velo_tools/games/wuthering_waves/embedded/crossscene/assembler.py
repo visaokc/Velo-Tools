@@ -260,16 +260,23 @@ def _atomize_draw_owner_sections(text):
             return
 
         draw_start = draw_indices[0]
-        while draw_start > 0 and body[draw_start - 1].strip().startswith("; Draw "):
-            draw_start -= 1
+        while draw_start > 0:
+            prev = body[draw_start - 1].strip()
+            if prev.startswith(("if ", "else if ", "elif ", "else")):
+                draw_start -= 1
+                continue
+            if prev.startswith("; Draw "):
+                draw_start -= 1
+                continue
+            break
         draw_end = len(body)
         for idx in range(draw_indices[-1] + 1, len(body)):
             if re.match(r'\s*run\s*=\s*CommandListCleanupSharedResources(?:_ib\d+)*\b', body[idx]):
                 draw_end = idx
                 break
 
-        first_draw_line = body[draw_indices[0]]
-        owner_indent = first_draw_line[:len(first_draw_line) - len(first_draw_line.lstrip())]
+        owner_anchor = body[draw_start] if draw_start < len(body) else body[draw_indices[0]]
+        owner_indent = owner_anchor[:len(owner_anchor) - len(owner_anchor.lstrip())]
         owner = _draw_owner_name(comp_id, suffix)
         new_body = list(body[:draw_start])
         new_body.append(f"{owner_indent}run = {owner}")
@@ -278,11 +285,23 @@ def _atomize_draw_owner_sections(text):
         owner_body = []
         pending_comment = None
         ordinal = 0
+        owner_control_depth = 0
         for line in body[draw_start:draw_end]:
             stripped = line.strip()
             if stripped.startswith("; Draw "):
                 pending_comment = stripped
                 owner_body.append(line)
+                continue
+            if stripped == "endif":
+                owner_control_depth = max(0, owner_control_depth - 1)
+                owner_body.append(line)
+                continue
+            if stripped.startswith(("else if ", "elif ", "else")):
+                owner_body.append(line)
+                continue
+            if stripped.startswith("if "):
+                owner_body.append(line)
+                owner_control_depth += 1
                 continue
             draw = re.match(r'drawindexed = (\d+), (\d+), (-?\d+)', stripped)
             if not draw:
@@ -290,6 +309,8 @@ def _atomize_draw_owner_sections(text):
                 continue
             atom = _draw_atom_name(comp_id, ordinal, suffix)
             indent = line[:len(line) - len(line.lstrip())]
+            if not indent and owner_control_depth:
+                indent = "    " * owner_control_depth
             skip_var = _skip_var_name(comp_id, ordinal, suffix)
             if (comp_id, ordinal, suffix) in guarded_skips:
                 owner_body.append(f"{indent}if {skip_var} != 1")

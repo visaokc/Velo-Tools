@@ -7,7 +7,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 _SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
 _RUN_RE = re.compile(r"^(\s*)run\s*=\s*([A-Za-z0-9_]+)\s*$")
-_SET_RE = re.compile(r"^CommandListSetTexturesComponent\d+((?:_ib\d+)*)$")
+_TRIGGER_RE = re.compile(r"^CommandListTriggerResourceOverrides((?:_ib\d+)*)$")
 
 
 def _section_spans(lines: Sequence[str]) -> List[Tuple[str, int, int]]:
@@ -23,8 +23,8 @@ def _section_spans(lines: Sequence[str]) -> List[Tuple[str, int, int]]:
     return spans
 
 
-def _suffix(command: str) -> Optional[str]:
-    match = _SET_RE.fullmatch(command)
+def _trigger_suffix(command: str) -> Optional[str]:
+    match = _TRIGGER_RE.fullmatch(command)
     if not match:
         return None
     return match.group(1) or ""
@@ -82,14 +82,7 @@ def _has_run_between(lines: Sequence[str], start: int, stop: int, command: str) 
 
 def _next_transaction_start(lines: Sequence[str], start: int, stop: int, suffix: str) -> int:
     trigger = _find_next_run(lines, start, stop, _trigger_name(suffix))
-    setter = None
-    for index in range(start, stop):
-        parsed = _run_command(lines[index].strip())
-        if parsed and _suffix(parsed[1]) == suffix:
-            setter = index
-            break
-    candidates = [value for value in (trigger, setter) if value is not None]
-    return min(candidates) if candidates else stop
+    return trigger if trigger is not None else stop
 
 
 def _split_lines(text: str) -> List[str]:
@@ -175,7 +168,7 @@ def _top_up_support_sections(lines: List[str], suffixes: Iterable[str]) -> None:
 
 
 def apply_ps_resource_scope(ini_text: str) -> str:
-    """Wrap every direct slot texture command-list call with ps-t backup/restore."""
+    """Wrap every texture resource transaction with ps-t backup/restore."""
 
     lines = _split_lines(ini_text)
     if not lines:
@@ -183,7 +176,7 @@ def apply_ps_resource_scope(ini_text: str) -> str:
     spans = _section_spans(lines)
     insert_before: Dict[int, List[str]] = {}
     insert_after: Dict[int, List[str]] = {}
-    suffixes_with_set: Set[str] = set()
+    suffixes_with_scope: Set[str] = set()
 
     for _name, start, end in spans:
         for index in range(start + 1, end):
@@ -191,13 +184,13 @@ def apply_ps_resource_scope(ini_text: str) -> str:
             if not parsed:
                 continue
             _indent, command = parsed
-            suffix = _suffix(command)
+            suffix = _trigger_suffix(command)
             if suffix is None:
                 continue
-            suffixes_with_set.add(suffix)
-            trigger = _find_previous_run(lines, start + 1, index, _trigger_name(suffix))
+            suffixes_with_scope.add(suffix)
+            trigger = index
             cleanup = _find_next_run(lines, index + 1, end, _cleanup_name(suffix))
-            if trigger is None or cleanup is None:
+            if cleanup is None:
                 continue
             last_restore = _find_previous_run(
                 lines, start + 1, trigger, _restore_name(suffix))
@@ -223,18 +216,18 @@ def apply_ps_resource_scope(ini_text: str) -> str:
             for insert in dict.fromkeys(insert_after[index]):
                 if not out or out[-1] != insert:
                     out.append(insert)
-    if not suffixes_with_set:
+    if not suffixes_with_scope:
         result = "\n".join(out)
         return result + ("\n" if ini_text.endswith("\n") else "")
 
-    _append_support_sections(out, suffixes_with_set)
-    _top_up_support_sections(out, suffixes_with_set)
+    _append_support_sections(out, suffixes_with_scope)
+    _top_up_support_sections(out, suffixes_with_scope)
     result = "\n".join(out).rstrip() + "\n"
     return result
 
 
 def audit_ps_resource_scope(ini_text: str) -> List[str]:
-    """Return errors for direct slot texture calls not covered by ps-t restore scope."""
+    """Return errors for texture transactions not covered by ps-t restore scope."""
 
     lines = _split_lines(ini_text)
     spans = _section_spans(lines)
@@ -243,7 +236,7 @@ def audit_ps_resource_scope(ini_text: str) -> List[str]:
         for name, start, end in spans
     }
     errors: List[str] = []
-    suffixes_with_set: Set[str] = set()
+    suffixes_with_scope: Set[str] = set()
 
     for name, start, end in spans:
         for index in range(start + 1, end):
@@ -251,16 +244,12 @@ def audit_ps_resource_scope(ini_text: str) -> List[str]:
             if not parsed:
                 continue
             _indent, command = parsed
-            suffix = _suffix(command)
+            suffix = _trigger_suffix(command)
             if suffix is None:
                 continue
-            suffixes_with_set.add(suffix)
-            trigger = _find_previous_run(lines, start + 1, index, _trigger_name(suffix))
+            suffixes_with_scope.add(suffix)
+            trigger = index
             cleanup = _find_next_run(lines, index + 1, end, _cleanup_name(suffix))
-            if trigger is None:
-                errors.append(
-                    f"{name} runs {command} without preceding {_trigger_name(suffix)}")
-                continue
             if cleanup is None:
                 errors.append(
                     f"{name} runs {command} without following {_cleanup_name(suffix)}")
@@ -278,7 +267,7 @@ def audit_ps_resource_scope(ini_text: str) -> List[str]:
                         f"{name} runs {command} without {_restore_name(suffix)} "
                         f"after {_cleanup_name(suffix)}")
 
-    for suffix in sorted(suffixes_with_set, key=lambda value: (value != "", value)):
+    for suffix in sorted(suffixes_with_scope, key=lambda value: (value != "", value)):
         backup = _backup_name(suffix)
         restore = _restore_name(suffix)
         if backup not in section_bodies:

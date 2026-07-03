@@ -81,6 +81,37 @@ def _sections(text):
         yield match.group(2), match.group(1)
 
 
+def _audit_section_control_flow(text):
+    errors = []
+    for name, block in _sections(text):
+        stack = []
+        for lineno, line in enumerate(block.splitlines()[1:], 1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith(";"):
+                continue
+            if stripped == "endif":
+                if not stack:
+                    errors.append(
+                        "%s has unmatched endif at section line %d"
+                        % (name, lineno))
+                    continue
+                stack.pop()
+                continue
+            if stripped.startswith("if "):
+                stack.append(lineno)
+                continue
+            if stripped.startswith(("else if ", "elif ", "else")):
+                if not stack:
+                    errors.append(
+                        "%s has %s without matching if at section line %d"
+                        % (name, stripped.split(None, 1)[0], lineno))
+        for start in stack:
+            errors.append(
+                "%s has unterminated if starting at section line %d"
+                % (name, start))
+    return errors
+
+
 def _draw_atom_tuple_map(text):
     atoms = {}
     for name, block in _sections(text):
@@ -559,7 +590,6 @@ def _audit_slot_branches_match_stu_primary_pass(text, slot_branch_expectations):
         expected_sigs = expected.get((comp_id, ib))
         if not expected_sigs:
             continue
-        actual_sigs = []
         for line in block.splitlines():
             stripped = line.strip()
             if not stripped.startswith(("if ", "else if ")):
@@ -569,25 +599,19 @@ def _audit_slot_branches_match_stu_primary_pass(text, slot_branch_expectations):
             positive, negative = _slot_branch_signature_from_condition(stripped)
             if negative:
                 errors.append(
-                    "%s uses negative slot condition %s; full-STU primary "
-                    "branches must be positive layouts only"
+                    "%s uses negative slot condition %s; slot branches must "
+                    "use stable positive STU primary-pass subsets only"
                     % (header, ", ".join(
                         "ps-t%d != %s" % item for item in negative)))
             if not positive:
                 continue
-            actual_sigs.append(positive)
-            if positive not in expected_sigs:
+            if not any(all(term in expected_sig for term in positive)
+                       for expected_sig in expected_sigs):
                 errors.append(
-                    "%s condition %s is not a selected STU primary-pass "
-                    "layout"
+                    "%s condition %s is not a safe subset of a selected STU "
+                    "primary-pass layout"
                     % (header, ", ".join(
                         "ps-t%d == %s" % item for item in positive)))
-        unique_actual = set(actual_sigs)
-        if len(unique_actual) > len(expected_sigs):
-            errors.append(
-                "%s emits %d distinct slot branch layouts but the selected "
-                "STU primary-pass evidence has %d"
-                % (header, len(unique_actual), len(expected_sigs)))
     return errors
 
 
@@ -603,6 +627,7 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
     own_excluded = dict(own_excluded or {})
     draw_excludes = {int(k): set(v or set()) for k, v in (draw_excludes or {}).items()}
     errors = []
+    errors.extend(_audit_section_control_flow(text))
     errors.extend(_audit_slot_resources(text, path.parent))
     errors.extend(_audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks))
     errors.extend(_audit_no_slot_markers(text))
