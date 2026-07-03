@@ -57,8 +57,10 @@ def install():
             # merged root STU (orchestrator trims it to the base components first) and each sub-IB
             # exports its own slot layer; the assembler keeps them per-IB. No degrade here anymore.
             form_freshness = []
+            form_pass_depth = []
             forms, texture_info, load_warnings = generator.load_forms(
-                source_folder, freshness_out=form_freshness)
+                source_folder, freshness_out=form_freshness,
+                pass_depth_out=form_pass_depth)
             textures = [(texture.hash, f'ResourceTexture{index}')
                         for index, texture in enumerate(self.textures)]
             if not texture_info:
@@ -95,6 +97,7 @@ def install():
                 lod_ranges=_read_lod_ranges(source_folder),
                 manual_anchors=manual_anchors,
                 freshness=form_freshness,
+                pass_depth=form_pass_depth,
                 slot_eligible_components=_read_slot_eligible(context),
                 local_form_discriminator=local_discriminator,
                 local_discriminator_audit=local_audit,

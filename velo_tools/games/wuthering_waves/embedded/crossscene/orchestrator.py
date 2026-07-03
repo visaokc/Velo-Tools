@@ -502,6 +502,106 @@ def _root_non_body_hashes(merged_folder, keep_count):
     return non_body_hashes - body_hashes
 
 
+def _has_non_depth_texture_pass(src):
+    stu_path = Path(src) / "ShaderTextureUsage.json"
+    if not stu_path.is_file():
+        return True
+    try:
+        data = json.loads(stu_path.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+
+    def _walk(value):
+        if isinstance(value, dict):
+            if any(str(key).startswith("ps-t") for key in value):
+                if value.get("depth_only") is not True:
+                    return True
+            return any(_walk(child) for child in value.values())
+        if isinstance(value, list):
+            return any(_walk(child) for child in value)
+        return False
+
+    return _walk(data)
+
+
+def _primary_slot_signatures_from_usage(data, component_map=None):
+    try:
+        from ..slot_textures import generator as slot_generator
+        forms = []
+        texture_info = {}
+        freshness = []
+        pass_depth = []
+        base_fresh = {}
+        base_depth = {}
+        forms.append((
+            "base",
+            slot_generator.normalize_usage(
+                data, "base", [], texture_info, base_fresh, base_depth)))
+        freshness.append(base_fresh)
+        pass_depth.append(base_depth)
+        for entry in stu_metadata.form_entries(data):
+            if not isinstance(entry, dict):
+                continue
+            label = entry.get("label") or entry.get("source") or f"form{len(forms) + 1}"
+            entry_fresh = {}
+            entry_depth = {}
+            forms.append((
+                label,
+                slot_generator.normalize_usage(
+                    entry.get("components") or {}, label, [], texture_info,
+                    entry_fresh, entry_depth)))
+            freshness.append(entry_fresh)
+            pass_depth.append(entry_depth)
+        audit = slot_generator.build_local_discriminator_audit(
+            forms, texture_info, freshness, pass_depth=pass_depth)
+    except Exception:
+        return {}
+
+    out = {}
+    comp_map = {int(k): int(v) for k, v in (component_map or {}).items()}
+    for row in audit.get("rows") or []:
+        if not isinstance(row, dict) or not row.get("primary_pass"):
+            continue
+        try:
+            comp_id = int(row.get("component"))
+        except (TypeError, ValueError):
+            continue
+        signature = []
+        for item in row.get("positive_signature") or row.get("signature") or []:
+            if not isinstance(item, list) or len(item) != 2:
+                signature = []
+                break
+            try:
+                slot = int(item[0])
+                value = str(item[1])
+            except (TypeError, ValueError):
+                signature = []
+                break
+            signature.append((slot, value))
+        if signature:
+            out.setdefault(comp_map.get(comp_id, comp_id), set()).add(
+                tuple(sorted(signature)))
+    return out
+
+
+def _component_primary_slot_signatures(src, component_map=None):
+    stu_path = Path(src) / "ShaderTextureUsage.json"
+    if not stu_path.is_file():
+        return {}
+    try:
+        data = json.loads(stu_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return _primary_slot_signatures_from_usage(data, component_map)
+
+
+def _merge_slot_branch_expectations(target, src, ib_index, component_map=None):
+    for comp_id, signatures in _component_primary_slot_signatures(
+            src, component_map).items():
+        for signature in signatures:
+            target.setdefault((int(comp_id), int(ib_index)), set()).add(signature)
+
+
 def _add_suppression_reason(reasons, tex_hash, reason):
     current = reasons.get(tex_hash)
     if not current:
@@ -773,6 +873,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     # replays the base component maps onto the dungeon draws (fold.py). Just record the setting for the
     # report -- no global force-off.
     slot_style_on = bool(getattr(cfg, "velo_slot_style_textures", False))
+    slot_branch_expectations = {}
     # The build runs N stock sub-exports into `work` and the assembler reads each one's mod.ini +
     # Meshes + Textures to merge them -- so every sub-export MUST write ini + textures + buffers
     # regardless of the user's file-output toggles (write_ini=off / partial_export=on /
@@ -823,6 +924,20 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                          else {c for c in merged_eligible if c < keep_count})
             body_hash_suppressions = (_body_hash_suppressions(merged_folder, routing, keep_count, body_elig)
                                       if slot_style_on else {})
+            if slot_style_on:
+                try:
+                    root_stu = json.loads(
+                        (merged_folder / "ShaderTextureUsage.json").read_text(
+                            encoding="utf-8"))
+                    body_stu = _body_stu_for_export(
+                        root_stu, merged_folder, routing, keep_count)
+                    for comp_id, signatures in _primary_slot_signatures_from_usage(
+                            body_stu).items():
+                        for signature in signatures:
+                            slot_branch_expectations.setdefault(
+                                (int(comp_id), 0), set()).add(signature)
+                except Exception:
+                    pass
             _export_body_with_trimmed_metadata(
                 cfg, body_col, work, merged_folder, keep_count, routing,
                 eligible=body_elig)
@@ -900,7 +1015,13 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                             _pos_hole(cp, frac=hole_frac)
                         _export_col(
                             cfg, own_col, str(work / tag), "om_" + tag, src,
-                            eligible=own_elig)
+                            eligible=own_elig,
+                            slot_style=(False if slot_style_on
+                                        and not _has_non_depth_texture_pass(src)
+                                        else _KEEP))
+                        if slot_style_on:
+                            _merge_slot_branch_expectations(
+                                slot_branch_expectations, src, len(mods))
                         # Annotate the own-buffer draw with the split's real (Blender) name (e.g.
                         # Component 5.001) instead of the export-local 'Component 0.001' artifact.
                         _m_idx = re.search(r'(\d+)', cp.name)
@@ -929,7 +1050,13 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                             _pos_hole(o, frac=hole_frac)
                     _export_col(
                         cfg, col, str(work / tag), "om_" + tag, src,
-                        eligible=own_elig)
+                        eligible=own_elig,
+                        slot_style=(False if slot_style_on
+                                    and not _has_non_depth_texture_pass(src)
+                                    else _KEEP))
+                    if slot_style_on:
+                        _merge_slot_branch_expectations(
+                            slot_branch_expectations, src, len(mods))
                     _purge_collection(col)
                 mods.append(str(work / tag))
 
@@ -1001,9 +1128,15 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 eib_elig = (None if merged_eligible is None
                             else {li for li, mi in zip(rec["local_components"], rec["merged_components"])
                                   if mi in merged_eligible})
+                eib_ib_index = len(mods)
                 _export_col(
                     cfg, eib_col, str(work / tag), "om_" + tag, eib_src,
                     eligible=eib_elig)
+                if slot_style_on:
+                    _merge_slot_branch_expectations(
+                        slot_branch_expectations, eib_src, eib_ib_index,
+                        {int(li): int(mi) for li, mi in zip(
+                            rec["local_components"], rec["merged_components"])})
                 # Annotate the editable draws with the merged (Blender) component numbers (e.g. 8-11)
                 # instead of the export-local 'Component 0-3.001' artifacts.
                 _relabel_draw_comments(
@@ -1058,7 +1191,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 static_audit = audit.audit_cross_scene_ini(
                     Path(out_folder) / "mod.ini", routing, report["roles"],
                     own_excluded=own_excluded_tags,
-                    draw_excludes=fold_draw_excludes)
+                    draw_excludes=fold_draw_excludes,
+                    slot_branch_expectations=slot_branch_expectations)
                 report["static_audit"] = static_audit
                 if static_audit.get("errors"):
                     report["static_audit_errors"] = static_audit["errors"]

@@ -457,7 +457,7 @@ def _audit_no_slot_markers(text):
 def _audit_residual_sensitive_conditions(text):
     errors = []
     for match in re.finditer(
-            r'(^\[(CommandListSetTexturesComponent[^\]]*)\][^\[]*)',
+            r'(^\[(CommandListSetTexturesComponent\d+_ib\d+[^\]]*)\][^\[]*)',
             text, re.M):
         block = match.group(1)
         header = match.group(2)
@@ -488,8 +488,112 @@ def _audit_residual_sensitive_conditions(text):
     return errors
 
 
+def _audit_readable_slot_resource_names(text):
+    errors = []
+    for match in re.finditer(
+            r'(^\[(CommandListSetTexturesComponent[^\]]*)\][^\[]*)',
+            text, re.M):
+        header = match.group(2)
+        for resource in re.findall(
+                r'\bps-t\d+\s*=\s*ref\s+(ResourceTexture\d+(?:_ib\d+)*)\b',
+                match.group(1)):
+            errors.append(
+                "%s references numeric slot resource %s; use "
+                "ResourceTexture_C{component}_{hash}_ibN naming"
+                % (header, resource))
+    return errors
+
+
+def _slot_branch_signature_from_condition(line):
+    positive = []
+    for slot_raw, expected in re.findall(
+            r'\bps-t(\d+)\s*==\s*([0-9.]+)', line):
+        positive.append((int(slot_raw), expected))
+    negative = []
+    for slot_raw, expected in re.findall(
+            r'\bps-t(\d+)\s*!=\s*([0-9.]+)', line):
+        negative.append((int(slot_raw), expected))
+    return tuple(sorted(positive)), tuple(sorted(negative))
+
+
+def _normalise_slot_branch_expectations(slot_branch_expectations):
+    out = {}
+    for key, values in (slot_branch_expectations or {}).items():
+        try:
+            comp_id, ib = key
+            comp_id = int(comp_id)
+            ib = int(ib)
+        except (TypeError, ValueError):
+            continue
+        sigs = set()
+        for value in values or []:
+            signature = []
+            for item in value or []:
+                if not isinstance(item, (list, tuple)) or len(item) != 2:
+                    signature = []
+                    break
+                try:
+                    signature.append((int(item[0]), str(item[1])))
+                except (TypeError, ValueError):
+                    signature = []
+                    break
+            if signature:
+                sigs.add(tuple(sorted(signature)))
+        if sigs:
+            out[(comp_id, ib)] = sigs
+    return out
+
+
+def _audit_slot_branches_match_stu_primary_pass(text, slot_branch_expectations):
+    expected = _normalise_slot_branch_expectations(slot_branch_expectations)
+    if not expected:
+        return []
+    errors = []
+    for match in re.finditer(
+            r'(^\[(CommandListSetTexturesComponent(\d+)_ib(\d+)[^\]]*)\][^\[]*)',
+            text, re.M):
+        block = match.group(1)
+        header = match.group(2)
+        comp_id = int(match.group(3))
+        ib = int(match.group(4))
+        expected_sigs = expected.get((comp_id, ib))
+        if not expected_sigs:
+            continue
+        actual_sigs = []
+        for line in block.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith(("if ", "else if ")):
+                continue
+            if "ps-t" not in stripped:
+                continue
+            positive, negative = _slot_branch_signature_from_condition(stripped)
+            if negative:
+                errors.append(
+                    "%s uses negative slot condition %s; full-STU primary "
+                    "branches must be positive layouts only"
+                    % (header, ", ".join(
+                        "ps-t%d != %s" % item for item in negative)))
+            if not positive:
+                continue
+            actual_sigs.append(positive)
+            if positive not in expected_sigs:
+                errors.append(
+                    "%s condition %s is not a selected STU primary-pass "
+                    "layout"
+                    % (header, ", ".join(
+                        "ps-t%d == %s" % item for item in positive)))
+        unique_actual = set(actual_sigs)
+        if len(unique_actual) > len(expected_sigs):
+            errors.append(
+                "%s emits %d distinct slot branch layouts but the selected "
+                "STU primary-pass evidence has %d"
+                % (header, len(unique_actual), len(expected_sigs)))
+    return errors
+
+
 def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, draw_excludes=None,
-                           allowed_body_hash_fallbacks=None):
+                           allowed_body_hash_fallbacks=None,
+                           slot_branch_expectations=None):
     """Return a dict with routing errors found in the final namespace-merged INI."""
     path = Path(mod_ini_path)
     if not path.is_file():
@@ -503,6 +607,9 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
     errors.extend(_audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks))
     errors.extend(_audit_no_slot_markers(text))
     errors.extend(_audit_residual_sensitive_conditions(text))
+    errors.extend(_audit_readable_slot_resource_names(text))
+    errors.extend(_audit_slot_branches_match_stu_primary_pass(
+        text, slot_branch_expectations))
     if _ps_resource_scope is not None:
         errors.extend(_ps_resource_scope.audit_ps_resource_scope(text))
     errors.extend(_audit_skip_vars_declared(text))

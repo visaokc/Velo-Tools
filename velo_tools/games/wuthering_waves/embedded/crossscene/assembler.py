@@ -84,15 +84,20 @@ def _alias_global_var_name(name, k, namespace_aliases):
     return name
 
 
-def _resource_alias_name(name, k, resource_hashes, resource_components, namespace_aliases):
+def _resource_alias_name(name, k, resource_hashes, resource_components,
+                         namespace_aliases, resource_component_override=None):
     hv = resource_hashes.get(name)
-    if not hv or not _alias_enabled(namespace_aliases, k):
+    if not hv:
         return f'{name}_ib{k}'
-    component_id = (resource_components or {}).get(name)
+    component_id = resource_component_override
+    if component_id is None:
+        component_id = (resource_components or {}).get(name)
+        if isinstance(component_id, (set, list, tuple)):
+            component_id = next(iter(sorted(component_id))) if component_id else None
     if component_id is None:
         try:
             raw = (namespace_aliases or {}).get(k, {}).get("component_map", {})
-            if len(raw) == 1:
+            if _alias_enabled(namespace_aliases, k) and len(raw) == 1:
                 component_id = int(next(iter(raw.values())))
         except (AttributeError, StopIteration, TypeError, ValueError):
             component_id = None
@@ -102,7 +107,7 @@ def _resource_alias_name(name, k, resource_hashes, resource_components, namespac
 
 
 def _section_alias_name(name, k, resource_hashes=None, resource_components=None,
-                        namespace_aliases=None):
+                        namespace_aliases=None, resource_component_override=None):
     resource_hashes = resource_hashes or {}
     comp_match = re.fullmatch(r'(CommandListSetTexturesComponent|CommandListProbeComponent|'
                               r'CommandListDrawComponent|CommandListDrawOwnerComponent|'
@@ -120,12 +125,14 @@ def _section_alias_name(name, k, resource_hashes=None, resource_components=None,
         return f'{fmt_match.group(1)}{comp}{fmt_match.group(3)}_ib{k}'
     if _RE_RESTEX.match(name):
         return _resource_alias_name(
-            name, k, resource_hashes, resource_components, namespace_aliases)
+            name, k, resource_hashes, resource_components, namespace_aliases,
+            resource_component_override)
     return f'{name}_ib{k}'
 
 
 def _ns_line(line, k, *, shared_globals=None, resource_hashes=None,
-             resource_components=None, namespace_aliases=None):
+             resource_components=None, namespace_aliases=None,
+             resource_component_override=None):
     shared_globals = shared_globals or set()
     resource_hashes = resource_hashes or {}
 
@@ -139,7 +146,7 @@ def _ns_line(line, k, *, shared_globals=None, resource_hashes=None,
     def _sub_rescmd(m):
         return _section_alias_name(
             m.group(1), k, resource_hashes, resource_components,
-            namespace_aliases)
+            namespace_aliases, resource_component_override)
 
     line = _RE_GLOBAL.sub(_sub_global, line)
     line = _RE_RESCMD.sub(_sub_rescmd, line)
@@ -189,7 +196,7 @@ def _slot_resource_components(sections, k, namespace_aliases):
         comp = _alias_for_component(namespace_aliases, k, int(match.group(1)))
         for line in body:
             for resource in _RE_PST_REF.findall(line):
-                out.setdefault(resource, comp)
+                out.setdefault(resource, set()).add(comp)
     return out
 
 
@@ -398,6 +405,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     blindzone_component_mods = {}  # hash -> set of (mod index, component id) scoped fallbacks
     slot_hashes = set()     # hashes bound by ps-t slot -> per-IB resources, NO global hash override.
     tex_name = {}            # hash -> shipped filename under Textures/
+    emitted_slot_resource_sections = set()
     if isinstance(suppress_body_hashes, dict):
         suppress_body_reasons = {
             str(h).lower(): str(reason or "body")
@@ -515,11 +523,17 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                             nb.append(f'filename = Textures/{shipped_name}')
                         else:
                             nb.append(l)
-                    others.append((
-                        _section_alias_name(
+                    components = resource_components.get(h) or {None}
+                    for comp in sorted(components, key=lambda value: -1 if value is None else value):
+                        alias_section = _section_alias_name(
                             h, k, resource_hashes, resource_components,
-                            namespace_aliases),
-                        nb))
+                            namespace_aliases, comp)
+                        if alias_section in emitted_slot_resource_sections:
+                            continue
+                        emitted_slot_resource_sections.add(alias_section)
+                        others.append((
+                            alias_section,
+                            nb))
                 # else: blind-zone resource -> collapsed into a global Resource_Texture_<hash>, skip
                 continue
             if h == _MARK_BONE:
@@ -534,12 +548,19 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                     mark_bone_mismatch = True  # IBs disagree on cb4/filter_index -> NOT one character
                 continue
             shared_globals = _SHARED_BODY_GLOBALS if k == 0 else None
+            slot_set_match = re.fullmatch(
+                r'CommandListSetTexturesComponent(\d+)(?:_ib\d+)*', h)
+            resource_component_override = None
+            if slot_set_match:
+                resource_component_override = _alias_for_component(
+                    namespace_aliases, k, int(slot_set_match.group(1)))
             nb = [
                 _ns_line(
                     l, k, shared_globals=shared_globals,
                     resource_hashes=resource_hashes,
                     resource_components=resource_components,
-                    namespace_aliases=namespace_aliases)
+                    namespace_aliases=namespace_aliases,
+                    resource_component_override=resource_component_override)
                 for l in b]
             if h == 'Constants':
                 constants += [f'; --- ib{k} ---'] + nb

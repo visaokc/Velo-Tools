@@ -24,6 +24,9 @@ class SlotStyleDegrade(Exception):
 FormData = Dict[int, Dict[str, Dict[int, Optional[str]]]]
 # texture hash -> {'format': canonical DXGI name or '', 'width', 'height'}
 TextureInfo = Dict[str, dict]
+# (component, ps_hash) -> True when every observed pass for that ps was
+# depth-only. A single non-depth observation makes the pass usable as color.
+PassDepth = Dict[Tuple[int, str], bool]
 
 _PS_RE = re.compile(r'ps=([0-9a-f]{16})')
 _VS_KEY_RE = re.compile(r'^vs=[0-9a-f?]+$')
@@ -84,7 +87,8 @@ def _ingest_slot(pair_out: Dict[int, Optional[str]], slot: int,
 
 def normalize_usage(raw: dict, source: str, warnings: List[str],
                     texture_info: Optional[TextureInfo] = None,
-                    freshness: Optional[Dict[Tuple[int, str, int], bool]] = None) -> FormData:
+                    freshness: Optional[Dict[Tuple[int, str, int], bool]] = None,
+                    pass_depth: Optional[PassDepth] = None) -> FormData:
     """Convert one ShaderTextureUsage-shaped dict into FormData.
 
     Accepts both the old flat schema and the v3/v4 nested rich schema. Rich
@@ -112,6 +116,12 @@ def normalize_usage(raw: dict, source: str, warnings: List[str],
                         warnings.append(f'{source}: pair "{pair_key}/{ps_key}" has no ps hash, skipped')
                         continue
                     ps_hash = ps_found.group(1)
+                    if pass_depth is not None:
+                        depth_only = bool(slots.get('depth_only'))
+                        depth_key = (comp_id, ps_hash)
+                        pass_depth[depth_key] = (
+                            pass_depth[depth_key] and depth_only
+                            if depth_key in pass_depth else depth_only)
                     pair_out = comp_out.setdefault(ps_hash, {})
                     for slot_name, record in (slots or {}).items():
                         slot_found = _SLOT_RE.match(slot_name)
@@ -198,6 +208,7 @@ def _filter_extra_form_components(components: object,
 
 def load_forms(object_source_folder: Path,
                freshness_out: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+               pass_depth_out: Optional[List[PassDepth]] = None,
                ) -> Tuple[List[Tuple[str, FormData]], TextureInfo, List[str]]:
     """Load base + extra form maps from ShaderTextureUsage.json."""
     warnings: List[str] = []
@@ -217,11 +228,18 @@ def load_forms(object_source_folder: Path,
     def _form_freshness() -> Optional[Dict[Tuple[int, str, int], bool]]:
         return {} if freshness_out is not None else None
 
+    def _form_pass_depth() -> Optional[PassDepth]:
+        return {} if pass_depth_out is not None else None
+
     base_fresh = _form_freshness()
+    base_depth = _form_pass_depth()
     forms: List[Tuple[str, FormData]] = [
-        ('base', normalize_usage(base_raw, 'base', warnings, texture_info, base_fresh))]
+        ('base', normalize_usage(
+            base_raw, 'base', warnings, texture_info, base_fresh, base_depth))]
     if freshness_out is not None:
         freshness_out.append(base_fresh)
+    if pass_depth_out is not None:
+        pass_depth_out.append(base_depth)
 
     extra_entries = stu_metadata.form_entries(base_raw)
     if not extra_entries:
@@ -242,12 +260,16 @@ def load_forms(object_source_folder: Path,
     for entry in extra_entries or []:
         label = entry.get('label') or entry.get('source') or f'form{len(forms) + 1}'
         entry_fresh = _form_freshness()
+        entry_depth = _form_pass_depth()
         components = _filter_extra_form_components(
             entry.get('components'), multi_components)
         forms.append((label, normalize_usage(components, label,
-                                             warnings, texture_info, entry_fresh)))
+                                             warnings, texture_info, entry_fresh,
+                                             entry_depth)))
         if freshness_out is not None:
             freshness_out.append(entry_fresh)
+        if pass_depth_out is not None:
+            pass_depth_out.append(entry_depth)
 
     if freshness_out is not None and not any(freshness_out):
         warnings.append(
@@ -274,6 +296,7 @@ def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
     warnings: List[str] = []
     texture_info: TextureInfo = {}
     freshness: List[Dict[Tuple[int, str, int], bool]] = []
+    pass_depth: List[PassDepth] = []
     source_meta: Dict[Tuple[str, int], List[str]] = {}
     multi_components = _multi_component_ids_from_usage(usage)
 
@@ -281,6 +304,11 @@ def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
         fresh: Dict[Tuple[int, str, int], bool] = {}
         freshness.append(fresh)
         return fresh
+
+    def _pass_depth() -> PassDepth:
+        depth: PassDepth = {}
+        pass_depth.append(depth)
+        return depth
 
     def _add_source_meta(label: str, comp_name: str, values):
         found = _COMP_RE.search(str(comp_name))
@@ -310,7 +338,8 @@ def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
                 label, comp_name, block.get(constants.COMPONENT_SOURCES_KEY))
 
     forms: List[Tuple[str, FormData]] = [
-        ('base', normalize_usage(usage, 'base', warnings, texture_info, _freshness()))]
+        ('base', normalize_usage(
+            usage, 'base', warnings, texture_info, _freshness(), _pass_depth()))]
     _collect_source_meta('base', usage)
     for entry in stu_metadata.form_entries(usage):
         if not isinstance(entry, dict):
@@ -319,10 +348,12 @@ def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
         components = _filter_extra_form_components(
             entry.get('components'), multi_components)
         forms.append((label, normalize_usage(components, label,
-                                             warnings, texture_info, _freshness())))
+                                             warnings, texture_info,
+                                             _freshness(), _pass_depth())))
         _collect_source_meta(label, entry)
     return build_local_discriminator_audit(
-        forms, texture_info, freshness, warnings, source_meta=source_meta)
+        forms, texture_info, freshness, warnings, source_meta=source_meta,
+        pass_depth=pass_depth)
 
 
 # -------------------------------------------------------------------- plan --
@@ -675,27 +706,47 @@ def _canonical_override_slots(pair_map: Dict[int, Optional[str]],
     return _eligible_slots(pair_map)
 
 
-def _component_hash_canonical_slots(forms: List[Tuple[str, FormData]],
-                                    alias: Dict[str, str]) -> Dict[Tuple[int, str], int]:
-    out: Dict[Tuple[int, str], int] = {}
-    score_by_key: Dict[Tuple[int, str], Tuple[int, int, int]] = {}
-    for _label, form_data in forms:
+def _primary_passes_by_form(forms: List[Tuple[str, FormData]],
+                           texture_info: TextureInfo,
+                           freshness: Optional[List[Dict[Tuple[int, str, int], bool]]],
+                           pass_depth: Optional[List[PassDepth]],
+                           alias: Dict[str, str]) -> Dict[Tuple[int, int], str]:
+    chosen: Dict[Tuple[int, int], str] = {}
+    scores: Dict[Tuple[int, int], Tuple[int, int, int, Tuple[Tuple[int, float], ...], str]] = {}
+    for form_id, (_label, form_data) in enumerate(forms, start=1):
+        form_fresh = (freshness[form_id - 1]
+                      if freshness is not None and form_id - 1 < len(freshness)
+                      else None)
+        form_depth = (pass_depth[form_id - 1]
+                      if pass_depth is not None and form_id - 1 < len(pass_depth)
+                      else None) or {}
         for comp_id, comp_pairs in form_data.items():
-            for pair_map in comp_pairs.values():
-                role = _pass_role(pair_map, {})
+            for ps, pair_map in comp_pairs.items():
+                if form_depth.get((comp_id, ps), False):
+                    continue
+                fresh_slots = _fresh_signature_slots(
+                    comp_id, ps, pair_map, form_fresh)
+                role = _pass_role(pair_map, texture_info)
+                assignment_slots = _local_assignment_slots(
+                    pair_map, texture_info, role, fresh_slots)
+                assign_count = sum(
+                    1 for slot in assignment_slots
+                    if isinstance(pair_map.get(slot), str))
+                if assign_count <= 0:
+                    continue
+                signature = _signature_key(
+                    pair_map, texture_info, _local_condition_slots(
+                        pair_map, role, fresh_slots), alias)
+                if not signature:
+                    continue
+                non_depth = 0 if form_depth.get((comp_id, ps), False) else 1
                 role_score = 2 if role == 'material' else (1 if role == 'outline' else 0)
-                layout_score = len(_eligible_slots(pair_map))
-                for slot, tex_hash in pair_map.items():
-                    if not isinstance(tex_hash, str):
-                        continue
-                    canon = alias.get(tex_hash, tex_hash)
-                    key = (comp_id, canon)
-                    score = (role_score, layout_score, -slot)
-                    previous = score_by_key.get(key)
-                    if previous is None or score > previous:
-                        out[key] = slot
-                        score_by_key[key] = score
-    return out
+                score = (non_depth, assign_count, role_score, signature, ps)
+                key = (form_id, comp_id)
+                if key not in scores or score > scores[key]:
+                    scores[key] = score
+                    chosen[key] = ps
+    return chosen
 
 
 def _fresh_signature_slots(comp_id: int,
@@ -766,7 +817,8 @@ def _fi_str(value: float) -> str:
 
 def _hash_fingerprint(forms: List[Tuple[str, FormData]],
                       texture_info: TextureInfo,
-                      freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None) -> str:
+                      freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+                      pass_depth: Optional[List[PassDepth]] = None) -> str:
     """Stable fingerprint for the STU facts the local discriminator consumes."""
     import hashlib
     payload = []
@@ -774,6 +826,9 @@ def _hash_fingerprint(forms: List[Tuple[str, FormData]],
         form_fresh = (freshness[form_id - 1]
                       if freshness is not None and form_id - 1 < len(freshness)
                       else None)
+        form_depth = (pass_depth[form_id - 1]
+                      if pass_depth is not None and form_id - 1 < len(pass_depth)
+                      else None) or {}
         form_rows = []
         for comp_id in sorted(form_data):
             for ps in sorted(form_data[comp_id]):
@@ -784,7 +839,7 @@ def _hash_fingerprint(forms: List[Tuple[str, FormData]],
                     if form_fresh is not None:
                         fresh = form_fresh.get((comp_id, ps, slot))
                     row.append([slot, tex_hash, info.get('format') or '', fresh])
-                form_rows.append([comp_id, ps, row])
+                form_rows.append([comp_id, ps, bool(form_depth.get((comp_id, ps), False)), row])
         payload.append([label, form_rows])
     raw = json.dumps(payload, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
@@ -1082,7 +1137,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                     texture_info: TextureInfo,
                                     freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
                                     warnings: Optional[List[str]] = None,
-                                    source_meta: Optional[Dict[Tuple[str, int], List[str]]] = None) -> dict:
+                                    source_meta: Optional[Dict[Tuple[str, int], List[str]]] = None,
+                                    pass_depth: Optional[List[PassDepth]] = None) -> dict:
     """Build the STU audit block for local form discriminator export.
 
     The audit is intentionally data-only: export still recomputes and verifies
@@ -1093,7 +1149,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
         forms, freshness, [])
     audit_forms = _local_audit_forms(forms, filtered_forms, texture_info)
     alias = _variant_aliases(texture_info)
-    canonical_seats = _component_hash_canonical_slots(audit_forms, alias)
+    primary_passes = _primary_passes_by_form(
+        audit_forms, texture_info, freshness, pass_depth, alias)
     rows = []
     branch_samples: Dict[
         Tuple[int, Tuple[Tuple[int, str], ...], Tuple[Tuple[int, float], ...]],
@@ -1111,6 +1168,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                       else None)
         for comp_id, comp_pairs in form_data.items():
             for ps, pair_map in comp_pairs.items():
+                is_primary_pass = primary_passes.get((form_id, comp_id)) == ps
                 fresh_slots = _fresh_signature_slots(
                     comp_id, ps, pair_map, form_fresh)
                 role = _pass_role(pair_map, texture_info)
@@ -1130,15 +1188,21 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                 }
                 assign_hashes = {
                     slot: tex_hash for slot, tex_hash in observed_hashes.items()
-                    if (slot in override_slots
-                        and canonical_seats.get((comp_id, alias.get(tex_hash, tex_hash))) == slot)
+                    if (is_primary_pass and slot in override_slots
+                        and alias.get(tex_hash, tex_hash) in texture_info)
                 }
+                depth_only = False
+                if pass_depth is not None and form_id - 1 < len(pass_depth):
+                    depth_only = bool((pass_depth[form_id - 1] or {}).get(
+                        (comp_id, ps), False))
                 row = {
                     'form_id': form_id,
                     'form': label,
                     'component': comp_id,
                     'ps': ps,
                     'pass_role': role,
+                    'depth_only': depth_only,
+                    'primary_pass': is_primary_pass,
                     'condition_source': condition_source,
                     'signature': _serialized_signature(sig),
                     'positive_signature': _serialized_signature(sig),
@@ -1150,13 +1214,13 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     'observed_hashes': {str(slot): tex_hash
                                         for slot, tex_hash in observed_hashes.items()},
                     'fresh_slots': sorted(fresh_slots),
-                    'canonical_slots': sorted(override_slots),
+                    'canonical_slots': sorted(override_slots) if is_primary_pass else [],
                 }
                 remap_sources = _source_meta_for(source_meta, label, comp_id)
                 if remap_sources:
                     row['remap_sources'] = remap_sources
                 rows.append(row)
-                if assign_hashes:
+                if assign_hashes and is_primary_pass:
                     akey = tuple(sorted((slot, tex_hash)
                                         for slot, tex_hash in assign_hashes.items()))
                     component_assignments.setdefault(
@@ -1183,6 +1247,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                             'assign_hashes': {str(slot): tex_hash
                                               for slot, tex_hash in assign_hashes.items()},
                             'pass_role': role,
+                            'depth_only': depth_only,
+                            'primary_pass': is_primary_pass,
                             'condition_source': condition_source,
                             'forms': [label],
                             'sources': [{'form': label, 'ps': ps}],
@@ -1246,7 +1312,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
 
     return {
         'schema': constants.LOCAL_FORM_DISCRIMINATOR_SCHEMA,
-        'fingerprint': _hash_fingerprint(forms, texture_info, freshness),
+        'fingerprint': _hash_fingerprint(
+            forms, texture_info, freshness, pass_depth),
         'slots': list(constants.LOCAL_DISCRIMINATOR_SLOTS),
         'service_slots': list(constants.SERVICE_SLOTS),
         'rows': rows,
@@ -1267,14 +1334,15 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
 def validate_local_discriminator_audit(audit: object,
                                        forms: List[Tuple[str, FormData]],
                                        texture_info: TextureInfo,
-                                       freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None) -> dict:
+                                       freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+                                       pass_depth: Optional[List[PassDepth]] = None) -> dict:
     if not isinstance(audit, dict):
         raise SlotStyleDegrade(
             '局部形态判据审计缺失；请先刷新 ShaderTextureUsage.json 后再导出。')
     if audit.get('schema') != constants.LOCAL_FORM_DISCRIMINATOR_SCHEMA:
         raise SlotStyleDegrade(
             '局部形态判据审计版本过旧；请刷新 ShaderTextureUsage.json 后再导出。')
-    expected = _hash_fingerprint(forms, texture_info, freshness)
+    expected = _hash_fingerprint(forms, texture_info, freshness, pass_depth)
     if audit.get('fingerprint') != expected:
         raise SlotStyleDegrade(
             '局部形态判据审计已过期；当前 STU 数据与审计 fingerprint 不一致，请刷新 STU 审计。')
@@ -1446,6 +1514,7 @@ def _local_branches_from_audit(audit: dict,
     if not isinstance(rows, list):
         raise SlotStyleDegrade(
             '局部形态判据审计没有 row evidence；请刷新 STU 审计。')
+    primary_row_keys: Set[Tuple[int, int, str]] = set()
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise SlotStyleDegrade(
@@ -1459,8 +1528,18 @@ def _local_branches_from_audit(audit: dict,
         if not signature:
             continue
         source = _source_from(row, f'row#{index}')
+        form_id_raw = row.get('form_id')
+        try:
+            form_id = int(form_id_raw)
+        except (TypeError, ValueError):
+            form_id = None
+        ps = str(row.get('ps') or '')
+        if row.get('primary_pass') and form_id is not None and ps:
+            primary_row_keys.add((form_id, comp_id, ps))
         _assign, _assign_key = _effective_assignment(
             row.get('assign_hashes'), comp_id, source)
+        if not row.get('primary_pass'):
+            continue
         row_assign_key = tuple(sorted(
             (int(slot), canon_fn(tex_hash))
             for slot, tex_hash in (row.get('assign_hashes') or {}).items()
@@ -1509,19 +1588,34 @@ def _local_branches_from_audit(audit: dict,
             and isinstance(tex_hash, str)
             and canon_fn(tex_hash) in mod_hashes
         ))
+        branch_primary_keys: Set[Tuple[int, int, str]] = set()
+        for src in (entry.get('sources') or []):
+            if not isinstance(src, dict):
+                continue
+            label = str(src.get('form') or '').strip().lower()
+            form_id = (form_label_to_id or {}).get(label)
+            ps = str(src.get('ps') or '')
+            if form_id is not None and ps:
+                branch_primary_keys.add((form_id, comp_id, ps))
+        if (branch_primary_keys
+                and not branch_primary_keys.issubset(primary_row_keys)):
+            continue
         pending_branches.append((comp_id, entry, assign, assign_key, source))
 
     row_records = [record for record in branch_records
                    if record.get('kind') == 'row']
     kept_branch_records: List[dict] = []
     grouped_pending: Dict[
-        Tuple[int, Tuple[Tuple[int, str], ...], str],
+        Tuple[int, Tuple[Tuple[int, str], ...], Tuple[Tuple[int, float], ...], str],
         List[Tuple[int, dict, Dict[int, str], Tuple[Tuple[int, str], ...], str]],
     ] = {}
     for item in pending_branches:
         comp_id, entry, _assign, assign_key, _source = item
         pass_role = str(entry.get('pass_role') or '')
-        grouped_pending.setdefault((comp_id, assign_key, pass_role), []).append(item)
+        signature = _signature_from_audit(
+            entry.get('positive_signature') or entry.get('signature'))
+        grouped_pending.setdefault(
+            (comp_id, assign_key, signature, pass_role), []).append(item)
 
     row_signatures: Dict[
         int,
@@ -1532,29 +1626,8 @@ def _local_branches_from_audit(audit: dict,
         row_signatures.setdefault(comp_id, {}).setdefault(
             record.get('assign_key') or (), set()).add(record['signature'])
 
-    for (comp_id, assign_key, pass_role), items in sorted(grouped_pending.items()):
-        entry_signatures = [
-            _signature_from_audit(item[1].get('positive_signature')
-                                  or item[1].get('signature'))
-            for item in items
-        ]
-        own_signatures = list(
-            row_signatures.get(comp_id, {}).get(assign_key, set()))
-        if not own_signatures:
-            own_signatures = [sig for sig in entry_signatures if sig]
-        other_signatures = [
-            sig for other_key, values in row_signatures.get(comp_id, {}).items()
-            if other_key != assign_key for sig in values
-        ]
-        blocked_negative_slots = {
-            slot for other_key in row_signatures.get(comp_id, {})
-            for slot, _tex_hash in other_key
-        }
-        signature, negative_signature = _minimal_condition_signature(
-            own_signatures, other_signatures,
-            {slot for slot, _tex_hash in assign_key},
-            blocked_negative_slots,
-            allow_negative=False)
+    for (comp_id, assign_key, signature, pass_role), items in sorted(grouped_pending.items()):
+        negative_signature = ()
         assign = dict(items[0][2])
         source = ','.join(item[4] for item in items)
         branch_form_id = None
@@ -1628,6 +1701,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                       multi_state_seats: Optional[Dict[Tuple[int, int], Set[str]]] = None,
                       live_seed: Optional[Set[str]] = None,
                       freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+                      pass_depth: Optional[List[PassDepth]] = None,
                       slot_eligible_components: Optional[Set[int]] = None,
                       local_discriminator_audit: Optional[dict] = None,
                       formid_auxiliary_anchors: Optional[List[Tuple[str, int]]] = None) -> SlotPlan:
@@ -1635,7 +1709,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     anchor_resources, watchdog_form, gated_forms = _anchor_runtime_state(
         forms, formid_auxiliary_anchors, warnings)
     validate_local_discriminator_audit(
-        local_discriminator_audit, forms, texture_info, freshness)
+        local_discriminator_audit, forms, texture_info, freshness, pass_depth)
     forms, dirty_hashes_raw, dirty_slots, phantom_pairs = _filtered_forms(
         forms, freshness, warnings)
     alias = _variant_aliases(texture_info)
@@ -2195,6 +2269,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                live_seed: Optional[Set[str]] = None,
                trusted_hashes: Optional[Set[str]] = None,
                freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+               pass_depth: Optional[List[PassDepth]] = None,
                slot_eligible_components: Optional[Set[int]] = None,
                local_form_discriminator: bool = False,
                local_discriminator_audit: Optional[dict] = None,
@@ -2217,6 +2292,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
             multi_state_seats=multi_state_seats,
             live_seed=live_seed,
             freshness=freshness,
+            pass_depth=pass_depth,
             slot_eligible_components=slot_eligible_components,
             local_discriminator_audit=local_discriminator_audit,
             formid_auxiliary_anchors=formid_auxiliary_anchors)
