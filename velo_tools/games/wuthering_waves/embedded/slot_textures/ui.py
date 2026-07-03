@@ -90,7 +90,6 @@ def _patch_export_menu():
             box.prop(cfg, "velo_slot_style_textures")
             slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
             if (slot_cfg is not None and cfg.velo_slot_style_textures):
-                box.prop(slot_cfg, "slot_audit_dump_folder")
                 _draw_slot_components(box, slot_cfg)
                 box.prop(slot_cfg, "formid_auxiliary_gate")
                 if slot_cfg.formid_auxiliary_gate:
@@ -250,16 +249,6 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
             "默认关闭以保持纯 0hash slot；该选项不能挽救 C0 这类 slot-layout 完全相同的组件。"
         ),
         default=False,
-    )
-
-    slot_audit_dump_folder: bpy.props.StringProperty(
-        name="Raw 审计 Dump",
-        description=(
-            "可选：指定一份真实 FrameAnalysis raw dump。跨场景 slot-style 导出会确认该 dump "
-            "里 fresh 绑定过的 pass 已被当前 ShaderTextureUsage.json 覆盖；未覆盖则阻断导出。"
-        ),
-        subtype='DIR_PATH',
-        default='',
     )
 
     # Per-component slot eligibility (UI opt-out). Empty = never populated = all components

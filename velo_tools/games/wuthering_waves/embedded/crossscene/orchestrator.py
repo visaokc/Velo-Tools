@@ -521,98 +521,6 @@ def _body_hash_suppressions(merged_folder, routing, keep_count, eligible):
     return reasons
 
 
-def _add_component_map_entry(mapping, vb0_hash, components):
-    if not vb0_hash:
-        return
-    comps = {int(c) for c in (components or []) if c is not None}
-    if not comps:
-        return
-    key = str(vb0_hash).lower()
-    mapping.setdefault(key, set()).update(comps)
-
-
-def _raw_audit_component_map(routing, keep_count):
-    """Map raw dump vb0 hashes to merged component ids for FrameAnalysis replay."""
-    mapping = {}
-    base_vb0 = (routing.get("base") or {}).get("vb0_hash")
-    _add_component_map_entry(mapping, base_vb0, range(int(keep_count or 0)))
-    for split in (routing.get("base") or {}).get("splits") or []:
-        _add_component_map_entry(
-            mapping, split.get("vb0_hash") or split.get("ib_hash"),
-            [split.get("base_component")])
-    for scene in routing.get("scene_ibs") or []:
-        components = (scene.get("derive") or {}).get("base_components")
-        if not components:
-            comp_map = (scene.get("fold") or {}).get("comp_map") or {}
-            components = list(comp_map.values())
-        _add_component_map_entry(
-            mapping, scene.get("vb0_hash") or scene.get("ib_hash"),
-            components)
-    for rec in routing.get("editable_ibs") or []:
-        _add_component_map_entry(
-            mapping, rec.get("vb0_hash") or rec.get("ib_hash"),
-            rec.get("merged_components"))
-    return mapping
-
-
-def _slot_audit_dump_folder(context):
-    try:
-        value = context.scene.vtww_slot_settings.slot_audit_dump_folder
-    except Exception:
-        return ""
-    return str(value or "").strip()
-
-
-def _run_slot_raw_audit(context, merged_folder, routing, keep_count,
-                        target_components=None, audit_module=None):
-    dump_folder = _slot_audit_dump_folder(context)
-    if not dump_folder:
-        return []
-    stu_path = Path(merged_folder) / "ShaderTextureUsage.json"
-    component_map = _raw_audit_component_map(routing, keep_count)
-    if audit_module is None:
-        from ..slot_textures import raw_replay_audit as audit_module
-    errors = audit_module.audit_raw_pass_coverage(
-        dump_folder, stu_path, component_map,
-        target_components=target_components, require_fresh=True)
-    if errors:
-        preview = "\n".join("  - " + err for err in errors[:20])
-        more = "" if len(errors) <= 20 else "\n  ... %d more" % (len(errors) - 20)
-        raise RuntimeError(
-            "跨场景 slot-style raw dump 审计失败：当前 ShaderTextureUsage.json "
-            "没有覆盖真实 FrameAnalysis 中 fresh 绑定过的 pass。\n%s%s"
-            % (preview, more))
-    return []
-
-
-def _graft_slot_raw_passes(context, source_folder, audit_module=None):
-    dump_folder = _slot_audit_dump_folder(context)
-    if not dump_folder:
-        return None
-    source_folder = Path(source_folder)
-    stu_path = source_folder / "ShaderTextureUsage.json"
-    meta_path = source_folder / "Metadata.json"
-    if audit_module is None:
-        from ..slot_textures import raw_replay_audit as audit_module
-    result = audit_module.graft_raw_passes_into_file(
-        dump_folder, stu_path, meta_path, source_folder=source_folder)
-    errors = audit_module.audit_local_raw_pass_coverage(
-        dump_folder, stu_path, meta_path,
-        source_folder=source_folder, require_fresh=True)
-    if errors:
-        preview = "\n".join("  - " + err for err in errors[:20])
-        more = "" if len(errors) <= 20 else "\n  ... %d more" % (len(errors) - 20)
-        raise RuntimeError(
-            "跨场景 slot-style raw dump 审计失败：%s 的 ShaderTextureUsage.json "
-            "在 raw graft 后仍没有覆盖真实 FrameAnalysis 中 fresh 绑定过的 pass。\n%s%s"
-            % (source_folder, preview, more))
-    if result.rows_added:
-        print("[velo.xscene] raw slot graft %s: added %d pass row(s), mapped %d/%d draw(s)."
-              % (source_folder.name, result.rows_added,
-                 result.draws_mapped, result.draws_seen))
-    return result
-
-
 def _slot_bound_hashes_from_ini(mod_ini):
     path = Path(mod_ini)
     if not path.is_file():
@@ -656,8 +564,7 @@ def _prune_unrepresented_fold_suppressions(body_mod_ini, suppressions):
     return pruned
 
 
-def _export_col(cfg, col, modout, name, src, eligible=_KEEP, slot_style=_KEEP,
-                raw_graft_context=None):
+def _export_col(cfg, col, modout, name, src, eligible=_KEEP, slot_style=_KEEP):
     Path(modout).mkdir(parents=True, exist_ok=True)
     cfg.object_source_folder = src
     cfg.component_collection = col
@@ -669,8 +576,6 @@ def _export_col(cfg, col, modout, name, src, eligible=_KEEP, slot_style=_KEEP,
     if slot_style is not _KEEP and saved_slot_style is not None:
         cfg.velo_slot_style_textures = bool(slot_style)
     try:
-        if raw_graft_context is not None:
-            _graft_slot_raw_passes(raw_graft_context, src)
         if eligible is _KEEP:
             bpy.ops.vtww.export_mod()
             return
@@ -692,8 +597,7 @@ def _export_col(cfg, col, modout, name, src, eligible=_KEEP, slot_style=_KEEP,
 
 
 def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_count,
-                                       routing, eligible=_KEEP,
-                                       raw_graft_context=None):
+                                       routing, eligible=_KEEP):
     """Body export must see ONLY the body components [0, keep_count). The producer appends the editable
     form2 components (8-11) to Metadata.json AND ShaderTextureUsage.json for MERGED *import*; if the body
     export saw them it would emit spurious empty Component 8+ sections (COMPONENT) / inflate the unified
@@ -718,7 +622,7 @@ def _export_body_with_trimmed_metadata(cfg, body_col, work, merged_folder, keep_
             if trimmed != s:
                 stu_metadata.write_usage(stu_p, trimmed)
         _export_col(cfg, body_col, str(work / "sc"), "om_sc", str(merged_folder),
-                    eligible=eligible, raw_graft_context=raw_graft_context)
+                    eligible=eligible)
     finally:
         if meta_full is not None:
             meta_p.write_text(meta_full, encoding="utf-8")
@@ -921,8 +825,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                                       if slot_style_on else {})
             _export_body_with_trimmed_metadata(
                 cfg, body_col, work, merged_folder, keep_count, routing,
-                eligible=body_elig,
-                raw_graft_context=(context if slot_style_on else None))
+                eligible=body_elig)
             body_hash_suppressions = _prune_unrepresented_fold_suppressions(
                 work / "sc" / "mod.ini", body_hash_suppressions)
 
@@ -997,8 +900,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                             _pos_hole(cp, frac=hole_frac)
                         _export_col(
                             cfg, own_col, str(work / tag), "om_" + tag, src,
-                            eligible=own_elig,
-                            raw_graft_context=(context if slot_style_on else None))
+                            eligible=own_elig)
                         # Annotate the own-buffer draw with the split's real (Blender) name (e.g.
                         # Component 5.001) instead of the export-local 'Component 0.001' artifact.
                         _m_idx = re.search(r'(\d+)', cp.name)
@@ -1027,8 +929,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                             _pos_hole(o, frac=hole_frac)
                     _export_col(
                         cfg, col, str(work / tag), "om_" + tag, src,
-                        eligible=own_elig,
-                        raw_graft_context=(context if slot_style_on else None))
+                        eligible=own_elig)
                     _purge_collection(col)
                 mods.append(str(work / tag))
 
@@ -1102,8 +1003,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                                   if mi in merged_eligible})
                 _export_col(
                     cfg, eib_col, str(work / tag), "om_" + tag, eib_src,
-                    eligible=eib_elig,
-                    raw_graft_context=(context if slot_style_on else None))
+                    eligible=eib_elig)
                 # Annotate the editable draws with the merged (Blender) component numbers (e.g. 8-11)
                 # instead of the export-local 'Component 0-3.001' artifacts.
                 _relabel_draw_comments(
