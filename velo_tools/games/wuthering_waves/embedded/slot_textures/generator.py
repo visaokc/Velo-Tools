@@ -729,6 +729,69 @@ def _component_hash_canonical_slots(forms: List[Tuple[str, FormData]],
     return out
 
 
+def _duplicate_service_assignment_variants(
+        assign_hashes: Dict[int, str],
+        alias: Dict[str, str]) -> List[Dict[int, str]]:
+    by_hash: Dict[str, List[int]] = {}
+    for slot, tex_hash in assign_hashes.items():
+        if slot not in constants.SERVICE_SLOTS:
+            continue
+        by_hash.setdefault(alias.get(tex_hash, tex_hash), []).append(slot)
+    duplicate_slots = [
+        set(slots) for slots in by_hash.values()
+        if len(slots) > 1
+    ]
+    if not duplicate_slots:
+        return [dict(assign_hashes)]
+
+    variants: List[Dict[int, str]] = [dict(assign_hashes)]
+    for slots in duplicate_slots:
+        next_variants: List[Dict[int, str]] = []
+        for variant in variants:
+            for slot in sorted(slots):
+                item = {
+                    current_slot: tex_hash
+                    for current_slot, tex_hash in variant.items()
+                    if current_slot not in slots
+                }
+                item[slot] = assign_hashes[slot]
+                next_variants.append(item)
+        variants = next_variants
+
+    deduped: List[Dict[int, str]] = []
+    seen: Set[Tuple[Tuple[int, str], ...]] = set()
+    for variant in variants:
+        key = tuple(sorted(variant.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(variant)
+    return deduped or [dict(assign_hashes)]
+
+
+def _signature_for_duplicate_service_variant(
+        signature: Tuple[Tuple[int, float], ...],
+        assign_hashes: Dict[int, str],
+        variant_assign_hashes: Dict[int, str],
+        alias: Dict[str, str]) -> Tuple[Tuple[int, float], ...]:
+    by_hash: Dict[str, List[int]] = {}
+    for slot, tex_hash in assign_hashes.items():
+        if slot not in constants.SERVICE_SLOTS:
+            continue
+        by_hash.setdefault(alias.get(tex_hash, tex_hash), []).append(slot)
+    keep_slots = set(variant_assign_hashes)
+    drop_slots: Set[int] = set()
+    for slots in by_hash.values():
+        if len(slots) <= 1:
+            continue
+        chosen = [slot for slot in slots if slot in keep_slots]
+        if len(chosen) == 1:
+            drop_slots.update(slot for slot in slots if slot != chosen[0])
+    if not drop_slots:
+        return signature
+    return tuple(term for term in signature if term[0] not in drop_slots)
+
+
 def _primary_passes_by_form(forms: List[Tuple[str, FormData]],
                            texture_info: TextureInfo,
                            freshness: Optional[List[Dict[Tuple[int, str, int], bool]]],
@@ -1232,8 +1295,20 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     slot: tex_hash for slot, tex_hash in observed_hashes.items()
                     if (is_primary_pass and slot in override_slots
                         and alias.get(tex_hash, tex_hash) in texture_info
-                        and canonical_seats.get(
-                            (comp_id, alias.get(tex_hash, tex_hash))) == slot)
+                        and (
+                            canonical_seats.get(
+                                (comp_id, alias.get(tex_hash, tex_hash))) == slot
+                            or (
+                                slot in constants.SERVICE_SLOTS
+                                and sum(
+                                    1 for other_slot, other_hash in observed_hashes.items()
+                                    if (other_slot in constants.SERVICE_SLOTS
+                                        and other_slot in override_slots
+                                        and alias.get(other_hash, other_hash)
+                                        == alias.get(tex_hash, tex_hash))
+                                ) > 1
+                            )
+                        ))
                 }
                 depth_only = False
                 if pass_depth is not None and form_id - 1 < len(pass_depth):
@@ -1265,44 +1340,50 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     row['remap_sources'] = remap_sources
                 rows.append(row)
                 if assign_hashes and is_primary_pass:
-                    akey = tuple(sorted((slot, tex_hash)
-                                        for slot, tex_hash in assign_hashes.items()))
-                    component_assignments.setdefault(
-                        comp_id, {}).setdefault(akey, set()).add(sig)
-                    detail = conflict_details.setdefault(comp_id, {}).setdefault(
-                        akey, {'assign_hashes': assign_hashes, 'sources': []})
-                    detail['sources'].append({
-                        'form': label,
-                        'ps': ps,
-                        'signature': _serialized_signature(sig),
-                        'pass_role': role,
-                        'remap_sources': remap_sources,
-                    })
-                    sample_key = (comp_id, akey, sig)
-                    sample = branch_samples.get(sample_key)
-                    if sample is None:
-                        branch_samples[sample_key] = {
-                            'component': comp_id,
-                            'signature': _serialized_signature(sig),
-                            'positive_signature': _serialized_signature(sig),
-                            'negative_signature': [],
-                            'condition_slots': [slot for slot, _key in sig],
-                            'assignment_slots': sorted(assign_hashes),
-                            'assign_hashes': {str(slot): tex_hash
-                                              for slot, tex_hash in assign_hashes.items()},
+                    for branch_assign_hashes in _duplicate_service_assignment_variants(
+                            assign_hashes, alias):
+                        branch_sig = _signature_for_duplicate_service_variant(
+                            sig, assign_hashes, branch_assign_hashes, alias)
+                        akey = tuple(sorted(
+                            (slot, tex_hash)
+                            for slot, tex_hash in branch_assign_hashes.items()))
+                        component_assignments.setdefault(
+                            comp_id, {}).setdefault(akey, set()).add(branch_sig)
+                        detail = conflict_details.setdefault(comp_id, {}).setdefault(
+                            akey, {'assign_hashes': branch_assign_hashes, 'sources': []})
+                        detail['sources'].append({
+                            'form': label,
+                            'ps': ps,
+                            'signature': _serialized_signature(branch_sig),
                             'pass_role': role,
-                            'depth_only': depth_only,
-                            'primary_pass': is_primary_pass,
-                            'condition_source': condition_source,
-                            'forms': [label],
-                            'sources': [{'form': label, 'ps': ps}],
-                        }
-                        if remap_sources:
-                            branch_samples[sample_key]['remap_sources'] = remap_sources
-                    else:
-                        if label not in sample['forms']:
-                            sample['forms'].append(label)
-                        sample['sources'].append({'form': label, 'ps': ps})
+                            'remap_sources': remap_sources,
+                        })
+                        sample_key = (comp_id, akey, branch_sig)
+                        sample = branch_samples.get(sample_key)
+                        if sample is None:
+                            branch_samples[sample_key] = {
+                                'component': comp_id,
+                                'signature': _serialized_signature(branch_sig),
+                                'positive_signature': _serialized_signature(branch_sig),
+                                'negative_signature': [],
+                                'condition_slots': [slot for slot, _key in branch_sig],
+                                'assignment_slots': sorted(branch_assign_hashes),
+                                'assign_hashes': {
+                                    str(slot): tex_hash
+                                    for slot, tex_hash in branch_assign_hashes.items()},
+                                'pass_role': role,
+                                'depth_only': depth_only,
+                                'primary_pass': is_primary_pass,
+                                'condition_source': condition_source,
+                                'forms': [label],
+                                'sources': [{'form': label, 'ps': ps}],
+                            }
+                            if remap_sources:
+                                branch_samples[sample_key]['remap_sources'] = remap_sources
+                        else:
+                            if label not in sample['forms']:
+                                sample['forms'].append(label)
+                            sample['sources'].append({'form': label, 'ps': ps})
 
     conflicts = []
 
@@ -1508,7 +1589,7 @@ def _local_branches_from_audit(audit: dict,
     suppressed_weak_branches = 0
     branch_records: List[dict] = []
     pending_branches: List[Tuple[int, dict, Dict[int, str], Tuple[Tuple[int, str], ...], str]] = []
-    observed_slot_sets_by_hash: Dict[str, Set[Tuple[int, ...]]] = {}
+    observed_service_slot_sets_by_hash: Dict[str, Set[Tuple[int, ...]]] = {}
 
     def _source_from(entry: dict, fallback: str) -> str:
         sources = entry.get('sources') or []
@@ -1560,6 +1641,7 @@ def _local_branches_from_audit(audit: dict,
         raise SlotStyleDegrade(
             '局部形态判据审计没有 row evidence；请刷新 STU 审计。')
     primary_row_keys: Set[Tuple[int, int, str]] = set()
+    row_signature_records: List[dict] = []
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise SlotStyleDegrade(
@@ -1583,7 +1665,7 @@ def _local_branches_from_audit(audit: dict,
             primary_row_keys.add((form_id, comp_id, ps))
         observed_hashes = row.get('observed_hashes') or {}
         if isinstance(observed_hashes, dict):
-            slots_by_hash: Dict[str, Set[int]] = {}
+            service_slots_by_hash: Dict[str, Set[int]] = {}
             for raw_slot, tex_hash in observed_hashes.items():
                 if not isinstance(tex_hash, str):
                     continue
@@ -1591,9 +1673,11 @@ def _local_branches_from_audit(audit: dict,
                     slot = int(raw_slot)
                 except (TypeError, ValueError):
                     continue
-                slots_by_hash.setdefault(canon_fn(tex_hash), set()).add(slot)
-            for canon, slots in slots_by_hash.items():
-                observed_slot_sets_by_hash.setdefault(canon, set()).add(
+                if not _volatile_condition_slot(slot):
+                    continue
+                service_slots_by_hash.setdefault(canon_fn(tex_hash), set()).add(slot)
+            for canon, slots in service_slots_by_hash.items():
+                observed_service_slot_sets_by_hash.setdefault(canon, set()).add(
                     tuple(sorted(slots)))
         _assign, _assign_key = _effective_assignment(
             row.get('assign_hashes'), comp_id, source)
@@ -1606,14 +1690,24 @@ def _local_branches_from_audit(audit: dict,
             and isinstance(tex_hash, str)
             and canon_fn(tex_hash) in mod_hashes
         ))
-        branch_records.append({
-            'kind': 'row',
-            'component': comp_id,
-            'signature': signature,
-            'negative_signature': (),
-            'assign_key': row_assign_key,
-            'source': source,
-        })
+        row_assign_hashes = dict(row_assign_key)
+        for variant in _duplicate_service_assignment_variants(
+                row_assign_hashes, {}):
+            variant_signature = _signature_for_duplicate_service_variant(
+                signature, row_assign_hashes, variant, {})
+            row_signature_records.append({
+                'component': comp_id,
+                'signature': variant_signature,
+                'assign_key': tuple(sorted(variant.items())),
+            })
+            branch_records.append({
+                'kind': 'row',
+                'component': comp_id,
+                'signature': variant_signature,
+                'negative_signature': (),
+                'assign_key': tuple(sorted(variant.items())),
+                'source': source,
+            })
 
     branches = audit.get('branches')
     if not isinstance(branches, list):
@@ -1677,12 +1771,12 @@ def _local_branches_from_audit(audit: dict,
         int,
         Dict[Tuple[Tuple[int, str], ...], Set[Tuple[Tuple[int, float], ...]]],
     ] = {}
-    for record in row_records:
+    for record in row_signature_records:
         comp_id = int(record.get('component'))
         row_signatures.setdefault(comp_id, {}).setdefault(
             record.get('assign_key') or (), set()).add(record['signature'])
     drift_hashes = {
-        tex_hash for tex_hash, slot_sets in observed_slot_sets_by_hash.items()
+        tex_hash for tex_hash, slot_sets in observed_service_slot_sets_by_hash.items()
         if len(slot_sets) > 1
         and len({slot for slots in slot_sets for slot in slots}) > 1
     }

@@ -539,7 +539,7 @@ def _has_non_depth_texture_pass(src):
     return _walk(data)
 
 
-def _primary_slot_signatures_from_usage(data, component_map=None):
+def _primary_slot_signatures_from_usage(data, component_map=None, volatile_hashes=None):
     try:
         from ..slot_textures import generator as slot_generator
         forms = []
@@ -574,7 +574,9 @@ def _primary_slot_signatures_from_usage(data, component_map=None):
 
     out = {}
     comp_map = {int(k): int(v) for k, v in (component_map or {}).items()}
-    for row in audit.get("rows") or []:
+    volatile = {str(h).lower() for h in (volatile_hashes or set())}
+    entries = audit.get("branches") or audit.get("rows") or []
+    for row in entries:
         if not isinstance(row, dict) or not row.get("primary_pass"):
             continue
         try:
@@ -594,12 +596,20 @@ def _primary_slot_signatures_from_usage(data, component_map=None):
                 break
             signature.append((slot, value))
         if signature:
+            assign_slots = []
+            for raw_slot, tex_hash in (row.get("assign_hashes") or {}).items():
+                if not isinstance(tex_hash, str) or tex_hash.lower() in volatile:
+                    continue
+                try:
+                    assign_slots.append(int(raw_slot))
+                except (TypeError, ValueError):
+                    continue
             out.setdefault(comp_map.get(comp_id, comp_id), set()).add(
-                tuple(sorted(signature)))
+                ("branch", tuple(sorted(signature)), tuple(sorted(assign_slots))))
     return out
 
 
-def _component_primary_slot_signatures(src, component_map=None):
+def _component_primary_slot_signatures(src, component_map=None, volatile_hashes=None):
     stu_path = Path(src) / "ShaderTextureUsage.json"
     if not stu_path.is_file():
         return {}
@@ -607,12 +617,13 @@ def _component_primary_slot_signatures(src, component_map=None):
         data = json.loads(stu_path.read_text(encoding="utf-8"))
     except Exception:
         return {}
-    return _primary_slot_signatures_from_usage(data, component_map)
+    return _primary_slot_signatures_from_usage(data, component_map, volatile_hashes)
 
 
-def _merge_slot_branch_expectations(target, src, ib_index, component_map=None):
+def _merge_slot_branch_expectations(
+        target, src, ib_index, component_map=None, volatile_hashes=None):
     for comp_id, signatures in _component_primary_slot_signatures(
-            src, component_map).items():
+            src, component_map, volatile_hashes).items():
         for signature in signatures:
             target.setdefault((int(comp_id), int(ib_index)), set()).add(signature)
 
@@ -1052,7 +1063,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     body_stu = _body_stu_for_export(
                         root_stu, merged_folder, routing, keep_count)
                     for comp_id, signatures in _primary_slot_signatures_from_usage(
-                            body_stu).items():
+                            body_stu, volatile_hashes=volatile_slot_hashes).items():
                         for signature in signatures:
                             slot_branch_expectations.setdefault(
                                 (int(comp_id), 0), set()).add(signature)
@@ -1141,7 +1152,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                             volatile_hashes=volatile_slot_hashes)
                         if slot_style_on:
                             _merge_slot_branch_expectations(
-                                slot_branch_expectations, src, len(mods))
+                                slot_branch_expectations, src, len(mods),
+                                volatile_hashes=volatile_slot_hashes)
                         # Annotate the own-buffer draw with the split's real (Blender) name (e.g.
                         # Component 5.001) instead of the export-local 'Component 0.001' artifact.
                         _m_idx = re.search(r'(\d+)', cp.name)
@@ -1175,7 +1187,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                         volatile_hashes=volatile_slot_hashes)
                     if slot_style_on:
                         _merge_slot_branch_expectations(
-                            slot_branch_expectations, src, len(mods))
+                            slot_branch_expectations, src, len(mods),
+                            volatile_hashes=volatile_slot_hashes)
                     _purge_collection(col)
                 mods.append(str(work / tag))
 
@@ -1256,7 +1269,8 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     _merge_slot_branch_expectations(
                         slot_branch_expectations, eib_src, eib_ib_index,
                         {int(li): int(mi) for li, mi in zip(
-                            rec["local_components"], rec["merged_components"])})
+                            rec["local_components"], rec["merged_components"])},
+                        volatile_hashes=volatile_slot_hashes)
                 # Annotate the editable draws with the merged (Blender) component numbers (e.g. 8-11)
                 # instead of the export-local 'Component 0-3.001' artifacts.
                 _relabel_draw_comments(

@@ -557,8 +557,17 @@ def _normalise_slot_branch_expectations(slot_branch_expectations):
             continue
         sigs = set()
         for value in values or []:
+            assign_slots = ()
+            raw_signature = value
+            if (isinstance(value, (list, tuple)) and len(value) == 3
+                    and value[0] == "branch"):
+                raw_signature = value[1]
+                try:
+                    assign_slots = tuple(sorted(int(slot) for slot in value[2]))
+                except (TypeError, ValueError):
+                    assign_slots = ()
             signature = []
-            for item in value or []:
+            for item in raw_signature or []:
                 if not isinstance(item, (list, tuple)) or len(item) != 2:
                     signature = []
                     break
@@ -568,10 +577,35 @@ def _normalise_slot_branch_expectations(slot_branch_expectations):
                     signature = []
                     break
             if signature:
-                sigs.add(tuple(sorted(signature)))
+                sigs.add((tuple(sorted(signature)), assign_slots))
         if sigs:
             out[(comp_id, ib)] = sigs
     return out
+
+
+def _slot_branch_lines(block):
+    current = None
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("if ", "else if ")):
+            if current is not None:
+                yield current
+            current = [stripped, set()]
+            continue
+        if stripped.startswith(("else ", "elif ", "endif")):
+            if current is not None:
+                yield current
+                current = None
+            continue
+        if current is None:
+            continue
+        match = re.search(
+            r'\bps-t(\d+)\s*=\s*ref\s+ResourceTexture[0-9A-Za-z_]+\b',
+            stripped)
+        if match:
+            current[1].add(int(match.group(1)))
+    if current is not None:
+        yield current
 
 
 def _audit_slot_branches_match_stu_primary_pass(text, slot_branch_expectations):
@@ -589,10 +623,7 @@ def _audit_slot_branches_match_stu_primary_pass(text, slot_branch_expectations):
         expected_sigs = expected.get((comp_id, ib))
         if not expected_sigs:
             continue
-        for line in block.splitlines():
-            stripped = line.strip()
-            if not stripped.startswith(("if ", "else if ")):
-                continue
+        for stripped, assigned_slots in _slot_branch_lines(block):
             if "ps-t" not in stripped:
                 continue
             positive, negative = _slot_branch_signature_from_condition(stripped)
@@ -604,13 +635,31 @@ def _audit_slot_branches_match_stu_primary_pass(text, slot_branch_expectations):
                         "ps-t%d != %s" % item for item in negative)))
             if not positive:
                 continue
-            if not any(all(term in expected_sig for term in positive)
-                       for expected_sig in expected_sigs):
+            matching = [
+                required_slots
+                for expected_sig, required_slots in expected_sigs
+                if all(term in expected_sig for term in positive)
+            ]
+            if not matching:
                 errors.append(
                     "%s condition %s is not a safe subset of a selected STU "
                     "primary-pass layout"
                     % (header, ", ".join(
                         "ps-t%d == %s" % item for item in positive)))
+                continue
+            if any(set(required_slots).issubset(assigned_slots)
+                   for required_slots in matching):
+                continue
+            required = min(matching, key=lambda slots: len(
+                set(slots) - assigned_slots))
+            missing = sorted(set(required) - assigned_slots)
+            if missing:
+                errors.append(
+                    "%s condition %s is missing required primary assignment "
+                    "slot %s"
+                    % (header, ", ".join(
+                        "ps-t%d == %s" % item for item in positive),
+                       ", ".join("ps-t%d" % slot for slot in missing)))
     return errors
 
 
