@@ -455,9 +455,8 @@ def _audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks=None):
         block = match.group(1)
         scoped = re.findall(r'\$component_hash_fallback_c\d+_ib\d+\s*==\s*1', block)
         tagged = 'component_scoped_hash_fallback' in block.lower()
-        if tagged and scoped and "$object_detected_ib0" not in block:
-            continue
-        if "$object_detected_ib0" not in block and "$object_detected_ib" in block and not scoped:
+        object_gates = re.findall(r'\$object_detected_ib\d+', block)
+        if tagged and scoped and not object_gates:
             continue
         errors.append(
             "body slot-owned texture %s is emitted as unscoped hash fallback %s; "

@@ -127,6 +127,30 @@ def _bake_shapekeys(obj):
     obj.data.update()
 
 
+def _rename_and_compact_vertex_groups(obj, renames):
+    renames = dict(renames or {})
+    if not renames:
+        return
+    try:
+        from .....core.mapping import algorithms as _mapping_algorithms
+    except Exception:
+        from . import vg_translate
+        by_name = {vg.name: vg for vg in obj.vertex_groups}
+        for old, new in renames.items():
+            vg = by_name.get(old)
+            if vg is not None:
+                vg.name = vg_translate.TMP_PREFIX + new
+        for vg in obj.vertex_groups:
+            if vg.name.startswith(vg_translate.TMP_PREFIX):
+                vg.name = vg.name[len(vg_translate.TMP_PREFIX):]
+        return
+    _mapping_algorithms.rename_and_reorder(
+        obj,
+        renames,
+        sort_renamed_numerically=False,
+        untouched_to_end=False)
+
+
 def _translate_unified_to_local(obj, component_vg_map, split_name, tag):
     """MERGED import carries UNIFIED VG names; translate them back to the split's base-component
     local numbering (the domain of host_vg_remap) via the component's vg_map inverse. Reuses the
@@ -167,25 +191,11 @@ def _translate_host_vgs(obj, split_rec, tag):
     by_name = {vg.name: vg for vg in obj.vertex_groups}
     for old in drops:
         obj.vertex_groups.remove(by_name[old])
-    for old, new in renames.items():
-        by_name[old].name = vg_translate.TMP_PREFIX + new
-    for vg in obj.vertex_groups:
-        if vg.name.startswith(vg_translate.TMP_PREFIX):
-            vg.name = vg.name[len(vg_translate.TMP_PREFIX):]
+    _rename_and_compact_vertex_groups(obj, renames)
 
 
 def _rename_digit_vertex_groups(obj, renames):
-    if not renames:
-        return
-    from . import vg_translate
-    by_name = {vg.name: vg for vg in obj.vertex_groups}
-    for old, new in renames.items():
-        vg = by_name.get(old)
-        if vg is not None:
-            vg.name = vg_translate.TMP_PREFIX + new
-    for vg in obj.vertex_groups:
-        if vg.name.startswith(vg_translate.TMP_PREFIX):
-            vg.name = vg.name[len(vg_translate.TMP_PREFIX):]
+    _rename_and_compact_vertex_groups(obj, renames)
 
 
 def _weighted_vg_entries(obj):
@@ -230,7 +240,12 @@ def _prepare_editable_ib_vgs(obj, rec, merged_component_vg_map,
             "component palette，也无法翻译到 editable source palette。请把这些权重转回该 editable "
             "IB 的本部件骨，或刷零后再导出。"
             % (tag, merged_component, strays))
-    _rename_digit_vertex_groups(obj, renames)
+    if str(export_skeleton_type).upper() == 'COMPONENT':
+        from ..per_from_merged import _apply_component_remap_preserving_vertex_order
+        _apply_component_remap_preserving_vertex_order(
+            obj, renames, source_component_vg_map)
+    else:
+        _rename_digit_vertex_groups(obj, renames)
 
 
 def _import_one(cfg, src, want_hash):
@@ -935,10 +950,14 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     # but the "Per-Component (from Merged)" path imports MERGED yet exports COMPONENT -- without this
     # the re-imported sub-IBs keep unified VG names and a COMPONENT export drops them (skeleton
     # collapse). Aligning sub-IB import to the export mode is generic (no asset-specific logic).
-    export_skeleton_type = ('COMPONENT' if cfg.mod_skeleton_type == 'COMPONENT_FROM_MERGED'
+    pfm_mode = (cfg.mod_skeleton_type == 'COMPONENT_FROM_MERGED')
+    export_skeleton_type = ('COMPONENT' if pfm_mode
                             else cfg.mod_skeleton_type)
     saved_import_type = cfg.import_skeleton_type
+    saved_mod_skeleton_type = cfg.mod_skeleton_type
     cfg.import_skeleton_type = export_skeleton_type
+    if pfm_mode:
+        cfg.mod_skeleton_type = export_skeleton_type
     # Cross-scene now supports slot-style textures: each independently-exported IB (body / own-buffer /
     # editable) emits its own slot layer (the assembler keeps per-IB slot resources), and the fold
     # replays the base component maps onto the dungeon draws (fold.py). Just record the setting for the
@@ -969,6 +988,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     if hasattr(cfg, "custom_template_live_update"):
         cfg.custom_template_live_update = False
     temp_cols = []
+    pfm_temp_objs = []
     try:
         with _cross_scene_export_guard():
             # 1) body: gather the base's Component meshes once, honoring the stock collection settings
@@ -981,16 +1001,43 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     "「忽略嵌套集合」(Ignore Nested Collections)，导致一个组件都取不到。"
                     "请取消勾选该选项后重试。" % base_collection.name)
             base_by_name = {o.name: o for o in base_meshes}
+            body_meshes = list(base_meshes)
+            if pfm_mode:
+                from .. import per_from_merged
+                merged_meta = json.loads((merged_folder / "Metadata.json").read_text(encoding="utf-8"))
+                velo_settings = getattr(context.scene, "velo_endfield", None)
+                mmd_profile = getattr(velo_settings, "mmd_profile", None) if velo_settings is not None else None
+                pfm_col = bpy.data.collections.new("xs_pfm_body")
+                bpy.context.scene.collection.children.link(pfm_col)
+                temp_cols.append(pfm_col)
+                body_meshes = []
+                components = merged_meta.get("components") or []
+                for src_obj in base_meshes:
+                    cp = src_obj.copy()
+                    cp.data = src_obj.data.copy()
+                    cp.name = src_obj.name
+                    pfm_col.objects.link(cp)
+                    pfm_temp_objs.append(cp)
+                    cid = _component_id(src_obj.name)
+                    if cid is not None and cid < len(components):
+                        stray = per_from_merged._prepare_object_for_component_export(
+                            cp, (components[cid].get("vg_map") or {}), mmd_profile)
+                        if stray:
+                            raise RuntimeError(
+                                "跨场景 Per-Component(from Merged)：物体 %s 的顶点组 %s 权重越界。"
+                                % (src_obj.name, stray))
+                    body_meshes.append(cp)
             if hole:
-                for o in base_meshes:
+                for o in body_meshes:
                     _pos_hole(o, frac=hole_frac)
             # Always export the body from a flat temp collection (identical whether or not there are
             # editable IBs to exclude), so the body path no longer depends on ignore_nested_collections.
             body_col = bpy.data.collections.new("xs_body")
             bpy.context.scene.collection.children.link(body_col)
             temp_cols.append(body_col)
-            for o in base_meshes:
-                if o.name not in eib_comp_names:
+            eib_component_ids = {_component_id(name) for name in eib_comp_names}
+            for o in body_meshes:
+                if _component_id(o.name) not in eib_component_ids:
                     body_col.objects.link(o)
             keep_count = routing["base"]["component_count"]
             body_elig = (None if merged_eligible is None
@@ -1090,9 +1137,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                         _export_col(
                             cfg, own_col, str(work / tag), "om_" + tag, src,
                             eligible=own_elig,
-                            slot_style=(False if slot_style_on
-                                        and not _has_non_depth_texture_pass(src)
-                                        else _KEEP),
+                            slot_style=_KEEP,
                             volatile_hashes=volatile_slot_hashes)
                         if slot_style_on:
                             _merge_slot_branch_expectations(
@@ -1126,9 +1171,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     _export_col(
                         cfg, col, str(work / tag), "om_" + tag, src,
                         eligible=own_elig,
-                        slot_style=(False if slot_style_on
-                                    and not _has_non_depth_texture_pass(src)
-                                    else _KEEP),
+                        slot_style=_KEEP,
                         volatile_hashes=volatile_slot_hashes)
                     if slot_style_on:
                         _merge_slot_branch_expectations(
@@ -1280,6 +1323,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     finally:
         cfg.object_source_folder, cfg.mod_output_folder, cfg.mod_name = saved[0], saved[2], saved[3]
         cfg.import_skeleton_type = saved_import_type
+        cfg.mod_skeleton_type = saved_mod_skeleton_type
         slot_hook.clear_eligible_override()
         cfg.write_ini = saved_gating["write_ini"]
         cfg.partial_export = saved_gating["partial_export"]
@@ -1289,6 +1333,17 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             cfg.custom_template_live_update = saved_gating["custom_template_live_update"]
         if saved[1] is not None:
             cfg.component_collection = saved[1]
+        for obj in list(pfm_temp_objs):
+            mesh = getattr(obj, "data", None)
+            try:
+                bpy.data.objects.remove(obj, do_unlink=True)
+            except Exception:
+                pass
+            try:
+                if mesh is not None:
+                    bpy.data.meshes.remove(mesh)
+            except Exception:
+                pass
         for col in temp_cols:
             for o in list(col.objects):
                 col.objects.unlink(o)

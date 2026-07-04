@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import importlib.util
+import hashlib
 
 
 def _load_format_tags():
@@ -658,6 +659,9 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     if text != text_before_postprocess:
         with open(ini_path, "w", encoding="utf-8") as f:
             f.write(text)
+    with open(ini_path, "rb") as f:
+        final_ini_bytes = f.read()
+    text = final_ini_bytes.decode("utf-8")
     sections_set = set(re.findall(r'^\[([^\]]+)\]', text, re.M))
     refs = set(re.findall(r'(?:ref|run\s*=|this\s*=)\s+(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)', text))
     dangling = sorted(r for r in refs if r not in sections_set)
@@ -710,7 +714,10 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
         },
         "textures_files": (len(os.listdir(textures_dir)) if os.path.isdir(textures_dir) else 0),
         "meshes_files": len(os.listdir(os.path.join(out, "Meshes"))),
-        "ini_size": len(text), "gate": gate,
+        "ini_sha256": hashlib.sha256(final_ini_bytes).hexdigest(),
+        "ini_size": len(final_ini_bytes),
+        "section_count": len(sections_set),
+        "gate": gate,
         "format_sections_raw": format_stats["format_sections_raw"],
         "format_sections_unique": format_stats["format_sections_unique"],
         "format_sections_removed": format_stats["format_sections_removed"],
@@ -728,4 +735,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             os.remove(os.path.join(out, "mod.ini"))
         except OSError:
             pass
+        report["ini_sha256"] = None
+        report["ini_size"] = 0
+        report["section_count"] = 0
     return report

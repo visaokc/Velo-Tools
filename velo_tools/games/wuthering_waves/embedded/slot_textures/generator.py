@@ -706,6 +706,29 @@ def _canonical_override_slots(pair_map: Dict[int, Optional[str]],
     return _eligible_slots(pair_map)
 
 
+def _component_hash_canonical_slots(forms: List[Tuple[str, FormData]],
+                                    alias: Dict[str, str]) -> Dict[Tuple[int, str], int]:
+    out: Dict[Tuple[int, str], int] = {}
+    score_by_key: Dict[Tuple[int, str], Tuple[int, int, int]] = {}
+    for _label, form_data in forms:
+        for comp_id, comp_pairs in form_data.items():
+            for pair_map in comp_pairs.values():
+                role = _pass_role(pair_map, {})
+                role_score = 2 if role == 'material' else (1 if role == 'outline' else 0)
+                layout_score = len(_eligible_slots(pair_map))
+                for slot, tex_hash in pair_map.items():
+                    if not isinstance(tex_hash, str):
+                        continue
+                    canon = alias.get(tex_hash, tex_hash)
+                    key = (comp_id, canon)
+                    score = (role_score, layout_score, -slot)
+                    previous = score_by_key.get(key)
+                    if previous is None or score > previous:
+                        out[key] = slot
+                        score_by_key[key] = score
+    return out
+
+
 def _primary_passes_by_form(forms: List[Tuple[str, FormData]],
                            texture_info: TextureInfo,
                            freshness: Optional[List[Dict[Tuple[int, str, int], bool]]],
@@ -722,8 +745,6 @@ def _primary_passes_by_form(forms: List[Tuple[str, FormData]],
                       else None) or {}
         for comp_id, comp_pairs in form_data.items():
             for ps, pair_map in comp_pairs.items():
-                if form_depth.get((comp_id, ps), False):
-                    continue
                 fresh_slots = _fresh_signature_slots(
                     comp_id, ps, pair_map, form_fresh)
                 role = _pass_role(pair_map, texture_info)
@@ -1012,34 +1033,7 @@ def _minimal_condition_signature_options(
     positive, negative = _minimal_condition_signature(
         own_signatures, other_signatures, assignment_slots,
         blocked_negative_slots, allow_negative)
-    options = [(positive, negative)]
-    if negative or not positive or not other_signatures:
-        return options
-
-    volatile_terms = [term for term in positive if _volatile_condition_slot(term[0])]
-    if len(volatile_terms) != 1:
-        return options
-
-    anchor_terms = tuple(term for term in positive
-                         if not _volatile_condition_slot(term[0]))
-    if not anchor_terms:
-        return options
-
-    common = _signature_common(own_signatures)
-    other_set = set(other_signatures)
-    seen = {positive}
-    for term in sorted(common, key=lambda item: _condition_term_sort_key(
-            item, assignment_slots)):
-        if term in positive or not _volatile_condition_slot(term[0]):
-            continue
-        candidate = _ordered_signature(anchor_terms + (term,))
-        if candidate in seen or not _safe_condition_shape(candidate, ()):
-            continue
-        if any(all(item in other for item in candidate) for other in other_set):
-            continue
-        seen.add(candidate)
-        options.append((candidate, ()))
-    return options
+    return [(positive, negative)]
 
 def _minimize_anchor_branches(branches: List[_Branch]) -> None:
     blocked_negative_slots = {
@@ -1196,6 +1190,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
         forms, freshness, [])
     audit_forms = _local_audit_forms(forms, filtered_forms, texture_info)
     alias = _variant_aliases(texture_info)
+    canonical_seats = _component_hash_canonical_slots(audit_forms, alias)
     primary_passes = _primary_passes_by_form(
         audit_forms, texture_info, freshness, pass_depth, alias)
     rows = []
@@ -1236,7 +1231,9 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                 assign_hashes = {
                     slot: tex_hash for slot, tex_hash in observed_hashes.items()
                     if (is_primary_pass and slot in override_slots
-                        and alias.get(tex_hash, tex_hash) in texture_info)
+                        and alias.get(tex_hash, tex_hash) in texture_info
+                        and canonical_seats.get(
+                            (comp_id, alias.get(tex_hash, tex_hash))) == slot)
                 }
                 depth_only = False
                 if pass_depth is not None and form_id - 1 < len(pass_depth):
@@ -1261,7 +1258,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     'observed_hashes': {str(slot): tex_hash
                                         for slot, tex_hash in observed_hashes.items()},
                     'fresh_slots': sorted(fresh_slots),
-                    'canonical_slots': sorted(override_slots) if is_primary_pass else [],
+                    'canonical_slots': sorted(assign_hashes) if is_primary_pass else [],
                 }
                 remap_sources = _source_meta_for(source_meta, label, comp_id)
                 if remap_sources:

@@ -108,6 +108,99 @@ def _vgs_with_weight(obj, threshold=1e-6):
     return have
 
 
+def _component_local_names(vg_map):
+    return [str(i) for i in sorted(int(key) for key in (vg_map or {}).keys())]
+
+
+def _find_vertex_group(obj, name):
+    getter = getattr(obj.vertex_groups, "get", None)
+    if getter is not None:
+        vg = getter(name)
+        if vg is not None:
+            return vg
+    for vg in obj.vertex_groups:
+        if vg.name == name:
+            return vg
+    return None
+
+
+def _move_vertex_group(obj, from_index, to_index):
+    mover = getattr(obj.vertex_groups, "move", None)
+    if mover is not None:
+        mover(from_index, to_index)
+        return
+    groups = obj.vertex_groups
+    vg = groups.pop(from_index)
+    groups.insert(to_index, vg)
+    for index, item in enumerate(groups):
+        item.index = index
+
+
+def _sort_vertex_groups_by_name(obj):
+    if obj is None or getattr(obj, "type", None) != 'MESH':
+        return False
+    active_obj = bpy.context.view_layer.objects.active
+    selected = list(getattr(bpy.context, "selected_objects", ()) or [])
+    active_mode = getattr(active_obj, "mode", "OBJECT") if active_obj is not None else "OBJECT"
+    try:
+        if active_obj is not None and active_mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.vertex_group_sort()
+        return True
+    finally:
+        try:
+            bpy.ops.object.select_all(action='DESELECT')
+            for selected_obj in selected:
+                selected_obj.select_set(True)
+            if active_obj is not None:
+                bpy.context.view_layer.objects.active = active_obj
+            if active_obj is not None and active_mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode=active_mode)
+        except Exception:
+            pass
+
+
+def _apply_component_remap_preserving_vertex_order(obj, renames, vg_map):
+    renames = dict(renames or {})
+    by_name = {vg.name: vg for vg in obj.vertex_groups}
+    rename_pairs = [
+        (by_name[old], str(new))
+        for old, new in renames.items()
+        if new is not None and old in by_name
+    ]
+    drop_groups = [
+        by_name[old]
+        for old, new in renames.items()
+        if new is None and old in by_name
+    ]
+    for vg, new in rename_pairs:
+        vg.name = _TMP_PREFIX + new
+    for vg in drop_groups:
+        obj.vertex_groups.remove(vg)
+    for vg, new in rename_pairs:
+        vg.name = new
+
+    names = _component_local_names(vg_map)
+    if not names:
+        return
+    existing = {vg.name for vg in obj.vertex_groups}
+    new_group = getattr(obj.vertex_groups, "new", None)
+    if new_group is not None:
+        for name in names:
+            if name not in existing:
+                new_group(name=name)
+                existing.add(name)
+    if _sort_vertex_groups_by_name(obj):
+        return
+    for target_index, name in enumerate(names):
+        vg = _find_vertex_group(obj, name)
+        if vg is not None and vg.index != target_index:
+            _move_vertex_group(obj, vg.index, target_index)
+
+
 def _remap_object(obj, vg_map):
     """Rename ``obj``'s unified VG names back to local 0-based (via ``vg_map`` inverse) and drop
     out-of-palette VGs. Returns the names of dropped VGs that still carried weight (stray cross-
@@ -115,16 +208,7 @@ def _remap_object(obj, vg_map):
     weighted = _vgs_with_weight(obj)
     entries = [(vg.name, vg.index in weighted) for vg in obj.vertex_groups]
     renames, drop_with_weight = plan_vg_remap(vg_map, entries)
-    by_name = {vg.name: vg for vg in obj.vertex_groups}
-    for old, new in renames.items():
-        if new is not None and old in by_name:
-            by_name[old].name = _TMP_PREFIX + new
-    for vg in obj.vertex_groups:
-        if vg.name.startswith(_TMP_PREFIX):
-            vg.name = vg.name[len(_TMP_PREFIX):]
-    for old, new in renames.items():
-        if new is None and old in by_name:
-            obj.vertex_groups.remove(by_name[old])
+    _apply_component_remap_preserving_vertex_order(obj, renames, vg_map)
     return drop_with_weight
 
 
@@ -184,6 +268,8 @@ def _make_patched(orig_execute):
             self.report({'ERROR'}, "Per-Component (from Merged)：未选择 component collection。")
             return {'CANCELLED'}
         src = bpy.path.abspath(getattr(cfg, "object_source_folder", "") or "")
+        if (Path(src) / "CrossSceneRouting.json").is_file():
+            return orig_execute(self, context)
         try:
             vg_maps = _load_vg_maps(src)
         except Exception as e:
