@@ -10,13 +10,18 @@ dist/
 Blend/
 _archive/
 
-# Markdown docs: only the root README.md is published (per project decision).
+# Markdown docs: publish the root README and the two GitHub user manuals only.
 # All other .md stay local — internal CONTEXT/DEV_LOG/FIX, nested per-game READMEs, ADRs.
 *.md
 !/README.md
+!/docs/
+!/docs/user-manual.en.md
+!/docs/user-manual.zh-CN.md
 
 # Internal design docs and unreferenced doc images kept local
-docs/
+docs/*
+!docs/user-manual.en.md
+!docs/user-manual.zh-CN.md
 png/
 
 # Dev-only tooling kept local; only the dev junction helper is published
