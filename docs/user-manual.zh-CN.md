@@ -1,210 +1,234 @@
-# Velo Tools 用户手册（中文）
+# Velo Tools 中文使用手册
 
-> 适用版本：Velo Tools v1.4.0。本文面向 Blender 用户与 mod 作者；Blender、GIMI、3Dmigoto、IB、VB、Hash、MERGED、Per-Component、Frame Dump、LOD、INI、ShapeKey 等技术名词保留原文。
+> 适用版本：Velo Tools v1.4.0。本文按当前 Velo Tools 中文 UI 编写，优先使用面板上的中文名称；只有文件名、格式名、缩写和游戏生态通用词保留英文。
+
+## 术语说明
+
+| 手册写法 | 含义 |
+| --- | --- |
+| Mod | 游戏 Mod 成品或输出目录。 |
+| Frame Dump / Dump | 3Dmigoto 抓到的帧转储目录；UI 中也写作 `Frame Dump 目录`。 |
+| IB / VB / Hash | 3Dmigoto 资源标识，属于定位对象和贴图的基础缩写。 |
+| Merged | 统一顶点组骨架模式；UI 中写作 `Merged` 或 `Merged（统一顶点组）`。 |
+| Per-Component | 部件独立骨架模式；UI 中写作 `Per-Component` 或 `Per-Component（部件独立）`。 |
+| ShapeKey | Blender 形态键技术名；UI 中多数位置也保留 `ShapeKey`。 |
+| LOD | 远距离模型层级；UI 中保留 `LOD`。 |
+| INI / JSON / DDS / Buffer | 文件或数据格式名，保持原文。 |
+| Component | EFMI / WWMI 的部件编号单位；UI 中常见 `Component 0`、`Component 1`。 |
+| draw | 一次绘制调用；在贴图和跨场景导出说明中保留此缩写。 |
+
+除上表外，本文尽量使用中文：例如“通用工具”“权重工具”“对象源目录”“插槽风格贴图”“形态贴图合并”“形态锚点”“原始网格工具”等。
 
 ## 目录
 
 1. [快速引导](#快速引导)
 2. [安装与更新](#安装与更新)
 3. [界面与游戏切换](#界面与游戏切换)
-4. [Shared tools](#shared-tools)
-   - [顶点组工具与 general mapping](#顶点组工具与-general-mapping)
+4. [通用工具](#通用工具)
+   - [顶点组工具与映射表](#顶点组工具与映射表)
    - [网格工具](#网格工具)
-   - [Weight Tools](#weight-tools)
-5. [Arknights: Endfield / EFMI 工作流](#arknights-endfield--efmi-工作流)
+   - [权重工具](#权重工具)
+5. [终末地 EFMI 工作流](#终末地-efmi-工作流)
    - [EFMI 提取、导入与导出](#efmi-提取导入与导出)
-   - [CrossIB](#crossib)
-   - [EFMI ShapeKey export](#efmi-shapekey-export)
-6. [Wuthering Waves / WWMI 工作流](#wuthering-waves--wwmi-工作流)
-   - [WWMI Extract / Import / Export](#wwmi-extract--import--export)
-   - [Per-Component (from Merged)](#per-component-from-merged)
-   - [LOD](#lod)
-   - [cross-scene multi-IB](#cross-scene-multi-ib)
-   - [slot-style texture export](#slot-style-texture-export)
-   - [Merge Form Textures](#merge-form-textures)
-   - [form anchors](#form-anchors)
-   - [Raw Mesh](#raw-mesh)
+   - [跨 IB / CrossIB](#跨-ib--crossib)
+   - [EFMI 形态键导出](#efmi-形态键导出)
+6. [鸣潮 WWMI 工作流](#鸣潮-wwmi-工作流)
+   - [WWMI 提取、导入与导出](#wwmi-提取导入与导出)
+   - [部件独立（从 Merged 导出）](#部件独立从-merged-导出)
+   - [LOD 数据](#lod-数据)
+   - [跨场景多 IB](#跨场景多-ib)
+   - [插槽风格贴图导出](#插槽风格贴图导出)
+   - [形态贴图合并](#形态贴图合并)
+   - [形态锚点](#形态锚点)
+   - [原始网格工具](#原始网格工具)
 7. [常见问题与限制](#常见问题与限制)
 
 ## 快速引导
 
-1. 从 GitHub Releases 下载最新 `velo_tools-<version>.zip`。
-2. 在 Blender 中通过 **Edit -> Preferences -> Add-ons -> Install from Disk...** 安装 zip。
+1. 从 [GitHub Releases](https://github.com/visaokc/Velo-Tools/releases) 下载最新 `velo_tools-<version>.zip`。
+2. 在 Blender 中通过 **Edit（编辑） -> Preferences（偏好设置） -> Add-ons（插件） -> Install from Disk...（从磁盘安装）** 安装这个 zip。
 3. 启用 **Velo-Tools**。
-4. 在 3D Viewport 按 `N`，打开 **Velo Tools** sidebar tab。
-5. 顶部功能区通常这样选择：
-   - **顶点组工具**：vertex group 批处理、名称映射、MMD / unified 互转。
-   - **网格工具**：material split / merge、shape-key aggregation、多物体 sculpt 辅助。
-   - **权重工具**：Robust 权重传递、mirror、donor normalization、smoothing、group limiting。
-   - **游戏**：进入 EFMI 或 WWMI 的具体提取、导入、导出流程。
-6. 在 **游戏** tab 选择目标游戏：
-   - **Arknights: Endfield / EFMI**：EFMI import/export、CrossIB、EFMI ShapeKey export。
-   - **Wuthering Waves / WWMI**：WWMI extract/import/export、LOD、cross-scene multi-IB、slot-style texture export、Merge Form Textures、form anchors、Per-Component (from Merged)、Raw Mesh。
+4. 在 3D 视图按 `N`，打开右侧 **Velo Tools** 面板。
+5. 顶部 **功能区** 通常这样选：
+   - **顶点组工具**：顶点组批处理、MMD 与统一编号映射、通用映射表、可视化校对。
+   - **网格工具**：材质拆分/合并、多物体雕刻辅助、形态键聚合、按材质分配集合。
+   - **权重工具**：权重传递、镜像映射、供体规格化、平滑、每顶点组数限制、局部顶点修复。
+   - **游戏**：进入终末地 EFMI 或鸣潮 WWMI 的提取、导入、导出流程。
+6. 在 **游戏** 功能区里选择目标游戏：
+   - **终末地**：EFMI 提取/导入/导出、跨 IB、EFMI 形态键导出。
+   - **鸣潮**：WWMI 提取/导入/导出、LOD、跨场景多 IB、插槽风格贴图、形态贴图合并、形态锚点、部件独立（从 Merged 导出）、原始网格工具。
 
 ## 安装与更新
 
 ### 安装
 
 1. 从 [GitHub Releases](https://github.com/visaokc/Velo-Tools/releases) 下载最新 `velo_tools-<version>.zip`。
-2. Blender：**Edit -> Preferences -> Add-ons -> Install from Disk...**。
+2. Blender：**Edit（编辑） -> Preferences（偏好设置） -> Add-ons（插件） -> Install from Disk...（从磁盘安装）**。
 3. 选择下载的 zip。
 4. 启用 **Velo-Tools**。
-5. 在 3D Viewport 按 `N`，打开 **Velo Tools** tab。
+5. 在 3D 视图按 `N`，打开 **Velo Tools** 面板。
 
 ### 更新
 
-Velo Tools 使用宿主级 updater 更新整个 `velo_tools/` 插件，而不是让 EFMI / WWMI vendored core 自己更新。
+Velo Tools 使用宿主级更新器更新整个 `velo_tools/` 插件。不要单独更新内置的 EFMI 或 WWMI 核心。
 
-- 默认只显示 stable GitHub Releases。
-- 只有主动开启 pre-release 接收时，才会显示 beta / pre-release。
-- 更新后重启 Blender。
-- 开发期 junction / source-link 安装不要点击 updater 的立即更新；普通用户安装 release zip 时正常使用 updater。
+更新入口：
 
-Velo 内置的 EFMI / WWMI core 使用 Velo 自己的 namespace fork；如需更新，更新 Velo Tools 本身即可。
+- **Velo Tools 面板顶部横幅**：检测到新版本时会显示更新提示。
+- **Add-ons 偏好设置 -> Velo-Tools**：可手动检查更新、立即更新、开启/关闭自动提醒。
+
+说明：
+
+- 默认只显示稳定版 GitHub Release。
+- 只有主动开启“接收预发布版本”时，才会显示 beta / pre-release。
+- 更新后请重启 Blender。
+- 开发期目录联接或源码安装不要点击“立即更新”；普通用户通过 release zip 安装时可正常使用更新器。
 
 ## 界面与游戏切换
 
-Velo Tools 是一个 host add-on：同一个 Blender add-on 内承载通用工具、EFMI 工作流和 WWMI 工作流。
+Velo Tools 是一个宿主插件：同一个 Blender 插件内承载通用工具、终末地 EFMI 工作流和鸣潮 WWMI 工作流。
 
-| 功能区 | 用途 |
+| 功能区 | 主要用途 |
 | --- | --- |
-| 顶点组工具 | vertex-group 操作、mapping table、可视化校对 |
-| 网格工具 | material tools、split/merge helper、多物体 sculpt、shape-key aggregation |
-| 权重工具 | Robust weight transfer、mirror transfer、donor normalization、smoothing、group limiting |
-| 游戏 | EFMI / WWMI 的 game-specific mod workflow |
+| 顶点组工具 | 顶点组操作、MMD 映射、通用映射、可视化校对。 |
+| 网格工具 | 材质工具、拆分/合并、形态键聚合、多物体雕刻辅助。 |
+| 权重工具 | 权重传递、镜像传递、供体规格化、平滑、组数限制。 |
+| 游戏 | EFMI / WWMI 的游戏专用 Mod 流程。 |
 
-进入 **游戏** 功能区后，用 game dropdown 选择：
+进入 **游戏** 功能区后，用 **游戏** 下拉框选择：
 
-- **Arknights: Endfield / EFMI**
-- **Wuthering Waves / WWMI**
+- **终末地**
+- **鸣潮**
 
-只会显示当前游戏相关的面板，减少 EFMI 和 WWMI 设置混用。
+只会显示当前游戏相关的面板，避免 EFMI 与 WWMI 设置混用。
 
-## Shared tools
+## 通用工具
 
-### 顶点组工具与 general mapping
+### 顶点组工具与映射表
 
-顶点组工具适合在导出前整理 vertex groups。
+顶点组工具适合在导出前整理顶点组名称和骨骼编号。
 
 常见任务：
 
-1. 选择 source mesh 和 target mesh。
-2. 建立或加载 mapping table。
-3. 从 source object 填充行。
-4. 按位置匹配写入 target rows。
-5. 执行 source / target rename，或恢复原名。
-6. 使用 overlay 和 unmatched list 检查映射质量。
+1. 选择 **源物体** 和 **目标物体**。
+2. 建立或加载 **映射表**。
+3. 点击 **从源物体补行**，把源顶点组填入表格。
+4. 点击 **按位置匹配→写入本表**，自动匹配目标顶点组。
+5. 执行源物体或目标物体的改名，也可恢复原名。
+6. 打开 **可视化校对（重心连线）** 或未匹配列表，检查映射是否合理。
 
-mapping table 可以存入 `.blend` 的 Text block，也可以 import / export 为外部文件。
+映射表可以保存为 `.blend` 内置文本，也可以导入/导出为外部文本。
 
 批处理操作包括：
 
-- Merge vertex groups。
-- Fill gaps in vertex groups。
-- Remove unused vertex groups。
-- Remove all vertex groups。
+- 合并顶点组。
+- 补齐顶点组编号空洞。
+- 移除未使用顶点组。
+- 移除全部顶点组。
 
 ### 网格工具
 
-网格工具用于 Blender 数据整理，通常在 game export 之前使用。
+网格工具用于 Blender 数据整理，通常在导出 Mod 之前使用。
 
-- **多物体 sculpt**：创建 merged sculpt object，把 sculpt 结果应用回源对象，也支持带 ShapeKey 的应用流程。
-- **Material tools**：添加 `Component` 前缀、生成材质、按材质拆分、按贴图合并、补齐 mesh data、对带 ShapeKey 的对象应用 modifiers、转换 vertex colors。
-- **Material routing**：预览当前 active game export collection 下的 material groups，把 material / texture 分组拆入目标 collections。
-- **Shape-key aggregation**：扫描 collection 内 mesh ShapeKeys，按同名 key 聚合、改名并同步 value。
+- **多物体雕刻**：创建合并雕刻对象，把雕刻结果应用回源对象，也支持带形态键的应用流程。
+- **材质工具**：添加 `Component` 前缀、生成材质、按材质拆分、按贴图合并、补齐网格数据、对带 ShapeKey 的对象应用修改器、转换顶点色。
+- **按材质分离所属集合**：预览当前游戏导出集合下的材质分组，把材质或贴图分组拆入目标集合。
+- **形态键聚合（按集合）**：扫描集合内网格的 ShapeKey，按同名形态键聚合、改名并同步数值。
 
-这里的 shape-key aggregation 是 Blender 组织工具；EFMI runtime ShapeKey export 是后面单独说明的游戏功能。
+这里的“形态键聚合”是 Blender 组织工具；EFMI 的运行时形态键导出见后文 **EFMI 形态键导出**。
 
-### Weight Tools
+### 权重工具
 
-Weight Tools 用于把 source vertex group 安全转移到 target mesh，并尽量保留其它权重生态。
+权重工具用于把一个来源顶点组安全转移到目标网格，同时尽量保护已有权重结构。
 
 典型流程：
 
-1. 设置 **Source Mesh**。
-2. 选择 **Source Vertex Group**。
-3. 可选设置 **Mirror Vertex Group**。
-4. 设置 **Target Mesh** 和可选 **Target Armature**。
-5. 选择 transfer engine：
-   - **Robust**：surface matching + inpaint，是 Velo 默认主路径。
-   - **Surface interpolation transfer**：Blender Data Transfer 风格的 surface interpolation。
-6. 确认或手动覆盖 target group name。
-7. 检查 donor groups。
-8. 执行 **Weight Transfer**。
-9. 查看 last report。
+1. 设置 **来源网格**。
+2. 选择 **来源顶点组**。
+3. 可选设置 **镜像顶点组**。
+4. 设置 **目标网格** 和可选 **目标骨架**。
+5. 选择 **传递引擎**：
+   - **Robust**：Velo 主路径，使用表面匹配和补洞计算。
+   - **面插值传递**：接近 Blender Data Transfer 的表面插值路径。
+6. 确认或手动覆盖 **承接组名**。
+7. 检查 **预计算供体（规格化时使用）**。
+8. 执行 **权重传递**。
+9. 查看 **结果** 或复制报告。
 
 重要行为：
 
-- Robust transfer 会使用 source-side weight context，避免把弱证据孤岛写成权重。
-- donor groups 用于 normalization，是最大 donor set，不要求填满所有槽位。
-- 手动 donor slots 是严格覆盖；自动 donor slots 是预览建议，直到你手动编辑才固定。
-- mirror transfer 可解析 numeric 或 named mirror pairs，并能把手动 mirror mapping 持久化在 scene 中。
-- locked ordinary groups 在 limit / normalize 时视为受保护容量。
-- smoothing 是 seam-safe，可关闭。
-- selected-vertex repair 可在 Edit Mode 中修复局部顶点，并把未解决顶点保持选中。
+- Robust 传递会利用来源侧权重证据，避免把弱证据孤岛误写成有效权重。
+- **供体** 用于规格化，数量是上限，不要求强行填满。
+- 手动供体槽位是严格覆盖；自动供体只是预填建议，直到你手动编辑才固定。
+- 镜像传递可解析数字顶点组或命名镜像组，也可把手动镜像映射保存在场景里。
+- 锁定的普通组在限制和规格化时会被保护。
+- 平滑会避开 UV 接缝，必要时可关闭。
+- 选中顶点修复可在 Edit Mode 中处理局部问题，并保持未解决顶点处于选中状态。
 
-## Arknights: Endfield / EFMI 工作流
+## 终末地 EFMI 工作流
 
-在 **Game -> Arknights: Endfield / EFMI** 下使用 EFMI 工作流。Velo 内置 vendored EFMI core，并在 host 层加入 Velo 扩展。
+在 **游戏 -> 终末地** 下使用 EFMI 工作流。Velo 内置 EFMI 核心，并在宿主层加入 Velo 扩展。
 
 ### EFMI 提取、导入与导出
 
-常见 modes：
+常见模式：
 
-- **Extract Frame Data**
-- **Import Object**
-- **Extract LOD Data**
-- **Export Mod**
+- **提取帧数据**
+- **导入对象**
+- **提取 LOD 数据**
+- **导出 Mod**
 
-常见 EFMI export 字段：
+常见导出字段：
 
-- Component collection。
-- Object source folder。
-- Mod output folder。
-- Export skeleton mode。
-- Mirror mesh。
-- Apply modifiers。
-- Copy textures。
-- Write `mod.ini`。
-- Ignore nested / hidden collections 或 hidden objects。
-- Ignore muted shape keys。
-- Add missing vertex groups。
-- Fill missing mesh data。
-- Allow export without LODs。
+- **组件集合**
+- **对象源目录**
+- **Mod 输出目录**
+- **骨架**
+- **镜像网格**
+- **应用所有修改器**
+- **复制贴图**
+- **写出 mod.ini**
+- **写入注释**
+- **忽略嵌套集合 / 忽略隐藏集合 / 忽略隐藏对象**
+- **忽略禁用形态键**
+- **补齐缺失顶点组**
+- **补齐缺失网格数据**
+- **允许无 LOD 导出**
 
-提取时使用有效 Frame Dump folder 和 output folder。过滤选项可跳过 static objects、小贴图、`.jpg` 贴图、低于阈值的 objects / components 或指定 resource hashes。
+提取时使用有效的 **Frame Dump 目录** 和 **输出目录**。过滤选项可跳过静态对象、小贴图、`.jpg` 贴图、组件数量不足的对象或指定 Hash。
 
-### CrossIB
+### 跨 IB / CrossIB
 
-CrossIB 让一个 component 跨 index buffer 借用另一个 component 的 rendering pipeline。
+跨 IB（CrossIB）让一个源物体或源集合借用目标部件的渲染管线，适合跨 index buffer 渲染。
 
 基本流程：
 
-1. 切到 **Game -> Arknights: Endfield / EFMI**。
-2. mode 设为 **Export Mod**。
-3. 打开 **Cross Index Buffer / CrossIB**。
-4. 启用 **Use Cross Index Buffer**。
-5. 如果 object source folder 中没有 sidecar data，从 Frame Dump 生成或合并 `CrossIB.json`。
-6. 添加 mapping：
-   - **Object mapping**：单个 mesh object 作为 provider。
-   - **Collection mapping**：collection 内每个 mesh 都可作为 provider。
-7. 设置每行 target component。
-8. 正常导出。
+1. 切到 **游戏 -> 终末地**。
+2. 模式设为 **导出 Mod**。
+3. 打开 **Cross Index Buffer（跨 IB）**。
+4. 启用 **启用跨 IB（CrossIB）**。
+5. 如果对象源目录里没有 `CrossIB.json`，点击 **生成 CrossIB.json（选帧转储）**。
+6. 如需合并更多场景证据，点击 **合并新场景 dump（累积）**。
+7. 添加映射：
+   - **添加物体映射**：单个网格物体作为源。
+   - **添加集合映射**：集合内每个网格都可作为源。
+8. 设置每行 **目标部件**。
+9. 正常导出。
 
 注意：
 
-- 已存在 `CrossIB.json` 和 `ShaderOverride.ini` 时会直接消费。
-- 可从更多 scene dumps 累积 sidecar evidence。
-- overwrite / rebuild 只在你明确要重算时使用。
+- 已存在 `CrossIB.json` 和 `ShaderOverride.ini` 时会直接使用。
+- 可从更多场景 Dump 累积证据。
+- **覆盖重建（不累积）** 只在明确要从头重算时使用。
 
-### EFMI ShapeKey export
+### EFMI 形态键导出
 
-EFMI ShapeKey export 是导出期功能，用于把 Blender 中的 custom ShapeKeys 写入 mod。
+EFMI 形态键导出是导出期功能，用于把 Blender 里的自定义 ShapeKey 写入 Mod。
 
 命名规则：
 
 ```text
-Deform <slot> <name>
+Deform <编号> <名称>
 ```
 
 示例：
@@ -217,234 +241,229 @@ Deform12 CapeLift
 
 流程：
 
-1. 在 active EFMI component collection 内的 meshes 上保留或创建 ShapeKeys。
-2. 按 `Deform <number> <name>` 命名。
-3. 在 EFMI advanced export options 中启用 **Export custom shape keys**。
-4. 除非需要 legacy per-slot buffers，否则保持 **Merge Buffer Files** 开启。
-5. 检查 detected shape-key list。
-6. 修复 naming conflicts 后导出。
+1. 在当前 EFMI **组件集合** 内的网格上保留或创建 ShapeKey。
+2. 按 `Deform <编号> <名称>` 命名。
+3. 在高级导出选项中启用 **导出自定义形状键**。
+4. 除非需要旧式分散 Buffer，否则保持 **合并 Buffer 文件** 开启。
+5. 展开 **已识别形状键** 并刷新。
+6. 修复列表中提示的重复或冲突后导出。
 
 会阻止导出的情况：
 
-- 同一 object 上重复 `(slot, name)`。
-- 同一个 name 被分配到不同 Deform slots。
-- 同一 Deform slot 在不同 components 上对应不同 names。
-- sanitized INI-safe variable names 发生冲突。
+- 同一物体上重复 `(编号, 名称)`。
+- 同一个名称被分配给不同 Deform 编号。
+- 同一 Deform 编号在不同物体上对应不同名称。
+- 写入 INI 的变量名清理后发生冲突。
 
-## Wuthering Waves / WWMI 工作流
+## 鸣潮 WWMI 工作流
 
-在 **Game -> Wuthering Waves / WWMI** 下使用 WWMI 工作流。Velo 内置 namespaced WWMI fork，可与 standalone WWMI-Tools 共存。
+在 **游戏 -> 鸣潮** 下使用 WWMI 工作流。Velo 内置独立命名空间的 WWMI 分叉，可与独立安装的 WWMI-Tools 共存。
 
-### WWMI Extract / Import / Export
+### WWMI 提取、导入与导出
 
-#### Extract Objects From Dump
+#### 提取帧数据
 
-用于把 WWMI Frame Dump 转成 object source folder。
+用于把 WWMI Frame Dump 转成对象源目录。
 
 常见选项：
 
-- Frame Dump folder。
-- Output folder。
-- Skip small textures。
-- Minimum texture size。
-- Skip `.jpg` textures。
-- Skip known cubemap textures。
-- Skip same-slot hash textures。
-- 有 log freshness evidence 时跳过 dirty / inherited slot records。
+- **Frame Dump 目录**
+- **输出目录**
+- **贴图过滤：跳过小贴图**
+- **最小大小 KB**
+- **贴图过滤：跳过 .jpg**
+- **贴图过滤：跳过已知 Cubemap**
+- **贴图过滤：跳过同槽同 Hash**
+- **贴图过滤：跳过 Dirty Slot**
 
-提取会写出 slot-style texture export 需要的 texture usage data。
+提取会写出 `ShaderTextureUsage.json`，供插槽风格贴图导出、形态贴图合并和贴图证据检查使用。
 
-#### Import Object
+#### 导入对象
 
-用于把 object source folder 导入 Blender。
+用于把对象源目录导入 Blender。
 
 关键字段：
 
-- Object source folder。
-- Vertex color storage。
-- Import skeleton type：
-  - **Merged**
-  - **Per-Component**
-- Import as component sub-collections。
-- Import textures。
-- Skip empty vertex groups。
-- Mirror mesh。
+- **对象源目录**
+- **顶点色**
+- **骨架**：`Merged` 或 `Per-Component`
+- **按组件创建子集合**
+- **跳过空顶点组**
+- **镜像网格**
+- **导入贴图**
 
-Velo import extras：
+Velo 导入增强：
 
-- **Import as component sub-collections** 会创建 `C0`、`C1` ... 子集合，并自动连接 export collection。
-- **Import textures** 在 texture usage data 可用时，为 imported meshes 分配 diffuse / source textures。
-- 关闭这些选项可复现更接近 stock 的 single-collection、no-material import。
+- **按组件创建子集合** 会创建 `C0`、`C1` ... 子集合，并自动连接导出集合。
+- **导入贴图** 会在贴图使用数据可用时，为导入网格分配材质贴图。
+- 关闭这些选项可复现更接近原版的单集合、无材质导入行为。
 
-#### Export Mod
+#### 导出 Mod
 
-用于把编辑后的 Blender collection 导出为 WWMI mod。
+用于把编辑后的 Blender 集合导出为 WWMI Mod。
 
 常见字段：
 
-- Component collection。
-- Object source folder。
-- Mod output folder。
-- Skeleton：
-  - **Merged**
-  - **Per-Component**
-  - **Per-Component (from Merged)**
-- Mirror mesh。
-- Apply all modifiers。
-- Copy textures。
-- Write `mod.ini`。
-- Comment `mod.ini`。
-- Ignore nested collections。
-- Ignore hidden collections。
-- Ignore hidden objects。
-- Ignore muted shape keys。
-- Partial export options。
+- **组件集合**
+- **对象源目录**
+- **Mod 输出目录**
+- **骨架**：`Merged`、`Per-Component`、`Per-Component (from Merged)`
+- **镜像网格**
+- **应用所有修改器**
+- **复制贴图**
+- **写出 mod.ini**
+- **写入注释**
+- **忽略嵌套集合**
+- **忽略隐藏集合**
+- **忽略隐藏对象**
+- **忽略禁用形态键**
+- **部分导出**
 
-普通完整导出时，通常保持 `write_ini` 与 `copy_textures` 开启。
+普通完整导出时，通常保持 **写出 mod.ini** 和 **复制贴图** 开启。
 
-### Per-Component (from Merged)
+### 部件独立（从 Merged 导出）
 
-**Per-Component (from Merged)** 是 WWMI 的 Velo export mode。
+**Per-Component (from Merged)** 是 WWMI 的 Velo 导出模式。中文理解为：按 `Merged` 方式编辑，最终导出成 `Per-Component` 运行结构。
 
 适合你想：
 
-- 用 **Merged** skeleton 和 unified vertex-group list 编辑。
-- 导出 **Per-Component** runtime mod。
-- 避免某些情况下 pure Merged runtime 的缺点。
-- 让 Velo 在导出时把 unified vertex groups remap 回 component-local groups。
+- 用 `Merged` 的统一顶点组列表编辑。
+- 最终导出 `Per-Component` 类型的运行时 Mod。
+- 避免纯 `Merged` 在某些同屏场景中的缺点。
+- 让 Velo 在导出时把统一顶点组转换回各 Component 的局部编号。
 
 行为：
 
-- 你按 Merged authoring style 导入和编辑。
-- 导出时 Velo 将 unified vertex groups 转回 component-local IDs。
-- 如果某顶点权重指向 owning component 允许范围之外的 bones，导出会给出 actionable error。
-- 对 cross-scene 项目，这是 body、own-buffer、editable-IB 输出的推荐验证路径。
+- 你按 `Merged` 编辑方式导入和编辑。
+- 导出时 Velo 把统一顶点组转回部件局部顶点组。
+- 如果某顶点权重指向所属 Component 允许范围之外的骨骼，导出会给出可操作错误。
+- 对跨场景项目，这是 body、独立 Buffer 拆分件和独立可编辑 IB 的推荐验证路径。
 
-### LOD
+### LOD 数据
 
-WWMI LOD workflow 会把 LOD frame dump 匹配到已提取 object source folder，再在导出时写出 LOD-aware sections。
+WWMI 的 **LOD 数据提取** 会把 LOD Frame Dump 匹配到已提取的对象源目录，然后在导出时写出 LOD 相关段落。
 
 流程：
 
-1. 先完成 main object extract / import。
+1. 先完成主对象的提取和导入。
 2. 在目标实际以 LOD 距离渲染时抓取 Frame Dump。
-3. 打开 **LOD Data Extraction**。
-4. 设置 LOD Frame Dump folder 和 Object source folder。
-5. 必要时调整 minimum component vertex count、object hash blacklist、geometry match threshold。
-6. 匹配失败时再调整 advanced matching method、voxel size、sample size、candidate counts 等。
-7. 执行 **Extract LOD Data**。
-8. 正常导出。
+3. 打开 **LOD 数据提取**。
+4. 设置 **LOD Frame Dump 目录** 和 **对象源目录**。
+5. 必要时调整 **组件过滤：最少顶点数**、**对象过滤：黑名单 Hash**、**几何匹配误差阈值**。
+6. 匹配失败时再展开 **高级**，调整 **匹配方法**、**体素大小**、**点云采样数**、**预过滤候选数** 等。
+7. 点击 **提取 LOD 数据**。
+8. 正常导出 Mod。
 
 注意：
 
-- 只有在游戏实际绘制 LOD mesh 时抓取的 dump 才可靠。
-- 未启用 overwrite 时，已有 LOD data 会被保护。
-- cross-scene merged exports 可以携带 LOD data。
+- 只有在游戏实际绘制 LOD 网格时抓取的 Dump 才可靠。
+- 未启用 **允许覆盖 LOD 数据** 时，已有 LOD 数据会被保护。
+- 跨场景合并导出可以携带 LOD 数据。
 
-### cross-scene multi-IB
+### 跨场景多 IB
 
-cross-scene multi-IB 把一个 base extraction 和多个 IB-specific extractions 合成一个 editable source folder。
+**跨场景折叠合并** 把一个基底提取目录和多个 IB 提取目录合成一个可编辑对象源目录。
 
-适用于同一对象存在多个 scene-specific IB，而你希望一份编辑结果覆盖多个场景的情况。
+适用于同一对象存在多个场景 IB，而你希望一份编辑结果覆盖多个场景的情况。
 
 流程：
 
-1. 准备 base extracted object folder。
-2. 准备一个或多个 additional IB folders。
-3. 打开 **Cross-Scene Merge**。
-4. 设置 base folder。
-5. 添加每个 IB folder，并选择角色：
-   - **Fold**：折入 base；兼容时编辑 base 即覆盖该 scene。
-   - **Editable**：作为独立 editable geometry 导入，通常用于独立形态或独立 ownership domain。
-6. 设置 merge output folder。
-7. 执行 merge，生成 merged object 与 `CrossSceneRouting.json`。
-8. 用 **Import Object** 导入 merged output folder。
-9. 编辑 merged Blender collection。
-10. 用 **Export Mod** 正常导出。
+1. 准备基底提取目录。
+2. 准备一个或多个额外 IB 文件夹。
+3. 打开 **跨场景折叠合并**。
+4. 设置 **基底**。
+5. 添加每个 **IB 文件夹** 并选择角色：
+   - **折入基底**：折入基底；兼容时编辑基底即可覆盖该场景。
+   - **独立可编辑**：作为独立可编辑几何导入，常用于独立形态或独立归属域。
+6. 设置 **输出**。
+7. 点击 **合并跨场景**，生成合并对象和 `CrossSceneRouting.json`。
+8. 用 **导入对象** 导入合并后的目录。
+9. 编辑这份合并网格。
+10. 用 **导出 Mod** 正常导出。
 
 重要概念：
 
-- merged folder 是 cross-scene project 的 authoring source。
-- 最终导出在 merged output stage 应用 stock-like output options。
-- FoldHost routing 会为每个 actual draw 保持一个 canonical draw owner。
-- slot-style texture export 支持此路径。
-- 许多 cross-scene authoring 场景推荐使用 Per-Component (from Merged)。
-- 如果 source captures 或 routing assumptions 改变，应重新 merge。
+- 合并目录就是跨场景项目的编辑源。
+- 最终导出会在合并输出阶段应用与原版接近的输出选项。
+- FoldHost 路由会为每个实际绘制调用（draw）保留唯一所属方（draw owner）。
+- 插槽风格贴图支持跨场景路径。
+- 许多跨场景编辑场景推荐使用 **Per-Component (from Merged)**。
+- 如果来源 Dump 或路由假设改变，应重新执行 **合并跨场景**。
 
-### slot-style texture export
+### 插槽风格贴图导出
 
-slot-style texture export 是 WWMI / Velo 功能，用 draw-scope `ps-tN` slot rebinding 替代 texture-hash matching。
+**插槽风格贴图** 是 WWMI / Velo 功能，用绘制调用范围内的 `ps-tN` 槽位重绑替代贴图 Hash 匹配。
 
-入口：**Export Mod -> Velo compatibility options -> Slot-style textures**。
+入口：**导出 Mod -> Velo 兼容选项 -> 插槽风格贴图**。
 
-适用原因：
+为什么使用它：
 
-- texture Hash 会随 streaming residency / mip state 改变。
-- slot-style 在 component draw scope 内绑定 mod textures。
-- 条件基于正向 `ps-tN` DXGI format-family layout evidence，而不是 shader Hash。
-- 输出设计上保守、可 audit。
+- 游戏贴图 Hash 可能随流送状态或 mip 层级变化。
+- 插槽风格会在组件绘制调用范围内绑定 Mod 贴图。
+- 判据基于正向 `ps-tN` 槽位格式组合，而不是 shader Hash。
+- 输出偏保守：证据不足时宁可报错，也不生成不安全的猜测分支。
 
 典型流程：
 
-1. 用较新 Velo Tools extract，确保 `ShaderTextureUsage.json` 存在。
-2. Import 并编辑对象。
-3. 在 Export Mod 中启用 **Slot-style textures**。
-4. 可选 refresh component list。
-5. 需要 slot-style 的 components 保持勾选。
-6. 需要回退 component-scoped hash style 的 components 取消勾选。
+1. 用较新 Velo Tools 提取对象，确保 `ShaderTextureUsage.json` 存在。
+2. 导入并编辑对象。
+3. 在 **导出 Mod** 中启用 **插槽风格贴图**。
+4. 可选点击 **列出组件**。
+5. 需要走插槽风格的组件保持勾选。
+6. 需要回退 Hash 风格的组件取消勾选。
 7. 正常导出。
 
 行为和限制：
 
-- 如果没有 component list，默认所有 eligible components 走 slot-style。
-- 取消勾选的 components 使用 component-scoped hash fallback。
-- unsupported ambiguous components 会 fail closed，而不是输出 unsafe hash / probe logic。
-- same-layout multi-form components 需要更好的 slot evidence 或 component exclusion。
-- slot command lists 使用直接 `ps-tN = ref ResourceTexture...` assignments。
-- cross-scene slot-style export 会 audit resource sections、DDS existence、format-family matches 和 command-list structure。
-- exporter 会围绕 texture-triggered draw transactions 备份/恢复 `ps-t0..8`，避免 lazy resource state 泄漏。
+- 没有列出组件时，默认所有可用组件都走插槽风格。
+- 取消勾选的组件使用组件范围内的 Hash 回退。
+- 无法安全区分的组件会停止导出，而不是输出不安全逻辑。
+- 相同槽位布局的多形态组件，需要补充证据或取消该组件的插槽风格。
+- 贴图命令会直接写出 `ps-tN = ref ResourceTexture...`。
+- 跨场景插槽风格导出会检查资源段、DDS 文件、格式组合和命令结构。
+- 导出器会围绕贴图触发的绘制调用备份/恢复 `ps-t0..8`，避免像素着色器资源状态泄漏到后续绘制调用。
 
-slot-style 适合解决 texture streaming 稳定性问题，但不能神奇区分 runtime slot layout 完全相同的 components。
+插槽风格适合解决贴图流送稳定性问题，但不能强行区分运行时槽位布局完全相同的组件。
 
-### Merge Form Textures
+### 形态贴图合并
 
-多形态 WWMI 对象使用 **Merge Form Textures** 合并额外 form 的 texture evidence。
+多形态 WWMI 对象使用 **形态贴图合并** 把额外形态的贴图证据合入对象源目录。
 
 流程：
 
-1. 每个额外 form 抓一份 RAW Frame Dump。
-2. 打开 **Merge Form Textures**。
-3. 设置 Form Frame Dump、Object source folder、可选 form label。
-4. 执行 **Merge Form Textures**。
-5. 对其它 forms 或同一 form 的补充 captures 重复。
-6. 启用 slot-style export 后正常导出。
+1. 每个额外形态抓一份 RAW Frame Dump。
+2. 打开 **形态贴图合并**。
+3. 设置 **形态 Frame Dump**、**对象源目录** 和可选 **形态标签**。
+4. 点击 **合并形态贴图数据**。
+5. 对其它形态或同一形态的补充 Dump 重复。
+6. 启用 **插槽风格贴图** 后正常导出。
 
 注意：
 
-- 额外 form 不需要第二次完整 object extraction。
-- merge 会读取 RAW Frame Dump 并更新 object folder 的 texture usage data。
-- 重复使用同一 form label 可补充同一 form 的证据。
-- 输出存储在 object source folder 的 texture usage data 中，export 时使用。
-- 只有真实 same-VB multi-form components 应进入 multi-form slot domain；独立 editable / other-VB components 保持 single-form domain。
+- 额外形态不需要第二次完整对象提取。
+- 合并会读取 RAW Frame Dump 并更新对象源目录里的贴图使用数据。
+- 重复使用同一形态标签可补充同一形态的证据。
+- 输出存储在对象源目录，导出时自动使用。
+- 只有真实同 VB 的多形态组件应进入多形态插槽域；独立可编辑或其它 VB 的组件保持单形态域。
 
-### form anchors
+### 形态锚点
 
-form anchors 是可选的 WWMI metadata，用于 form tracking。
+形态锚点是可选 WWMI 元数据，用于更快判断当前形态。
 
 支持格式：
 
-- **8 hex characters**：dump filename 中的 `vb0` hash。
-- **16 hex characters**：pixel shader hash。
+- **8 位十六进制**：Dump 文件名中的 `vb0` Hash。
+- **16 位十六进制**：像素着色器 Hash。
 
-不要使用 `ib` hash 作为 form anchor；它不参与此用途的 WWMI draw matching。
+不要使用 `ib` Hash 作为形态锚点；它不参与这个用途的 WWMI 绘制调用匹配。
 
 手动格式：
 
 ```text
-hash:formLabel
+hash:形态标签
 ```
 
-多个 anchors 可用逗号、空格或换行分隔。
+多个锚点可用逗号、空格或换行分隔。
 
 示例：
 
@@ -454,86 +473,86 @@ hash:formLabel
 0123456789abcdef:form3
 ```
 
-Anchor finder 流程：
+形态锚点查找流程：
 
-1. 启用 slot-style export。
-2. 必要时启用 optional form-id auxiliary / anchor section。
-3. 设置 base form dump。
-4. 添加 extra form dump rows 和 labels。
-5. 执行 **Find Form Anchors**。
-6. 检查 candidates。
-7. 对有用 candidates 点击 **Apply**。
+1. 启用 **插槽风格贴图**。
+2. 必要时启用 **formid 辅助判据**。
+3. 设置 **基础形态 Dump**。
+4. 添加额外 **形态 Dump** 行和标签。
+5. 点击 **查找形态锚点**。
+6. 检查候选。
+7. 对有用候选点击 **采用**。
 8. 导出。
 
 限制：
 
-- `$form_id` 是 optional auxiliary state，不是默认 texture discriminator。
-- 如果某 component 的 slot-layout evidence 完全不可区分，它不能单独拯救该 component；这类 component 应排除 slot-style 或补充证据。
-- 优先使用 `vb0` anchors，因为 geometry identity 通常比 shader identity 更稳定。
-- 如果恰好只有一个 form 没有 anchor，watchdog 可在一帧中没有 anchored form 出现时用排除法推断。
+- `$form_id` 是辅助状态，不是默认贴图区分依据。
+- 如果某组件的槽位布局证据完全不可区分，形态锚点不能单独拯救该组件；应取消该组件的插槽风格或补充证据。
+- 优先使用 `vb0` 锚点，因为几何身份通常比 shader 身份稳定。
+- 如果恰好只有一个形态没有锚点，看门狗可在一帧中没有锚点命中时用排除法推断。
 
-### Raw Mesh
+### 原始网格工具
 
-Raw Mesh 是 WWMI / Velo 子工具，面向 stock pose-chain extractor 识别不到的 non-character geometry，例如 VFX-layer、scene 或 environment meshes。
+**原始网格工具** 是 WWMI / Velo 子工具，面向原版角色提取器识别不到的非角色几何，例如特效层、场景或环境网格。
 
-它有独立 modes：
+它有独立模式：
 
-- **Extract**
-- **Import**
-- **Export**
+- **提取**
+- **导入**
+- **导出**
 
-#### Raw Mesh Extract
+#### 原始网格提取
 
 字段：
 
-- Frame Dump folder。
-- Output folder。
-- Hash list。
-- 可选 output folder name。
-- 可选 Position element override。
-- Texture filters。
+- **Frame Dump 目录**
+- **输出目录**
+- **文件夹名**
+- **Hash 列表**
+- **Position 元素**
+- 贴图过滤选项
 
-Hash list 行为：
+Hash 列表行为：
 
-- `VB` hash 会提取整个 `VB0` object 并自动 split components。
-- `IB` hash 只提取匹配 draw / component。
-- 多个 hashes 可用逗号分隔。
+- `VB` Hash 会提取整个 `VB0` 对象并自动拆分组件。
+- `IB` Hash 只提取匹配的绘制调用 / 组件。
+- 多个 Hash 可用逗号分隔。
 
-#### Raw Mesh Import
+#### 原始网格导入
 
-导入 Raw Mesh Extract 生成的 consolidated folder。
+导入原始网格提取生成的目录。
 
-Velo 会创建 editable mesh objects，并把 raw per-slot bytes 保存在 mesh attributes 中。
+Velo 会创建可编辑网格对象，并把原始槽位字节保存在网格属性里。
 
-#### Raw Mesh Export
+#### 原始网格导出
 
 导出字段：
 
-- Component collection。
-- Mod output folder。
-- Export mode：
-  - **Auto**
-  - **Faithful**
-  - **Rebuild**
+- **组件集合**
+- **Mod 输出目录**
+- **导出模式**：
+  - **自动**
+  - **保真直通**
+  - **重建**
 
-模式：
+模式说明：
 
-- **Faithful**：topology 必须不变；只重新编码编辑过的 positions，其它 vertex attributes byte-for-byte passthrough。
-- **Rebuild**：允许 topology changes / remesh，但非标准 attributes 是 best-effort，可能有损。
-- **Auto**：topology 未变时用 Faithful，否则用 Rebuild。
+- **保真直通**：拓扑必须不变；只重新编码编辑过的位置，其它顶点属性按字节透传。
+- **重建**：允许改拓扑或重建网格，但非标准属性只能尽力处理，可能有损。
+- **自动**：拓扑未变时用保真直通，否则用重建。
 
 限制：
 
-- Raw Mesh 不是普通 skinned-character workflow。
-- Faithful mode 拒绝 topology changes。
-- Rebuild mode 可能丢失或 zero-fill Blender 无法干净表达的 attributes。
-- 此工具刻意隔离于 vendored WWMI core。
+- 原始网格工具不是普通蒙皮角色流程。
+- 保真直通拒绝拓扑变化。
+- 重建可能丢失或清零 Blender 无法干净表达的属性。
+- 此工具刻意与内置 WWMI 核心隔离。
 
 ## 常见问题与限制
 
-### 可以同时安装 standalone EFMI-Tools 或 WWMI-Tools 吗？
+### 可以同时安装独立 EFMI-Tools 或 WWMI-Tools 吗？
 
-可以。Velo 内置 namespaced EFMI / WWMI forks，避免注册同一 upstream updater / operator IDs。Velo Tools 自己用 Velo updater 更新。
+可以。Velo 内置独立命名空间的 EFMI / WWMI 分叉，避免注册同一上游更新器或操作符 ID。Velo Tools 自己使用 Velo 更新器更新。
 
 ### 推荐 Blender 版本？
 
@@ -541,51 +560,51 @@ Blender 3.6+；主要测试版本是 Blender 4.4。
 
 ### 为什么看不到 EFMI 或 WWMI 面板？
 
-打开 **Velo Tools -> Game**，再选择目标游戏。game-specific panels 只在 Game tab 和匹配 game active 时显示。
+打开 **Velo Tools -> 游戏**，再选择目标游戏。游戏专用面板只在 **游戏** 功能区且对应游戏处于当前选择时显示。
 
-### WWMI skeleton mode 怎么选？
+### WWMI 骨架模式怎么选？
 
-- **Merged**：需要 unrestricted unified authoring / runtime behavior。
-- **Per-Component**：直接按 component-local groups authoring。
-- **Per-Component (from Merged)**：想用 Merged-style editing，但最终导出 Per-Component runtime。
+- **Merged**：需要统一顶点组编辑或运行时统一骨架行为。
+- **Per-Component**：直接按部件局部顶点组编辑。
+- **Per-Component (from Merged)**：想用 `Merged` 方式编辑，但最终导出 `Per-Component` 运行结构。
 
 ### Per-Component (from Merged) 为什么导出失败？
 
-通常是 mesh 权重指向 owning component 允许范围之外的 vertex-group / bone。修复权重，或把它移动到有效 component-local groups。
+通常是某个网格权重指向所属 Component 允许范围之外的顶点组或骨骼。修复权重，或把它移动到有效的部件局部顶点组。
 
-### slot-style texture export 为什么失败？
+### 插槽风格贴图为什么失败？
 
 常见原因：
 
 - 缺少或过期的 `ShaderTextureUsage.json`。
-- component 的多个 forms 使用相同 slot layout，无法在不依赖 texture identity 的情况下区分。
-- 必需 DDS / resource 缺失。
-- 某 component 应该取消 slot component list 勾选，改走 component-scoped hash fallback。
+- 某组件的多个形态使用相同槽位布局，无法在不依赖贴图身份的情况下区分。
+- 必需的 DDS 或资源段缺失。
+- 某组件应取消 **按组件选插槽风格** 中的勾选，改走组件范围内的 Hash 回退。
 
-### 所有 mod 都应该启用 slot-style textures 吗？
+### 所有 Mod 都应该启用插槽风格贴图吗？
 
-不需要。遇到 texture streaming / hash churn，或 cross-scene slot-aware output 需要稳定 texture rebinding 时再启用。stock hash-style export 仍是默认路径。
+不需要。遇到贴图流送、Hash 变化，或跨场景插槽贴图输出需要稳定重绑时再启用。原版 Hash 风格导出仍是默认路径。
 
-### form anchors 可以用 `ib` hashes 吗？
+### 形态锚点可以用 `ib` Hash 吗？
 
-不可以。用 `vb0` hashes 或 pixel shader hashes；`ib` hashes 不适合作为 form anchors。
+不可以。请使用 `vb0` Hash 或像素着色器 Hash；`ib` Hash 不适合作为形态锚点。
 
-### LOD extraction 匹配不上怎么办？
+### LOD 提取匹配不上怎么办？
 
-确认 Frame Dump 是在游戏实际绘制 LOD mesh 时抓取的；再调整 geometry matcher threshold、voxel size 或 candidate counts。
+确认 Frame Dump 是在游戏实际绘制 LOD 网格时抓取的；再调整 **几何匹配误差阈值**、**体素大小** 或 **预过滤候选数**。
 
-### CrossIB 缺 scene evidence 怎么办？
+### CrossIB 缺少场景证据怎么办？
 
-从 additional Frame Dumps 生成或累积 sidecar data。CrossIB 可以把新 scene shader evidence 合并进已有 sidecars。
+从额外 Frame Dump 生成或累积 sidecar（旁路文件）数据。CrossIB 可以把新的场景 shader 证据合并进已有 sidecar。
 
-### Raw Mesh 可以改 topology 吗？
+### 原始网格可以改拓扑吗？
 
-可以，但需要 **Rebuild** mode，且 non-standard attributes 可能有损。只移动 positions 并想保持 byte-preserving output 时用 **Faithful**。
+可以，但需要 **重建** 模式，且非标准属性可能有损。只移动位置并想保持字节级保真时，用 **保真直通**。
 
-### Weight Tools 能完全替代手刷权重吗？
+### 权重工具能完全替代手刷权重吗？
 
-不能。Weight Tools 加速 transfer、mirroring、normalization、smoothing 和 repair，但最终仍应在 Blender 中检查结果。
+不能。权重工具加速传递、镜像、规格化、平滑和修复，但最终仍应在 Blender 中检查结果。
 
 ### 手册需要本机路径吗？
 
-不需要。公开手册只使用 object source folder、Frame Dump folder、mod output folder 等通用名称。
+不需要。公开手册只使用对象源目录、Frame Dump 目录、Mod 输出目录等通用名称。
