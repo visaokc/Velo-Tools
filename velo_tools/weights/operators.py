@@ -125,7 +125,7 @@ def _snapshot_group(snapshots, obj, group):
     key = group.name
     if key in snapshots:
         return
-    snapshots[key] = list(_algo._plain_group_weights(obj, group))
+    snapshots[key] = _algo.snapshot_group_memberships(obj, group)
 
 
 def _snapshot_group_locks(obj):
@@ -146,12 +146,12 @@ def _restore_group_locks(obj, snapshots):
 def _restore_group_snapshots(obj, snapshots):
     if obj is None:
         return
-    for group_name, weights in snapshots.items():
+    for group_name, memberships in snapshots.items():
         group = obj.vertex_groups.get(group_name)
         if group is None:
             continue
         try:
-            _algo.write_group_weights(obj, group, weights)
+            _algo.restore_group_memberships(obj, group, memberships)
         except Exception:
             pass
 
@@ -257,6 +257,7 @@ def _select_donors_for_group(
     focus_weights=None,
     exclude_names=None,
     include_locked_candidates=False,
+    rank_all=False,
 ):
     donor_count = _props.donor_count_value(settings)
     configured_names = list(configured_names or [])
@@ -295,6 +296,7 @@ def _select_donors_for_group(
         focus_weights=focus_weights,
         preferred_side=preferred_side,
         include_locked_candidates=include_locked_candidates,
+        rank_all=rank_all,
     )
 
 
@@ -962,6 +964,9 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
         preserve_rows = None
         authority_suppressed_rows = None
         donor_focus_weights = None
+        configured_pairs = []
+        configured_donors = []
+        configured_mirror_donors = []
         robust_smoothing_handled = False
         mirror_flag_stack = contextlib.ExitStack()
         try:
@@ -1020,6 +1025,33 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                         _snapshot_group(snapshots, target, mirror_group)
                     mirror_enabled = True
                     mirror_flag_stack.enter_context(_algo.suppress_native_mirror_flags(target))
+
+            if settings.normalize_after:
+                configured_pairs = _props.selected_donor_pairs(settings)
+                if configured_pairs:
+                    configured_names = [donor for donor, _mirror in configured_pairs]
+                    exclude_names = [mirror_group.name] if mirror_enabled and mirror_group is not None else []
+                    configured_donors = _select_donors_for_group(
+                        context,
+                        settings,
+                        target,
+                        target_group,
+                        source_name,
+                        configured_names=configured_names,
+                        exclude_names=exclude_names,
+                    )
+                    if mirror_enabled and mirror_group is not None and configured_donors:
+                        mirror_by_donor = {donor: mirror for donor, mirror in configured_pairs}
+                        mirror_names = [mirror_by_donor.get(group.name, "") for group in configured_donors]
+                        configured_mirror_donors = _algo.mirrored_donor_groups(
+                            context,
+                            settings,
+                            target,
+                            configured_donors,
+                            mirror_names=mirror_names,
+                            exclude_names=[target_group.name, mirror_group.name],
+                        )
+                        _validate_mirror_donor_count(configured_donors, configured_mirror_donors)
 
             original_target_weights = _algo.read_group_weights(target, target_group)
             if mirror_enabled and mirror_group is not None:
@@ -1118,36 +1150,28 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             donors = []
             mirror_donors = []
             if settings.normalize_after:
-                configured_pairs = _props.selected_donor_pairs(settings)
-                configured_donors = [donor for donor, _mirror in configured_pairs]
+                automatic_mirror_pairs = mirror_enabled and not configured_pairs
                 focus_weights = donor_focus_weights
                 if focus_weights is None:
                     focus_weights = _algo.read_group_weights(target, target_group)
                 exclude_names = [mirror_group.name] if mirror_enabled and mirror_group is not None else []
-                donors = _select_donors_for_group(
-                    context,
-                    settings,
-                    target,
-                    target_group,
-                    source_name,
-                    configured_names=configured_donors,
-                    focus_weights=focus_weights,
-                    exclude_names=exclude_names,
-                )
+                if configured_pairs:
+                    donors = list(configured_donors)
+                else:
+                    donors = _select_donors_for_group(
+                        context,
+                        settings,
+                        target,
+                        target_group,
+                        source_name,
+                        focus_weights=focus_weights,
+                        exclude_names=exclude_names,
+                        rank_all=automatic_mirror_pairs,
+                    )
                 report.donors = [vg.name for vg in donors]
                 if mirror_enabled and mirror_group is not None and donors:
-                    mirror_names = None
                     if configured_pairs:
-                        mirror_by_donor = {donor: mirror for donor, mirror in configured_pairs}
-                        mirror_names = [mirror_by_donor.get(group.name, "") for group in donors]
-                        mirror_donors = _algo.mirrored_donor_groups(
-                            context,
-                            settings,
-                            target,
-                            donors,
-                            mirror_names=mirror_names,
-                            exclude_names=[target_group.name, mirror_group.name],
-                        )
+                        mirror_donors = list(configured_mirror_donors)
                     else:
                         eligibility = _algo.auto_donor_pair_eligibility(
                             context,
@@ -1155,6 +1179,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                             target,
                             donors,
                             exclude_names=[target_group.name, mirror_group.name],
+                            max_pairs=_props.donor_count_value(settings),
                         )
                         donors = eligibility.donors
                         mirror_donors = eligibility.mirror_donors
@@ -1168,6 +1193,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                             focus_weights=focus_weights,
                             exclude_names=exclude_names,
                             include_locked_candidates=True,
+                            rank_all=True,
                         )
                         diagnostic = _algo.auto_donor_pair_eligibility(
                             context,
@@ -1175,6 +1201,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                             target,
                             diagnostic_donors,
                             exclude_names=[target_group.name, mirror_group.name],
+                            max_pairs=_props.donor_count_value(settings),
                         )
                         for label in diagnostic.skipped_locked_pairs:
                             if label not in skipped_locked_pairs:

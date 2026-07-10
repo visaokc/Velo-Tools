@@ -915,11 +915,23 @@ def _transfer_with_robust_matrix_context(
     rescue_info = _empty_component_rescue_info()
     component_stats = _matched_component_stats(target, matched)
     direct_matrix_weights = matrix_weights.copy()
+    matched_for_inpaint = matched
+    if component_stats is not None:
+        _selected_weights, matched_for_inpaint, rescue_info = promote_unseeded_component_matches(
+            target_verts,
+            matched,
+            direct_matrix_weights[:, selected_column],
+            component_stats,
+            threshold=threshold,
+        )
+        zero_anchor_rows = np.asarray(matched_for_inpaint, dtype=bool) & ~np.asarray(matched, dtype=bool)
+        if bool(np.any(zero_anchor_rows)):
+            direct_matrix_weights[zero_anchor_rows, :] = 0.0
     result, painted_matrix_weights = _rwt.inpaint(
         target_verts,
         target_faces,
         direct_matrix_weights.copy(),
-        matched,
+        matched_for_inpaint,
         settings.robust_point_cloud_inpaint,
     )
     if result:
@@ -929,7 +941,7 @@ def _transfer_with_robust_matrix_context(
             target_verts,
             target_faces,
             direct_matrix_weights.copy(),
-            matched,
+            matched_for_inpaint,
             False,
         )
         if fallback_result:
@@ -948,14 +960,28 @@ def _transfer_with_robust_matrix_context(
         and settings.smoothing_factor > 0.0
     )
     if smoothing_requested:
-        matrix_weights, smoothed = _smooth_robust_matrix_weights(target, target_verts, matrix_weights, matched, settings)
+        matrix_weights, smoothed = _smooth_robust_matrix_weights(
+            target,
+            target_verts,
+            matrix_weights,
+            matched_for_inpaint,
+            settings,
+        )
         rescue_info = dict(rescue_info)
         rescue_info["smoothing_handled"] = True
         rescue_info["smoothed"] = bool(smoothed)
+    selected_weights, gate_info = _apply_source_positive_component_gate(
+        matrix_weights[:, selected_column],
+        matched,
+        direct_matrix_weights[:, selected_column],
+        component_stats,
+        threshold=threshold,
+    )
+    rescue_info.update(gate_info)
     rescue_info["matrix_context"] = True
     return RobustMatrixTransferResult(
-        weights=_weight_values(matrix_weights[:, selected_column]),
-        matched=matched,
+        weights=_weight_values(selected_weights),
+        matched=matched_for_inpaint,
         matched_count=matched_count,
         info=rescue_info,
     )
@@ -2026,6 +2052,23 @@ def _plain_group_weights(obj, group):
     return weights
 
 
+def snapshot_group_memberships(obj, group):
+    memberships = []
+    group_index = int(group.index)
+    for vertex in obj.data.vertices:
+        for item in vertex.groups:
+            if int(item.group) == group_index:
+                memberships.append((int(vertex.index), float(item.weight)))
+                break
+    return memberships
+
+
+def restore_group_memberships(obj, group, memberships):
+    clear_vertex_group(obj, group)
+    for vertex_index, weight in memberships or ():
+        group.add([int(vertex_index)], float(weight), 'REPLACE')
+
+
 def _coord_bucket_key(co, tolerance):
     return (
         int(round(float(co.x) / tolerance)),
@@ -2182,13 +2225,16 @@ def mirrored_donor_groups(context, settings, obj, donor_groups, *, mirror_names=
     return result
 
 
-def auto_donor_pair_eligibility(context, settings, obj, donor_groups, *, exclude_names=None):
+def auto_donor_pair_eligibility(context, settings, obj, donor_groups, *, exclude_names=None, max_pairs=None):
     exclude = {_clean_name(name) for name in (exclude_names or ()) if _clean_name(name)}
     result = DonorPairEligibility()
-    seen_donors = set()
-    seen_mirrors = set()
+    if max_pairs is not None:
+        max_pairs = max(0, int(max_pairs))
+    used_group_indices = set()
     for donor in donor_groups or ():
-        if donor is None or getattr(donor, "index", None) in seen_donors:
+        if max_pairs is not None and len(result.donors) >= max_pairs:
+            break
+        if donor is None:
             continue
         donor_name = _clean_name(getattr(donor, "name", ""))
         if not donor_name:
@@ -2222,12 +2268,13 @@ def auto_donor_pair_eligibility(context, settings, obj, donor_groups, *, exclude
         if count_group_weights(obj, mirror_group) <= 0:
             result.skipped_unavailable_pairs.append(pair_label)
             continue
-        if getattr(mirror_group, "index", None) in seen_mirrors:
+        donor_index = getattr(donor, "index", None)
+        mirror_index = getattr(mirror_group, "index", None)
+        if donor_index in used_group_indices or mirror_index in used_group_indices:
             result.skipped_unavailable_pairs.append(pair_label)
             continue
 
-        seen_donors.add(donor.index)
-        seen_mirrors.add(mirror_group.index)
+        used_group_indices.update((donor_index, mirror_index))
         result.donors.append(donor)
         result.mirror_donors.append(mirror_group)
     return result
@@ -2899,7 +2946,17 @@ def _select_spatial_fallback_donors(obj, target_group, target_mask, candidate_gr
     return [obj.vertex_groups[index] for _bucket, _side, _mean_distance, _center_distance, _neg_total, index in candidates[:count]]
 
 
-def _prefilter_donor_candidates(obj, candidate_groups, target_weights, preferred_side, preferred_names, count, np):
+def _prefilter_donor_candidates(
+    obj,
+    candidate_groups,
+    target_weights,
+    preferred_side,
+    preferred_names,
+    count,
+    np,
+    *,
+    rank_all=False,
+):
     if not candidate_groups:
         return []
     target_weights = np.asarray(target_weights, dtype=float).reshape(-1)
@@ -2990,7 +3047,7 @@ def _prefilter_donor_candidates(obj, candidate_groups, target_weights, preferred
     local_multiplier = 16
     pool_size = max(count * local_multiplier, count + len(preferred_names), 32)
     scored.sort(key=lambda item: item[:-1], reverse=True)
-    selected_indices = [item[-1] for item in scored[:pool_size]]
+    selected_indices = [item[-1] for item in (scored if rank_all else scored[:pool_size])]
     selected = set(selected_indices)
     for item in scored:
         index = item[-1]
@@ -3088,17 +3145,13 @@ def source_group_target_focus_weights(context, settings, source_group_name, *, t
     return focus_weights
 
 
-def _side_filtered_groups(groups, preferred_side, count):
+def _side_filtered_groups(groups, preferred_side):
     if preferred_side not in {"L", "R"}:
         return list(groups)
-    matching = [group for group in groups if _name_side_suffix(group.name) == preferred_side]
-    allow_unsided = len(matching) < count
     result = []
     for group in groups:
         side = _name_side_suffix(group.name)
         if side and side != preferred_side:
-            continue
-        if not side and not allow_unsided:
             continue
         result.append(group)
     return result
@@ -3151,6 +3204,7 @@ def select_auto_donors(
     focus_weights=None,
     preferred_side=None,
     include_locked_candidates=False,
+    rank_all=False,
 ):
     ok, error = _rwt.ensure_available()
     if not ok:
@@ -3161,6 +3215,26 @@ def select_auto_donors(
         return []
     exclude_group_names = {_clean_name(name) for name in (exclude_group_names or ()) if _clean_name(name)}
     preferred_names = [_clean_name(name) for name in (preferred_names or ()) if _clean_name(name)]
+    if strict_preferred:
+        strict_groups = []
+        seen_strict = set()
+        for cleaned in preferred_names:
+            if cleaned in seen_strict:
+                continue
+            group = obj.vertex_groups.get(cleaned)
+            if group is None:
+                raise ValueError(f"手动供体 '{cleaned}' 不存在")
+            if group.index == target_group.index or cleaned in exclude_group_names:
+                raise ValueError(f"手动供体 '{obj.name}/{group.name}' 不能作为本次供体")
+            if group.lock_weight:
+                raise ValueError(f"手动供体 '{obj.name}/{group.name}' 已锁定，请先解锁后再执行")
+            if is_special_vg_name(group.name):
+                raise ValueError(f"手动供体 '{obj.name}/{group.name}' 是 Velo 特殊组，不能参与规格化")
+            if count_group_weights(obj, group) <= 0:
+                raise ValueError(f"手动供体 '{obj.name}/{group.name}' 没有非零权重，不能参与规格化")
+            strict_groups.append(group)
+            seen_strict.add(cleaned)
+        return strict_groups[:count]
     preferred_name_set = set(preferred_names)
     raw_candidate_groups = []
     for vg in obj.vertex_groups:
@@ -3175,7 +3249,7 @@ def select_auto_donors(
         raw_candidate_groups.append(vg)
     if preferred_side not in {"L", "R"}:
         preferred_side = _name_side_suffix(getattr(target_group, "name", ""))
-    candidate_groups = _side_filtered_groups(raw_candidate_groups, preferred_side, count)
+    candidate_groups = _side_filtered_groups(raw_candidate_groups, preferred_side)
     preferred = []
     seen_preferred = set()
     for cleaned in preferred_names:
@@ -3196,8 +3270,6 @@ def select_auto_donors(
         seen_preferred.add(cleaned)
         if len(preferred) >= count:
             break
-    if preferred and strict_preferred:
-        return preferred
     target_weights = focus_weights if focus_weights is not None else read_group_weights(obj, target_group)
     target_weights = np.asarray(target_weights, dtype=float).reshape(-1)
     if len(target_weights) != len(obj.data.vertices):
@@ -3215,6 +3287,7 @@ def select_auto_donors(
         preferred_names,
         count,
         np,
+        rank_all=rank_all,
     )
     if candidate_pool:
         candidate_groups = candidate_pool
@@ -3251,13 +3324,18 @@ def select_auto_donors(
             candidates.append((preferred_score, side_score, overlap, focus_ratio, focus_sum, shared_vertices, -total, vg.index))
     candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5], item[6]), reverse=True)
     candidates = _apply_donor_dominance_gate(candidates)
+    if preferred_side in {"L", "R"} and not rank_all:
+        same_side_evidence = sum(1 for candidate in candidates if candidate[1])
+        if same_side_evidence >= count:
+            candidates = [candidate for candidate in candidates if candidate[1]]
     selected_indices = []
     selected_indices.extend(
         index
         for _preferred, _side, _overlap, _focus_ratio, _focus_sum, _shared, _neg_total, index in candidates
         if index not in selected_indices
     )
-    selected_indices = selected_indices[:count]
+    if not rank_all:
+        selected_indices = selected_indices[:count]
     return [obj.vertex_groups[index] for index in selected_indices]
 
 

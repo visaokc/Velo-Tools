@@ -407,6 +407,7 @@ def preview_donor_selection(settings, context):
             or (getattr(settings, "mirror_group", "") or "").strip()
         )
         exclude_group_names = [mirror_target_name]
+        uses_mirror_pairs = _uses_mirror_donor_pairs(settings)
         donors = _algo.select_auto_donors(
             target,
             target_group,
@@ -416,15 +417,17 @@ def preview_donor_selection(settings, context):
             strict_preferred=False,
             focus_weights=focus_weights,
             preferred_side=preferred_side,
+            rank_all=uses_mirror_pairs,
         )
         skipped_locked_pairs = []
-        if _uses_mirror_donor_pairs(settings):
+        if uses_mirror_pairs:
             eligibility = _algo.auto_donor_pair_eligibility(
                 context,
                 settings,
                 target,
                 donors,
                 exclude_names=[target_name, mirror_target_name],
+                max_pairs=donor_count_value(settings),
             )
             donors = eligibility.donors
             skipped_locked_pairs = list(eligibility.skipped_locked_pairs)
@@ -438,6 +441,7 @@ def preview_donor_selection(settings, context):
                 focus_weights=focus_weights,
                 preferred_side=preferred_side,
                 include_locked_candidates=True,
+                rank_all=True,
             )
             diagnostic = _algo.auto_donor_pair_eligibility(
                 context,
@@ -445,6 +449,7 @@ def preview_donor_selection(settings, context):
                 target,
                 diagnostic_donors,
                 exclude_names=[target_name, mirror_target_name],
+                max_pairs=donor_count_value(settings),
             )
             for label in diagnostic.skipped_locked_pairs:
                 if label not in skipped_locked_pairs:
