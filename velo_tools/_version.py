@@ -15,5 +15,5 @@ time (patch / minor / major by the nature of the change). No auto-increment. Dur
 development the iteration is tracked by git, not by a hand-maintained counter.
 """
 
-PRERELEASE = None   # None on a release; "dev" during development toward the next version.
+PRERELEASE = "dev"  # None on a release; "dev" during development toward the next version.
 BUILD = ""          # optional build id (e.g. a git describe string); empty on a release.
