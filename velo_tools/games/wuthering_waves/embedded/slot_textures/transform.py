@@ -15,7 +15,7 @@
 #   2. Every non-comment `run = CommandListTriggerResourceOverrides` line that
 #      lives in a section whose name carries a component id gets
 #      `run = CommandListSetTexturesComponent{id}` injected right after it.
-#      The concise XQFA-style path does not backup/restore ps-t slots.
+#      Each transaction is wrapped by the generated ps-t scope contract.
 #   3. Multi-form only: `global $form_id = {plan.default_form_id}` is added
 #      to [Constants] (the unanchored form while the anchor watchdog is
 #      active, else 1 = base form; form markers latch it at runtime).
@@ -43,6 +43,7 @@ _FIRST_INDEX_RE = re.compile(r'^match_first_index\s*=\s*(\d+)\s*$', re.I)
 _INDEX_COUNT_RE = re.compile(r'^match_index_count\s*=\s*(\d+)\s*$', re.I)
 
 _TRIGGER_LINE = 'run = commandlisttriggerresourceoverrides'
+_CLEANUP_LINE = 'run = commandlistcleanupsharedresources'
 _CONSTANTS_SECTION = 'constants'
 _PRESENT_SECTION = 'present'
 
@@ -197,12 +198,37 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
             if has_component_fallback:
                 var = constants.COMPONENT_HASH_FALLBACK_VAR.format(component_id=comp_id)
+                cleanup_index = None
+                for candidate in range(i + 1, end):
+                    candidate_line = lines[candidate].strip()
+                    if candidate_line.startswith(';'):
+                        continue
+                    candidate_low = candidate_line.lower()
+                    if candidate_low == _TRIGGER_LINE:
+                        break
+                    if candidate_low == _CLEANUP_LINE:
+                        cleanup_index = candidate
+                        break
+                if cleanup_index is None:
+                    raise SlotStyleDegrade(
+                        f'component {comp_id} hash fallback transaction has no '
+                        'matching cleanup anchor')
                 insert_before.setdefault(i, []).append(f'{indent}{var} = 1')
-                insert_after.setdefault(i, []).append(f'{indent}{var} = 0')
+                cleanup_indent = lines[cleanup_index][
+                    :len(lines[cleanup_index])
+                    - len(lines[cleanup_index].lstrip())]
+                insert_after.setdefault(cleanup_index, []).append(
+                    f'{cleanup_indent}{var} = 0')
             if list_name is not None:
                 insert_after.setdefault(i, []).append(f'{indent}run = {list_name}')
         injected_components.add(comp_id)
 
+    required_components = set(plan.component_list_names) | fallback_components
+    missing_components = required_components - injected_components
+    if missing_components:
+        raise SlotStyleDegrade(
+            'no component draw anchor found for planned Component(s): '
+            + ', '.join(str(comp_id) for comp_id in sorted(missing_components)))
     if not injected_components:
         raise SlotStyleDegrade(
             'no component draw anchors found in the rendered ini - unknown '
@@ -236,7 +262,11 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
     if not result.endswith('\n'):
         result += '\n'
     result, format_stats = format_tags.dedupe_format_tag_sections(result)
-    result = ps_resource_scope.apply_ps_resource_scope(result)
+    try:
+        result = ps_resource_scope.apply_ps_resource_scope(
+            result, getattr(plan, 'restore_contract', None) or {})
+    except ValueError as exc:
+        raise SlotStyleDegrade(str(exc)) from exc
     plan.format_diagnostics = format_stats
     plan.stats.update({
         key: value for key, value in format_stats.items()

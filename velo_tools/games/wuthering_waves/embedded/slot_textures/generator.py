@@ -27,11 +27,14 @@ TextureInfo = Dict[str, dict]
 # (component, ps_hash) -> True when every observed pass for that ps was
 # depth-only. A single non-depth observation makes the pass usable as color.
 PassDepth = Dict[Tuple[int, str], bool]
+RouteContext = Dict[str, Set[int]]
+FormRoutes = Dict[Tuple[int, int], str]
 
 _PS_RE = re.compile(r'ps=([0-9a-f]{16})')
 _VS_KEY_RE = re.compile(r'^vs=[0-9a-f?]+$')
 _COMP_RE = re.compile(r'component\s*(\d+)\s*$', re.I)
 _SLOT_RE = re.compile(r'^ps-t(\d+)$')
+_ROUTE_RE = re.compile(r'^[0-9a-f]{8}$')
 
 _RESERVED_KEYS = {
     constants.EXTRA_FORMS_KEY,
@@ -278,7 +281,9 @@ def load_forms(object_source_folder: Path,
     return forms, texture_info, warnings
 
 
-def read_local_discriminator_audit(object_source_folder: Path) -> object:
+def read_local_discriminator_audit(
+        object_source_folder: Path,
+        route_context: Optional[RouteContext] = None) -> object:
     """Build the local discriminator audit from current STU facts at export time."""
     base_path = Path(object_source_folder) / constants.BASE_USAGE_FILENAME
     try:
@@ -289,10 +294,88 @@ def read_local_discriminator_audit(object_source_folder: Path) -> object:
     if not isinstance(raw, dict):
         raise SlotStyleDegrade(
             f'{constants.BASE_USAGE_FILENAME} has an unexpected shape')
-    return build_local_discriminator_audit_from_usage(raw)
+    return build_local_discriminator_audit_from_usage(
+        raw, route_context=route_context)
 
 
-def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
+def _normalized_route_context(
+        route_context: Optional[RouteContext]) -> RouteContext:
+    normalized: RouteContext = {}
+    for raw_route, raw_components in (route_context or {}).items():
+        route = str(raw_route or '').strip().lower()
+        if not _ROUTE_RE.fullmatch(route):
+            continue
+        try:
+            components = {int(value) for value in raw_components}
+        except (TypeError, ValueError):
+            continue
+        normalized.setdefault(route, set()).update(components)
+    return normalized
+
+
+def _component_form_routes(
+        entries: List[dict],
+        route_context: Optional[RouteContext],
+        multi_components: Set[int],
+        invalid_out: Optional[Set[int]] = None,
+        profiles_out: Optional[Dict[int, Set[str]]] = None) -> FormRoutes:
+    """Return validated component-local scene routes for audit forms.
+
+    A component enters route mode only when every extra form containing that
+    component names a route that is present in CrossSceneRouting.json and maps
+    back to that merged component. Partial route evidence is rejected so a
+    normal local discriminator conflict remains visible instead of being
+    silently split into an unverified route.
+    """
+    context = _normalized_route_context(route_context)
+    if not context:
+        return {}
+    expected_by_component: Dict[int, Set[str]] = {}
+    for route, components in context.items():
+        for comp_id in components & multi_components:
+            expected_by_component.setdefault(comp_id, set()).add(route)
+    candidates: Dict[int, List[Tuple[int, Optional[str]]]] = {}
+    for form_id, entry in enumerate(entries, start=2):
+        components = _filter_extra_form_components(
+            entry.get('components'), multi_components)
+        if not isinstance(components, dict):
+            continue
+        entry_route = str(entry.get('vb0_hash') or '').strip().lower()
+        for comp_name, block in components.items():
+            found = _COMP_RE.search(str(comp_name))
+            if not found or not isinstance(block, dict):
+                continue
+            comp_id = int(found.group(1))
+            route = str(block.get('vb0_hash') or entry_route).strip().lower()
+            valid = (_ROUTE_RE.fullmatch(route) is not None
+                     and comp_id in context.get(route, set()))
+            candidates.setdefault(comp_id, []).append(
+                (form_id, route if valid else None))
+
+    routes: FormRoutes = {}
+    for comp_id in sorted(set(candidates) | set(expected_by_component)):
+        form_candidates = candidates.get(comp_id, [])
+        expected = expected_by_component.get(comp_id, set())
+        observed = {
+            route for _form_id, route in form_candidates if route is not None
+        }
+        if (not expected or not form_candidates
+                or any(route is None for _form_id, route in form_candidates)
+                or observed != expected):
+            if invalid_out is not None:
+                invalid_out.add(comp_id)
+            continue
+        routes[(1, comp_id)] = 'base'
+        for form_id, route in form_candidates:
+            routes[(form_id, comp_id)] = str(route)
+        if profiles_out is not None:
+            profiles_out[comp_id] = {'base', *expected}
+    return routes
+
+
+def build_local_discriminator_audit_from_usage(
+        usage: dict,
+        route_context: Optional[RouteContext] = None) -> dict:
     warnings: List[str] = []
     texture_info: TextureInfo = {}
     freshness: List[Dict[Tuple[int, str, int], bool]] = []
@@ -341,9 +424,9 @@ def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
         ('base', normalize_usage(
             usage, 'base', warnings, texture_info, _freshness(), _pass_depth()))]
     _collect_source_meta('base', usage)
-    for entry in stu_metadata.form_entries(usage):
-        if not isinstance(entry, dict):
-            continue
+    entries = [entry for entry in stu_metadata.form_entries(usage)
+               if isinstance(entry, dict)]
+    for entry in entries:
         label = entry.get('label') or entry.get('source') or f'form{len(forms) + 1}'
         components = _filter_extra_form_components(
             entry.get('components'), multi_components)
@@ -351,9 +434,16 @@ def build_local_discriminator_audit_from_usage(usage: dict) -> dict:
                                              warnings, texture_info,
                                              _freshness(), _pass_depth())))
         _collect_source_meta(label, entry)
+    invalid_route_components: Set[int] = set()
+    route_profiles: Dict[int, Set[str]] = {}
+    form_routes = _component_form_routes(
+        entries, route_context, multi_components,
+        invalid_out=invalid_route_components, profiles_out=route_profiles)
     return build_local_discriminator_audit(
         forms, texture_info, freshness, warnings, source_meta=source_meta,
-        pass_depth=pass_depth)
+        pass_depth=pass_depth, form_routes=form_routes,
+        invalid_route_components=invalid_route_components,
+        route_profiles=route_profiles)
 
 
 # -------------------------------------------------------------------- plan --
@@ -378,6 +468,9 @@ class SlotPlan:
     warnings: List[str] = field(default_factory=list)
     stats: Dict[str, object] = field(default_factory=dict)
     format_diagnostics: Dict[str, object] = field(default_factory=dict)
+    branch_contract: Dict[str, Dict[str, object]] = field(default_factory=dict)
+    restore_contract: Dict[str, Dict[str, object]] = field(default_factory=dict)
+    component_route_lists: Dict[int, Dict[str, str]] = field(default_factory=dict)
 
 
 def _slot_issue_entry(tex_hash: str, comp_id: int, reason: str,
@@ -489,6 +582,365 @@ class _LocalBranch:
     label: str
     ps: str
     source: str
+    assign_hashes: Dict[int, str] = field(default_factory=dict)
+    route_id: Optional[str] = None
+
+
+def _serialized_branch_contract(
+        comp_id: int,
+        branches: List[object],
+        route: Optional[str] = None,
+        emitted_form_gates: Optional[Set[int]] = None) -> Dict[str, object]:
+    assignment_slots: Set[int] = set()
+    serialized = []
+    for branch in branches:
+        branch_assignments = sorted(getattr(branch, 'assign', {}))
+        assignment_slots.update(branch_assignments)
+        entry = {
+            'positive_signature': [
+                [slot, _fi_str(key)]
+                for slot, key in getattr(branch, 'signature', ())
+            ],
+            'negative_signature': [
+                [slot, _fi_str(key)]
+                for slot, key in getattr(branch, 'negative_signature', ())
+            ],
+            'assignment_slots': branch_assignments,
+            'assignment_hashes': {
+                str(slot): tex_hash for slot, tex_hash in sorted(
+                    getattr(branch, 'assign_hashes', {}).items())
+            },
+            'assignment_resources': {
+                str(slot): resource for slot, resource in sorted(
+                    getattr(branch, 'assign', {}).items())
+            },
+        }
+        form_gate = getattr(branch, 'form_id', None)
+        if form_gate is None:
+            form_gate = getattr(branch, 'form_gate', None)
+        if (emitted_form_gates is not None
+                and form_gate not in emitted_form_gates):
+            form_gate = None
+        if form_gate is not None:
+            entry['form_gate'] = int(form_gate)
+        serialized.append(entry)
+    contract = {
+        'component': comp_id,
+        'direct_setter_slots': sorted(assignment_slots),
+        'branches': serialized,
+    }
+    if route is not None:
+        contract['route'] = route
+    return contract
+
+
+def _local_restore_policy(comp_id: int,
+                          branches: List[_LocalBranch],
+                          audit: object,
+                          volatile_assignment_hashes: Optional[Set[str]] = None,
+                          canon_fn=None) -> Dict[str, object]:
+    """Derive one persistent seat from final branches and collision evidence."""
+    full_restore: Dict[str, object] = {'mode': 'full'}
+    if not branches or not isinstance(audit, dict):
+        return full_restore
+    if audit.get('schema') != constants.LOCAL_FORM_DISCRIMINATOR_SCHEMA:
+        return full_restore
+    branch_routes = {branch.route_id for branch in branches}
+    if None in branch_routes and len(branch_routes) != 1:
+        return full_restore
+    allowed_routes = branch_routes
+
+    def _canon_hash(value: object) -> Optional[str]:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        canon = canon_fn(value) if canon_fn is not None else value
+        if not isinstance(canon, str) or not canon.strip():
+            return None
+        return canon.strip().lower()
+
+    def _slot_set(value: object) -> Optional[Set[int]]:
+        if not isinstance(value, list):
+            return None
+        out: Set[int] = set()
+        try:
+            for raw_slot in value:
+                slot = int(raw_slot)
+                if slot < 0 or slot > 8:
+                    return None
+                out.add(slot)
+        except (TypeError, ValueError):
+            return None
+        return out
+
+    def _hash_map(value: object) -> Optional[Dict[int, str]]:
+        if not isinstance(value, dict):
+            return None
+        out: Dict[int, str] = {}
+        try:
+            for raw_slot, raw_hash in value.items():
+                slot = int(raw_slot)
+                if slot < 0 or slot > 8 or slot in out:
+                    return None
+                tex_hash = _canon_hash(raw_hash)
+                if tex_hash is None:
+                    return None
+                out[slot] = tex_hash
+        except (TypeError, ValueError):
+            return None
+        return out
+
+    def _signature_map(value: object,
+                       *, allow_empty: bool = False) -> Optional[Dict[int, float]]:
+        if not isinstance(value, list):
+            return None
+        signature = _signature_from_audit(value)
+        if not signature and not allow_empty:
+            return None
+        out = dict(signature)
+        if len(out) != len(signature):
+            return None
+        return out
+
+    raw_service_slots = _slot_set(audit.get('service_slots'))
+    required_service_slots = set(constants.SERVICE_SLOTS)
+    if (raw_service_slots is None
+            or not required_service_slots.issubset(raw_service_slots)):
+        return full_restore
+    excluded_slots = set(raw_service_slots)
+    for key in ('drift_slots', 'volatile_slots'):
+        if key not in audit:
+            continue
+        extra_slots = _slot_set(audit.get(key))
+        if extra_slots is None:
+            return full_restore
+        excluded_slots.update(extra_slots)
+
+    rows = audit.get('rows')
+    if not isinstance(rows, list):
+        return full_restore
+
+    parsed_rows: List[Dict[str, object]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return full_restore
+        try:
+            row_component = int(row.get('component'))
+        except (TypeError, ValueError):
+            return full_restore
+        if row_component != comp_id:
+            continue
+        row_route = row.get('route')
+        if row_route is not None:
+            row_route = str(row_route).strip().lower()
+            if row_route != 'base' and not _ROUTE_RE.fullmatch(row_route):
+                return full_restore
+        if row_route not in allowed_routes:
+            continue
+        try:
+            form_id = int(row.get('form_id'))
+        except (TypeError, ValueError):
+            return full_restore
+        if (not isinstance(row.get('primary_pass'), bool)
+                or not isinstance(row.get('depth_only'), bool)
+                or not isinstance(row.get('ps'), str)
+                or not isinstance(row.get('pass_role'), str)
+                or not isinstance(row.get('condition_source'), str)):
+            return full_restore
+        signature = _signature_map(row.get('signature'))
+        positive = _signature_map(row.get('positive_signature'))
+        negative = _signature_map(
+            row.get('negative_signature'), allow_empty=True)
+        observed = _hash_map(row.get('observed_hashes'))
+        assigned = _hash_map(row.get('assign_hashes'))
+        fresh = _slot_set(row.get('fresh_slots'))
+        condition_slots = _slot_set(row.get('condition_slots'))
+        assignment_slots = _slot_set(row.get('assignment_slots'))
+        canonical_slots = _slot_set(row.get('canonical_slots'))
+        if (signature is None or positive is None or negative is None
+                or observed is None or assigned is None or fresh is None
+                or condition_slots is None or assignment_slots is None
+                or canonical_slots is None):
+            return full_restore
+        if (signature != positive
+                or condition_slots != set(signature)
+                or assignment_slots != set(assigned)):
+            return full_restore
+        parsed_rows.append({
+            'form_id': form_id,
+            'primary': row['primary_pass'],
+            'depth_only': row['depth_only'],
+            'signature': signature,
+            'negative': negative,
+            'observed': observed,
+            'assigned': assigned,
+            'fresh': fresh,
+        })
+    if not parsed_rows:
+        return full_restore
+
+    hash_families: Dict[str, float] = {}
+    service_seats_by_hash: Dict[str, Set[int]] = {}
+    for row in parsed_rows:
+        signature = row['signature']
+        observed = row['observed']
+        for slot, tex_hash in observed.items():
+            family = signature.get(slot)
+            if family is None:
+                continue
+            previous = hash_families.setdefault(tex_hash, family)
+            if previous != family:
+                return full_restore
+            if slot in raw_service_slots:
+                service_seats_by_hash.setdefault(tex_hash, set()).add(slot)
+    excluded_hashes = {
+        tex_hash for tex_hash, seats in service_seats_by_hash.items()
+        if len(seats) > 1
+    }
+    for key in ('drift_hashes', 'volatile_hashes'):
+        if key not in audit:
+            continue
+        values = audit.get(key)
+        if not isinstance(values, list):
+            return full_restore
+        for value in values:
+            tex_hash = _canon_hash(value)
+            if tex_hash is None:
+                return full_restore
+            excluded_hashes.add(tex_hash)
+    for value in volatile_assignment_hashes or ():
+        tex_hash = _canon_hash(value)
+        if tex_hash is None:
+            return full_restore
+        excluded_hashes.add(tex_hash)
+
+    branch_facts: List[Tuple[_LocalBranch, Dict[int, float], Dict[int, str]]] = []
+    for branch in branches:
+        if branch.form_id is None:
+            return full_restore
+        try:
+            form_id = int(branch.form_id)
+        except (TypeError, ValueError):
+            return full_restore
+        positive = dict(branch.signature)
+        negative = dict(branch.negative_signature)
+        if (not positive or len(positive) != len(branch.signature)
+                or len(negative) != len(branch.negative_signature)
+                or set(positive) & set(negative)):
+            return full_restore
+        assigned_slots = set(branch.assign)
+        if (not assigned_slots or assigned_slots != set(branch.assign_hashes)
+                or not assigned_slots.issubset(positive)):
+            return full_restore
+        assign_hashes: Dict[int, str] = {}
+        for slot, value in branch.assign_hashes.items():
+            tex_hash = _canon_hash(value)
+            if tex_hash is None:
+                return full_restore
+            assign_hashes[slot] = tex_hash
+        branch_facts.append((branch, positive, assign_hashes))
+
+    candidates = set(branch_facts[0][2])
+    for _branch, positive, assign_hashes in branch_facts[1:]:
+        candidates &= set(assign_hashes)
+    candidates -= excluded_slots
+    candidates = {
+        slot for slot in candidates
+        if all(slot in positive for _branch, positive, _assign in branch_facts)
+        and len({positive[slot]
+                 for _branch, positive, _assign in branch_facts}) == 1
+        and all(assign_hashes[slot] not in excluded_hashes
+                for _branch, _positive, assign_hashes in branch_facts)
+    }
+    if not candidates:
+        return full_restore
+
+    def _matches(branch: _LocalBranch,
+                 positive: Dict[int, float],
+                 state: Dict[int, float]) -> bool:
+        if any(state.get(slot) != family
+               for slot, family in positive.items()):
+            return False
+        for slot, family in branch.negative_signature:
+            if slot not in state or state[slot] == family:
+                return False
+        return True
+
+    for branch, positive, assign_hashes in branch_facts:
+        form_rows = [
+            row for row in parsed_rows
+            if row['form_id'] == int(branch.form_id)
+        ]
+        primary_rows = [row for row in form_rows if row['primary']]
+        if len(primary_rows) != 1:
+            return full_restore
+        primary = primary_rows[0]
+        if primary['depth_only']:
+            return full_restore
+        primary_observed = primary['observed']
+        primary_fresh = primary['fresh']
+        if (not set(assign_hashes).issubset(primary_observed)
+                or not set(assign_hashes).issubset(primary_fresh)
+                or any(primary_observed[slot] != tex_hash
+                       for slot, tex_hash in assign_hashes.items())
+                or not _matches(branch, positive, primary['signature'])):
+            return full_restore
+
+        matched_collisions: List[Dict[str, object]] = []
+        for collision in form_rows:
+            if collision['primary'] or collision['depth_only']:
+                continue
+            if collision['assigned']:
+                return full_restore
+            fresh_slots = collision['fresh']
+            if not fresh_slots:
+                continue
+            collision_observed = collision['observed']
+            collision_signature = collision['signature']
+            if (not fresh_slots.issubset(collision_observed)
+                    or not fresh_slots.issubset(collision_signature)):
+                return full_restore
+            state_hashes = dict(primary_observed)
+            state_families = dict(primary['signature'])
+            for slot in fresh_slots:
+                state_hashes[slot] = collision_observed[slot]
+                state_families[slot] = collision_signature[slot]
+            if not _matches(branch, positive, state_families):
+                continue
+            displaced = any(
+                primary_slot != collision_slot
+                and primary_hash == collision_observed[collision_slot]
+                for collision_slot in fresh_slots
+                for primary_slot, primary_hash in primary_observed.items()
+            )
+            if not displaced:
+                return full_restore
+            matched_collisions.append({
+                'fresh': fresh_slots,
+                'hashes': state_hashes,
+                'families': state_families,
+            })
+        if not matched_collisions:
+            return full_restore
+        for collision in matched_collisions:
+            fresh_slots = collision['fresh']
+            state_hashes = collision['hashes']
+            state_families = collision['families']
+            candidates = {
+                slot for slot in candidates
+                if (slot not in fresh_slots
+                    and slot in state_hashes
+                    and slot in state_families
+                    and slot in primary_observed
+                    and slot in primary['signature']
+                    and state_hashes[slot] == primary_observed[slot]
+                    and state_families[slot] == primary['signature'][slot])
+            }
+        if not candidates:
+            return full_restore
+
+    if len(candidates) != 1:
+        return full_restore
+    return {'mode': 'except', 'persistent_slot': next(iter(candidates))}
 
 
 def _branch_with_assign(branch: _Branch,
@@ -707,11 +1159,16 @@ def _canonical_override_slots(pair_map: Dict[int, Optional[str]],
 
 
 def _component_hash_canonical_slots(forms: List[Tuple[str, FormData]],
-                                    alias: Dict[str, str]) -> Dict[Tuple[int, str], int]:
-    out: Dict[Tuple[int, str], int] = {}
-    score_by_key: Dict[Tuple[int, str], Tuple[int, int, int]] = {}
-    for _label, form_data in forms:
+                                    alias: Dict[str, str],
+                                    form_routes: Optional[FormRoutes] = None,
+                                    ) -> Dict[Tuple[int, Optional[str], str], int]:
+    out: Dict[Tuple[int, Optional[str], str], int] = {}
+    score_by_key: Dict[
+        Tuple[int, Optional[str], str], Tuple[int, int, int]
+    ] = {}
+    for form_id, (_label, form_data) in enumerate(forms, start=1):
         for comp_id, comp_pairs in form_data.items():
+            route = (form_routes or {}).get((form_id, comp_id))
             for pair_map in comp_pairs.values():
                 role = _pass_role(pair_map, {})
                 role_score = 2 if role == 'material' else (1 if role == 'outline' else 0)
@@ -720,7 +1177,7 @@ def _component_hash_canonical_slots(forms: List[Tuple[str, FormData]],
                     if not isinstance(tex_hash, str):
                         continue
                     canon = alias.get(tex_hash, tex_hash)
-                    key = (comp_id, canon)
+                    key = (comp_id, route, canon)
                     score = (role_score, layout_score, -slot)
                     previous = score_by_key.get(key)
                     if previous is None or score > previous:
@@ -796,9 +1253,13 @@ def _primary_passes_by_form(forms: List[Tuple[str, FormData]],
                            texture_info: TextureInfo,
                            freshness: Optional[List[Dict[Tuple[int, str, int], bool]]],
                            pass_depth: Optional[List[PassDepth]],
-                           alias: Dict[str, str]) -> Dict[Tuple[int, int], str]:
+                           alias: Dict[str, str],
+                           form_routes: Optional[FormRoutes] = None,
+                           ambiguous_out: Optional[List[str]] = None,
+                           ) -> Dict[Tuple[int, int], str]:
     chosen: Dict[Tuple[int, int], str] = {}
     scores: Dict[Tuple[int, int], Tuple[int, int, int, Tuple[Tuple[int, float], ...], str]] = {}
+    route_candidates: Dict[Tuple[int, int], List[dict]] = {}
     for form_id, (_label, form_data) in enumerate(forms, start=1):
         form_fresh = (freshness[form_id - 1]
                       if freshness is not None and form_id - 1 < len(freshness)
@@ -830,6 +1291,77 @@ def _primary_passes_by_form(forms: List[Tuple[str, FormData]],
                 if key not in scores or score > scores[key]:
                     scores[key] = score
                     chosen[key] = ps
+                if form_routes and key in form_routes:
+                    assignment_key = tuple(sorted(
+                        (slot, alias.get(tex_hash, tex_hash))
+                        for slot in assignment_slots
+                        for tex_hash in [pair_map.get(slot)]
+                        if isinstance(tex_hash, str)
+                    ))
+                    route_candidates.setdefault(key, []).append({
+                        'ps': ps,
+                        'signature': signature,
+                        'semantic_score': (
+                            non_depth, assign_count, role_score, len(signature)),
+                        'assignment_key': assignment_key,
+                    })
+    if not form_routes:
+        return chosen
+
+    route_components = sorted({
+        comp_id for form_id, comp_id in form_routes
+        if form_id == 1 and form_routes[(form_id, comp_id)] == 'base'
+    })
+    for comp_id in route_components:
+        base_key = (1, comp_id)
+        base_candidates = route_candidates.get(base_key, [])
+        if not base_candidates:
+            continue
+        best_base_score = max(
+            candidate['semantic_score'] for candidate in base_candidates)
+        top_base = [
+            candidate for candidate in base_candidates
+            if candidate['semantic_score'] == best_base_score
+        ]
+        if len({candidate['assignment_key'] for candidate in top_base}) > 1:
+            if ambiguous_out is not None:
+                ambiguous_out.append(
+                    f'component {comp_id} base route has an ambiguous primary pass')
+            continue
+        base_choice = max(
+            top_base, key=lambda candidate: (
+                candidate['signature'], candidate['ps']))
+        chosen[base_key] = base_choice['ps']
+
+        for form_id, route_comp_id in sorted(form_routes):
+            if route_comp_id != comp_id or form_id == 1:
+                continue
+            key = (form_id, comp_id)
+            candidates = route_candidates.get(key, [])
+            if not candidates:
+                continue
+            best_score = max(
+                candidate['semantic_score'] for candidate in candidates)
+            top = [candidate for candidate in candidates
+                   if candidate['semantic_score'] == best_score]
+            shared = [candidate for candidate in top
+                      if candidate['ps'] == base_choice['ps']]
+            if shared:
+                choice = max(
+                    shared, key=lambda candidate: (
+                        candidate['signature'], candidate['ps']))
+            elif len({candidate['assignment_key'] for candidate in top}) > 1:
+                if ambiguous_out is not None:
+                    route = form_routes.get(key) or '?'
+                    ambiguous_out.append(
+                        f'component {comp_id} route {route} has an ambiguous '
+                        'primary pass without a base-shared shader')
+                continue
+            else:
+                choice = max(
+                    top, key=lambda candidate: (
+                        candidate['signature'], candidate['ps']))
+            chosen[key] = choice['ps']
     return chosen
 
 
@@ -866,8 +1398,6 @@ def _local_assignment_slots(pair_map: Dict[int, Optional[str]],
                             role: str,
                             fresh_slots: Set[int]) -> Set[int]:
     slots = _canonical_override_slots(pair_map, texture_info)
-    if role == 'outline':
-        return slots
     return slots & fresh_slots
 
 
@@ -1033,41 +1563,61 @@ def _minimal_condition_signature(
     common = _signature_common(own_signatures)
     if not common:
         return (), ()
-    if not other_signatures:
-        return _safe_default_condition_signature(common, assignment_slots), ()
+    required = _ordered_signature(tuple(
+        term for term in common if term[0] in assignment_slots))
+    if assignment_slots and {
+            slot for slot, _key in required} != assignment_slots:
+        return (), ()
+    optional_terms = sorted(
+        (term for term in common if term not in required),
+        key=lambda term: _condition_term_sort_key(term, assignment_slots))
 
-    ordered_terms = sorted(common, key=lambda term: _condition_term_sort_key(
-        term, assignment_slots))
+    def candidates():
+        start = 0 if required else 1
+        for size in range(start, len(optional_terms) + 1):
+            for extra in combinations(optional_terms, size):
+                yield _ordered_signature(required + tuple(extra))
+
+    if not other_signatures:
+        for candidate in candidates():
+            if _safe_condition_shape(candidate, ()):
+                return candidate, ()
+        return required or _safe_default_condition_signature(
+            common, assignment_slots), ()
+
     own_set = set(own_signatures)
     other_set = set(other_signatures)
-    for size in range(1, len(ordered_terms) + 1):
-        for subset_raw in combinations(ordered_terms, size):
-            subset = _ordered_signature(tuple(subset_raw))
+    for subset in candidates():
+        blockers = [
+            other for other in other_set
+            if all(term in other for term in subset)
+        ]
+        if blockers or not _safe_condition_shape(subset, ()):
+            continue
+        return subset, ()
+
+    if allow_negative:
+        for subset in candidates():
             blockers = [
                 other for other in other_set
                 if all(term in other for term in subset)
             ]
-            if blockers or not _safe_condition_shape(subset, ()):
+            if not blockers:
                 continue
-            return subset, ()
+            negative = _minimal_negative_signature(
+                subset, own_set, set(blockers), blocked_negative_slots)
+            if negative is None or not _safe_condition_shape(subset, negative):
+                continue
+            return subset, negative
 
-    if allow_negative:
-        for size in range(1, len(ordered_terms) + 1):
-            for subset_raw in combinations(ordered_terms, size):
-                subset = _ordered_signature(tuple(subset_raw))
-                blockers = [
-                    other for other in other_set
-                    if all(term in other for term in subset)
-                ]
-                if not blockers:
-                    continue
-                negative = _minimal_negative_signature(
-                    subset, own_set, set(blockers), blocked_negative_slots)
-                if negative is None or not _safe_condition_shape(subset, negative):
-                    continue
-                return subset, negative
-
-    fallback = _default_condition_signature(common, assignment_slots)
+    fallback = required
+    if not _safe_condition_shape(fallback, ()):
+        for candidate in candidates():
+            if _safe_condition_shape(candidate, ()):
+                fallback = candidate
+                break
+    if not fallback:
+        fallback = _default_condition_signature(common, assignment_slots)
     if not allow_negative:
         if not _safe_condition_shape(fallback, ()):
             return _safe_default_condition_signature(common, assignment_slots), ()
@@ -1126,6 +1676,12 @@ def _minimize_anchor_branches(branches: List[_Branch]) -> None:
             positive, negative = _minimal_condition_signature(
                 own_signatures, other_signatures, assignment_slots,
                 blocked_negative_slots)
+            missing_slots = assignment_slots - {
+                slot for slot, _key in positive}
+            if missing_slots:
+                raise SlotStyleDegrade(
+                    'slot condition does not cover assignment slot(s): '
+                    + ', '.join(f'ps-t{slot}' for slot in sorted(missing_slots)))
             for member in members:
                 member.signature = positive
                 member.negative_signature = negative
@@ -1242,7 +1798,11 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                     freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
                                     warnings: Optional[List[str]] = None,
                                     source_meta: Optional[Dict[Tuple[str, int], List[str]]] = None,
-                                    pass_depth: Optional[List[PassDepth]] = None) -> dict:
+                                    pass_depth: Optional[List[PassDepth]] = None,
+                                    form_routes: Optional[FormRoutes] = None,
+                                    invalid_route_components: Optional[Set[int]] = None,
+                                    route_profiles: Optional[Dict[int, Set[str]]] = None,
+                                    ) -> dict:
     """Build the STU audit block for local form discriminator export.
 
     The audit is intentionally data-only: export still recomputes and verifies
@@ -1253,25 +1813,36 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
         forms, freshness, [])
     audit_forms = _local_audit_forms(forms, filtered_forms, texture_info)
     alias = _variant_aliases(texture_info)
-    canonical_seats = _component_hash_canonical_slots(audit_forms, alias)
+    canonical_seats = _component_hash_canonical_slots(
+        audit_forms, alias, form_routes)
+    ambiguous_primary: List[str] = []
     primary_passes = _primary_passes_by_form(
-        audit_forms, texture_info, freshness, pass_depth, alias)
+        audit_forms, texture_info, freshness, pass_depth, alias,
+        form_routes=form_routes, ambiguous_out=ambiguous_primary)
+    if ambiguous_primary:
+        raise SlotStyleDegrade('; '.join(ambiguous_primary))
     rows = []
     branch_samples: Dict[
-        Tuple[int, Tuple[Tuple[int, str], ...], Tuple[Tuple[int, float], ...]],
+        Tuple[int, Optional[str], Tuple[Tuple[int, str], ...],
+              Tuple[Tuple[int, float], ...]],
         dict,
     ] = {}
     component_assignments: Dict[
-        int,
+        Tuple[int, Optional[str]],
         Dict[Tuple[Tuple[int, str], ...], Set[Tuple[Tuple[int, float], ...]]],
     ] = {}
-    conflict_details: Dict[int, Dict[Tuple[Tuple[int, str], ...], dict]] = {}
+    conflict_details: Dict[
+        Tuple[int, Optional[str]],
+        Dict[Tuple[Tuple[int, str], ...], dict],
+    ] = {}
 
     for form_id, (label, form_data) in enumerate(audit_forms, start=1):
         form_fresh = (freshness[form_id - 1]
                       if freshness is not None and form_id - 1 < len(freshness)
                       else None)
         for comp_id, comp_pairs in form_data.items():
+            route = (form_routes or {}).get((form_id, comp_id))
+            scope = (comp_id, route)
             for ps, pair_map in comp_pairs.items():
                 is_primary_pass = primary_passes.get((form_id, comp_id)) == ps
                 fresh_slots = _fresh_signature_slots(
@@ -1297,7 +1868,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                         and alias.get(tex_hash, tex_hash) in texture_info
                         and (
                             canonical_seats.get(
-                                (comp_id, alias.get(tex_hash, tex_hash))) == slot
+                                (comp_id, route,
+                                 alias.get(tex_hash, tex_hash))) == slot
                             or (
                                 slot in constants.SERVICE_SLOTS
                                 and sum(
@@ -1335,6 +1907,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     'fresh_slots': sorted(fresh_slots),
                     'canonical_slots': sorted(assign_hashes) if is_primary_pass else [],
                 }
+                if route is not None:
+                    row['route'] = route
                 remap_sources = _source_meta_for(source_meta, label, comp_id)
                 if remap_sources:
                     row['remap_sources'] = remap_sources
@@ -1348,8 +1922,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                             (slot, tex_hash)
                             for slot, tex_hash in branch_assign_hashes.items()))
                         component_assignments.setdefault(
-                            comp_id, {}).setdefault(akey, set()).add(branch_sig)
-                        detail = conflict_details.setdefault(comp_id, {}).setdefault(
+                            scope, {}).setdefault(akey, set()).add(branch_sig)
+                        detail = conflict_details.setdefault(scope, {}).setdefault(
                             akey, {'assign_hashes': branch_assign_hashes, 'sources': []})
                         detail['sources'].append({
                             'form': label,
@@ -1358,7 +1932,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                             'pass_role': role,
                             'remap_sources': remap_sources,
                         })
-                        sample_key = (comp_id, akey, branch_sig)
+                        sample_key = (comp_id, route, akey, branch_sig)
                         sample = branch_samples.get(sample_key)
                         if sample is None:
                             branch_samples[sample_key] = {
@@ -1380,6 +1954,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                             }
                             if remap_sources:
                                 branch_samples[sample_key]['remap_sources'] = remap_sources
+                            if route is not None:
+                                branch_samples[sample_key]['route'] = route
                         else:
                             if label not in sample['forms']:
                                 sample['forms'].append(label)
@@ -1387,15 +1963,19 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
 
     conflicts = []
 
-    unresolved_components: Set[int] = set()
-    for comp_id, by_assign in sorted(component_assignments.items()):
+    unresolved_scopes: Set[Tuple[int, Optional[str]]] = set()
+    for scope, by_assign in sorted(
+            component_assignments.items(),
+            key=lambda item: (item[0][0], item[0][1] or '')):
+        comp_id, route = scope
         if len(by_assign) <= 1:
             continue
         for assign_key, signatures in sorted(by_assign.items()):
             has_branch = False
             for sample_key, sample in branch_samples.items():
-                sample_comp, sample_assign, _sample_sig = sample_key
-                if sample_comp != comp_id or sample_assign != assign_key:
+                sample_comp, sample_route, sample_assign, _sample_sig = sample_key
+                if ((sample_comp, sample_route) != scope
+                        or sample_assign != assign_key):
                     continue
                 pos = _signature_from_audit(sample.get('positive_signature')
                                             or sample.get('signature'))
@@ -1415,9 +1995,9 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     has_branch = True
                     break
             if not has_branch:
-                unresolved_components.add(comp_id)
-        if comp_id in unresolved_components:
-            conflicts.append({
+                unresolved_scopes.add(scope)
+        if scope in unresolved_scopes:
+            conflict = {
                 'component': comp_id,
                 'reason': 'local slot-layout conditions cannot separate different assignments',
                 'members': [
@@ -1427,15 +2007,18 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                         'sources': detail['sources'],
                     }
                     for assign_key, detail in sorted(
-                        conflict_details.get(comp_id, {}).items())
+                        conflict_details.get(scope, {}).items())
                 ],
-            })
+            }
+            if route is not None:
+                conflict['route'] = route
+            conflicts.append(conflict)
 
     branches = list(branch_samples.values())
     for branch in branches:
         branch['forms'] = sorted(branch['forms'])
 
-    return {
+    result = {
         'schema': constants.LOCAL_FORM_DISCRIMINATOR_SCHEMA,
         'fingerprint': _hash_fingerprint(
             forms, texture_info, freshness, pass_depth),
@@ -1454,6 +2037,15 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
         },
         'warnings': local_warnings,
     }
+    if invalid_route_components:
+        result['invalid_route_components'] = sorted(invalid_route_components)
+    if route_profiles:
+        result['route_profiles'] = {
+            str(comp_id): sorted(routes, key=lambda value: (
+                value != 'base', value))
+            for comp_id, routes in sorted(route_profiles.items())
+        }
+    return result
 
 
 def validate_local_discriminator_audit(audit: object,
@@ -1483,8 +2075,8 @@ def _local_condition_matches(signature: Tuple[Tuple[int, float], ...],
 
 def _local_conflict_messages(records: List[dict],
                              slot_eligible_components: Optional[Set[int]]) -> List[dict]:
-    row_by_component: Dict[int, List[dict]] = {}
-    branch_by_component: Dict[int, List[dict]] = {}
+    row_by_scope: Dict[Tuple[int, Optional[str]], List[dict]] = {}
+    branch_by_scope: Dict[Tuple[int, Optional[str]], List[dict]] = {}
     for record in records:
         assign_key = record.get('assign_key') or ()
         if not assign_key:
@@ -1495,13 +2087,18 @@ def _local_conflict_messages(records: List[dict],
             continue
         if slot_eligible_components is not None and comp_id not in slot_eligible_components:
             continue
+        route = record.get('route')
+        scope = (comp_id, route if isinstance(route, str) else None)
         if record.get('kind') == 'row':
-            row_by_component.setdefault(comp_id, []).append(record)
+            row_by_scope.setdefault(scope, []).append(record)
         elif record.get('kind') == 'branch':
-            branch_by_component.setdefault(comp_id, []).append(record)
+            branch_by_scope.setdefault(scope, []).append(record)
     problems = []
-    for comp_id, branches in sorted(branch_by_component.items()):
-        evidence = row_by_component.get(comp_id, [])
+    for scope, branches in sorted(
+            branch_by_scope.items(),
+            key=lambda item: (item[0][0], item[0][1] or '')):
+        comp_id, route = scope
+        evidence = row_by_scope.get(scope, [])
         issues = []
         seen_issues: Set[
             Tuple[
@@ -1545,7 +2142,10 @@ def _local_conflict_messages(records: List[dict],
                     ],
                 })
         if issues:
-            problems.append({'component': comp_id, 'issues': issues})
+            problem = {'component': comp_id, 'issues': issues}
+            if route is not None:
+                problem['route'] = route
+            problems.append(problem)
     return problems
 
 
@@ -1555,7 +2155,9 @@ def _format_local_conflict_message(problems: List[dict]) -> str:
     ]
     for problem in problems:
         comp_id = problem['component']
-        lines.append(f'- Component {comp_id}')
+        route = problem.get('route')
+        route_suffix = f' route {route}' if route is not None else ''
+        lines.append(f'- Component {comp_id}{route_suffix}')
         for issue in problem['issues'][:4]:
             condition = _format_condition(
                 issue["signature"], issue.get("negative_signature") or ())
@@ -1576,20 +2178,117 @@ def _format_local_conflict_message(problems: List[dict]) -> str:
     return '\n'.join(lines)
 
 
+def _complete_route_direct_components(
+        audit: dict,
+        component_branches: Dict[int, List[_LocalBranch]]) -> Set[int]:
+    """Return components whose route profiles can safely replace hash fallback."""
+    raw_profiles = audit.get('route_profiles')
+    if not isinstance(raw_profiles, dict):
+        return set()
+    complete: Set[int] = set()
+    for raw_comp_id, raw_routes in raw_profiles.items():
+        try:
+            comp_id = int(raw_comp_id)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(raw_routes, list):
+            continue
+        routes = [str(route).strip().lower() for route in raw_routes]
+        route_set = set(routes)
+        if (len(route_set) != len(routes) or 'base' not in route_set
+                or len(route_set) < 2
+                or any(route != 'base' and not _ROUTE_RE.fullmatch(route)
+                       for route in route_set)):
+            continue
+        branches = component_branches.get(comp_id) or []
+        by_route: Dict[str, List[_LocalBranch]] = {}
+        valid = True
+        for branch in branches:
+            route = branch.route_id
+            if route not in route_set:
+                valid = False
+                break
+            positive = dict(branch.signature)
+            negative = dict(branch.negative_signature)
+            assigned_slots = set(branch.assign)
+            if (not positive or len(positive) != len(branch.signature)
+                    or len(negative) != len(branch.negative_signature)
+                    or set(positive) & set(negative)
+                    or not assigned_slots
+                    or assigned_slots != set(branch.assign_hashes)
+                    or not assigned_slots.issubset(positive)
+                    or (len(positive) == 1 and not negative)):
+                valid = False
+                break
+            by_route.setdefault(str(route), []).append(branch)
+        if not valid or set(by_route) != route_set:
+            continue
+        for route_branches in by_route.values():
+            condition_assignments: Dict[
+                Tuple[
+                    Tuple[Tuple[int, float], ...],
+                    Tuple[Tuple[int, float], ...],
+                ],
+                Tuple[Tuple[int, str], ...],
+            ] = {}
+            for branch in route_branches:
+                condition = (branch.signature, branch.negative_signature)
+                assignment = tuple(sorted(branch.assign_hashes.items()))
+                previous = condition_assignments.setdefault(
+                    condition, assignment)
+                if previous != assignment:
+                    valid = False
+                    break
+            if not valid:
+                break
+        if valid:
+            complete.add(comp_id)
+    return complete
+
+
 def _local_branches_from_audit(audit: dict,
                                mod_hashes: Dict[str, str],
                                canon_fn,
                                form_label_to_id: Optional[Dict[str, int]] = None,
                                slot_eligible_components: Optional[Set[int]] = None,
                                volatile_assignment_hashes: Optional[Set[str]] = None,
-                               ) -> Tuple[Dict[int, List[_LocalBranch]], Set[str], int, Set[str]]:
+                               ) -> Tuple[
+                                   Dict[int, List[_LocalBranch]], Set[str],
+                                   int, Set[str], Set[int]
+                               ]:
     component_branches: Dict[int, List[_LocalBranch]] = {}
+    invalid_routes = {
+        int(value) for value in (audit.get('invalid_route_components') or [])
+        if str(value).isdigit()
+    }
+    blocking_invalid_routes = (
+        invalid_routes if slot_eligible_components is None
+        else invalid_routes & set(slot_eligible_components)
+    )
+    if blocking_invalid_routes:
+        raise SlotStyleDegrade(
+            'cross-scene route validation failed for component(s): '
+            + ', '.join(str(value) for value in sorted(
+                blocking_invalid_routes)))
     assigned_hashes: Set[str] = set()
     suppressed_weak_hashes: Set[str] = set()
     suppressed_weak_branches = 0
     branch_records: List[dict] = []
-    pending_branches: List[Tuple[int, dict, Dict[int, str], Tuple[Tuple[int, str], ...], str]] = []
+    pending_branches: List[
+        Tuple[int, Optional[str], dict, Dict[int, str],
+              Tuple[Tuple[int, str], ...], str]
+    ] = []
     observed_service_slot_sets_by_hash: Dict[str, Set[Tuple[int, ...]]] = {}
+
+    def _route_from(entry: dict, source: str) -> Optional[str]:
+        raw_route = entry.get('route')
+        if raw_route is None:
+            return None
+        route = str(raw_route).strip().lower()
+        if route != 'base' and not _ROUTE_RE.fullmatch(route):
+            raise SlotStyleDegrade(
+                f'{source} has an invalid cross-scene route {raw_route!r}')
+        return route
 
     def _source_from(entry: dict, fallback: str) -> str:
         sources = entry.get('sources') or []
@@ -1655,6 +2354,7 @@ def _local_branches_from_audit(audit: dict,
         if not signature:
             continue
         source = _source_from(row, f'row#{index}')
+        route = _route_from(row, f'local form discriminator row #{index}')
         form_id_raw = row.get('form_id')
         try:
             form_id = int(form_id_raw)
@@ -1697,12 +2397,14 @@ def _local_branches_from_audit(audit: dict,
                 signature, row_assign_hashes, variant, {})
             row_signature_records.append({
                 'component': comp_id,
+                'route': route,
                 'signature': variant_signature,
                 'assign_key': tuple(sorted(variant.items())),
             })
             branch_records.append({
                 'kind': 'row',
                 'component': comp_id,
+                'route': route,
                 'signature': variant_signature,
                 'negative_signature': (),
                 'assign_key': tuple(sorted(variant.items())),
@@ -1729,6 +2431,7 @@ def _local_branches_from_audit(audit: dict,
                 f'component {comp_id}: local form discriminator branch #{index} '
                 'has no usable slot-format signature')
         source = _source_from(entry, f'branch#{index}')
+        route = _route_from(entry, f'local form discriminator branch #{index}')
         assign, _assign_key = _effective_assignment(
             entry.get('assign_hashes'), comp_id, f'branch #{index}')
         if not assign:
@@ -1753,27 +2456,31 @@ def _local_branches_from_audit(audit: dict,
         if (branch_primary_keys
                 and not branch_primary_keys.issubset(primary_row_keys)):
             continue
-        pending_branches.append((comp_id, entry, assign, assign_key, source))
+        pending_branches.append(
+            (comp_id, route, entry, assign, assign_key, source))
 
     row_records = [record for record in branch_records
                    if record.get('kind') == 'row']
     kept_branch_records: List[dict] = []
     grouped_pending: Dict[
-        Tuple[int, Tuple[Tuple[int, str], ...], str],
-        List[Tuple[int, dict, Dict[int, str], Tuple[Tuple[int, str], ...], str]],
+        Tuple[int, Optional[str], Tuple[Tuple[int, str], ...], str],
+        List[Tuple[int, Optional[str], dict, Dict[int, str],
+                   Tuple[Tuple[int, str], ...], str]],
     ] = {}
     for item in pending_branches:
-        comp_id, entry, _assign, assign_key, _source = item
+        comp_id, route, entry, _assign, assign_key, _source = item
         pass_role = str(entry.get('pass_role') or '')
-        grouped_pending.setdefault((comp_id, assign_key, pass_role), []).append(item)
+        grouped_pending.setdefault(
+            (comp_id, route, assign_key, pass_role), []).append(item)
 
     row_signatures: Dict[
-        int,
+        Tuple[int, Optional[str]],
         Dict[Tuple[Tuple[int, str], ...], Set[Tuple[Tuple[int, float], ...]]],
     ] = {}
     for record in row_signature_records:
         comp_id = int(record.get('component'))
-        row_signatures.setdefault(comp_id, {}).setdefault(
+        scope = (comp_id, record.get('route'))
+        row_signatures.setdefault(scope, {}).setdefault(
             record.get('assign_key') or (), set()).add(record['signature'])
     drift_hashes = {
         tex_hash for tex_hash, slot_sets in observed_service_slot_sets_by_hash.items()
@@ -1785,34 +2492,49 @@ def _local_branches_from_audit(audit: dict,
         if canon:
             drift_hashes.add(canon)
 
-    for (comp_id, assign_key, pass_role), items in sorted(grouped_pending.items()):
+    for (comp_id, route, evidence_assign_key, pass_role), items in sorted(
+            grouped_pending.items(),
+            key=lambda item: (
+                item[0][0], item[0][1] or '', item[0][2], item[0][3])):
+        scope = (comp_id, route)
         entry_signatures = [
-            _signature_from_audit(item[1].get('positive_signature')
-                                  or item[1].get('signature'))
+            _signature_from_audit(item[2].get('positive_signature')
+                                  or item[2].get('signature'))
             for item in items
         ]
         own_signatures = list(
-            row_signatures.get(comp_id, {}).get(assign_key, set()))
+            row_signatures.get(scope, {}).get(evidence_assign_key, set()))
         if not own_signatures:
             own_signatures = [sig for sig in entry_signatures if sig]
         other_signatures = [
-            sig for other_key, values in row_signatures.get(comp_id, {}).items()
-            if other_key != assign_key for sig in values
+            sig for other_key, values in row_signatures.get(scope, {}).items()
+            if other_key != evidence_assign_key for sig in values
         ]
         blocked_negative_slots = {
-            slot for other_key in row_signatures.get(comp_id, {})
+            slot for other_key in row_signatures.get(scope, {})
             for slot, _tex_hash in other_key
         }
+        assign_key = tuple(
+            (slot, tex_hash) for slot, tex_hash in evidence_assign_key
+            if not (_volatile_condition_slot(slot) and tex_hash in drift_hashes)
+        )
+        if not assign_key:
+            continue
         condition_options = _minimal_condition_signature_options(
             own_signatures, other_signatures,
             {slot for slot, _tex_hash in assign_key},
             blocked_negative_slots,
             allow_negative=False)
-        assign = dict(items[0][2])
-        source = ','.join(item[4] for item in items)
+        assignment_slots = {slot for slot, _tex_hash in assign_key}
+        assign = {
+            slot: resource for slot, resource in items[0][3].items()
+            if slot in assignment_slots
+        }
+        source = ','.join(item[5] for item in items)
         branch_form_id = None
         forms_seen: Set[int] = set()
-        for _comp_id, entry, _assign, _assign_key, _source in items:
+        for (_comp_id, _route, entry, _assign,
+             _assign_key, _source) in items:
             forms_value = entry.get('forms')
             if isinstance(forms_value, list):
                 labels = [str(value).strip().lower()
@@ -1837,6 +2559,13 @@ def _local_branches_from_audit(audit: dict,
         assign_hash_by_slot = dict(assign_key)
         for signature, negative_signature in condition_options:
             condition_slots = {slot for slot, _key in signature}
+            missing_slots = assignment_slots - condition_slots
+            if missing_slots:
+                raise SlotStyleDegrade(
+                    f'component {comp_id}: local slot condition does not cover '
+                    'assignment slot(s): '
+                    + ', '.join(
+                        f'ps-t{slot}' for slot in sorted(missing_slots)))
             condition_hashes = {
                 tex_hash for slot, tex_hash in assign_key
                 if slot in condition_slots and _volatile_condition_slot(slot)
@@ -1859,10 +2588,10 @@ def _local_branches_from_audit(audit: dict,
             if (not component_excluded and _local_branch_is_weak(
                     signature, negative_signature, filtered_assign, pass_role)):
                 weak_blocked = any(
-                    other != assign_key and any(
+                    other != evidence_assign_key and any(
                         all(term in other_sig for term in signature)
                         for other_sig in values)
-                    for other, values in row_signatures.get(comp_id, {}).items())
+                    for other, values in row_signatures.get(scope, {}).items())
             if weak_blocked:
                 suppressed_weak_branches += 1
                 for _slot, tex_hash in assign_key:
@@ -1871,6 +2600,7 @@ def _local_branches_from_audit(audit: dict,
             kept_branch_records.append({
                 'kind': 'branch',
                 'component': comp_id,
+                'route': route,
                 'signature': signature,
                 'negative_signature': negative_signature,
                 'assign_key': filtered_assign_key,
@@ -1886,13 +2616,23 @@ def _local_branches_from_audit(audit: dict,
                 label='local',
                 ps='',
                 source=source,
+                assign_hashes=dict(filtered_assign_key),
+                route_id=route,
             ))
     branch_records.extend(kept_branch_records)
-    problems = _local_conflict_messages(branch_records, slot_eligible_components)
+    route_direct_components = _complete_route_direct_components(
+        audit, component_branches)
+    effective_eligible_components = slot_eligible_components
+    if slot_eligible_components is not None:
+        effective_eligible_components = (
+            set(slot_eligible_components) | route_direct_components)
+    problems = _local_conflict_messages(
+        branch_records, effective_eligible_components)
     if problems:
         raise SlotStyleDegrade(_format_local_conflict_message(problems))
     return (component_branches, assigned_hashes,
-            suppressed_weak_branches, suppressed_weak_hashes)
+            suppressed_weak_branches, suppressed_weak_hashes,
+            route_direct_components)
 
 
 def _build_local_plan(forms: List[Tuple[str, FormData]],
@@ -1984,9 +2724,11 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         label.strip().lower(): form_id
         for form_id, (label, _data) in enumerate(forms, start=1)
     }
-    component_branches, raw_assigned_hashes, suppressed_weak_branches, suppressed_weak_hashes = _local_branches_from_audit(
-        local_discriminator_audit, mod_hashes, _canon, label_to_id,
-        slot_eligible_components, volatile_assignment_hashes)
+    (component_branches, raw_assigned_hashes, suppressed_weak_branches,
+     suppressed_weak_hashes,
+     route_direct_components) = _local_branches_from_audit(
+         local_discriminator_audit, mod_hashes, _canon, label_to_id,
+         slot_eligible_components, volatile_assignment_hashes)
     if suppressed_weak_branches:
         warnings.append(
             f'suppressed {suppressed_weak_branches} weak local slot branch(es); '
@@ -2006,8 +2748,11 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                 continue
             source = _audit_source_from(row, 'row')
             hash_source = (row.get('assign_hashes') or {})
-            if (slot_eligible_components is not None
-                    and comp_id not in slot_eligible_components):
+            component_excluded = (
+                slot_eligible_components is not None
+                and comp_id not in slot_eligible_components
+                and comp_id not in route_direct_components)
+            if component_excluded:
                 hash_source = row.get('observed_hashes') or hash_source
             for raw_slot, tex_hash in hash_source.items():
                 if not isinstance(tex_hash, str):
@@ -2024,8 +2769,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                         canon, comp_id,
                         'not represented by a safe local slot branch',
                         source, slot))
-                if (slot_eligible_components is not None
-                        and comp_id not in slot_eligible_components):
+                if component_excluded:
                     resource = mod_hashes[canon]
                     _add_component_hash_fallback(
                         component_hash_fallbacks,
@@ -2044,7 +2788,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     if slot_eligible_components is not None:
         resource_to_hash_for_exclusion = {res: h for h, res in textures}
         for comp_id in list(component_branches):
-            if comp_id in slot_eligible_components:
+            if (comp_id in slot_eligible_components
+                    or comp_id in route_direct_components):
                 continue
             for branch in component_branches.pop(comp_id):
                 for resource in branch.assign.values():
@@ -2063,6 +2808,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         merged: List[_LocalBranch] = []
         seen: Dict[
             Tuple[
+                Optional[str],
                 Tuple[Tuple[int, float], ...],
                 Tuple[Tuple[int, float], ...],
                 Tuple[Tuple[int, str], ...],
@@ -2071,6 +2817,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         ] = {}
         for branch in branches:
             key = (
+                branch.route_id,
                 branch.signature,
                 branch.negative_signature,
                 tuple(sorted(branch.assign.items())),
@@ -2169,6 +2916,9 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     used_families: Dict[int, Set[float]] = {}
     component_list_names: Dict[int, str] = {}
     body_chunks: List[str] = []
+    branch_contract: Dict[str, Dict[str, object]] = {}
+    restore_contract: Dict[str, Dict[str, object]] = {}
+    component_route_lists: Dict[int, Dict[str, str]] = {}
 
     def _terms(comp_id: int, branch: _LocalBranch) -> List[str]:
         terms: List[str] = []
@@ -2198,27 +2948,84 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             used_slots.add(slot)
 
     for comp_id in sorted(component_branches):
-        name = constants.CMDLIST_SET_TEXTURES.format(component_id=comp_id)
-        component_list_names[comp_id] = name
-        chunk: List[str] = ['', f'[{name}]', 'if $object_detected == 1']
-        ordered = sorted(
-            component_branches[comp_id],
-            key=lambda b: (-len(b.assign), -len(b.signature), b.form_id or 0,
-                           b.signature, tuple(sorted(b.assign.items()))))
-        first = True
-        for branch in ordered:
-            terms = _terms(comp_id, branch)
-            if not terms:
+        by_route: Dict[Optional[str], List[_LocalBranch]] = {}
+        for branch in component_branches[comp_id]:
+            by_route.setdefault(branch.route_id, []).append(branch)
+        routed = any(route is not None for route in by_route)
+        if routed and (None in by_route or 'base' not in by_route):
+            raise SlotStyleDegrade(
+                f'component {comp_id}: cross-scene route profile is incomplete')
+
+        emitted_names: Dict[str, str] = {}
+        emitted_by_name: Dict[str, List[_LocalBranch]] = {}
+        route_order = sorted(
+            by_route, key=lambda route: (route != 'base', route or ''))
+        for route in route_order:
+            if route is None:
+                name = constants.CMDLIST_SET_TEXTURES.format(
+                    component_id=comp_id)
+            else:
+                suffix = 'Base' if route == 'base' else route
+                name = (f'CommandListSetTexturesComponent{comp_id}'
+                        f'Route{suffix}')
+            chunk: List[str] = ['', f'[{name}]', 'if $object_detected == 1']
+            ordered = sorted(
+                by_route[route],
+                key=lambda b: (-len(b.assign), -len(b.signature),
+                               b.form_id or 0, b.signature,
+                               tuple(sorted(b.assign.items()))))
+            first = True
+            emitted: List[_LocalBranch] = []
+            for branch in ordered:
+                terms = _terms(comp_id, branch)
+                if not terms:
+                    continue
+                chunk.append(
+                    f'    {"if" if first else "else if"} '
+                    + _condition(terms, branch))
+                _append_assignments(chunk, branch.assign, '        ')
+                emitted.append(branch)
+                first = False
+            if first:
                 continue
-            chunk.append(f'    {"if" if first else "else if"} ' + _condition(terms, branch))
-            _append_assignments(chunk, branch.assign, '        ')
-            first = False
-        if not first:
             chunk.append('    endif')
             chunk.append('endif')
             body_chunks.append('\n'.join(chunk))
+            branch_contract[name] = _serialized_branch_contract(
+                comp_id, list(emitted), route=route,
+                emitted_form_gates=gated_forms)
+            emitted_by_name[name] = emitted
+            if route is not None:
+                emitted_names[route] = name
+
+        if routed:
+            if 'base' not in emitted_names:
+                raise SlotStyleDegrade(
+                    f'component {comp_id}: base route emitted no texture branch')
+            component_list_names[comp_id] = emitted_names['base']
+            component_route_lists[comp_id] = emitted_names
+            policy = _local_restore_policy(
+                comp_id,
+                [branch for emitted in emitted_by_name.values()
+                 for branch in emitted],
+                local_discriminator_audit,
+                volatile_assignment_hashes=volatile_assignment_hashes,
+                canon_fn=_canon,
+            )
+            for name in emitted_names.values():
+                restore_contract[name] = dict(policy)
         else:
-            component_list_names.pop(comp_id, None)
+            generic_name = constants.CMDLIST_SET_TEXTURES.format(
+                component_id=comp_id)
+            if generic_name in branch_contract:
+                component_list_names[comp_id] = generic_name
+                restore_contract[generic_name] = _local_restore_policy(
+                    comp_id,
+                    emitted_by_name[generic_name],
+                    local_discriminator_audit,
+                    volatile_assignment_hashes=volatile_assignment_hashes,
+                    canon_fn=_canon,
+                )
 
     covered_resource_indices: Set[int] = set()
     blind_zone: List[Tuple[str, str]] = []
@@ -2383,6 +3190,9 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             h: list(entries)
             for h, entries in component_hash_fallbacks.items()
         },
+        branch_contract=branch_contract,
+        restore_contract=restore_contract,
+        component_route_lists=component_route_lists,
         warnings=warnings,
         stats={
             'forms': len(forms),
@@ -2856,6 +3666,9 @@ def build_plan(forms: List[Tuple[str, FormData]],
     component_list_names: Dict[int, str] = {}
     body_chunks: List[str] = []
 
+    branch_contract: Dict[str, Dict[str, object]] = {}
+    restore_contract: Dict[str, Dict[str, object]] = {}
+
     def _terms(comp_id: int, branch: _Branch) -> List[str]:
         terms: List[str] = []
         for slot, key in branch.signature:
@@ -2895,6 +3708,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                            b.signature, b.negative_signature,
                            tuple(sorted(b.assign.items()))))
         first = True
+        emitted: List[_Branch] = []
         for branch in ordered:
             terms = _terms(comp_id, branch)
             if not terms:
@@ -2903,10 +3717,14 @@ def build_plan(forms: List[Tuple[str, FormData]],
             chunk.append(f'{"if" if first else "else if"} '
                           f'{_condition(terms, branch.form_gate)}')
             _append_assignments(chunk, branch.assign, '    ')
+            emitted.append(branch)
             first = False
         if not first:
             chunk.append('endif')
             body_chunks.append('\n'.join(chunk))
+            branch_contract[name] = _serialized_branch_contract(
+                comp_id, list(emitted))
+            restore_contract[name] = {'mode': 'full'}
         else:
             component_list_names.pop(comp_id, None)
 
@@ -3020,6 +3838,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
             h: list(entries)
             for h, entries in component_hash_fallbacks.items()
         },
+        branch_contract=branch_contract,
+        restore_contract=restore_contract,
         warnings=warnings,
         stats={
             'forms': len(forms),

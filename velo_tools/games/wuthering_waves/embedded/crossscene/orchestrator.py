@@ -19,7 +19,7 @@ import re
 import shutil
 import sys
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import bpy
@@ -81,6 +81,29 @@ def _relabel_draw_comments(mod_ini, index_to_label):
 
     p.write_text(re.sub(r'(;\s*Draw )Component (\d+)(?:\.\d+)?', _sub,
                         p.read_text(encoding="utf-8")), encoding="utf-8")
+
+
+def _relabel_draw_comments_exact(mod_ini, temp_to_source):
+    """Restore exact source object labels for temporary body export copies."""
+    p = Path(mod_ini)
+    labels = {
+        str(temp): str(source)
+        for temp, source in (temp_to_source or {}).items()
+        if str(temp) and str(source)
+    }
+    if not p.is_file() or not labels:
+        return
+
+    def _sub(match):
+        source = labels.get(match.group(2))
+        if source is None:
+            return match.group(0)
+        return "%s%s%s" % (match.group(1), source, match.group(3) or "")
+
+    text = p.read_text(encoding="utf-8")
+    p.write_text(re.sub(
+        r'^(\s*;\s*Draw\s+)(.*?)(\r?)$', _sub, text, flags=re.M),
+        encoding="utf-8")
 
 
 def _dhash(x, y, z):
@@ -250,8 +273,14 @@ def _prepare_editable_ib_vgs(obj, rec, merged_component_vg_map,
 
 def _import_one(cfg, src, want_hash):
     before = set(c.name for c in bpy.data.collections)
+    before_objects = set(o.name for o in bpy.data.objects)
+    before_meshes = set(m.name for m in bpy.data.meshes)
     cfg.object_source_folder = src
-    bpy.ops.vtww.import_object()
+    try:
+        bpy.ops.vtww.import_object()
+    except Exception:
+        _purge_import_delta(before, before_objects, before_meshes)
+        raise
     new = [c for c in bpy.data.collections if c.name not in before]
     # Prefer the collection created by THIS import: a previous export in the same session may
     # have left a same-named collection imported under another skeleton mode, whose VG naming
@@ -261,7 +290,33 @@ def _import_one(cfg, src, want_hash):
             return c
     if new:
         return sorted(new, key=lambda c: c.name)[0]
-    return bpy.data.collections.get(want_hash)
+    raise RuntimeError(
+        "Cross-scene import produced no new collection for %s" % want_hash)
+
+
+def _purge_import_delta(collection_names, object_names, mesh_names):
+    """Remove only datablocks created by a failed stock import."""
+    for obj in list(bpy.data.objects):
+        if obj.name in object_names:
+            continue
+        try:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        except Exception:
+            pass
+    for mesh in list(bpy.data.meshes):
+        if mesh.name in mesh_names or getattr(mesh, "users", 0) != 0:
+            continue
+        try:
+            bpy.data.meshes.remove(mesh)
+        except Exception:
+            pass
+    for col in list(bpy.data.collections):
+        if col.name in collection_names:
+            continue
+        try:
+            bpy.data.collections.remove(col)
+        except Exception:
+            pass
 
 
 def _purge_collection(col):
@@ -269,14 +324,18 @@ def _purge_collection(col):
     keeps the scene clean across repeated exports and makes stale-collection reuse impossible."""
     if col is None:
         return
-    for o in list(col.objects):
+    try:
+        objects = list(col.objects)
+    except Exception:
+        return
+    for o in objects:
         data = o.data
         try:
             bpy.data.objects.remove(o, do_unlink=True)
         except Exception:
             pass
         try:
-            if data is not None:
+            if data is not None and getattr(data, "users", 0) == 0:
                 bpy.data.meshes.remove(data)
         except Exception:
             pass
@@ -284,6 +343,53 @@ def _purge_collection(col):
         bpy.data.collections.remove(col)
     except Exception:
         pass
+
+
+@contextmanager
+def _temporary_import(cfg, src, want_hash, tracker=None):
+    """Own one stock-imported collection for exactly one export transaction."""
+    col = _import_one(cfg, src, want_hash)
+    if tracker is not None:
+        tracker.append(col)
+    try:
+        yield col
+    finally:
+        _purge_collection(col)
+
+
+def _remove_temporary_mesh_copy(obj, mesh):
+    if obj is not None:
+        try:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        except Exception:
+            pass
+    if mesh is not None:
+        try:
+            if getattr(mesh, "users", 0) == 0:
+                bpy.data.meshes.remove(mesh)
+        except Exception:
+            pass
+
+
+@contextmanager
+def _temporary_mesh_copy(source, collection, name, *,
+                         object_tracker=None, mesh_tracker=None):
+    """Create and always remove one owned object+mesh copy."""
+    obj = None
+    mesh = None
+    try:
+        obj = source.copy()
+        if object_tracker is not None:
+            object_tracker.append(obj)
+        mesh = source.data.copy()
+        if mesh_tracker is not None:
+            mesh_tracker.append(mesh)
+        obj.data = mesh
+        obj.name = name
+        collection.objects.link(obj)
+        yield obj
+    finally:
+        _remove_temporary_mesh_copy(obj, mesh)
 
 
 _KEEP = object()  # _export_col sentinel: leave the slot-style eligibility override untouched.
@@ -517,117 +623,6 @@ def _root_non_body_hashes(merged_folder, keep_count):
     return non_body_hashes - body_hashes
 
 
-def _has_non_depth_texture_pass(src):
-    stu_path = Path(src) / "ShaderTextureUsage.json"
-    if not stu_path.is_file():
-        return True
-    try:
-        data = json.loads(stu_path.read_text(encoding="utf-8"))
-    except Exception:
-        return True
-
-    def _walk(value):
-        if isinstance(value, dict):
-            if any(str(key).startswith("ps-t") for key in value):
-                if value.get("depth_only") is not True:
-                    return True
-            return any(_walk(child) for child in value.values())
-        if isinstance(value, list):
-            return any(_walk(child) for child in value)
-        return False
-
-    return _walk(data)
-
-
-def _primary_slot_signatures_from_usage(data, component_map=None, volatile_hashes=None):
-    try:
-        from ..slot_textures import generator as slot_generator
-        forms = []
-        texture_info = {}
-        freshness = []
-        pass_depth = []
-        base_fresh = {}
-        base_depth = {}
-        forms.append((
-            "base",
-            slot_generator.normalize_usage(
-                data, "base", [], texture_info, base_fresh, base_depth)))
-        freshness.append(base_fresh)
-        pass_depth.append(base_depth)
-        for entry in stu_metadata.form_entries(data):
-            if not isinstance(entry, dict):
-                continue
-            label = entry.get("label") or entry.get("source") or f"form{len(forms) + 1}"
-            entry_fresh = {}
-            entry_depth = {}
-            forms.append((
-                label,
-                slot_generator.normalize_usage(
-                    entry.get("components") or {}, label, [], texture_info,
-                    entry_fresh, entry_depth)))
-            freshness.append(entry_fresh)
-            pass_depth.append(entry_depth)
-        audit = slot_generator.build_local_discriminator_audit(
-            forms, texture_info, freshness, pass_depth=pass_depth)
-    except Exception:
-        return {}
-
-    out = {}
-    comp_map = {int(k): int(v) for k, v in (component_map or {}).items()}
-    volatile = {str(h).lower() for h in (volatile_hashes or set())}
-    entries = audit.get("branches") or audit.get("rows") or []
-    for row in entries:
-        if not isinstance(row, dict) or not row.get("primary_pass"):
-            continue
-        try:
-            comp_id = int(row.get("component"))
-        except (TypeError, ValueError):
-            continue
-        signature = []
-        for item in row.get("positive_signature") or row.get("signature") or []:
-            if not isinstance(item, list) or len(item) != 2:
-                signature = []
-                break
-            try:
-                slot = int(item[0])
-                value = str(item[1])
-            except (TypeError, ValueError):
-                signature = []
-                break
-            signature.append((slot, value))
-        if signature:
-            assign_slots = []
-            for raw_slot, tex_hash in (row.get("assign_hashes") or {}).items():
-                if not isinstance(tex_hash, str) or tex_hash.lower() in volatile:
-                    continue
-                try:
-                    assign_slots.append(int(raw_slot))
-                except (TypeError, ValueError):
-                    continue
-            out.setdefault(comp_map.get(comp_id, comp_id), set()).add(
-                ("branch", tuple(sorted(signature)), tuple(sorted(assign_slots))))
-    return out
-
-
-def _component_primary_slot_signatures(src, component_map=None, volatile_hashes=None):
-    stu_path = Path(src) / "ShaderTextureUsage.json"
-    if not stu_path.is_file():
-        return {}
-    try:
-        data = json.loads(stu_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return _primary_slot_signatures_from_usage(data, component_map, volatile_hashes)
-
-
-def _merge_slot_branch_expectations(
-        target, src, ib_index, component_map=None, volatile_hashes=None):
-    for comp_id, signatures in _component_primary_slot_signatures(
-            src, component_map, volatile_hashes).items():
-        for signature in signatures:
-            target.setdefault((int(comp_id), int(ib_index)), set()).add(signature)
-
-
 def _accumulate_service_slot_hashes(components, slots_by_hash):
     for _comp, comp_pairs in (components or {}).items():
         if not isinstance(comp_pairs, dict):
@@ -837,6 +832,9 @@ def _copy_body(work: Path):
     shutil.copytree(work / "sc" / "Meshes", body / "Meshes")
     shutil.copytree(work / "sc" / "Textures", body / "Textures")
     shutil.copy(work / "sc" / "mod.ini", body / "mod.ini")
+    slot_contract = work / "sc" / ".velo_slot_contract.json"
+    if slot_contract.is_file():
+        shutil.copy(slot_contract, body / slot_contract.name)
     return body
 
 
@@ -976,7 +974,6 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
     slot_style_on = bool(getattr(cfg, "velo_slot_style_textures", False))
     volatile_slot_hashes = (_service_slot_drift_hashes(merged_folder)
                             if slot_style_on else set())
-    slot_branch_expectations = {}
     # The build runs N stock sub-exports into `work` and the assembler reads each one's mod.ini +
     # Meshes + Textures to merge them -- so every sub-export MUST write ini + textures + buffers
     # regardless of the user's file-output toggles (write_ini=off / partial_export=on /
@@ -1000,6 +997,10 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
         cfg.custom_template_live_update = False
     temp_cols = []
     pfm_temp_objs = []
+    temp_import_cols = []
+    temp_copy_objects = []
+    temp_copy_meshes = []
+    temp_copy_stacks = []
     try:
         with _cross_scene_export_guard():
             # 1) body: gather the base's Component meshes once, honoring the stock collection settings
@@ -1013,6 +1014,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     "请取消勾选该选项后重试。" % base_collection.name)
             base_by_name = {o.name: o for o in base_meshes}
             body_meshes = list(base_meshes)
+            pfm_draw_labels = {}
             if pfm_mode:
                 from .. import per_from_merged
                 merged_meta = json.loads((merged_folder / "Metadata.json").read_text(encoding="utf-8"))
@@ -1028,6 +1030,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     cp.data = src_obj.data.copy()
                     cp.name = src_obj.name
                     pfm_col.objects.link(cp)
+                    pfm_draw_labels[cp.name] = src_obj.name
                     pfm_temp_objs.append(cp)
                     cid = _component_id(src_obj.name)
                     if cid is not None and cid < len(components):
@@ -1055,24 +1058,13 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                          else {c for c in merged_eligible if c < keep_count})
             body_hash_suppressions = (_body_hash_suppressions(merged_folder, routing, keep_count, body_elig)
                                       if slot_style_on else {})
-            if slot_style_on:
-                try:
-                    root_stu = json.loads(
-                        (merged_folder / "ShaderTextureUsage.json").read_text(
-                            encoding="utf-8"))
-                    body_stu = _body_stu_for_export(
-                        root_stu, merged_folder, routing, keep_count)
-                    for comp_id, signatures in _primary_slot_signatures_from_usage(
-                            body_stu, volatile_hashes=volatile_slot_hashes).items():
-                        for signature in signatures:
-                            slot_branch_expectations.setdefault(
-                                (int(comp_id), 0), set()).add(signature)
-                except Exception:
-                    pass
             _export_body_with_trimmed_metadata(
                 cfg, body_col, work, merged_folder, keep_count, routing,
                 eligible=body_elig,
                 volatile_hashes=volatile_slot_hashes)
+            if pfm_draw_labels:
+                _relabel_draw_comments_exact(
+                    work / "sc" / "mod.ini", pfm_draw_labels)
             body_hash_suppressions = _prune_unrepresented_fold_suppressions(
                 work / "sc" / "mod.ini", body_hash_suppressions)
 
@@ -1131,11 +1123,11 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     own_col = bpy.data.collections.new("xs_own_" + tag)
                     bpy.context.scene.collection.children.link(own_col)
                     temp_cols.append(own_col)
-                    cp = split_obj.copy()
-                    cp.data = split_obj.data.copy()
-                    cp.name = sp.get("host_component_object", "Component 0")
-                    own_col.objects.link(cp)
-                    try:
+                    with _temporary_mesh_copy(
+                            split_obj, own_col,
+                            sp.get("host_component_object", "Component 0"),
+                            object_tracker=temp_copy_objects,
+                            mesh_tracker=temp_copy_meshes) as cp:
                         _bake_shapekeys(cp)
                         # Some saved files or headless scripts can disagree about the UI import
                         # skeleton mode even though the split copy still carries MERGED unified
@@ -1150,10 +1142,6 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                             eligible=own_elig,
                             slot_style=_KEEP,
                             volatile_hashes=volatile_slot_hashes)
-                        if slot_style_on:
-                            _merge_slot_branch_expectations(
-                                slot_branch_expectations, src, len(mods),
-                                volatile_hashes=volatile_slot_hashes)
                         # Annotate the own-buffer draw with the split's real (Blender) name (e.g.
                         # Component 5.001) instead of the export-local 'Component 0.001' artifact.
                         _m_idx = re.search(r'(\d+)', cp.name)
@@ -1161,13 +1149,6 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                             _relabel_draw_comments(
                                 work / tag / "mod.ini",
                                 {int(_m_idx.group(1)): sp["split_object"].split("Component ", 1)[-1]})
-                    finally:
-                        mesh = cp.data
-                        bpy.data.objects.remove(cp, do_unlink=True)
-                        try:
-                            bpy.data.meshes.remove(mesh)
-                        except Exception:
-                            pass
                 else:
                     why = ("路由无骨级翻译表（请重跑合并以生成）" if sp is None or "host_vg_remap" not in sp
                            else ("不支持的导出骨架模式 %s" % cfg.mod_skeleton_type
@@ -1176,20 +1157,16 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     own_legacy.append("%s: %s" % (tag, why))
                     print("[velo.xscene] own-buffer IB %s 走 legacy 重导入路径（%s）——对该部件的编辑不会传播。"
                           % (tag, why))
-                    col = _import_one(cfg, src, tag)
-                    if hole:
-                        for o in [o for o in col.objects if o.type == 'MESH']:
-                            _pos_hole(o, frac=hole_frac)
-                    _export_col(
-                        cfg, col, str(work / tag), "om_" + tag, src,
-                        eligible=own_elig,
-                        slot_style=_KEEP,
-                        volatile_hashes=volatile_slot_hashes)
-                    if slot_style_on:
-                        _merge_slot_branch_expectations(
-                            slot_branch_expectations, src, len(mods),
+                    with _temporary_import(
+                            cfg, src, tag, tracker=temp_import_cols) as col:
+                        if hole:
+                            for o in [o for o in col.objects if o.type == 'MESH']:
+                                _pos_hole(o, frac=hole_frac)
+                        _export_col(
+                            cfg, col, str(work / tag), "om_" + tag, src,
+                            eligible=own_elig,
+                            slot_style=_KEEP,
                             volatile_hashes=volatile_slot_hashes)
-                    _purge_collection(col)
                 mods.append(str(work / tag))
 
             # 3) Foldable IB (clothing/face): export takes its host (face carries morph), then fold.apply_fold redirects the geometry
@@ -1202,17 +1179,17 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             fold_skipped = []
             for s in foldable_ibs:
                 src = str(merged_folder / s["source_folder"])
-                col = _import_one(cfg, src, s["ib_hash"])
-                if hole:
-                    for o in [o for o in col.objects if o.type == 'MESH']:
-                        _pos_hole(o, frac=hole_frac)
                 tag = s["ib_hash"]
-                # Foldable host: its slot layer is discarded (fold replays the BASE maps onto the dungeon
-                # draw), so keep this intermediate export hash-style. This avoids requiring form anchors
-                # for a temporary ini whose texture layer never reaches the final mod.
-                _export_col(cfg, col, str(work / tag), "om_" + tag, src,
-                            eligible=None, slot_style=False)
-                _purge_collection(col)
+                with _temporary_import(
+                        cfg, src, tag, tracker=temp_import_cols) as col:
+                    if hole:
+                        for o in [o for o in col.objects if o.type == 'MESH']:
+                            _pos_hole(o, frac=hole_frac)
+                    # Foldable host: its slot layer is discarded (fold replays the BASE maps onto the dungeon
+                    # draw), so keep this intermediate export hash-style. This avoids requiring form anchors
+                    # for a temporary ini whose texture layer never reaches the final mod.
+                    _export_col(cfg, col, str(work / tag), "om_" + tag, src,
+                                eligible=None, slot_style=False)
                 skipped = fold.apply_fold(work, s, tag, draw_excludes=fold_draw_excludes)
                 if skipped:
                     fold_skipped.append("%s: base components %s" % (tag, skipped))
@@ -1232,25 +1209,33 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 bpy.context.scene.collection.children.link(eib_col)
                 temp_cols.append(eib_col)
                 temp_objs = []
-                for li, mi in zip(rec["local_components"], rec["merged_components"]):
-                    src_obj = base_by_name.get(f"Component {mi}")
-                    if src_obj is None:
-                        continue
-                    cp = src_obj.copy()
-                    cp.data = src_obj.data.copy()
-                    cp.name = f"Component {li}"
-                    eib_col.objects.link(cp)
-                    merged_comp_meta = (merged_meta.get("components") or [])[mi]
-                    source_comp_meta = (source_meta.get("components") or [])[li]
-                    _prepare_editable_ib_vgs(
-                        cp, rec,
-                        merged_comp_meta.get("vg_map") or {},
-                        source_comp_meta.get("vg_map") or {},
-                        mi, tag, export_skeleton_type)
-                    temp_objs.append(cp)
+                temp_stack = ExitStack()
+                temp_copy_stacks.append(temp_stack)
+                try:
+                    for li, mi in zip(
+                            rec["local_components"], rec["merged_components"]):
+                        src_obj = base_by_name.get(f"Component {mi}")
+                        if src_obj is None:
+                            continue
+                        cp = temp_stack.enter_context(_temporary_mesh_copy(
+                            src_obj, eib_col, f"Component {li}",
+                            object_tracker=temp_copy_objects,
+                            mesh_tracker=temp_copy_meshes))
+                        merged_comp_meta = (merged_meta.get("components") or [])[mi]
+                        source_comp_meta = (source_meta.get("components") or [])[li]
+                        _prepare_editable_ib_vgs(
+                            cp, rec,
+                            merged_comp_meta.get("vg_map") or {},
+                            source_comp_meta.get("vg_map") or {},
+                            mi, tag, export_skeleton_type)
+                        temp_objs.append(cp)
+                except Exception:
+                    temp_stack.close()
+                    raise
                 if not temp_objs:
                     # every component of this editable IB was excluded (hidden / Ignore Hidden Objects)
                     # or absent -> skip the whole editable sub-IB (that form just isn't in the mod).
+                    temp_stack.close()
                     eib_excluded.append(tag)
                     print("[velo.xscene] editable IB %s 的所有组件都被忽略（隐藏/排除/缺失），跳过该子 IB。" % tag)
                     continue
@@ -1260,17 +1245,10 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 eib_elig = (None if merged_eligible is None
                             else {li for li, mi in zip(rec["local_components"], rec["merged_components"])
                                   if mi in merged_eligible})
-                eib_ib_index = len(mods)
                 _export_col(
                     cfg, eib_col, str(work / tag), "om_" + tag, eib_src,
                     eligible=eib_elig,
                     volatile_hashes=volatile_slot_hashes)
-                if slot_style_on:
-                    _merge_slot_branch_expectations(
-                        slot_branch_expectations, eib_src, eib_ib_index,
-                        {int(li): int(mi) for li, mi in zip(
-                            rec["local_components"], rec["merged_components"])},
-                        volatile_hashes=volatile_slot_hashes)
                 # Annotate the editable draws with the merged (Blender) component numbers (e.g. 8-11)
                 # instead of the export-local 'Component 0-3.001' artifacts.
                 _relabel_draw_comments(
@@ -1278,13 +1256,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     {li: str(mi) for li, mi in zip(rec["local_components"], rec["merged_components"])})
                 mods.append(str(work / tag))
                 eib_roles.append(tag)
-                for cp in temp_objs:
-                    mesh = cp.data
-                    bpy.data.objects.remove(cp, do_unlink=True)
-                    try:
-                        bpy.data.meshes.remove(mesh)
-                    except Exception:
-                        pass
+                temp_stack.close()
 
             # 5) Namespace merge + texture dedup + self-check.
             # The merged root is the single authoritative texture allowlist: only hashes still present
@@ -1320,19 +1292,37 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                 report["editable_excluded"] = eib_excluded
             if fold_skipped:
                 report["fold_skipped"] = fold_skipped
-            try:
-                from . import audit
-                static_audit = audit.audit_cross_scene_ini(
-                    Path(out_folder) / "mod.ini", routing, report["roles"],
-                    own_excluded=own_excluded_tags,
-                    draw_excludes=fold_draw_excludes,
-                    slot_branch_expectations=slot_branch_expectations)
-                report["static_audit"] = static_audit
-                if static_audit.get("errors"):
-                    report["static_audit_errors"] = static_audit["errors"]
+            if report.get("final_ini_written"):
+                try:
+                    from . import audit
+                    static_audit = audit.audit_cross_scene_ini(
+                        Path(out_folder) / "mod.ini", routing, report["roles"],
+                        own_excluded=own_excluded_tags,
+                        draw_excludes=fold_draw_excludes,
+                        slot_branch_expectations=report.get(
+                            "slot_branch_expectations"),
+                        slot_restore_contract=report.get(
+                            "slot_restore_contract"),
+                        slot_component_route_lists=report.get(
+                            "slot_component_route_lists"),
+                        slot_style=slot_style_on)
+                    report["static_audit"] = static_audit
+                    if (static_audit.get("skipped")
+                            or static_audit.get("errors")):
+                        report["static_audit_errors"] = static_audit["errors"]
+                        report["sound"] = False
+                except Exception as e:
+                    error = "static audit failed: %s" % e
+                    report["static_audit"] = {
+                        "skipped": False, "reason": str(e), "errors": [error]}
+                    report["static_audit_errors"] = [error]
                     report["sound"] = False
-            except Exception as e:
-                report["static_audit"] = {"skipped": True, "reason": str(e), "errors": []}
+            else:
+                report["static_audit"] = {
+                    "skipped": True,
+                    "reason": "final mod.ini intentionally not written",
+                    "errors": [],
+                }
             return report
     finally:
         cfg.object_source_folder, cfg.mod_output_folder, cfg.mod_name = saved[0], saved[2], saved[3]
@@ -1347,6 +1337,17 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             cfg.custom_template_live_update = saved_gating["custom_template_live_update"]
         if saved[1] is not None:
             cfg.component_collection = saved[1]
+        for stack in reversed(temp_copy_stacks):
+            try:
+                stack.close()
+            except Exception:
+                pass
+        for col in reversed(temp_import_cols):
+            _purge_collection(col)
+        for obj in reversed(temp_copy_objects):
+            _remove_temporary_mesh_copy(obj, None)
+        for mesh in reversed(temp_copy_meshes):
+            _remove_temporary_mesh_copy(None, mesh)
         for obj in list(pfm_temp_objs):
             mesh = getattr(obj, "data", None)
             try:

@@ -22,6 +22,8 @@ import re
 import shutil
 import importlib.util
 import hashlib
+import json
+import sys
 
 
 def _load_format_tags():
@@ -42,8 +44,20 @@ def _load_ps_resource_scope():
     return module
 
 
+def _load_crossscene_helper(module_name):
+    path = os.path.join(os.path.dirname(__file__), module_name + ".py")
+    spec = importlib.util.spec_from_file_location(
+        "_velo_wwmi_crossscene_" + module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 _format_tags = _load_format_tags()
 _ps_resource_scope = _load_ps_resource_scope()
+_ini_document = _load_crossscene_helper("ini_document")
+_texture_delivery = _load_crossscene_helper("texture_delivery")
 
 _RE_GLOBAL = re.compile(r'\$([A-Za-z]\w*)')
 _RE_RESCMD = re.compile(r'\b(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)\b')
@@ -57,6 +71,7 @@ _RE_PST_REF = re.compile(r'ps-t\d+\s*=\s*ref\s+(ResourceTexture(?:\d+|_C\d+_[0-9
 _RE_TEXTURE_REF = re.compile(r'\s*this\s*=\s*(ResourceTexture(?:\d+|_C\d+_[0-9a-fA-F]+)(?:_ib\d+)*)\b', re.I)
 _RE_COMPONENT_FALLBACK_VAR = re.compile(r'\$component_hash_fallback_c(\d+)(?:_ib\d+)*\b')
 _SHARED_BODY_GLOBALS = {"form_id"}
+_SLOT_CONTRACT_FILENAME = ".velo_slot_contract.json"
 
 
 def _alias_for_component(namespace_aliases, k, component_id):
@@ -110,8 +125,17 @@ def _resource_alias_name(name, k, resource_hashes, resource_components,
 def _section_alias_name(name, k, resource_hashes=None, resource_components=None,
                         namespace_aliases=None, resource_component_override=None):
     resource_hashes = resource_hashes or {}
+    route_setter = re.fullmatch(
+        r'(CommandListSetTexturesComponent)(\d+)'
+        r'(Route(?:Base|[0-9a-fA-F]{8}))', name)
+    if route_setter:
+        comp = _alias_for_component(
+            namespace_aliases, k, int(route_setter.group(2)))
+        return (f'{route_setter.group(1)}{comp}{route_setter.group(3)}'
+                f'_ib{k}')
     comp_match = re.fullmatch(r'(CommandListSetTexturesComponent|CommandListProbeComponent|'
-                              r'CommandListDrawComponent|CommandListDrawOwnerComponent|'
+                              r'CommandListDrawComponent|CommandListDrawGeometryComponent|'
+                              r'CommandListDrawOwnerComponent|'
                               r'TextureOverrideComponent)(\d+)', name)
     if comp_match:
         comp = _alias_for_component(namespace_aliases, k, int(comp_match.group(2)))
@@ -129,6 +153,217 @@ def _section_alias_name(name, k, resource_hashes=None, resource_components=None,
             name, k, resource_hashes, resource_components, namespace_aliases,
             resource_component_override)
     return f'{name}_ib{k}'
+
+
+def _normalise_restore_policy(value):
+    full = {"mode": "full"}
+    if not isinstance(value, dict):
+        return full, False
+    mode = str(value.get("mode") or "").strip().lower()
+    if mode == "full":
+        return full, True
+    if mode != "except":
+        return full, False
+    try:
+        slot = int(value.get("persistent_slot"))
+    except (TypeError, ValueError):
+        return full, False
+    if not 0 <= slot <= 8:
+        return full, False
+    return {"mode": "except", "persistent_slot": slot}, True
+
+
+def _branch_expectation(contract, final_setter):
+    match = re.fullmatch(
+        r'CommandListSetTexturesComponent(\d+)'
+        r'(?:Route(?:Base|[0-9a-f]{8}))?_ib(\d+)', final_setter, re.I)
+    if not match or not isinstance(contract, dict):
+        return None, [f"{final_setter}: branch contract is not an object"], False
+    branches = contract.get("branches")
+    if not isinstance(branches, list):
+        return None, [f"{final_setter}: branch contract has no branches list"], False
+    if not branches:
+        return None, [f"{final_setter}: branch contract has no branches"], False
+    values = []
+    errors = []
+    for ordinal, branch in enumerate(branches):
+        if not isinstance(branch, dict):
+            errors.append(
+                f"{final_setter}: branch {ordinal} is not an object")
+            continue
+        raw_signature = branch.get("positive_signature")
+        signature = []
+        if not isinstance(raw_signature, list) or not raw_signature:
+            errors.append(
+                f"{final_setter}: branch {ordinal} has no positive signature")
+            continue
+        for item in raw_signature:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                signature = []
+                break
+            try:
+                slot = int(item[0])
+                value = str(item[1]).strip()
+            except (TypeError, ValueError):
+                signature = []
+                break
+            if not 0 <= slot <= 8 or not value:
+                signature = []
+                break
+            signature.append((slot, value))
+        raw_assignments = branch.get("assignment_slots")
+        try:
+            assignment_slots = tuple(sorted(int(slot) for slot in raw_assignments))
+        except (TypeError, ValueError):
+            assignment_slots = ()
+        signature_slots = [slot for slot, _value in signature]
+        if (not signature or not assignment_slots
+                or any(not 0 <= slot <= 8 for slot in assignment_slots)
+                or len(signature_slots) != len(set(signature_slots))
+                or len(assignment_slots) != len(set(assignment_slots))):
+            errors.append(
+                f"{final_setter}: branch {ordinal} has an incomplete signature")
+            continue
+        missing_conditions = sorted(set(assignment_slots) - set(signature_slots))
+        if missing_conditions:
+            errors.append(
+                f"{final_setter}: branch {ordinal} condition does not cover "
+                "assignment slot(s) "
+                + ", ".join(f"ps-t{slot}" for slot in missing_conditions))
+            continue
+        if branch.get("negative_signature"):
+            errors.append(
+                f"{final_setter}: branch {ordinal} has a negative signature")
+            continue
+        values.append((
+            "branch", tuple(sorted(signature)), assignment_slots))
+    if len(values) != len(set(values)):
+        errors.append(f"{final_setter}: branch contract contains duplicate branches")
+    valid = not errors and len(values) == len(branches)
+    return ((final_setter, tuple(values)) if values else None), errors, valid
+
+
+def _collect_slot_contracts(mods, namespace_aliases):
+    restore_contract = {}
+    branch_expectations = {}
+    missing = []
+    degraded = []
+    conflicts = []
+    component_route_lists = {}
+    sidecars = 0
+    for k, mod in enumerate(mods):
+        path = os.path.join(mod, _SLOT_CONTRACT_FILENAME)
+        if not os.path.isfile(path):
+            missing.append(k)
+            continue
+        sidecars += 1
+        try:
+            payload = json.loads(open(path, encoding="utf-8").read())
+        except Exception as exc:
+            raise ValueError(
+                f"invalid slot contract for ib{k}: {exc}") from exc
+        if (not isinstance(payload, dict)
+                or payload.get("version") not in {1, 2}):
+            raise ValueError(f"unsupported slot contract for ib{k}")
+        raw_restore = payload.get("restore_contract")
+        raw_branches = payload.get("branch_contract")
+        if not isinstance(raw_restore, dict) or not isinstance(raw_branches, dict):
+            raise ValueError(f"incomplete slot contract for ib{k}")
+        source_keys = set(raw_restore) | set(raw_branches)
+        source_route_setters = {}
+        for source_setter in sorted(source_keys, key=str.casefold):
+            if not re.fullmatch(
+                    r'CommandListSetTexturesComponent\d+'
+                    r'(?:Route(?:Base|[0-9a-fA-F]{8}))?',
+                    str(source_setter), re.I):
+                degraded.append(f"ib{k}:{source_setter}")
+                continue
+            if re.search(r'Route(?:Base|[0-9a-fA-F]{8})$', str(source_setter), re.I):
+                source_route_setters[str(source_setter).casefold()] = str(source_setter)
+            final_setter = _section_alias_name(
+                str(source_setter), k, namespace_aliases=namespace_aliases)
+            complete = (source_setter in raw_restore
+                        and source_setter in raw_branches)
+            policy, valid = _normalise_restore_policy(
+                raw_restore.get(source_setter))
+            expectation, errors, branch_valid = _branch_expectation(
+                raw_branches.get(source_setter), final_setter)
+            degraded.extend(errors)
+            valid = valid and complete and branch_valid
+            if not valid:
+                policy = {"mode": "full"}
+                degraded.append(final_setter)
+            existing = restore_contract.get(final_setter)
+            if existing is not None and existing != policy:
+                restore_contract[final_setter] = {"mode": "full"}
+                conflicts.append(final_setter)
+            else:
+                restore_contract[final_setter] = policy
+            if expectation is not None and branch_valid:
+                key, values = expectation
+                branch_expectations.setdefault(key, []).extend(values)
+        raw_routes = payload.get("component_route_lists") or {}
+        if not isinstance(raw_routes, dict):
+            raise ValueError(f"invalid component route lists for ib{k}")
+        mapped_source_setters = set()
+        for raw_component, raw_mapping in raw_routes.items():
+            try:
+                source_component = int(raw_component)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"invalid route component {raw_component!r} for ib{k}") from exc
+            if not isinstance(raw_mapping, dict) or not raw_mapping:
+                raise ValueError(
+                    f"empty route mapping for component {source_component} ib{k}")
+            final_component = _alias_for_component(
+                namespace_aliases, k, source_component)
+            final_mapping = {}
+            for raw_route, source_setter in raw_mapping.items():
+                route = str(raw_route or "").strip().lower()
+                if route != "base" and not re.fullmatch(r'[0-9a-f]{8}', route):
+                    raise ValueError(
+                        f"invalid route {raw_route!r} for component "
+                        f"{source_component} ib{k}")
+                expected = (
+                    f"CommandListSetTexturesComponent{source_component}"
+                    + ("RouteBase" if route == "base"
+                       else f"Route{route}"))
+                if str(source_setter).lower() != expected.lower():
+                    raise ValueError(
+                        f"route {route} for component {source_component} ib{k} "
+                        f"points at unexpected setter {source_setter}")
+                mapped_source_setters.add(str(source_setter).casefold())
+                final_setter = _section_alias_name(
+                    str(source_setter), k, namespace_aliases=namespace_aliases)
+                if final_setter not in restore_contract:
+                    raise ValueError(
+                        f"route setter {final_setter} has no restore contract")
+                final_mapping[route] = final_setter
+            if "base" not in final_mapping:
+                raise ValueError(
+                    f"component {source_component} ib{k} has no base route setter")
+            route_key = (final_component, k)
+            if route_key in component_route_lists:
+                raise ValueError(
+                    f"duplicate route mapping for C{final_component}/ib{k}")
+            component_route_lists[route_key] = final_mapping
+        orphan_contracts = sorted(
+            (source_route_setters[key]
+             for key in set(source_route_setters) - mapped_source_setters),
+            key=str.casefold)
+        if orphan_contracts:
+            raise ValueError(
+                f"orphan route contract for ib{k}: "
+                + ", ".join(orphan_contracts))
+    return {
+        "restore_contract": restore_contract,
+        "branch_expectations": branch_expectations,
+        "missing": missing,
+        "degraded": sorted(set(degraded)),
+        "conflicts": sorted(set(conflicts)),
+        "component_route_lists": component_route_lists,
+        "sidecars": sidecars,
+    }
 
 
 def _ns_line(line, k, *, shared_globals=None, resource_hashes=None,
@@ -188,10 +423,39 @@ def _component_fallback_components(body):
     return components if tagged and components else set()
 
 
+def _collect_local_section_references(text):
+    references = set()
+    for raw_line in text.splitlines():
+        line = raw_line.split(";", 1)[0]
+        for match in re.finditer(
+                r'\bref\s+(Resource[A-Za-z0-9_]+)\b', line, re.I):
+            references.add(match.group(1))
+        binding = re.match(
+            r'^\s*[A-Za-z][A-Za-z0-9_-]*\s*=\s*'
+            r'(?:ref\s+)?(Resource[A-Za-z0-9_]+)\b', line, re.I)
+        if binding:
+            references.add(binding.group(1))
+        if re.match(r'^\s*(?:if|else\s+if|elif)\b', line, re.I):
+            references.update(re.findall(
+                r'\bResource[A-Za-z0-9_]+\b', line, re.I))
+        run = re.match(
+            r'^\s*run\s*=\s*'
+            r'((?:CommandList|CustomShader)[^\s;]+)', line, re.I)
+        if run:
+            references.add(run.group(1))
+    return references
+
+
+def _is_framework_external_reference(name):
+    return "\\" in name or "/" in name
+
+
 def _slot_resource_components(sections, k, namespace_aliases):
     out = {}
     for header, body in sections:
-        match = re.fullmatch(r'CommandListSetTexturesComponent(\d+)(?:_ib\d+)*', header)
+        match = re.fullmatch(
+            r'CommandListSetTexturesComponent(\d+)'
+            r'(?:Route(?:Base|[0-9a-fA-F]{8}))?(?:_ib\d+)*', header)
         if not match:
             continue
         comp = _alias_for_component(namespace_aliases, k, int(match.group(1)))
@@ -201,29 +465,330 @@ def _slot_resource_components(sections, k, namespace_aliases):
     return out
 
 
-def _draw_atom_name(component_id, ordinal, suffix):
-    return f"CommandListDrawAtomComponent{component_id}_{ordinal}{suffix or ''}"
-
-
-def _draw_owner_name(component_id, suffix):
-    return f"CommandListDrawOwnerComponent{component_id}{suffix or ''}"
+def _draw_geometry_name(component_id, suffix):
+    return f"CommandListDrawGeometryComponent{component_id}{suffix or ''}"
 
 
 def _skip_var_name(component_id, ordinal, suffix):
     return f"$xscene_skip_draw_c{component_id}_{ordinal}{suffix or ''}"
 
 
-def _atomize_draw_owner_sections(text):
-    """Move actual drawindexed calls into deterministic atom command lists.
+def _is_geometry_line(line):
+    stripped = line.strip()
+    if not stripped or stripped.startswith(";"):
+        return True
+    if re.fullmatch(r'drawindexed\s*=\s*\d+\s*,\s*\d+\s*,\s*-?\d+', stripped):
+        return True
+    if stripped == "endif" or stripped == "else":
+        return True
+    return stripped.startswith(("if ", "else if ", "elif "))
 
-    Existing CommandListDrawComponent sections keep setup, LOD dispatch, slot
-    rebinding and cleanup lines, then run one canonical draw owner. The owner
-    owns the draw atom list; FoldHost sections may run that owner, but must not
-    expand the same atom list themselves.
-    """
+
+def _geometry_control_is_balanced(lines):
+    depth = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith(";"):
+            continue
+        if stripped.startswith("if "):
+            depth += 1
+        elif stripped.startswith(("else if ", "elif ")) or stripped == "else":
+            if depth <= 0:
+                return False
+        elif stripped == "endif":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+def _draw_comment_indices(body):
+    labels = {}
+    pending = None
+    for index, line in enumerate(body):
+        stripped = line.strip()
+        if stripped.startswith("; Draw "):
+            pending = index
+            continue
+        if re.fullmatch(r'drawindexed\s*=\s*\d+\s*,\s*\d+\s*,\s*-?\d+', stripped):
+            labels[index] = pending
+            pending = None
+    return labels
+
+
+def _geometry_region(body, draw_indices, header):
+    comments = _draw_comment_indices(body)
+    required_start = comments.get(draw_indices[0])
+    if required_start is None:
+        required_start = draw_indices[0]
+    last_draw = draw_indices[-1]
+    candidates = []
+    for start in range(required_start, -1, -1):
+        for end in range(last_draw + 1, len(body) + 1):
+            region = body[start:end]
+            if not all(_is_geometry_line(line) for line in region):
+                continue
+            if not _geometry_control_is_balanced(region):
+                continue
+            candidates.append((end - start, -start, end, start))
+    if not candidates:
+        raise ValueError(
+            "%s has a discontinuous or side-effectful draw region; "
+            "cannot build one canonical geometry list" % header)
+    _size, _neg_start, end, start = min(candidates)
+    return start, end
+
+
+def _dedent_geometry(lines):
+    indents = [
+        len(line) - len(line.lstrip())
+        for line in lines if line.strip()
+    ]
+    amount = min(indents) if indents else 0
+    if amount <= 0:
+        return list(lines), ""
+    return [
+        line[amount:] if line.strip() else ""
+        for line in lines
+    ], " " * amount
+
+
+def _guard_geometry_draws(lines, component_id, suffix, guarded_skips):
     out = []
-    owners = []
-    atoms = []
+    ordinal = 0
+    for line in lines:
+        stripped = line.strip()
+        if not re.fullmatch(
+                r'drawindexed\s*=\s*\d+\s*,\s*\d+\s*,\s*-?\d+', stripped):
+            out.append(line)
+            continue
+        indent = line[:len(line) - len(line.lstrip())]
+        if (component_id, ordinal, suffix) in guarded_skips:
+            skip_var = _skip_var_name(component_id, ordinal, suffix)
+            out.append(f"{indent}if {skip_var} != 1")
+            out.append(f"{indent}    {stripped}")
+            out.append(f"{indent}endif")
+        else:
+            out.append(line)
+        ordinal += 1
+    return out
+
+
+def _validate_geometry_layout(text):
+    for name, body in _parse_sections(text):
+        is_geometry = re.fullmatch(
+            r'CommandListDrawGeometryComponent\d+(?:_ib\d+)*', name)
+        draws = [
+            line for line in body
+            if re.fullmatch(
+                r'drawindexed\s*=\s*\d+\s*,\s*\d+\s*,\s*-?\d+',
+                line.strip())
+        ]
+        if draws and not is_geometry:
+            raise ValueError(
+                "%s contains drawindexed outside canonical Geometry" % name)
+        if not is_geometry:
+            continue
+        if not draws:
+            raise ValueError("%s contains no drawindexed" % name)
+        side_effects = [
+            line.strip() for line in body
+            if not _is_geometry_line(line)
+        ]
+        if side_effects:
+            raise ValueError(
+                "%s contains non-geometry side effect: %s"
+                % (name, side_effects[0]))
+
+
+_ROUTE_SETTER_RE = re.compile(
+    r'CommandListSetTexturesComponent(\d+)'
+    r'(Route(?:Base|[0-9a-fA-F]{8}))?_ib(\d+)$', re.I)
+
+
+def _apply_component_route_setters(text, component_route_lists):
+    """Bind route-specific setters to base and FoldHost transactions."""
+    if not component_route_lists:
+        return text, []
+    section_names = {name for name, _body in _parse_sections(text)}
+    for mapping in component_route_lists.values():
+        for setter in mapping.values():
+            if setter not in section_names:
+                raise ValueError(f"route contract references missing setter {setter}")
+    applications = []
+    output = []
+    header = None
+    body = []
+
+    def flush():
+        if header is None:
+            return
+        trigger_indices = [
+            index for index, line in enumerate(body)
+            if re.fullmatch(
+                r'\s*run\s*=\s*CommandListTriggerResourceOverrides_ib\d+\s*',
+                line, re.I)
+        ]
+        route = None
+        target = None
+        fold_match = re.fullmatch(
+            r'TextureOverride_FoldHost_([0-9a-fA-F]{8})_C\d+_ib(\d+)',
+            header)
+        if fold_match:
+            ib_index = int(fold_match.group(2))
+            candidates = set()
+            for line in body:
+                for comp, _route_suffix, ib in re.findall(
+                        r'CommandListSetTexturesComponent(\d+)'
+                        r'(Route(?:Base|[0-9a-fA-F]{8}))?_ib(\d+)', line, re.I):
+                    key = (int(comp), int(ib))
+                    if key in component_route_lists:
+                        candidates.add(key)
+                for comp, ib in re.findall(
+                        r'\$component_hash_fallback_c(\d+)_ib(\d+)\b', line, re.I):
+                    key = (int(comp), int(ib))
+                    if key in component_route_lists:
+                        candidates.add(key)
+                for comp, ib in re.findall(
+                        r'CommandListDraw(?:Geometry)?Component(\d+)_ib(\d+)\b',
+                        line, re.I):
+                    key = (int(comp), int(ib))
+                    if key in component_route_lists:
+                        candidates.add(key)
+            candidates = {key for key in candidates if key[1] == ib_index}
+            if len(candidates) > 1:
+                raise ValueError(
+                    f"{header} maps to multiple route-bound components: "
+                    + ", ".join(f"C{comp}/ib{ib}" for comp, ib in sorted(candidates)))
+            if candidates:
+                target = next(iter(candidates))
+                route = fold_match.group(1).lower()
+        else:
+            base_match = re.fullmatch(
+                r'(?:CommandListDrawComponent|TextureOverrideComponent)'
+                r'(\d+)_ib(\d+)', header)
+            if base_match:
+                candidate = (int(base_match.group(1)), int(base_match.group(2)))
+                if candidate in component_route_lists:
+                    target = candidate
+                    route = "base"
+
+        if target is None:
+            output.append((header, list(body)))
+            return
+        if not trigger_indices and fold_match is None:
+            has_transaction_fragment = any(
+                re.search(
+                    r'CommandListSetTexturesComponent\d+'
+                    r'(?:Route(?:Base|[0-9a-fA-F]{8}))?_ib\d+',
+                    line, re.I)
+                or re.fullmatch(
+                    r'\s*run\s*=\s*CommandListCleanupSharedResources_ib\d+\s*',
+                    line, re.I)
+                for line in body
+            )
+            if not has_transaction_fragment:
+                output.append((header, list(body)))
+                return
+        mapping = component_route_lists[target]
+        desired = mapping.get(route)
+        if desired is None:
+            raise ValueError(f"{header} has no exact route setter for {route}")
+        if desired not in section_names:
+            raise ValueError(f"{header} references missing route setter {desired}")
+        if not trigger_indices:
+            raise ValueError(f"{header} route transaction has no trigger")
+        if len(trigger_indices) != 1:
+            raise ValueError(
+                f"{header} has {len(trigger_indices)} resource-override triggers")
+        trigger = trigger_indices[0]
+        cleanup = next((
+            index for index in range(trigger + 1, len(body))
+            if re.fullmatch(
+                r'\s*run\s*=\s*CommandListCleanupSharedResources_ib\d+\s*',
+                body[index], re.I)), None)
+        if cleanup is None:
+            raise ValueError(f"{header} route transaction has no cleanup")
+
+        direct_indices = []
+        for index in range(trigger + 1, cleanup):
+            match = re.fullmatch(
+                r'(\s*)run\s*=\s*'
+                r'(CommandListSetTexturesComponent\d+'
+                r'(?:Route(?:Base|[0-9a-fA-F]{8}))?_ib\d+)\s*',
+                body[index], re.I)
+            if not match:
+                continue
+            setter_match = _ROUTE_SETTER_RE.fullmatch(match.group(2))
+            if setter_match and (
+                    int(setter_match.group(1)), int(setter_match.group(3))) == target:
+                direct_indices.append((index, match.group(1), match.group(2)))
+        if len(direct_indices) > 1:
+            raise ValueError(f"{header} has multiple route setters before cleanup")
+        new_body = list(body)
+        if direct_indices:
+            index, indent, _old = direct_indices[0]
+            new_body[index] = f"{indent}run = {desired}"
+        else:
+            indent = body[trigger][
+                :len(body[trigger]) - len(body[trigger].lstrip())]
+            new_body.insert(trigger + 1, f"{indent}run = {desired}")
+        output.append((header, new_body))
+        applications.append({
+            "section": header,
+            "component": target[0],
+            "ib": target[1],
+            "route": route,
+            "setter": desired,
+        })
+
+    preamble = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            flush()
+            header = stripped[1:-1]
+            body = []
+        elif header is None:
+            preamble.append(line)
+        else:
+            body.append(line)
+    flush()
+    for target, mapping in sorted(component_route_lists.items()):
+        component_id, ib_id = target
+        base_setter = mapping["base"]
+        base_apps = [
+            item for item in applications
+            if (item["component"], item["ib"], item["route"], item["setter"])
+            == (component_id, ib_id, "base", base_setter)
+        ]
+        if len(base_apps) != 1:
+            raise ValueError(
+                f"base route contract for C{component_id}/ib{ib_id} must be "
+                f"applied exactly once, got {len(base_apps)}")
+        for route, setter in sorted(mapping.items()):
+            if route == "base":
+                continue
+            route_apps = [
+                item for item in applications
+                if (item["component"], item["ib"], item["route"], item["setter"])
+                == (component_id, ib_id, route, setter)
+            ]
+            if not route_apps:
+                raise ValueError(
+                    f"orphan route contract for C{component_id}/ib{ib_id} "
+                    f"route {route}: {setter}")
+    parts = list(preamble)
+    for section, lines in output:
+        parts.append(f"[{section}]")
+        parts.extend(lines)
+    return "\n".join(parts).rstrip() + "\n", applications
+
+
+def _canonicalize_draw_geometry_sections(text):
+    """Move each final component/IB draw region into one shared Geometry list."""
+    out = []
+    geometries = []
     header = None
     body = []
     section_names = {
@@ -236,6 +801,17 @@ def _atomize_draw_owner_sections(text):
             r'\$xscene_skip_draw_c(\d+)_(\d+)((?:_ib\d+)*)\b',
             text)
     }
+    legacy_sections = sorted(
+        name for name in section_names
+        if re.fullmatch(
+            r'CommandListDraw(?:OwnerComponent\d+|AtomComponent\d+_\d+)'
+            r'(?:_ib\d+)*', name)
+    )
+    if legacy_sections:
+        raise ValueError(
+            "legacy draw Owner/Atom sections cannot be mixed with canonical "
+            "Geometry: %s" % ", ".join(legacy_sections))
+    generated_names = set()
 
     def flush():
         if header is None:
@@ -254,80 +830,30 @@ def _atomize_draw_owner_sections(text):
         suffix = match.group(2) or ""
         draw_indices = [
             idx for idx, line in enumerate(body)
-            if re.match(r'\s*drawindexed = \d+, \d+, -?\d+', line)
+            if re.fullmatch(
+                r'drawindexed\s*=\s*\d+\s*,\s*\d+\s*,\s*-?\d+',
+                line.strip())
         ]
         if not draw_indices:
             out.append((header, list(body)))
             return
 
-        draw_start = draw_indices[0]
-        while draw_start > 0:
-            prev = body[draw_start - 1].strip()
-            if prev.startswith(("if ", "else if ", "elif ", "else")):
-                draw_start -= 1
-                continue
-            if prev.startswith("; Draw "):
-                draw_start -= 1
-                continue
-            break
-        draw_end = len(body)
-        for idx in range(draw_indices[-1] + 1, len(body)):
-            if re.match(r'\s*run\s*=\s*CommandListCleanupSharedResources(?:_ib\d+)*\b', body[idx]):
-                draw_end = idx
-                break
-
-        owner_anchor = body[draw_start] if draw_start < len(body) else body[draw_indices[0]]
-        owner_indent = owner_anchor[:len(owner_anchor) - len(owner_anchor.lstrip())]
-        owner = _draw_owner_name(comp_id, suffix)
+        draw_start, draw_end = _geometry_region(body, draw_indices, header)
+        geometry_body, caller_indent = _dedent_geometry(
+            body[draw_start:draw_end])
+        geometry = _draw_geometry_name(comp_id, suffix)
+        if geometry in section_names or geometry in generated_names:
+            raise ValueError(
+                "%s would define duplicate canonical geometry section %s"
+                % (header, geometry))
+        generated_names.add(geometry)
+        geometry_body = _guard_geometry_draws(
+            geometry_body, comp_id, suffix, guarded_skips)
         new_body = list(body[:draw_start])
-        new_body.append(f"{owner_indent}run = {owner}")
+        new_body.append(f"{caller_indent}run = {geometry}")
         new_body.extend(body[draw_end:])
-
-        owner_body = []
-        pending_comment = None
-        ordinal = 0
-        owner_control_depth = 0
-        for line in body[draw_start:draw_end]:
-            stripped = line.strip()
-            if stripped.startswith("; Draw "):
-                pending_comment = stripped
-                owner_body.append(line)
-                continue
-            if stripped == "endif":
-                owner_control_depth = max(0, owner_control_depth - 1)
-                owner_body.append(line)
-                continue
-            if stripped.startswith(("else if ", "elif ", "else")):
-                owner_body.append(line)
-                continue
-            if stripped.startswith("if "):
-                owner_body.append(line)
-                owner_control_depth += 1
-                continue
-            draw = re.match(r'drawindexed = (\d+), (\d+), (-?\d+)', stripped)
-            if not draw:
-                owner_body.append(line)
-                continue
-            atom = _draw_atom_name(comp_id, ordinal, suffix)
-            indent = line[:len(line) - len(line.lstrip())]
-            if not indent and owner_control_depth:
-                indent = "    " * owner_control_depth
-            skip_var = _skip_var_name(comp_id, ordinal, suffix)
-            if (comp_id, ordinal, suffix) in guarded_skips:
-                owner_body.append(f"{indent}if {skip_var} != 1")
-                owner_body.append(f"{indent}    run = {atom}")
-                owner_body.append(f"{indent}endif")
-            else:
-                owner_body.append(f"{indent}run = {atom}")
-            atom_body = []
-            if pending_comment:
-                atom_body.append(pending_comment)
-            atom_body.append(stripped)
-            atoms.append((atom, atom_body))
-            pending_comment = None
-            ordinal += 1
         out.append((header, new_body))
-        owners.append((owner, owner_body))
+        geometries.append((geometry, geometry_body))
 
     preamble = []
     for line in text.splitlines():
@@ -340,7 +866,8 @@ def _atomize_draw_owner_sections(text):
         else:
             body.append(line)
     flush()
-    if not atoms:
+    if not geometries:
+        _validate_geometry_layout(text)
         return text
 
     parts = list(preamble)
@@ -350,19 +877,15 @@ def _atomize_draw_owner_sections(text):
         parts.append(f"[{section}]")
         parts.extend(lines)
         parts.append("")
-    parts.append("; --- Draw owners (canonical draw route per component) ---")
+    parts.append("; --- Canonical draw geometry (one list per component/IB) ---")
     parts.append("")
-    for section, lines in owners:
+    for section, lines in geometries:
         parts.append(f"[{section}]")
         parts.extend(lines)
         parts.append("")
-    parts.append("; --- Draw owner atoms (one actual drawindexed per atom) ---")
-    parts.append("")
-    for section, lines in atoms:
-        parts.append(f"[{section}]")
-        parts.extend(lines)
-        parts.append("")
-    return "\n".join(parts).rstrip() + "\n"
+    result = "\n".join(parts).rstrip() + "\n"
+    _validate_geometry_layout(result)
+    return result
 
 
 def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True, partial_export=False,
@@ -390,6 +913,10 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     suppressed; own/editable sub-IBs can still keep a real hash fallback for the same hash."""
     write_textures = (not partial_export) and copy_textures
     write_final_ini = (not partial_export) and write_ini
+    # Validate all external evidence before cleaning any existing output.
+    delivery_inventory = _texture_delivery.build_delivery_inventory(
+        texture_root, mods)
+    slot_contracts = _collect_slot_contracts(mods, namespace_aliases)
     # Clean ONLY generated mesh products. Textures follow stock WWMI semantics: existing files are
     # author assets and are not deleted or overwritten.
     os.makedirs(out, exist_ok=True)
@@ -407,16 +934,13 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     root_name_by_hash = {}
     if texture_root is not None:
         allowed = set()
-        for name in sorted(os.listdir(texture_root)):
-            if not name.lower().endswith(".dds"):
+        for item in delivery_inventory.root_files:
+            if item.texture_hash is None:
                 continue
-            m = _RE_TEXHASH.search(name)
-            if not m:
-                continue
-            h = m.group(1).lower()
+            h = item.texture_hash
             allowed.add(h)
-            root_file_by_hash.setdefault(h, os.path.join(texture_root, name))
-            root_name_by_hash.setdefault(h, name)
+            root_file_by_hash.setdefault(h, str(item.path))
+            root_name_by_hash.setdefault(h, item.name)
 
     constants, present, others = [], [], []
     tex = {}                # hash -> source .dds absolute path (deduped; slot + blind-zone)
@@ -571,7 +1095,8 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                 continue
             shared_globals = _SHARED_BODY_GLOBALS if k == 0 else None
             slot_set_match = re.fullmatch(
-                r'CommandListSetTexturesComponent(\d+)(?:_ib\d+)*', h)
+                r'CommandListSetTexturesComponent(\d+)'
+                r'(?:Route(?:Base|[0-9a-fA-F]{8}))?(?:_ib\d+)*', h)
             resource_component_override = None
             if slot_set_match:
                 resource_component_override = _alias_for_component(
@@ -614,6 +1139,11 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             if os.path.exists(dst):
                 continue
             shutil.copy(src, dst)
+        delivery_report = _texture_delivery.deliver_root_dds(
+            delivery_inventory, textures_dir)
+    else:
+        delivery_report = _texture_delivery.inspect_root_dds(
+            delivery_inventory, textures_dir)
 
     gate = ' || '.join(f'$object_detected_ib{k}' for k in range(len(mods)))
     blindzone_shipped = sorted(hv for hv in blindzone if hv in shipped)
@@ -653,9 +1183,16 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     # ---- self-check ----
     ini_path = os.path.join(out, "mod.ini")
     text_before_postprocess = open(ini_path, encoding="utf-8").read()
-    text = _atomize_draw_owner_sections(text_before_postprocess)
+    text, route_applications = _apply_component_route_setters(
+        text_before_postprocess, slot_contracts["component_route_lists"])
+    text = _canonicalize_draw_geometry_sections(text)
     text, format_stats = _format_tags.dedupe_format_tag_sections(text)
-    text = _ps_resource_scope.apply_ps_resource_scope(text)
+    restore_contract = slot_contracts["restore_contract"]
+    text = _ps_resource_scope.apply_ps_resource_scope(
+        text, restore_contract)
+    text = _ini_document.stable_functional_sort(text)
+    scope_errors = _ps_resource_scope.audit_ps_resource_scope(
+        text, restore_contract)
     if text != text_before_postprocess:
         with open(ini_path, "w", encoding="utf-8") as f:
             f.write(text)
@@ -663,8 +1200,12 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
         final_ini_bytes = f.read()
     text = final_ini_bytes.decode("utf-8")
     sections_set = set(re.findall(r'^\[([^\]]+)\]', text, re.M))
-    refs = set(re.findall(r'(?:ref|run\s*=|this\s*=)\s+(Resource[A-Za-z0-9_]+|CommandList[A-Za-z0-9_]+)', text))
-    dangling = sorted(r for r in refs if r not in sections_set)
+    section_keys = {name.casefold() for name in sections_set}
+    refs = _collect_local_section_references(text)
+    dangling = sorted(
+        reference for reference in refs
+        if reference.casefold() not in section_keys
+        and not _is_framework_external_reference(reference))
     missing = [m.group(1).strip() for m in re.finditer(r'^\s*filename\s*=\s*(.+)$', text, re.M)
                if not os.path.exists(os.path.join(out, m.group(1).strip()))
                # textures are intentionally absent when the final output omits them (copy_textures off
@@ -687,6 +1228,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
         hv for hv, reason in suppressed_body_reasons.items()
         if "fold-local" in reason.split("+")
     )
+    root_delivery_ok = (not write_textures) or not delivery_report["root_dds_missing"]
     report = {
         "out": out, "sections": len(sections_set), "refs": len(refs),
         "dangling": dangling, "missing": missing,
@@ -724,10 +1266,26 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
         "format_sections_summary": format_stats["format_sections_summary"],
         "mark_bone_collapsed_from": mark_bone_count, "mark_bone_emitted": mark_bone_emitted,
         "mark_bone_mismatch": mark_bone_mismatch, "skeleton_ok": skeleton_ok,
-        "sound": not dangling and not missing and tex_conserved and skeleton_ok,
+        "scope_errors": scope_errors,
+        "geometry_errors": [],
+        "slot_contract_sidecars": slot_contracts["sidecars"],
+        "slot_contract_missing": slot_contracts["missing"],
+        "slot_contract_degraded": slot_contracts["degraded"],
+        "slot_contract_conflicts": slot_contracts["conflicts"],
+        "slot_restore_contract": restore_contract,
+        "slot_branch_expectations": slot_contracts["branch_expectations"],
+        "slot_component_route_lists": {
+            f"c{component_id}_ib{ib_id}": dict(mapping)
+            for (component_id, ib_id), mapping in sorted(
+                slot_contracts["component_route_lists"].items())
+        },
+        "slot_route_applications": route_applications,
+        "sound": (not dangling and not missing and tex_conserved and skeleton_ok
+                  and not scope_errors and root_delivery_ok),
         "final_ini_written": write_final_ini,
         "final_textures_written": write_textures,
     }
+    report.update(delivery_report)
     # The ini was written above so the self-check could validate the merged build; honor the user's
     # file-output toggles on the FINAL mod by dropping it if they asked for no ini / partial export.
     if not write_final_ini:

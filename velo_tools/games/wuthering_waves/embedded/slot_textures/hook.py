@@ -27,6 +27,7 @@ from . import transform
 
 _INSTALLED = False
 _ORIG_BUILD_FROM_TEMPLATE = None
+_SLOT_CONTRACT_FILENAME = '.velo_slot_contract.json'
 
 # Last export's report lines (operators may surface them to the UI).
 last_report = []
@@ -85,7 +86,9 @@ def install():
                 and getattr(slot_cfg, "formid_auxiliary_gate", False))
             manual_anchors = []
             local_audit = None
-            local_audit = generator.read_local_discriminator_audit(source_folder)
+            route_context = _read_cross_scene_route_context(source_folder)
+            local_audit = generator.read_local_discriminator_audit(
+                source_folder, route_context=route_context)
             if formid_auxiliary:
                 manual_anchors = _parse_form_anchors(context, forms, load_warnings)
                 if not manual_anchors:
@@ -111,6 +114,8 @@ def install():
                 raise generator.SlotStyleDegrade(
                     generator._format_slot_unrepresented(slot_issues))
             result = transform.apply(result, plan)
+            if _eligible_override_active:
+                _write_slot_contract(cfg, plan)
             if formid_auxiliary:
                 for anchor_hash, form_id in manual_anchors:
                     kind = 'shader (ps)' if len(anchor_hash) == 16 else 'resource (vb0)'
@@ -296,9 +301,77 @@ def _read_lod_ranges(source_folder):
     return lod_ranges
 
 
+def _read_cross_scene_route_context(source_folder):
+    """Return fold route -> merged component ids from CrossSceneRouting.json."""
+    routing_path = source_folder / 'CrossSceneRouting.json'
+    if not routing_path.is_file():
+        return None
+    try:
+        with open(routing_path, encoding='utf-8') as f:
+            payload = json.load(f)
+    except Exception as exc:
+        raise generator.SlotStyleDegrade(
+            f'failed to read CrossSceneRouting.json: {exc}')
+    scene_ibs = payload.get('scene_ibs') if isinstance(payload, dict) else None
+    if not isinstance(scene_ibs, list):
+        raise generator.SlotStyleDegrade(
+            'CrossSceneRouting.json has no scene_ibs list')
+
+    routes = {}
+    for index, entry in enumerate(scene_ibs):
+        if not isinstance(entry, dict):
+            raise generator.SlotStyleDegrade(
+                f'CrossSceneRouting.json scene_ibs[{index}] is not an object')
+        if entry.get('foldable') is not True:
+            continue
+        route = str(entry.get('vb0_hash') or entry.get('ib_hash') or '').strip().lower()
+        if not re.fullmatch(r'[0-9a-f]{8}', route):
+            raise generator.SlotStyleDegrade(
+                f'CrossSceneRouting.json scene_ibs[{index}] has no valid route hash')
+        fold = entry.get('fold')
+        comp_map = fold.get('comp_map') if isinstance(fold, dict) else None
+        if not isinstance(comp_map, dict) or not comp_map:
+            raise generator.SlotStyleDegrade(
+                f'CrossSceneRouting.json route {route} has no fold.comp_map')
+        components = set()
+        try:
+            for value in comp_map.values():
+                comp_id = int(value)
+                if comp_id < 0:
+                    raise ValueError
+                components.add(comp_id)
+        except (TypeError, ValueError):
+            raise generator.SlotStyleDegrade(
+                f'CrossSceneRouting.json route {route} has an invalid fold.comp_map')
+        routes.setdefault(route, set()).update(components)
+    return routes
+
+
 def _report(message: str):
     print(message)
     last_report.append(message)
+
+
+def _write_slot_contract(cfg, plan):
+    output_folder = resolve_path(cfg.mod_output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    payload = {
+        'version': 2,
+        'branch_contract': dict(getattr(plan, 'branch_contract', None) or {}),
+        'restore_contract': dict(getattr(plan, 'restore_contract', None) or {}),
+        'component_route_lists': {
+            str(comp_id): {
+                str(route): str(command_list)
+                for route, command_list in sorted(route_lists.items())
+            }
+            for comp_id, route_lists in sorted(
+                (getattr(plan, 'component_route_lists', None) or {}).items())
+        },
+    }
+    (output_folder / _SLOT_CONTRACT_FILENAME).write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
 
 
 # Per-export slot-eligibility override (cross-scene). The cross-scene orchestrator runs N sub-exports,

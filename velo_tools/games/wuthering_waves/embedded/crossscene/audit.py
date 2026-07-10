@@ -5,6 +5,7 @@ import re
 import importlib.util
 import sys
 import types
+from collections import Counter
 from pathlib import Path
 
 try:
@@ -112,100 +113,150 @@ def _audit_section_control_flow(text):
     return errors
 
 
-def _draw_atom_tuple_map(text):
-    atoms = {}
-    for name, block in _sections(text):
-        if not re.match(r'CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*$', name):
-            continue
-        entries = _draw_entries(block)
-        if len(entries) == 1:
-            cnt, off, _label = entries[0]
-            atoms[name] = (cnt, off)
-    return atoms
-
-
-def _draw_atom_label_map(text):
-    labels = {}
-    for name, block in _sections(text):
-        if not re.match(r'CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*$', name):
-            continue
-        entries = _draw_entries(block)
-        if len(entries) == 1:
-            _cnt, _off, label = entries[0]
-            labels[name] = label
-    return labels
-
-
-def _run_draw_atoms(block):
+def _run_draw_geometries(block):
     return re.findall(
-        r'^\s*run\s*=\s*(CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*)\s*$',
-        block or "",
-        re.M)
+        r'^\s*run\s*=\s*(CommandListDrawGeometryComponent\d+(?:_ib\d+)*)\s*$',
+        block or "", re.M)
 
 
-def _run_draw_owners(block):
-    return re.findall(
-        r'^\s*run\s*=\s*(CommandListDrawOwnerComponent\d+(?:_ib\d+)*)\s*$',
-        block or "",
-        re.M)
+def _geometry_plan(text, geometry_name, *, skip_ordinals=None):
+    entries = _draw_entries(_section(text, geometry_name))
+    skipped = {int(ordinal) for ordinal in (skip_ordinals or set())}
+    return [
+        entry for ordinal, entry in enumerate(entries)
+        if ordinal not in skipped
+    ]
 
 
-def _draw_owner_atom_runs(text):
-    return {
-        name: _run_draw_atoms(block)
-        for name, block in _sections(text)
-        if re.match(r'CommandListDrawOwnerComponent\d+(?:_ib\d+)*$', name)
+def _geometry_guard_targets(block, component_id, ib_id):
+    pattern = re.compile(
+        r'if\s+\$xscene_skip_draw_c%d_(\d+)_ib%d\s*!=\s*1\s*'
+        % (int(component_id), int(ib_id)))
+    stack = []
+    targets = {}
+    draw_ordinal = 0
+    for line in (block or "").splitlines()[1:]:
+        stripped = line.strip()
+        if stripped.startswith("if "):
+            match = pattern.fullmatch(stripped)
+            stack.append(int(match.group(1)) if match else None)
+            continue
+        if stripped == "endif":
+            if stack:
+                stack.pop()
+            continue
+        if re.fullmatch(
+                r'drawindexed\s*=\s*\d+\s*,\s*\d+\s*,\s*-?\d+', stripped):
+            for guard_ordinal in stack:
+                if guard_ordinal is not None:
+                    targets.setdefault(guard_ordinal, set()).add(draw_ordinal)
+            draw_ordinal += 1
+    return targets
+
+
+def _geometry_skip_ordinals(text, block, geometry_name, component_id, ib_id,
+                            errors, caller):
+    lines = (block or "").splitlines()
+    runs = [
+        index for index, line in enumerate(lines)
+        if re.fullmatch(
+            r'\s*run\s*=\s*%s\s*' % re.escape(geometry_name), line)
+    ]
+    if len(runs) != 1:
+        return set()
+    run_index = runs[0]
+    pattern = re.compile(
+        r'\s*\$xscene_skip_draw_c%d_(\d+)_ib%d\s*=\s*([01])\s*'
+        % (int(component_id), int(ib_id)))
+    before = {}
+    after = {}
+    for index, line in enumerate(lines):
+        match = pattern.fullmatch(line)
+        if not match:
+            continue
+        ordinal = int(match.group(1))
+        value = int(match.group(2))
+        if index < run_index and value == 1:
+            before.setdefault(ordinal, []).append(index)
+        elif index > run_index and value == 0:
+            after.setdefault(ordinal, []).append(index)
+        else:
+            errors.append(
+                "%s has out-of-order geometry skip assignment %s"
+                % (caller, line.strip()))
+    for ordinal in sorted(set(before) | set(after)):
+        if len(before.get(ordinal, [])) != 1 or len(after.get(ordinal, [])) != 1:
+            errors.append(
+                "%s must set $xscene_skip_draw_c%d_%d_ib%d to 1 before %s "
+                "and clear it to 0 after the run"
+                % (caller, component_id, ordinal, ib_id, geometry_name))
+    complete = {
+        ordinal for ordinal in before
+        if len(before[ordinal]) == 1 and len(after.get(ordinal, [])) == 1
     }
-
-
-def _draw_owner_skip_ordinals(block, component_id, ib_id):
-    suffix = "(?:_ib0)?" if ib_id == 0 else "_ib%d" % ib_id
-    pattern = r'\$xscene_skip_draw_c%d_(\d+)%s\s*=\s*1\b' % (
-        int(component_id), suffix)
-    return {int(raw) for raw in re.findall(pattern, block or "")}
-
-
-def _owner_plan(text, owner_name, *, skip_ordinals=None):
-    atoms = _draw_atom_tuple_map(text)
-    labels = _draw_atom_label_map(text)
-    runs = _draw_owner_atom_runs(text).get(owner_name, [])
-    skip_ordinals = set(skip_ordinals or set())
-    out = []
-    for ordinal, atom in enumerate(runs):
-        if ordinal in skip_ordinals or atom not in atoms:
+    geometry_block = _section(text, geometry_name) or ""
+    draw_count = len(_draw_entries(geometry_block))
+    guard_targets = _geometry_guard_targets(
+        geometry_block, component_id, ib_id)
+    for ordinal in sorted(complete):
+        skip_var = "$xscene_skip_draw_c%d_%d_ib%d" % (
+            component_id, ordinal, ib_id)
+        if ordinal >= draw_count:
+            errors.append(
+                "%s skips missing draw ordinal %d in %s"
+                % (caller, ordinal, geometry_name))
             continue
-        cnt, off = atoms[atom]
-        out.append((cnt, off, labels.get(atom)))
-    return out
+        if guard_targets.get(ordinal) != {ordinal}:
+            errors.append(
+                "%s skips draw ordinal %d but %s does not guard that draw "
+                "with %s != 1"
+                % (caller, ordinal, geometry_name, skip_var))
+    return complete
 
 
-def _audit_draw_owners(text):
+def _audit_draw_geometry(text):
     errors = []
-    seen = {}
+    section_names = {name for name, _block in _sections(text)}
+    geometry_names = {
+        name for name in section_names
+        if re.fullmatch(
+            r'CommandListDrawGeometryComponent\d+(?:_ib\d+)*', name)
+    }
     for name, block in _sections(text):
         if re.match(r'TextureOverride_FoldHost_.*_LOD\d+(?:_ib\d+)?$', name):
             errors.append(
                 "%s is a FoldHost LOD section and must not be emitted; "
                 "LOD draw sections are not format-tag twins" % name)
-        is_owner = re.match(r'CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*$', name) is not None
-        for draw in _drawindexed_tuples(block):
-            if not is_owner:
-                errors.append("%s contains drawindexed outside draw-owner atom" % name)
-                continue
-            prev = seen.get(draw)
-            if prev is not None:
+        if re.fullmatch(
+                r'CommandListDraw(?:OwnerComponent\d+|AtomComponent\d+_\d+)'
+                r'(?:_ib\d+)*', name):
+            errors.append("legacy draw Owner/Atom section remains: %s" % name)
+        is_geometry = name in geometry_names
+        draws = _drawindexed_tuples(block)
+        if draws and not is_geometry:
+            errors.append("%s contains drawindexed outside canonical Geometry" % name)
+        if is_geometry:
+            if not draws:
+                errors.append("%s contains no drawindexed" % name)
+            for line in block.splitlines()[1:]:
+                stripped = line.strip()
+                if (not stripped or stripped.startswith(";")
+                        or re.fullmatch(
+                            r'drawindexed\s*=\s*\d+\s*,\s*\d+\s*,\s*-?\d+',
+                            stripped)
+                        or stripped == "endif" or stripped == "else"
+                        or stripped.startswith(("if ", "else if ", "elif "))):
+                    continue
                 errors.append(
-                    "drawindexed tuple %s duplicated in %s and %s"
-                    % (draw, prev, name))
-            else:
-                seen[draw] = name
-        if re.match(r'CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*$', name):
-            continue
-        if re.match(r'CommandListDrawOwnerComponent\d+(?:_ib\d+)*$', name):
-            continue
-        for atom in _run_draw_atoms(block):
-            errors.append("%s directly runs draw atom %s outside canonical draw owner"
-                          % (name, atom))
+                    "%s contains non-geometry side effect: %s"
+                    % (name, stripped))
+        for target in _run_draw_geometries(block):
+            if target not in geometry_names:
+                errors.append("%s references missing draw Geometry %s" % (name, target))
+        for legacy in re.findall(
+                r'^\s*run\s*=\s*(CommandListDraw(?:OwnerComponent\d+|'
+                r'AtomComponent\d+_\d+)(?:_ib\d+)*)\s*$', block, re.M):
+            errors.append("%s runs legacy draw route %s" % (name, legacy))
     return errors
 
 
@@ -297,49 +348,16 @@ def _audit_foldhost_component_fallback_scope(text, routing):
 
 
 def _body_draw_entries(text, component_id):
-    atoms = _draw_atom_tuple_map(text)
     cmd = _section(text, "CommandListDrawComponent%d_ib0" % component_id)
     if cmd:
-        owner_runs = _run_draw_owners(cmd)
-        if owner_runs:
-            out = _owner_plan(text, owner_runs[-1])
-            if out:
-                return out
-        out = []
-        label = None
-        for ln in cmd.splitlines():
-            s = ln.strip()
-            if s.startswith("; Draw "):
-                label = s.split("; Draw ", 1)[1].strip()
-                continue
-            m = re.match(r'run = (CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*)$', s)
-            if m and m.group(1) in atoms:
-                cnt, off = atoms[m.group(1)]
-                out.append((cnt, off, label))
-                label = None
-        if out:
-            return out
+        geometry_runs = _run_draw_geometries(cmd)
+        if geometry_runs:
+            return _geometry_plan(text, geometry_runs[-1])
         return _draw_entries(cmd)
     ovr = _section(text, "TextureOverrideComponent%d_ib0" % component_id)
-    owner_runs = _run_draw_owners(ovr)
-    if owner_runs:
-        out = _owner_plan(text, owner_runs[-1])
-        if out:
-            return out
-    out = []
-    label = None
-    for ln in (ovr or "").splitlines():
-        s = ln.strip()
-        if s.startswith("; Draw "):
-            label = s.split("; Draw ", 1)[1].strip()
-            continue
-        m = re.match(r'run = (CommandListDrawAtomComponent\d+_\d+(?:_ib\d+)*)$', s)
-        if m and m.group(1) in atoms:
-            cnt, off = atoms[m.group(1)]
-            out.append((cnt, off, label))
-            label = None
-    if out:
-        return out
+    geometry_runs = _run_draw_geometries(ovr)
+    if geometry_runs:
+        return _geometry_plan(text, geometry_runs[-1])
     return _draw_entries(ovr)
 
 
@@ -351,6 +369,25 @@ def _select_draws(entries, excluded_labels):
     if not any(label in excluded for _cnt, _off, label in entries):
         return entries[:1]
     return [entry for entry in entries if entry[2] not in excluded]
+
+
+def _strict_selected_draw_ordinals(entries, excluded_labels):
+    entries = list(entries or [])
+    excluded = {str(label) for label in (excluded_labels or set())}
+    excluded_ordinals = set()
+    for label in sorted(excluded):
+        matches = [
+            ordinal for ordinal, entry in enumerate(entries)
+            if entry[2] == label
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                "split draw exclusion %r must resolve to exactly one draw "
+                "ordinal, got %s" % (label, matches))
+        excluded_ordinals.add(matches[0])
+    return tuple(
+        ordinal for ordinal in range(len(entries))
+        if ordinal not in excluded_ordinals)
 
 
 def _pairs(entries):
@@ -487,7 +524,8 @@ def _audit_no_slot_markers(text):
 def _audit_residual_sensitive_conditions(text):
     errors = []
     for match in re.finditer(
-            r'(^\[(CommandListSetTexturesComponent\d+_ib\d+[^\]]*)\][^\[]*)',
+            r'(^\[(CommandListSetTexturesComponent\d+'
+            r'(?:Route(?:Base|[0-9a-fA-F]{8}))?_ib\d+[^\]]*)\][^\[]*)',
             text, re.M):
         block = match.group(1)
         header = match.group(2)
@@ -549,23 +587,24 @@ def _slot_branch_signature_from_condition(line):
 def _normalise_slot_branch_expectations(slot_branch_expectations):
     out = {}
     for key, values in (slot_branch_expectations or {}).items():
-        try:
-            comp_id, ib = key
-            comp_id = int(comp_id)
-            ib = int(ib)
-        except (TypeError, ValueError):
-            continue
-        sigs = set()
+        if isinstance(key, str):
+            normalised_key = key.casefold()
+        else:
+            try:
+                comp_id, ib = key
+                normalised_key = (int(comp_id), int(ib))
+            except (TypeError, ValueError):
+                continue
+        branches = []
         for value in values or []:
-            assign_slots = ()
-            raw_signature = value
-            if (isinstance(value, (list, tuple)) and len(value) == 3
-                    and value[0] == "branch"):
-                raw_signature = value[1]
-                try:
-                    assign_slots = tuple(sorted(int(slot) for slot in value[2]))
-                except (TypeError, ValueError):
-                    assign_slots = ()
+            if (not isinstance(value, (list, tuple)) or len(value) != 3
+                    or value[0] != "branch"):
+                continue
+            raw_signature = value[1]
+            try:
+                assign_slots = tuple(sorted(int(slot) for slot in value[2]))
+            except (TypeError, ValueError):
+                continue
             signature = []
             for item in raw_signature or []:
                 if not isinstance(item, (list, tuple)) or len(item) != 2:
@@ -576,10 +615,10 @@ def _normalise_slot_branch_expectations(slot_branch_expectations):
                 except (TypeError, ValueError):
                     signature = []
                     break
-            if signature:
-                sigs.add((tuple(sorted(signature)), assign_slots))
-        if sigs:
-            out[(comp_id, ib)] = sigs
+            if signature and assign_slots:
+                branches.append((tuple(sorted(signature)), assign_slots))
+        if branches:
+            out[normalised_key] = tuple(branches)
     return out
 
 
@@ -590,7 +629,7 @@ def _slot_branch_lines(block):
         if stripped.startswith(("if ", "else if ")):
             if current is not None:
                 yield current
-            current = [stripped, set()]
+            current = [stripped, []]
             continue
         if stripped.startswith(("else ", "elif ", "endif")):
             if current is not None:
@@ -603,7 +642,7 @@ def _slot_branch_lines(block):
             r'\bps-t(\d+)\s*=\s*ref\s+ResourceTexture[0-9A-Za-z_]+\b',
             stripped)
         if match:
-            current[1].add(int(match.group(1)))
+            current[1].append(int(match.group(1)))
     if current is not None:
         yield current
 
@@ -613,16 +652,23 @@ def _audit_slot_branches_match_stu_primary_pass(text, slot_branch_expectations):
     if not expected:
         return []
     errors = []
+    seen_expectation_keys = set()
     for match in re.finditer(
-            r'(^\[(CommandListSetTexturesComponent(\d+)_ib(\d+)[^\]]*)\][^\[]*)',
+            r'(^\[(CommandListSetTexturesComponent(\d+)'
+            r'(?:Route(?:Base|[0-9a-fA-F]{8}))?_ib(\d+)[^\]]*)\][^\[]*)',
             text, re.M):
         block = match.group(1)
         header = match.group(2)
         comp_id = int(match.group(3))
         ib = int(match.group(4))
-        expected_sigs = expected.get((comp_id, ib))
+        expected_sigs = (
+            expected.get(header.casefold())
+            or expected.get((comp_id, ib)))
         if not expected_sigs:
             continue
+        seen_expectation_keys.add(header.casefold())
+        seen_expectation_keys.add((comp_id, ib))
+        actual = []
         for stripped, assigned_slots in _slot_branch_lines(block):
             if "ps-t" not in stripped:
                 continue
@@ -633,63 +679,164 @@ def _audit_slot_branches_match_stu_primary_pass(text, slot_branch_expectations):
                     "use stable positive STU primary-pass subsets only"
                     % (header, ", ".join(
                         "ps-t%d != %s" % item for item in negative)))
-            if not positive:
-                continue
-            matching = [
-                required_slots
-                for expected_sig, required_slots in expected_sigs
-                if all(term in expected_sig for term in positive)
-            ]
-            if not matching:
+            if len(assigned_slots) != len(set(assigned_slots)):
                 errors.append(
-                    "%s condition %s is not a safe subset of a selected STU "
-                    "primary-pass layout"
-                    % (header, ", ".join(
-                        "ps-t%d == %s" % item for item in positive)))
-                continue
-            if any(set(required_slots).issubset(assigned_slots)
-                   for required_slots in matching):
-                continue
-            required = min(matching, key=lambda slots: len(
-                set(slots) - assigned_slots))
-            missing = sorted(set(required) - assigned_slots)
+                    "%s has duplicate assignment slot(s) in condition %s"
+                    % (header, stripped))
+            positive_slots = {slot for slot, _value in positive}
+            for slot in sorted(set(assigned_slots) - positive_slots):
+                errors.append(
+                    "%s assignment ps-t%d has no positive condition in %s"
+                    % (header, slot, stripped))
+            actual.append((positive, tuple(sorted(assigned_slots))))
+        expected_counter = Counter(expected_sigs)
+        actual_counter = Counter(actual)
+        for branch, count in sorted(actual_counter.items(), key=str):
+            if count > 1:
+                errors.append(
+                    "%s has duplicate slot branch %s (%d copies)"
+                    % (header, _format_slot_branch(branch), count))
+        missing = expected_counter - actual_counter
+        extra = actual_counter - expected_counter
+        if missing or extra:
+            details = []
             if missing:
-                errors.append(
-                    "%s condition %s is missing required primary assignment "
-                    "slot %s"
-                    % (header, ", ".join(
-                        "ps-t%d == %s" % item for item in positive),
-                       ", ".join("ps-t%d" % slot for slot in missing)))
+                details.append("missing " + ", ".join(
+                    "%s x%d" % (_format_slot_branch(branch), count)
+                    for branch, count in sorted(missing.items(), key=str)))
+            if extra:
+                details.append("extra " + ", ".join(
+                    "%s x%d" % (_format_slot_branch(branch), count)
+                    for branch, count in sorted(extra.items(), key=str)))
+            errors.append(
+                "%s slot branch multiset mismatch: %s"
+                % (header, "; ".join(details)))
+    for key in expected:
+        if key not in seen_expectation_keys:
+            errors.append("missing slot setter section for branch contract %r" % (key,))
+    return errors
+
+
+def _format_slot_branch(branch):
+    signature, assignments = branch
+    condition = " && ".join(
+        "ps-t%d == %s" % item for item in signature) or "<no positive signature>"
+    assigned = ",".join("ps-t%d" % slot for slot in assignments) or "<none>"
+    return "{%s -> %s}" % (condition, assigned)
+
+
+def _route_setter_runs(block):
+    return re.findall(
+        r'^\s*run\s*=\s*(CommandListSetTexturesComponent\d+'
+        r'Route(?:Base|[0-9a-fA-F]{8})_ib\d+)\s*$',
+        block or "", re.M | re.I)
+
+
+def _audit_component_route_setters(text, routing, component_route_lists):
+    mappings = dict(component_route_lists or {})
+    if not mappings:
+        return []
+    errors = []
+    for raw_key, mapping in mappings.items():
+        try:
+            if isinstance(raw_key, str):
+                key_match = re.fullmatch(r'c(\d+)_ib(\d+)', raw_key, re.I)
+                if not key_match:
+                    raise ValueError
+                component_id, ib_id = map(int, key_match.groups())
+            else:
+                component_id, ib_id = int(raw_key[0]), int(raw_key[1])
+        except (TypeError, ValueError, IndexError):
+            errors.append("invalid component route key %r" % (raw_key,))
+            continue
+        if not isinstance(mapping, dict):
+            errors.append("invalid route mapping for C%d/ib%d" % (
+                component_id, ib_id))
+            continue
+        base_setter = mapping.get("base")
+        base = _section(text, "CommandListDrawComponent%d_ib%d" % (
+            component_id, ib_id))
+        if base is None:
+            base = _section(text, "TextureOverrideComponent%d_ib%d" % (
+                component_id, ib_id))
+        base_runs = _route_setter_runs(base)
+        if base_runs.count(base_setter) != 1 or len(base_runs) != 1:
+            errors.append(
+                "base C%d/ib%d must run exactly %s" % (
+                    component_id, ib_id, base_setter))
+        if ib_id != 0:
+            continue
+        for scene in routing.get("scene_ibs") or []:
+            if not scene.get("foldable"):
+                continue
+            route = str(scene.get("ib_hash") or "").lower()
+            comp_map = {
+                int(fc): int(bc)
+                for fc, bc in ((scene.get("fold") or {}).get("comp_map") or {}).items()
+            }
+            for fold_component, base_component in comp_map.items():
+                if base_component != component_id:
+                    continue
+                expected = mapping.get(route)
+                header = "TextureOverride_FoldHost_%s_C%d_ib0" % (
+                    route, fold_component)
+                block = _section(text, header)
+                runs = _route_setter_runs(block)
+                if expected is None:
+                    errors.append("%s has no route setter contract" % header)
+                elif runs.count(expected) != 1 or len(runs) != 1:
+                    errors.append("%s must run exactly %s" % (header, expected))
     return errors
 
 
 def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, draw_excludes=None,
                            allowed_body_hash_fallbacks=None,
-                           slot_branch_expectations=None):
+                           slot_branch_expectations=None,
+                           slot_restore_contract=None,
+                           slot_component_route_lists=None,
+                           slot_style=False):
     """Return a dict with routing errors found in the final namespace-merged INI."""
     path = Path(mod_ini_path)
     if not path.is_file():
-        return {"skipped": True, "reason": "mod.ini not written", "errors": []}
+        return {
+            "skipped": False,
+            "reason": "expected mod.ini is missing",
+            "errors": ["expected mod.ini is missing: %s" % path],
+        }
     text = path.read_text(encoding="utf-8")
     roles = list(roles or [])
     own_excluded = dict(own_excluded or {})
     draw_excludes = {int(k): set(v or set()) for k, v in (draw_excludes or {}).items()}
     errors = []
+    missing_capabilities = []
+    if _slot_constants is None:
+        missing_capabilities.append("slot constants")
+    if _dds_meta is None:
+        missing_capabilities.append("DDS metadata")
+    if _ps_resource_scope is None:
+        missing_capabilities.append("PS resource scope")
+    if missing_capabilities:
+        errors.append(
+            "cross-scene audit capability unavailable: "
+            + ", ".join(missing_capabilities))
     errors.extend(_audit_section_control_flow(text))
     errors.extend(_audit_slot_resources(text, path.parent))
-    errors.extend(_audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks))
+    if slot_style:
+        errors.extend(_audit_body_hash_fallbacks(
+            text, allowed_body_hash_fallbacks))
     errors.extend(_audit_no_slot_markers(text))
     errors.extend(_audit_residual_sensitive_conditions(text))
     errors.extend(_audit_readable_slot_resource_names(text))
     errors.extend(_audit_slot_branches_match_stu_primary_pass(
         text, slot_branch_expectations))
+    errors.extend(_audit_component_route_setters(
+        text, routing, slot_component_route_lists))
     if _ps_resource_scope is not None:
-        errors.extend(_ps_resource_scope.audit_ps_resource_scope(text))
+        errors.extend(_ps_resource_scope.audit_ps_resource_scope(
+            text, slot_restore_contract))
     errors.extend(_audit_skip_vars_declared(text))
-    errors.extend(_audit_draw_owners(text))
+    errors.extend(_audit_draw_geometry(text))
     errors.extend(_audit_foldhost_component_fallback_scope(text, routing))
-    draw_atoms = _draw_atom_tuple_map(text)
-    draw_owners = _draw_owner_atom_runs(text)
 
     for tag, label in sorted(own_excluded.items()):
         if tag not in roles:
@@ -710,10 +857,10 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
             for run in re.findall(r'^\s*run\s*=\s*(CommandListDrawComponent\d+_ib%d)\s*$' % ib,
                                   block, re.M):
                 target = _section(text, run)
-                if target and (_draw_entries(target) or _run_draw_atoms(target)):
+                if target and _draw_entries(target):
                     errors.append("hidden own-buffer %s (%s) still draws via %s" % (tag, label, run))
-                for owner in _run_draw_owners(target):
-                    if draw_owners.get(owner):
+                for geometry in _run_draw_geometries(target):
+                    if _geometry_plan(text, geometry):
                         errors.append("hidden own-buffer %s (%s) still draws via %s" % (tag, label, run))
         if not matched:
             errors.append("hidden own-buffer %s (%s) has no matching skip section" % (tag, label))
@@ -738,31 +885,39 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
                     errors.append("%s does not skip excluded base Component %d" % (header, bc))
                 if "drawindexed" in block:
                     errors.append("%s draws even though base Component %d has no draw" % (header, bc))
-                if _run_draw_atoms(block):
-                    errors.append("%s runs draw-owner atoms even though base Component %d has no draw"
-                                  % (header, bc))
-                if _run_draw_owners(block):
-                    errors.append("%s runs draw owner even though base Component %d has no draw"
+                if _run_draw_geometries(block):
+                    errors.append("%s runs Geometry even though base Component %d has no draw"
                                   % (header, bc))
                 continue
             if not block:
                 errors.append("%s missing for visible base Component %d" % (header, bc))
                 continue
-            expected = _pairs(_select_draws(body_draws, draw_excludes.get(bc)))
-            if _run_draw_atoms(block):
-                errors.append("%s directly runs draw-owner atom(s); run canonical draw owner instead"
-                              % header)
-            owner_runs = _run_draw_owners(block)
-            missing_owners = [name for name in owner_runs if name not in draw_owners]
-            if missing_owners:
-                errors.append("%s references missing draw owner(s): %s" % (header, missing_owners))
-            if len(owner_runs) != 1:
-                errors.append("%s must run exactly one canonical draw owner, got %s"
-                              % (header, owner_runs))
+            try:
+                selected_ordinals = _strict_selected_draw_ordinals(
+                    body_draws, draw_excludes.get(bc))
+            except ValueError as exc:
+                errors.append("%s: %s" % (header, exc))
+                selected_ordinals = ()
+            expected = _pairs([
+                entry for ordinal, entry in enumerate(body_draws)
+                if ordinal in set(selected_ordinals)
+            ])
+            geometry_runs = _run_draw_geometries(block)
+            expected_geometry = "CommandListDrawGeometryComponent%d_ib0" % bc
+            if len(geometry_runs) != 1:
+                errors.append("%s must run exactly one canonical Geometry, got %s"
+                              % (header, geometry_runs))
+                actual = []
+            elif geometry_runs[0] != expected_geometry:
+                errors.append(
+                    "%s must run %s, got %s"
+                    % (header, expected_geometry, geometry_runs[0]))
                 actual = []
             else:
-                skip = _draw_owner_skip_ordinals(block, bc, 0)
-                actual = _pairs(_owner_plan(text, owner_runs[0], skip_ordinals=skip))
+                skip = _geometry_skip_ordinals(
+                    text, block, geometry_runs[0], bc, 0, errors, header)
+                actual = _pairs(_geometry_plan(
+                    text, geometry_runs[0], skip_ordinals=skip))
             if actual != expected:
                 errors.append("%s draw plan mismatch: expected %s, got %s" % (header, expected, actual))
 

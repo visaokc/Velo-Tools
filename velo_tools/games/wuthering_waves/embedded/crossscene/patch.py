@@ -88,6 +88,14 @@ def _make_patched(orig_execute):
                 msg += " | final mod.ini skipped (write_ini off / partial export)"
             if rep.get("final_textures_written") is False:
                 msg += " | final Textures/ skipped (copy textures off / partial export)"
+            elif rep.get("root_dds_files") is not None:
+                msg += " | root DDS %d/%d" % (
+                    int(rep.get("root_dds_files", 0))
+                    - len(rep.get("root_dds_missing") or []),
+                    int(rep.get("root_dds_files", 0)))
+                if rep.get("preserved_modified"):
+                    msg += " (%d author edit(s) preserved)" % len(
+                        rep.get("preserved_modified") or [])
             gated = rep.get("tex_gated_out") or []
             if rep.get("texture_gate") and gated:
                 # The merge-root allowlist dropped these referenced hashes (absent from the root);
@@ -107,6 +115,18 @@ def _make_patched(orig_execute):
                 # mismatch): the mod was written but may not work -- never report this as a clean success.
                 msg += (" | self-check FAILED: %d dangling ref(s), %d missing file(s)"
                         % (len(rep.get("dangling") or []), len(rep.get("missing") or [])))
+                root_missing = rep.get("root_dds_missing") or []
+                if root_missing and rep.get("final_textures_written"):
+                    msg += " | %d root DDS missing" % len(root_missing)
+                    print("[velo.xscene] root DDS missing: %s" % ", ".join(root_missing))
+                scope_errors = rep.get("scope_errors") or []
+                geometry_errors = rep.get("geometry_errors") or []
+                if scope_errors:
+                    msg += " | PS scope %d error(s)" % len(scope_errors)
+                    print("[velo.xscene] PS scope errors: %s" % " | ".join(scope_errors))
+                if geometry_errors:
+                    msg += " | Geometry %d error(s)" % len(geometry_errors)
+                    print("[velo.xscene] Geometry errors: %s" % " | ".join(geometry_errors))
                 audit_errors = rep.get("static_audit_errors") or []
                 if audit_errors:
                     msg += " | static audit %d error(s)" % len(audit_errors)

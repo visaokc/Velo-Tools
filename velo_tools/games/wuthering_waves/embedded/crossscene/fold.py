@@ -98,34 +98,20 @@ def _normalise_draw_entries(draws):
     return out
 
 
-def _draw_atom_name(component_id, ordinal):
-    return "CommandListDrawAtomComponent%d_%d" % (int(component_id), int(ordinal))
-
-
-def _draw_atom_names(component_id, draws):
-    names = {}
-    for ordinal, (cnt, off, _label) in enumerate(_normalise_draw_entries(draws)):
-        names.setdefault((cnt, off), _draw_atom_name(component_id, ordinal))
-    return names
-
-
-def _draw_owner_name(component_id):
-    return "CommandListDrawOwnerComponent%d" % int(component_id)
+def _draw_geometry_name(component_id):
+    return "CommandListDrawGeometryComponent%d" % int(component_id)
 
 
 def _skip_var_name(component_id, ordinal):
     return "$xscene_skip_draw_c%d_%d" % (int(component_id), int(ordinal))
 
 
-def _skip_var_names_for_selection(component_id, draws, selected):
-    selected_pairs = {
-        (int(cnt), int(off))
-        for cnt, off, _label in _normalise_draw_entries(selected)
-    }
+def _skip_var_names_for_ordinals(component_id, draws, selected_ordinals):
+    selected = {int(ordinal) for ordinal in (selected_ordinals or set())}
     return [
         _skip_var_name(component_id, ordinal)
-        for ordinal, (cnt, off, _label) in enumerate(_normalise_draw_entries(draws))
-        if (cnt, off) not in selected_pairs
+        for ordinal, _entry in enumerate(_normalise_draw_entries(draws))
+        if ordinal not in selected
     ]
 
 
@@ -151,33 +137,54 @@ def _inject_skip_var_globals(body_text, skip_vars):
     return "[Constants]\n%s\n\n%s" % ("\n".join(lines), body_text)
 
 
-def _draw_owner_run_lines(component_id, draws, selected):
+def _draw_geometry_run_lines(component_id, draws, selected_ordinals):
     lines = []
-    for skip_var in _skip_var_names_for_selection(component_id, draws, selected):
+    skip_vars = _skip_var_names_for_ordinals(
+        component_id, draws, selected_ordinals)
+    for skip_var in skip_vars:
         lines.append("    %s = 1" % skip_var)
-    lines.append("    run = %s" % _draw_owner_name(component_id))
-    for skip_var in _skip_var_names_for_selection(component_id, draws, selected):
+    lines.append("    run = %s" % _draw_geometry_name(component_id))
+    for skip_var in skip_vars:
         lines.append("    %s = 0" % skip_var)
     return lines
+
+
+def resolve_fold_draw_ordinals(draws, excluded_labels=None):
+    """Resolve every requested split label to exactly one draw ordinal."""
+    entries = _normalise_draw_entries(draws)
+    excluded = {str(label) for label in (excluded_labels or set())}
+    if not excluded:
+        return tuple(range(len(entries)))
+    excluded_ordinals = set()
+    for label in sorted(excluded):
+        matches = [
+            ordinal for ordinal, entry in enumerate(entries)
+            if entry[2] == label
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                "split draw exclusion %r must resolve to exactly one draw "
+                "ordinal, got %s" % (label, matches))
+        excluded_ordinals.add(matches[0])
+    return tuple(
+        ordinal for ordinal in range(len(entries))
+        if ordinal not in excluded_ordinals)
 
 
 def select_fold_draws(draws, excluded_labels=None):
     """Return draw entries a FoldHost may replay for one base component.
 
-    Own-buffer split draws are excluded by their ``; Draw`` label. If an old/custom ini
-    has no matching labels for a known split, keep legacy primary-only behavior rather
-    than risk drawing the split part through the fold.
+    Own-buffer split draws are excluded by their unique ``; Draw`` label. An
+    unresolved or ambiguous label is a routing error, not a primary-only fallback.
     """
     entries = _normalise_draw_entries(draws)
     if not entries:
         return []
-    excluded = {str(label) for label in (excluded_labels or set())}
-    if not excluded:
-        return entries
-    labelled = [entry for entry in entries if entry[2] in excluded]
-    if not labelled:
-        return entries[:1]
-    return [entry for entry in entries if entry[2] not in excluded]
+    selected = set(resolve_fold_draw_ordinals(entries, excluded_labels))
+    return [
+        entry for ordinal, entry in enumerate(entries)
+        if ordinal in selected
+    ]
 
 
 def parse_match(text):
@@ -393,6 +400,12 @@ def _slot_active(body_text, bc):
     return ('[%s]' % (_SLOT_SET % bc)) in body_text
 
 
+def _route_slot_active(body_text, bc):
+    return bool(re.search(
+        r'^\[CommandListSetTexturesComponent%dRoute(?:Base|[0-9a-fA-F]{8})\]\s*$'
+        % int(bc), body_text, re.M))
+
+
 def _fold_slot_runs(body_text, bc):
     """The slot command-list ``run`` lines a folded dungeon draw must execute so its textures are
     rebound to the BASE component's slot maps (= master content, streaming-immune): SetTextures runs
@@ -437,7 +450,7 @@ def _fold_format_tag_twins(body_text, bc, fc, tag, mfi, mic):
     are copied verbatim (the family value is what the SetTextures list reads); only the match window
     is swapped. The bare ``[TextureOverrideComponent{bc}]`` draw section (no format suffix) and
     ``LOD*`` draw sections are excluded. Empty for a hash-style body."""
-    if not _slot_active(body_text, bc):
+    if not (_slot_active(body_text, bc) or _route_slot_active(body_text, bc)):
         return []
     twins = []
     pat = re.compile(r'^\[TextureOverrideComponent%d([A-Za-z][^\]]*)\]\s*$' % bc, re.M)
@@ -485,7 +498,7 @@ def _merge_offset_shift(remap_table):
 
 
 def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_count_override=None,
-                           draws=None, all_draws=None):
+                           selected_ordinals=None, all_draws=None):
     """MERGED FoldHost = the native body ``[TextureOverrideComponent<bc>]`` override replicated verbatim,
     so it inherits everything that component needs to draw correctly: the ``if $merge_status_id != 2``
     skeleton-build block, the ``if ResourceMergedSkeleton !== null`` draw block, and -- crucially for
@@ -508,19 +521,21 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
     the dungeon cb4 lands at ``base_offset + vg_shift`` (where the base surviving geometry reads), not at the
     bear-inclusive base offset. Identity folds pass ``vg_shift=0`` (no rewrite, byte-identical).
 
-    ``draws`` = selected fold draw plan entries ``(index_count, first_index, label)``. Needed for the
+    ``selected_ordinals`` identifies the exact body draw entries retained by the FoldHost. Needed for the
     LOD-fork ini shape, where the native section carries no inline draws but delegates to the shared
     ``[CommandListDrawComponent{N}]`` list -- that list may hold own-buffer split sub-draws plus the
     ``$lod_level`` dispatch, so running it from the FoldHost would also draw the split part with shifted
-    (wrong) bones in the dungeon scene. FoldHost therefore runs the canonical draw owner with temporary
-    skip vars for excluded sub-draws instead of expanding atom runs itself."""
+    (wrong) bones in the dungeon scene. FoldHost therefore runs the canonical geometry list with temporary
+    skip vars for excluded sub-draws."""
     native = _section(body_text, "TextureOverrideComponent%d" % bc)
     if not native:
         return ""
-    selected = _normalise_draw_entries(draws)
-    all_draws = _normalise_draw_entries(all_draws if all_draws is not None else draws)
-    selected_pairs = {(cnt, off) for cnt, off, _label in selected}
+    all_draws = _normalise_draw_entries(all_draws)
+    selected_ordinals = {
+        int(ordinal) for ordinal in (selected_ordinals or ())
+    }
     out, seen_draw, header_done, pending_comment = [], False, False, None
+    draw_ordinal = 0
     fallback_var = _component_hash_fallback_var(body_text, bc)
     for ln in native.rstrip("\n").split("\n"):
         s = ln.strip()
@@ -542,14 +557,17 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             out.append("%s$\\WWMIv1\\vg_count = %d" % (indent, vg_count_override))
         elif s.startswith("drawindexed"):
             m = re.match(r'drawindexed = (\d+), (\d+)', s)
-            if m and (int(m.group(1)), int(m.group(2))) in selected_pairs:
+            if m and draw_ordinal in selected_ordinals:
                 if pending_comment:
                     out.append(pending_comment)
                 if not seen_draw:
                     indent = ln[:len(ln) - len(ln.lstrip())]
-                    for run_line in _draw_owner_run_lines(bc, all_draws, selected):
+                    for run_line in _draw_geometry_run_lines(
+                            bc, all_draws, selected_ordinals):
                         out.append("%s%s" % (indent, run_line.strip()))
                     seen_draw = True
+            if m:
+                draw_ordinal += 1
             pending_comment = None
         elif s.startswith("run = CommandListDrawComponent"):
             # LOD-fork shape: replace the shared-list delegation with the stock inline
@@ -557,7 +575,7 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             # component's per-draw texture rebind (probe/set/restore) so the dungeon draw
             # rebinds to master textures -- the shared draw list's slot runs aren't reachable
             # from this inlined sequence. No-ops for a hash-style body.
-            if not selected:
+            if not selected_ordinals:
                 raise ValueError("LOD-fork body ini shape requires at least one fold draw of C%d" % bc)
             indent = ln[:len(ln) - len(ln.lstrip())]
             bt, at, bcl = _fold_slot_runs(body_text, bc)
@@ -565,7 +583,8 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             out.extend(_resource_override_trigger_lines(body_text, bc, indent))
             out.extend("%s%s" % (indent, r) for r in at)
             out.append("%srun = CommandListOverrideSharedResources" % indent)
-            for run_line in _draw_owner_run_lines(bc, all_draws, selected):
+            for run_line in _draw_geometry_run_lines(
+                    bc, all_draws, selected_ordinals):
                 out.append("%s%s" % (indent, run_line.strip()))
             out.extend("%s%s" % (indent, r) for r in bcl)
             out.append("%srun = CommandListCleanupSharedResources" % indent)
@@ -695,10 +714,17 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
     remap_cmd = {} if is_merged else {int(k): ("CommandListOverrideSharedResources_c%dremap" % int(k), "c%dremap" % int(k))
                                       for k in vg_remap_all if int(k) in _fold_targets}
 
+    selected_ordinals_by_component = {}
     skip_vars = []
     for bc in sorted(set(comp_map.values())):
-        selected = select_fold_draws(body_draw_plan.get(bc), draw_excludes.get(bc))
-        skip_vars.extend(_skip_var_names_for_selection(bc, body_draw_plan.get(bc), selected))
+        try:
+            selected_ordinals = resolve_fold_draw_ordinals(
+                body_draw_plan.get(bc), draw_excludes.get(bc))
+        except ValueError as exc:
+            raise ValueError("Component %d: %s" % (bc, exc)) from exc
+        selected_ordinals_by_component[bc] = selected_ordinals
+        skip_vars.extend(_skip_var_names_for_ordinals(
+            bc, body_draw_plan.get(bc), selected_ordinals))
     body_text = _inject_skip_var_globals(body_text, skip_vars)
 
     if has_morph and batch_counts:
@@ -727,11 +753,12 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             # verbatim; the LOD-fork inlined sequence gets them re-woven in _build_merged_foldhost.)
             rt = vg_remap_all.get(str(bc))
             vg_shift, vg_count_override = _merge_offset_shift(rt) if rt else (0, None)
-            selected = select_fold_draws(body_draw_plan.get(bc), draw_excludes.get(bc))
+            selected_ordinals = selected_ordinals_by_component[bc]
             out.append(_build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift, vg_count_override,
-                                              draws=selected, all_draws=body_draw_plan.get(bc)))
+                                              selected_ordinals=selected_ordinals,
+                                              all_draws=body_draw_plan.get(bc)))
         else:
-            selected = select_fold_draws(body_draw_plan.get(bc), draw_excludes.get(bc))
+            selected_ordinals = selected_ordinals_by_component[bc]
             ovr = remap_cmd[bc][0] if bc in remap_cmd else "CommandListOverrideSharedResources"
             # Slot-style: rebind the dungeon draw's textures to the BASE component's slot maps (master
             # content, streaming-immune). Empty for a hash-style body -> output byte-identical to before.
@@ -747,7 +774,8 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
             lines += _resource_override_trigger_lines(body_text, bc, "    ")
             lines += ["    %s" % r for r in at]
             lines.append("    run = %s" % ovr)
-            lines += _draw_owner_run_lines(bc, body_draw_plan.get(bc), selected)
+            lines += _draw_geometry_run_lines(
+                bc, body_draw_plan.get(bc), selected_ordinals)
             lines += ["    %s" % r for r in bcl]
             lines.append("    run = CommandListCleanupSharedResources")
             lines.append("endif")
