@@ -396,8 +396,113 @@ _KEEP = object()  # _export_col sentinel: leave the slot-style eligibility overr
 
 
 def _component_id(name):
-    m = re.match(r'Component (\d+)', str(name))
+    m = re.fullmatch(r'Component (\d+)(?:\.\d{3,})?', str(name))
     return int(m.group(1)) if m else None
+
+
+def _build_namespace_aliases(own_ibs, splits_by_ib, editable_ibs, eib_roles):
+    """Map export-local component identifiers to their merged-root identities."""
+    aliases = {}
+    for ib_index, rec in enumerate(own_ibs, start=1):
+        split = (splits_by_ib or {}).get(rec.get("ib_hash"))
+        if not split:
+            raise RuntimeError(
+                "missing own-buffer component routing for %s"
+                % rec.get("ib_hash"))
+        local_component = _component_id(split.get("host_component_object"))
+        if local_component is None:
+            raise RuntimeError(
+                "invalid own-buffer host component for %s"
+                % rec.get("ib_hash"))
+        try:
+            base_component = int(split["base_component"])
+            derive = rec.get("derive")
+            if not isinstance(derive, dict):
+                raise RuntimeError(
+                    "invalid own-buffer component routing for %s"
+                    % rec.get("ib_hash"))
+            raw_derived_components = derive.get("base_components")
+            if (not isinstance(
+                    raw_derived_components, (list, tuple, set, frozenset))
+                    or not raw_derived_components):
+                raise RuntimeError(
+                    "invalid own-buffer component routing for %s"
+                    % rec.get("ib_hash"))
+            if any(
+                    not isinstance(value, int) or isinstance(value, bool)
+                    for value in raw_derived_components):
+                raise RuntimeError(
+                    "invalid own-buffer component routing for %s"
+                    % rec.get("ib_hash"))
+            derived_components = set(raw_derived_components)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "invalid own-buffer component routing for %s"
+                % rec.get("ib_hash")) from exc
+        if derived_components and base_component not in derived_components:
+            raise RuntimeError(
+                "own-buffer routing for %s maps host Component %d to base "
+                "Component %d outside derive.base_components"
+                % (rec.get("ib_hash"), local_component, base_component))
+        aliases[ib_index] = {
+            "component_map": {local_component: base_component},
+        }
+
+    editable_tags = [rec.get("ib_hash") for rec in editable_ibs]
+    duplicate_records = [
+        tag for tag in editable_tags if editable_tags.count(tag) > 1
+    ]
+    if duplicate_records:
+        raise RuntimeError(
+            "duplicate active editable record: %s" % duplicate_records[0])
+    duplicate_roles = [role for role in eib_roles if eib_roles.count(role) > 1]
+    if duplicate_roles:
+        raise RuntimeError(
+            "duplicate editable role: %s" % duplicate_roles[0])
+    unknown_roles = [role for role in eib_roles if role not in editable_tags]
+    if unknown_roles:
+        raise RuntimeError(
+            "unknown editable role: %s" % unknown_roles[0])
+    missing_roles = [tag for tag in editable_tags if tag not in eib_roles]
+    if missing_roles:
+        raise RuntimeError(
+            "missing editable role: %s" % missing_roles[0])
+
+    for rec in editable_ibs:
+        tag = rec["ib_hash"]
+        if tag not in eib_roles:
+            continue
+        ib_index = 1 + len(own_ibs) + eib_roles.index(tag)
+        local_components = rec.get("local_components") or []
+        merged_components = rec.get("merged_components") or []
+        if len(local_components) != len(merged_components):
+            raise RuntimeError(
+                "editable component routing length mismatch for %s: "
+                "%d local, %d merged"
+                % (tag, len(local_components), len(merged_components)))
+        if not local_components:
+            raise RuntimeError(
+                "empty editable component routing for %s" % tag)
+        try:
+            local_components = [int(value) for value in local_components]
+            merged_components = [int(value) for value in merged_components]
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "invalid editable component routing for %s" % tag) from exc
+        if len(set(local_components)) != len(local_components):
+            raise RuntimeError(
+                "duplicate editable local component for %s" % tag)
+        if len(set(merged_components)) != len(merged_components):
+            raise RuntimeError(
+                "duplicate editable merged component for %s" % tag)
+        aliases[ib_index] = {
+            "component_map": {
+                local: merged
+                for local, merged in zip(
+                    local_components, merged_components)
+            }
+        }
+    return aliases
 
 
 def _iter_usage_hashes(components):
@@ -1199,6 +1304,7 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
             # 4) editable_ibs (form2 face etc.): copy C8-11 -> temporary Component 0-3 -> export against their own source
             #    (shape keys are per-object and must be exported separately; mesh.copy() carries the form2 shape keys -> export re-emits them automatically).
             eib_roles = []
+            active_editable_ibs = []
             eib_excluded = []
             merged_meta = json.loads((merged_folder / "Metadata.json").read_text(encoding="utf-8"))
             for rec in editable_ibs:
@@ -1256,24 +1362,15 @@ def build_cross_scene_mod(context, cfg, base_collection, merged_folder, out_fold
                     {li: str(mi) for li, mi in zip(rec["local_components"], rec["merged_components"])})
                 mods.append(str(work / tag))
                 eib_roles.append(tag)
+                active_editable_ibs.append(rec)
                 temp_stack.close()
 
             # 5) Namespace merge + texture dedup + self-check.
             # The merged root is the single authoritative texture allowlist: only hashes still present
             # at merged_folder root ship (sub-IB scene_ibs/<hash>/ no longer re-supply a pruned hash).
             from . import assembler
-            namespace_aliases = {}
-            for rec in editable_ibs:
-                tag = rec["ib_hash"]
-                if tag in eib_excluded or tag not in eib_roles:
-                    continue
-                ib_index = 1 + len(own_ibs) + eib_roles.index(tag)
-                namespace_aliases[ib_index] = {
-                    "component_map": {
-                        int(li): int(mi)
-                        for li, mi in zip(rec["local_components"], rec["merged_components"])
-                    }
-                }
+            namespace_aliases = _build_namespace_aliases(
+                own_ibs, splits_by_ib, active_editable_ibs, eib_roles)
             report = assembler.assemble(
                 str(out_folder), mods, texture_root=str(merged_folder),
                 write_ini=saved_gating["write_ini"],

@@ -9,7 +9,9 @@
 #   1. [TextureOverrideTexture{i}] hash sections whose texture is covered by
 #      the slot maps, or only came from stale-inherited phantom pairs, are
 #      removed ([ResourceTexture{i}] filename sections stay; blind-zone and
-#      excluded-component fallback textures keep their stock hash section).
+#      excluded-component fallback textures keep their stock hash section and
+#      native `$object_detected` gate. Opt-out ownership is recorded in comments
+#      for the cross-scene assembler and final audit.
 #      The global per-slot `CheckTextureOverride = ps-tN` trigger lines stay
 #      for ordinary format tags.
 #   2. Every non-comment `run = CommandListTriggerResourceOverrides` line that
@@ -43,7 +45,6 @@ _FIRST_INDEX_RE = re.compile(r'^match_first_index\s*=\s*(\d+)\s*$', re.I)
 _INDEX_COUNT_RE = re.compile(r'^match_index_count\s*=\s*(\d+)\s*$', re.I)
 
 _TRIGGER_LINE = 'run = commandlisttriggerresourceoverrides'
-_CLEANUP_LINE = 'run = commandlistcleanupsharedresources'
 _CONSTANTS_SECTION = 'constants'
 _PRESENT_SECTION = 'present'
 
@@ -89,26 +90,22 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
         raise SlotStyleDegrade('rendered ini has no sections')
 
     component_fallbacks = getattr(plan, 'component_hash_fallbacks', None) or {}
-    fallback_by_section = {}
-    fallback_components = set()
+    opt_out_by_section = {}
     for entries in component_fallbacks.values():
         for entry in entries:
             section = str(getattr(entry, 'section', '') or '').strip().lower()
             if not section:
                 continue
-            fallback_by_section.setdefault(section, []).append(entry)
-            fallback_components.add(int(getattr(entry, 'component_id')))
+            opt_out_by_section.setdefault(section, []).append(entry)
 
     drop_indices = (set(plan.covered_resource_indices)
                     | set(getattr(plan, 'phantom_only_resource_indices', set())))
     drop_sections = {f'textureoverridetexture{i}' for i in drop_indices}
-    drop_sections.difference_update(fallback_by_section)
+    drop_sections.difference_update(opt_out_by_section)
 
     deleted: Set[int] = set()
-    # after-insertions keyed by line index -> list of new lines, before- likewise.
+    # after-insertions keyed by line index -> list of new lines.
     insert_after: Dict[int, List[str]] = {}
-    insert_before: Dict[int, List[str]] = {}
-    replace_line: Dict[int, List[str]] = {}
 
     removed_sections = set()
     injected_components = set()
@@ -131,9 +128,6 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
                     f'global {constants.VAR_FORM} = {plan.default_form_id}')
             globals_to_add.extend(f'global {var} = 0'
                                   for var in plan.extra_globals)
-            for comp_id in sorted(fallback_components):
-                globals_to_add.append(
-                    f'global {constants.COMPONENT_HASH_FALLBACK_VAR.format(component_id=comp_id)} = 0')
             if globals_to_add:
                 insert_after.setdefault(start, []).extend(globals_to_add)
             continue
@@ -150,29 +144,15 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
                 insert_after.setdefault(last, []).extend(plan.watchdog_lines)
             continue
 
-        if lname in fallback_by_section:
-            entries = sorted(fallback_by_section[lname],
+        if lname in opt_out_by_section:
+            entries = sorted(opt_out_by_section[lname],
                              key=lambda e: int(getattr(e, 'component_id')))
-            gates = [
-                f'{constants.COMPONENT_HASH_FALLBACK_VAR.format(component_id=int(getattr(entry, "component_id")))} == 1'
-                for entry in entries
-            ]
-            gate = ' || '.join(gates)
             comments = [
-                '; component_scoped_hash_fallback = 1',
-                '; fallback_component = ' + ','.join(
+                '; slot_opt_out_hash_fallback = 1',
+                '; opt_out_component = ' + ','.join(
                     str(int(getattr(entry, 'component_id'))) for entry in entries),
             ]
             insert_after.setdefault(start, []).extend(comments)
-            for i in range(start + 1, end):
-                line = lines[i]
-                if re.match(r'\s*this\s*=\s*ResourceTexture\d+\b', line, re.I):
-                    indent = line[:len(line) - len(line.lstrip())]
-                    replace_line[i] = [
-                        f'{indent}if {gate}',
-                        f'{indent}    {line.strip()}',
-                        f'{indent}endif',
-                    ]
             continue
 
         comp_match = _COMP_ID_RE.search(name.strip())
@@ -180,8 +160,7 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             continue
         comp_id = int(comp_match.group(1))
         list_name = plan.component_list_names.get(comp_id)
-        has_component_fallback = comp_id in fallback_components
-        if list_name is None and not has_component_fallback:
+        if list_name is None:
             continue
 
         trigger_indices = []
@@ -196,59 +175,26 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             continue
         for i in trigger_indices:
             indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
-            if has_component_fallback:
-                var = constants.COMPONENT_HASH_FALLBACK_VAR.format(component_id=comp_id)
-                cleanup_index = None
-                for candidate in range(i + 1, end):
-                    candidate_line = lines[candidate].strip()
-                    if candidate_line.startswith(';'):
-                        continue
-                    candidate_low = candidate_line.lower()
-                    if candidate_low == _TRIGGER_LINE:
-                        break
-                    if candidate_low == _CLEANUP_LINE:
-                        cleanup_index = candidate
-                        break
-                if cleanup_index is None:
-                    raise SlotStyleDegrade(
-                        f'component {comp_id} hash fallback transaction has no '
-                        'matching cleanup anchor')
-                insert_before.setdefault(i, []).append(f'{indent}{var} = 1')
-                cleanup_indent = lines[cleanup_index][
-                    :len(lines[cleanup_index])
-                    - len(lines[cleanup_index].lstrip())]
-                insert_after.setdefault(cleanup_index, []).append(
-                    f'{cleanup_indent}{var} = 0')
-            if list_name is not None:
-                insert_after.setdefault(i, []).append(f'{indent}run = {list_name}')
+            insert_after.setdefault(i, []).append(f'{indent}run = {list_name}')
         injected_components.add(comp_id)
 
-    required_components = set(plan.component_list_names) | fallback_components
+    required_components = set(plan.component_list_names)
     missing_components = required_components - injected_components
     if missing_components:
         raise SlotStyleDegrade(
             'no component draw anchor found for planned Component(s): '
             + ', '.join(str(comp_id) for comp_id in sorted(missing_components)))
-    if not injected_components:
+    if not injected_components and not opt_out_by_section:
         raise SlotStyleDegrade(
             'no component draw anchors found in the rendered ini - unknown '
             'template structure')
     if plan.multi_form and not found_constants:
         raise SlotStyleDegrade(
             f'[Constants] section not found for {constants.VAR_FORM}')
-    if fallback_components and not found_constants:
-        raise SlotStyleDegrade(
-            '[Constants] section not found for component-scoped hash fallback')
-
     out: List[str] = []
     for i, line in enumerate(lines):
-        if i in insert_before:
-            out.extend(insert_before[i])
         if i not in deleted:
-            if i in replace_line:
-                out.extend(replace_line[i])
-            else:
-                out.append(line)
+            out.append(line)
         if i in insert_after:
             out.extend(insert_after[i])
 

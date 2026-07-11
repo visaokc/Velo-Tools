@@ -648,7 +648,7 @@ def _local_restore_policy(comp_id: int,
     branch_routes = {branch.route_id for branch in branches}
     if None in branch_routes and len(branch_routes) != 1:
         return full_restore
-    allowed_routes = branch_routes
+    allowed_routes = None if branch_routes == {None} else branch_routes
 
     def _canon_hash(value: object) -> Optional[str]:
         if not isinstance(value, str) or not value.strip():
@@ -734,7 +734,7 @@ def _local_restore_policy(comp_id: int,
             row_route = str(row_route).strip().lower()
             if row_route != 'base' and not _ROUTE_RE.fullmatch(row_route):
                 return full_restore
-        if row_route not in allowed_routes:
+        if allowed_routes is not None and row_route not in allowed_routes:
             continue
         try:
             form_id = int(row.get('form_id'))
@@ -814,6 +814,7 @@ def _local_restore_policy(comp_id: int,
         excluded_hashes.add(tex_hash)
 
     branch_facts: List[Tuple[_LocalBranch, Dict[int, float], Dict[int, str]]] = []
+    assignment_seats_by_hash: Dict[str, Set[int]] = {}
     for branch in branches:
         if branch.form_id is None:
             return full_restore
@@ -837,7 +838,12 @@ def _local_restore_policy(comp_id: int,
             if tex_hash is None:
                 return full_restore
             assign_hashes[slot] = tex_hash
+            assignment_seats_by_hash.setdefault(tex_hash, set()).add(slot)
         branch_facts.append((branch, positive, assign_hashes))
+
+    if any(len(seats) > 1 and seats & raw_service_slots
+           for seats in assignment_seats_by_hash.values()):
+        return full_restore
 
     candidates = set(branch_facts[0][2])
     for _branch, positive, assign_hashes in branch_facts[1:]:
@@ -2178,10 +2184,11 @@ def _format_local_conflict_message(problems: List[dict]) -> str:
     return '\n'.join(lines)
 
 
-def _complete_route_direct_components(
+def _route_split_components(
         audit: dict,
-        component_branches: Dict[int, List[_LocalBranch]]) -> Set[int]:
-    """Return components whose route profiles can safely replace hash fallback."""
+        component_branches: Dict[int, List[_LocalBranch]],
+        slot_eligible_components: Optional[Set[int]]) -> Set[int]:
+    """Return selected components that require route-specific setters."""
     raw_profiles = audit.get('route_profiles')
     if not isinstance(raw_profiles, dict):
         return set()
@@ -2190,6 +2197,9 @@ def _complete_route_direct_components(
         try:
             comp_id = int(raw_comp_id)
         except (TypeError, ValueError):
+            continue
+        if (slot_eligible_components is not None
+                and comp_id not in slot_eligible_components):
             continue
         if not isinstance(raw_routes, list):
             continue
@@ -2241,7 +2251,28 @@ def _complete_route_direct_components(
                     break
             if not valid:
                 break
-        if valid:
+        if not valid:
+            continue
+        assignments_by_condition: Dict[
+            Tuple[
+                Tuple[Tuple[int, float], ...],
+                Tuple[Tuple[int, float], ...],
+            ],
+            Tuple[str, Tuple[Tuple[int, str], ...]],
+        ] = {}
+        cross_route_collision = False
+        for route, route_branches in by_route.items():
+            for branch in route_branches:
+                condition = (branch.signature, branch.negative_signature)
+                assignment = tuple(sorted(branch.assign_hashes.items()))
+                previous = assignments_by_condition.setdefault(
+                    condition, (route, assignment))
+                if previous[0] != route and previous[1] != assignment:
+                    cross_route_collision = True
+                    break
+            if cross_route_collision:
+                break
+        if cross_route_collision:
             complete.add(comp_id)
     return complete
 
@@ -2620,19 +2651,36 @@ def _local_branches_from_audit(audit: dict,
                 route_id=route,
             ))
     branch_records.extend(kept_branch_records)
-    route_direct_components = _complete_route_direct_components(
-        audit, component_branches)
-    effective_eligible_components = slot_eligible_components
-    if slot_eligible_components is not None:
-        effective_eligible_components = (
-            set(slot_eligible_components) | route_direct_components)
+    route_split_components = _route_split_components(
+        audit, component_branches, slot_eligible_components)
+    routed_components = {
+        comp_id for comp_id, branches in component_branches.items()
+        if any(branch.route_id is not None for branch in branches)
+    }
+    generic_route_components = {
+        comp_id for comp_id in routed_components
+        if comp_id not in route_split_components
+        and (slot_eligible_components is None
+             or comp_id in slot_eligible_components)
+    }
+    if generic_route_components:
+        for comp_id in generic_route_components:
+            for branch in component_branches.get(comp_id, []):
+                branch.route_id = None
+        for record in branch_records:
+            try:
+                comp_id = int(record.get('component'))
+            except (TypeError, ValueError):
+                continue
+            if comp_id in generic_route_components:
+                record['route'] = None
     problems = _local_conflict_messages(
-        branch_records, effective_eligible_components)
+        branch_records, slot_eligible_components)
     if problems:
         raise SlotStyleDegrade(_format_local_conflict_message(problems))
     return (component_branches, assigned_hashes,
             suppressed_weak_branches, suppressed_weak_hashes,
-            route_direct_components)
+            route_split_components)
 
 
 def _build_local_plan(forms: List[Tuple[str, FormData]],
@@ -2726,7 +2774,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     }
     (component_branches, raw_assigned_hashes, suppressed_weak_branches,
      suppressed_weak_hashes,
-     route_direct_components) = _local_branches_from_audit(
+     route_split_components) = _local_branches_from_audit(
          local_discriminator_audit, mod_hashes, _canon, label_to_id,
          slot_eligible_components, volatile_assignment_hashes)
     if suppressed_weak_branches:
@@ -2750,8 +2798,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             hash_source = (row.get('assign_hashes') or {})
             component_excluded = (
                 slot_eligible_components is not None
-                and comp_id not in slot_eligible_components
-                and comp_id not in route_direct_components)
+                and comp_id not in slot_eligible_components)
             if component_excluded:
                 hash_source = row.get('observed_hashes') or hash_source
             for raw_slot, tex_hash in hash_source.items():
@@ -2788,8 +2835,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     if slot_eligible_components is not None:
         resource_to_hash_for_exclusion = {res: h for h, res in textures}
         for comp_id in list(component_branches):
-            if (comp_id in slot_eligible_components
-                    or comp_id in route_direct_components):
+            if comp_id in slot_eligible_components:
                 continue
             for branch in component_branches.pop(comp_id):
                 for resource in branch.assign.values():

@@ -436,13 +436,16 @@ Typical workflow:
 3. In Export Mod, enable **Slot-style textures**.
 4. Optionally refresh the component list.
 5. Leave components checked if they should use slot-style export.
-6. Uncheck components that should fall back to component-scoped hash style.
+6. Uncheck components that should retain native hash-style replacement.
 7. Export normally.
 
 Behavior and limits:
 
 - By default, if no component list is populated, all eligible components are treated as slot-style.
-- Unchecked components use component-scoped hash fallback.
+- Unchecked components retain native hash-style replacement, gated by the owning `$object_detected_ibN` state in cross-scene output.
+- Hash-style `ResourceTexture` and `TextureOverride` sections are shown as adjacent native-order pairs when the relationship is unambiguous.
+- Empty `ResourceBypassPST0..8` sections are intentional runtime backup handles for `ps-t0..8` when that IB has a slot transaction; unused generated groups are removed and rejected by audit.
+- Final cross-scene component-bearing section names use merged-root component ids; `_ibN` identifies the owning IB namespace.
 - Unsupported ambiguous components fail closed instead of producing unsafe hash/probe logic.
 - Same-layout multi-form components need better slot evidence or component exclusion.
 - Slot command lists use direct `ps-tN = ref ResourceTexture...` assignments.
@@ -625,7 +628,7 @@ Slot-style export is conservative. Common causes:
 - Missing or stale `ShaderTextureUsage.json`.
 - A component's forms share the same slot layout and cannot be distinguished without texture identity.
 - A required DDS/resource is missing.
-- A component needs component-scoped hash fallback and should be unchecked in the slot component list.
+- A component should retain native hash-style replacement and be unchecked in the slot component list.
 
 ### Should I enable slot-style textures for every mod?
 

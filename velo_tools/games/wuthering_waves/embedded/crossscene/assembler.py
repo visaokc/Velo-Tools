@@ -9,10 +9,10 @@ Textures take one of two paths per IB:
     ResourceTexture{i}`` are kept PER-IB (``[ResourceTexture{i}]`` -> ``[ResourceTexture{i}_ibK]``,
     filename normalised to the deduped ``Textures/Components-* t=<hash>.dds``), so the namespaced
     slot command lists resolve. They carry NO texture-hash matching -> immune to streaming.
-  * Hash-style (stock / slot blind-zone fallback): ``[TextureOverrideTexture{i}]`` hash overrides
+  * Hash-style (stock / slot opt-out fallback): ``[TextureOverrideTexture{i}]`` hash overrides
     collapse into one global ``[Resource_Texture_<hash>]``/``[TextureOverride_Texture_<hash>]`` per
-    unique hash (gate = OR over each IB's ``$object_detected``), as before. Explicitly
-    component-scoped excluded-component fallbacks keep their per-component gate instead.
+    unique hash (gate = OR over each owning IB's ``$object_detected``), as before. Explicit slot
+    opt-outs retain metadata naming the component that requested the native hash path.
 
 ``[Constants]``/``[Present]`` each merged into one section. Returns a self-check report (the
 ``tex_blindzone`` field lists residual hash-style textures -> empty == a pure 0-texture-hash mod).
@@ -69,7 +69,6 @@ _RE_TEXHASH = re.compile(r't=([0-9a-fA-F]+)')
 # namespaced once before the final assembler pass).
 _RE_PST_REF = re.compile(r'ps-t\d+\s*=\s*ref\s+(ResourceTexture(?:\d+|_C\d+_[0-9a-fA-F]+)(?:_ib\d+)*)\b')
 _RE_TEXTURE_REF = re.compile(r'\s*this\s*=\s*(ResourceTexture(?:\d+|_C\d+_[0-9a-fA-F]+)(?:_ib\d+)*)\b', re.I)
-_RE_COMPONENT_FALLBACK_VAR = re.compile(r'\$component_hash_fallback_c(\d+)(?:_ib\d+)*\b')
 _SHARED_BODY_GLOBALS = {"form_id"}
 _SLOT_CONTRACT_FILENAME = ".velo_slot_contract.json"
 
@@ -89,10 +88,6 @@ def _alias_enabled(namespace_aliases, k):
 def _alias_global_var_name(name, k, namespace_aliases):
     if not _alias_enabled(namespace_aliases, k):
         return name
-    match = re.fullmatch(r'component_hash_fallback_c(\d+)', name)
-    if match:
-        comp = _alias_for_component(namespace_aliases, k, int(match.group(1)))
-        return f'component_hash_fallback_c{comp}'
     match = re.fullmatch(r'xscene_skip_draw_c(\d+)_(\d+)', name)
     if match:
         comp = _alias_for_component(namespace_aliases, k, int(match.group(1)))
@@ -409,17 +404,19 @@ def _texture_filename(path):
     return os.path.basename(str(path).replace("\\", "/"))
 
 
-def _component_fallback_components(body):
+def _slot_opt_out_components(body):
     components = set()
     tagged = False
     for line in body:
         stripped = line.strip().lower()
-        if stripped.startswith(';'):
-            if 'component_scoped_hash_fallback' in stripped:
-                tagged = True
+        if not stripped.startswith(';'):
             continue
-        for match in _RE_COMPONENT_FALLBACK_VAR.finditer(line):
-            components.add(int(match.group(1)))
+        if re.fullmatch(r';\s*slot_opt_out_hash_fallback\s*=\s*1', stripped):
+            tagged = True
+            continue
+        match = re.fullmatch(r';\s*opt_out_component\s*=\s*(.+)', stripped)
+        if match:
+            components.update(int(value) for value in re.findall(r'\d+', match.group(1)))
     return components if tagged and components else set()
 
 
@@ -575,7 +572,21 @@ def _guard_geometry_draws(lines, component_id, suffix, guarded_skips):
 
 
 def _validate_geometry_layout(text):
-    for name, body in _parse_sections(text):
+    sections = _parse_sections(text)
+    section_names = {name for name, _body in sections}
+    geometry_run_counts = {}
+    for _name, body in sections:
+        for line in body:
+            match = re.fullmatch(
+                r'\s*run\s*=\s*'
+                r'(CommandListDrawGeometryComponent\d+(?:_ib\d+)*)\s*',
+                line)
+            if match:
+                target = match.group(1)
+                geometry_run_counts[target] = (
+                    geometry_run_counts.get(target, 0) + 1)
+
+    for name, body in sections:
         is_geometry = re.fullmatch(
             r'CommandListDrawGeometryComponent\d+(?:_ib\d+)*', name)
         draws = [
@@ -584,13 +595,25 @@ def _validate_geometry_layout(text):
                 r'drawindexed\s*=\s*\d+\s*,\s*\d+\s*,\s*-?\d+',
                 line.strip())
         ]
-        if draws and not is_geometry:
-            raise ValueError(
-                "%s contains drawindexed outside canonical Geometry" % name)
+        inline = re.fullmatch(
+            r'(?:CommandListDrawComponent|TextureOverrideComponent)'
+            r'(\d+)((?:_ib\d+)*)', name)
+        if draws and not is_geometry and not inline:
+            raise ValueError("%s contains drawindexed outside a draw caller" % name)
+        if draws and inline:
+            geometry = _draw_geometry_name(
+                int(inline.group(1)), inline.group(2) or "")
+            if geometry in section_names or geometry_run_counts.get(geometry):
+                raise ValueError(
+                    "%s keeps inline drawindexed while shared Geometry %s exists"
+                    % (name, geometry))
         if not is_geometry:
             continue
         if not draws:
             raise ValueError("%s contains no drawindexed" % name)
+        if geometry_run_counts.get(name, 0) < 2:
+            raise ValueError(
+                "%s is not reused by at least two draw transactions" % name)
         side_effects = [
             line.strip() for line in body
             if not _is_geometry_line(line)
@@ -641,11 +664,6 @@ def _apply_component_route_setters(text, component_route_lists):
                 for comp, _route_suffix, ib in re.findall(
                         r'CommandListSetTexturesComponent(\d+)'
                         r'(Route(?:Base|[0-9a-fA-F]{8}))?_ib(\d+)', line, re.I):
-                    key = (int(comp), int(ib))
-                    if key in component_route_lists:
-                        candidates.add(key)
-                for comp, ib in re.findall(
-                        r'\$component_hash_fallback_c(\d+)_ib(\d+)\b', line, re.I):
                     key = (int(comp), int(ib))
                     if key in component_route_lists:
                         candidates.add(key)
@@ -786,7 +804,7 @@ def _apply_component_route_setters(text, component_route_lists):
 
 
 def _canonicalize_draw_geometry_sections(text):
-    """Move each final component/IB draw region into one shared Geometry list."""
+    """Share draw geometry only when another transaction already reuses it."""
     out = []
     geometries = []
     header = None
@@ -812,6 +830,12 @@ def _canonicalize_draw_geometry_sections(text):
             "legacy draw Owner/Atom sections cannot be mixed with canonical "
             "Geometry: %s" % ", ".join(legacy_sections))
     generated_names = set()
+    geometry_run_counts = {}
+    for target in re.findall(
+            r'^\s*run\s*=\s*'
+            r'(CommandListDrawGeometryComponent\d+(?:_ib\d+)*)\s*$',
+            text, re.M):
+        geometry_run_counts[target] = geometry_run_counts.get(target, 0) + 1
 
     def flush():
         if header is None:
@@ -838,10 +862,14 @@ def _canonicalize_draw_geometry_sections(text):
             out.append((header, list(body)))
             return
 
+        geometry = _draw_geometry_name(comp_id, suffix)
+        if not geometry_run_counts.get(geometry):
+            out.append((header, list(body)))
+            return
+
         draw_start, draw_end = _geometry_region(body, draw_indices, header)
         geometry_body, caller_indent = _dedent_geometry(
             body[draw_start:draw_end])
-        geometry = _draw_geometry_name(comp_id, suffix)
         if geometry in section_names or geometry in generated_names:
             raise ValueError(
                 "%s would define duplicate canonical geometry section %s"
@@ -945,10 +973,9 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     constants, present, others = [], [], []
     tex = {}                # hash -> source .dds absolute path (deduped; slot + blind-zone)
     blindzone = set()       # hashes still bound hash-style (no slot map covered them) -> one global
-                            # [TextureOverride_Texture_<hash>] each, gated by $object_detected
-                            # or by explicit component-scoped fallback vars.
+                            # [TextureOverride_Texture_<hash>] each, gated by owning $object_detected.
     blindzone_mods = {}     # hash -> mod indexes that still need the stock object-detected fallback
-    blindzone_component_mods = {}  # hash -> set of (mod index, component id) scoped fallbacks
+    blindzone_opt_out_components = {}  # hash -> set of (mod index, component id) opt-outs
     slot_hashes = set()     # hashes bound by ps-t slot -> per-IB resources, NO global hash override.
     tex_name = {}            # hash -> shipped filename under Textures/
     emitted_slot_resource_sections = set()
@@ -1007,12 +1034,12 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                     if mm:
                         tgt = mm.group(1)
                 if hv and tgt:
-                    ov_pairs.append((hv, tgt, _component_fallback_components(b)))
+                    ov_pairs.append((hv, tgt, _slot_opt_out_components(b)))
         mod_hashes = set()
         # Blind-zone hash overrides: a slot-covered texture had its TextureOverrideTexture section
         # removed by the slot transform, so anything still carrying a hash override is a fallback.
-        for hv, tgt, component_scope in ov_pairs:
-            if tgt in slot_covered and not component_scope:
+        for hv, tgt, opt_out_components in ov_pairs:
+            if tgt in slot_covered and not opt_out_components:
                 continue
             fn = res_filename.get(tgt)
             if not fn:
@@ -1023,12 +1050,11 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                 continue
             mod_hashes.add(hv)
             blindzone.add(hv)
-            if component_scope:
-                for comp_id in component_scope:
-                    blindzone_component_mods.setdefault(hv, set()).add(
+            blindzone_mods.setdefault(hv, set()).add(k)
+            if opt_out_components:
+                for comp_id in opt_out_components:
+                    blindzone_opt_out_components.setdefault(hv, set()).add(
                         (k, _alias_for_component(namespace_aliases, k, comp_id)))
-            else:
-                blindzone_mods.setdefault(hv, set()).add(k)
             if hv not in tex:
                 tex[hv] = os.path.join(mod, fn)
                 tex_name[hv] = _texture_filename(fn)
@@ -1051,7 +1077,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                 tex_name[hv] = _texture_filename(fn)
         tex_hash_per_mod.append(mod_hashes)
         resource_hashes = dict(slot_hash_by_res)
-        for hv, tgt, _component_scope in ov_pairs:
+        for hv, tgt, _opt_out_components in ov_pairs:
             resource_hashes.setdefault(tgt, hv)
 
         for h, b in sections:
@@ -1158,25 +1184,22 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
         if blindzone_shipped:
             f.write("; --- Shared hash-style textures (blind-zone fallback, deduped by hash) ---\n\n")
             for hv in blindzone_shipped:
-                component_scope = sorted(blindzone_component_mods.get(hv, set()))
+                opt_out_scope = sorted(
+                    blindzone_opt_out_components.get(hv, set()))
                 gate_terms = [
                     f'$object_detected_ib{k}'
                     for k in sorted(blindzone_mods.get(hv, set()))
                 ]
-                gate_terms.extend(
-                    f'$component_hash_fallback_c{comp}_ib{k} == 1'
-                    for k, comp in component_scope
-                )
                 if not gate_terms:
                     gate_terms = [f'$object_detected_ib{k}' for k in range(len(mods))]
                 hv_gate = ' || '.join(gate_terms)
                 shipped_name = root_name_by_hash.get(hv) or tex_name.get(hv) or f't={hv}.dds'
                 f.write(f"[Resource_Texture_{hv}]\nfilename = Textures/{shipped_name}\n\n")
                 f.write(f"[TextureOverride_Texture_{hv}]\n")
-                if component_scope:
-                    f.write("; component_scoped_hash_fallback = 1\n")
-                    f.write("; fallback_component_scope = %s\n" % ", ".join(
-                        f"c{comp}_ib{k}" for k, comp in component_scope))
+                if opt_out_scope:
+                    f.write("; slot_opt_out_hash_fallback = 1\n")
+                    f.write("; opt_out_component_scope = %s\n" % ", ".join(
+                        f"c{comp}_ib{k}" for k, comp in opt_out_scope))
                 f.write(f"hash = {hv}\nmatch_priority = 0\n")
                 f.write(f"if {hv_gate}\n    this = Resource_Texture_{hv}\nendif\n\n")
 
@@ -1237,9 +1260,9 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
         "tex_shipped": len(shipped),
         "tex_slot": sorted(hv for hv in slot_hashes if hv in shipped),
         "tex_blindzone": blindzone_shipped,  # residual hash-style textures (empty == 0-texture-hash)
-        "tex_component_scoped_fallback": sorted(
+        "tex_slot_opt_out_fallback": sorted(
             hv for hv in blindzone_shipped
-            if blindzone_component_mods.get(hv)),
+            if blindzone_opt_out_components.get(hv)),
         "tex_suppressed_body": sorted(suppressed_body),
         "tex_suppressed_body_reasons": suppressed_body_reasons,
         "tex_suppressed_fold": suppressed_fold,
@@ -1247,11 +1270,8 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
         "tex_root_allowed": (len(allowed) if allowed is not None else None),
         "tex_gated_out": sorted(all_in - shipped),
         "tex_blindzone_gates": {
-            hv: (
-                [f"$object_detected_ib{k}" for k in sorted(blindzone_mods.get(hv, set()))]
-                + [f"$component_hash_fallback_c{comp}_ib{k} == 1"
-                   for k, comp in sorted(blindzone_component_mods.get(hv, set()))]
-            )
+            hv: [f"$object_detected_ib{k}"
+                 for k in sorted(blindzone_mods.get(hv, set()))]
             for hv in blindzone_shipped
         },
         "textures_files": (len(os.listdir(textures_dir)) if os.path.isdir(textures_dir) else 0),

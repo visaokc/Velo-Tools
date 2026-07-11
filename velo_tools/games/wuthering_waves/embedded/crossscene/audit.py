@@ -216,13 +216,19 @@ def _geometry_skip_ordinals(text, block, geometry_name, component_id, ib_id,
 
 def _audit_draw_geometry(text):
     errors = []
-    section_names = {name for name, _block in _sections(text)}
+    sections = list(_sections(text))
+    section_names = {name for name, _block in sections}
     geometry_names = {
         name for name in section_names
         if re.fullmatch(
             r'CommandListDrawGeometryComponent\d+(?:_ib\d+)*', name)
     }
-    for name, block in _sections(text):
+    geometry_callers = {}
+    for caller, block in sections:
+        for target in _run_draw_geometries(block):
+            geometry_callers.setdefault(target, []).append(caller)
+
+    for name, block in sections:
         if re.match(r'TextureOverride_FoldHost_.*_LOD\d+(?:_ib\d+)?$', name):
             errors.append(
                 "%s is a FoldHost LOD section and must not be emitted; "
@@ -233,11 +239,26 @@ def _audit_draw_geometry(text):
             errors.append("legacy draw Owner/Atom section remains: %s" % name)
         is_geometry = name in geometry_names
         draws = _drawindexed_tuples(block)
-        if draws and not is_geometry:
-            errors.append("%s contains drawindexed outside canonical Geometry" % name)
+        inline = re.fullmatch(
+            r'(?:CommandListDrawComponent|TextureOverrideComponent)'
+            r'(\d+)((?:_ib\d+)*)', name)
+        if draws and not is_geometry and not inline:
+            errors.append("%s contains drawindexed outside a draw caller" % name)
+        if draws and inline:
+            geometry = "CommandListDrawGeometryComponent%s%s" % (
+                inline.group(1), inline.group(2) or "")
+            if geometry in geometry_names or geometry_callers.get(geometry):
+                errors.append(
+                    "%s keeps inline drawindexed while shared Geometry %s exists"
+                    % (name, geometry))
         if is_geometry:
             if not draws:
                 errors.append("%s contains no drawindexed" % name)
+            callers = set(geometry_callers.get(name, []))
+            if len(callers) < 2:
+                errors.append(
+                    "%s is not reused by at least two draw transactions"
+                    % name)
             for line in block.splitlines()[1:]:
                 stripped = line.strip()
                 if (not stripped or stripped.startswith(";")
@@ -278,73 +299,13 @@ def _audit_skip_vars_declared(text):
     return errors
 
 
-def _component_fallback_scopes(text):
-    scopes = set()
-    for _name, block in _sections(text):
-        if "component_scoped_hash_fallback" not in block.lower():
-            continue
-        for comp, ib in re.findall(
-                r'\$component_hash_fallback_c(\d+)_ib(\d+)\s*==\s*1',
-                block):
-            scopes.add((int(comp), int(ib)))
-    return scopes
-
-
-def _runs_resource_overrides(block, ib_id):
-    suffix = "_ib%d" % int(ib_id)
-    return re.search(
-        r'^\s*run\s*=\s*CommandListTriggerResourceOverrides%s\s*$'
-        % re.escape(suffix),
-        block or "",
-        re.M) is not None
-
-
-def _has_component_fallback_trigger_scope(block, component_id, ib_id):
-    var = "$component_hash_fallback_c%d_ib%d" % (int(component_id), int(ib_id))
-    lines = (block or "").splitlines()
-    for index, line in enumerate(lines):
-        if not re.match(
-                r'^\s*run\s*=\s*CommandListTriggerResourceOverrides_ib%d\s*$'
-                % int(ib_id),
-                line):
-            continue
-        before = any(
-            re.match(r'^\s*%s\s*=\s*1\s*$' % re.escape(var), prev)
-            for prev in lines[:index])
-        after = any(
-            re.match(r'^\s*%s\s*=\s*0\s*$' % re.escape(var), next_line)
-            for next_line in lines[index + 1:])
-        if before and after:
-            return True
-    return False
-
-
-def _audit_foldhost_component_fallback_scope(text, routing):
-    errors = []
-    scopes = _component_fallback_scopes(text)
-    if not scopes:
-        return errors
-    for scene in (routing or {}).get("scene_ibs") or []:
-        if not scene.get("foldable"):
-            continue
-        tag = scene.get("ib_hash")
-        comp_map = {
-            int(k): int(v)
-            for k, v in ((scene.get("fold") or {}).get("comp_map") or {}).items()
-        }
-        for fc, bc in sorted(comp_map.items()):
-            if (bc, 0) not in scopes:
-                continue
-            header = "TextureOverride_FoldHost_%s_C%d_ib0" % (tag, fc)
-            block = _section(text, header)
-            if not block or not _runs_resource_overrides(block, 0):
-                continue
-            if not _has_component_fallback_trigger_scope(block, bc, 0):
-                errors.append(
-                    "%s runs CommandListTriggerResourceOverrides_ib0 for "
-                    "$component_hash_fallback_c%d_ib0 without bracketing the "
-                    "component-scoped fallback scope" % (header, bc))
-    return errors
+def _audit_no_legacy_component_hash_gates(text):
+    if re.search(r'\$component_hash_fallback_c\d+(?:_ib\d+)*\b', text):
+        return [
+            "legacy $component_hash_fallback gate remains; slot opt-outs must "
+            "use the owning IB's native $object_detected gate"
+        ]
+    return []
 
 
 def _body_draw_entries(text, component_id):
@@ -466,6 +427,61 @@ def _audit_slot_resources(text, mod_dir):
     return errors
 
 
+def _positive_object_gate(conditions):
+    object_conditions = [
+        condition for condition in conditions
+        if re.search(r'\$object_detected_ib\d+\b', condition)
+    ]
+    object_ibs = {
+        int(ib)
+        for condition in object_conditions
+        for ib in re.findall(r'\$object_detected_ib(\d+)\b', condition)
+    }
+    if len(conditions) != 1 or len(object_conditions) != 1:
+        return object_ibs, False
+    terms = [term.strip() for term in object_conditions[0].split("||")]
+    matches = [
+        re.fullmatch(
+            r'\$object_detected_ib(\d+)(?:\s*==\s*1)?', term)
+        for term in terms
+    ]
+    if not terms or not all(matches):
+        return object_ibs, False
+    return {int(match.group(1)) for match in matches}, True
+
+
+def _resource_assignment_gate_evidence(block, resource):
+    """Return object-gate evidence for each exact resource assignment."""
+    conditions = []
+    assignments = []
+    assignment = re.compile(
+        r'this\s*=\s*%s(?:\s*;.*)?' % re.escape(resource), re.I)
+    for line in block.splitlines()[1:]:
+        stripped = line.strip()
+        if stripped.startswith("if "):
+            conditions.append(stripped[3:])
+            continue
+        if stripped.startswith("else if "):
+            if conditions:
+                conditions[-1] = "__else_if__ " + stripped[8:]
+            continue
+        if stripped.startswith("elif "):
+            if conditions:
+                conditions[-1] = "__elif__ " + stripped[5:]
+            continue
+        if stripped == "else":
+            if conditions:
+                conditions[-1] = ""
+            continue
+        if stripped == "endif":
+            if conditions:
+                conditions.pop()
+            continue
+        if assignment.fullmatch(stripped):
+            assignments.append(_positive_object_gate(conditions))
+    return assignments
+
+
 def _audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks=None):
     errors = []
     allowed = {str(h).lower() for h in (allowed_body_hash_fallbacks or set())}
@@ -486,19 +502,61 @@ def _audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks=None):
             continue
         filename = resources.get(tex_hash, "")
         normalized = filename.replace("\\", "/")
-        if not re.search(r'(^|/)Textures/Components-\d+\s+t=[0-9a-fA-F]{8}\.dds$',
-                         normalized):
+        if not re.search(
+                r'(^|/)Textures/Components-\d+(?:-\d+)*\s+'
+                r't=[0-9a-fA-F]{8}\.dds$',
+                normalized):
             continue
         block = match.group(1)
-        scoped = re.findall(r'\$component_hash_fallback_c\d+_ib\d+\s*==\s*1', block)
-        tagged = 'component_scoped_hash_fallback' in block.lower()
-        object_gates = re.findall(r'\$object_detected_ib\d+', block)
-        if tagged and scoped and not object_gates:
+        tagged = re.search(
+            r'^\s*;\s*slot_opt_out_hash_fallback\s*=\s*1\s*$',
+            block, re.M | re.I) is not None
+        scope_lines = re.findall(
+            r'^\s*;\s*opt_out_component_scope\s*=\s*(.*?)\s*$',
+            block, re.M | re.I)
+        scopes = {
+            (int(comp), int(ib))
+            for scope_line in scope_lines
+            for comp, ib in re.findall(r'c(\d+)_ib(\d+)', scope_line, re.I)
+        }
+        if tagged and scopes:
+            owning_ibs = {ib for _comp, ib in scopes}
+            assignment_gates = _resource_assignment_gate_evidence(
+                block, "Resource_Texture_%s" % tex_hash)
+            if len(assignment_gates) != 1:
+                errors.append(
+                    "body slot opt-out texture %s must assign its hash "
+                    "resource exactly once, found %d assignments"
+                    % (tex_hash, len(assignment_gates)))
+                continue
+            object_gate_ibs, positive_gate = assignment_gates[0]
+            if not object_gate_ibs:
+                errors.append(
+                    "body slot opt-out texture %s resource assignment is not "
+                    "enclosed by its owning IB object gate(s)"
+                    % tex_hash)
+                continue
+            if not positive_gate:
+                errors.append(
+                    "body slot opt-out texture %s resource assignment must be "
+                    "enclosed by one positive owning-IB OR expression"
+                    % tex_hash)
+                continue
+            if owning_ibs == object_gate_ibs:
+                continue
+            errors.append(
+                "body slot opt-out texture %s must use exactly the owning IB "
+                "object gates; expected %s, found %s"
+                % (tex_hash,
+                   ", ".join("$object_detected_ib%d" % ib
+                             for ib in sorted(owning_ibs)),
+                   ", ".join("$object_detected_ib%d" % ib
+                             for ib in sorted(object_gate_ibs)) or "none"))
             continue
         errors.append(
             "body slot-owned texture %s is emitted as unscoped hash fallback %s; "
-            "slot-style export requires ps-t assignment, explicit component-scoped "
-            "excluded-component fallback, or fail-closed"
+            "slot-style export requires ps-t assignment, explicit slot opt-out "
+            "metadata with an owning-IB object gate, or fail-closed"
             % (tex_hash, filename))
     return errors
 
@@ -562,13 +620,37 @@ def _audit_readable_slot_resource_names(text):
             r'(^\[(CommandListSetTexturesComponent[^\]]*)\][^\[]*)',
             text, re.M):
         header = match.group(2)
+        block = match.group(1)
         for resource in re.findall(
                 r'\bps-t\d+\s*=\s*ref\s+(ResourceTexture\d+(?:_ib\d+)*)\b',
-                match.group(1)):
+                block):
             errors.append(
                 "%s references numeric slot resource %s; use "
                 "ResourceTexture_C{component}_{hash}_ibN naming"
                 % (header, resource))
+        setter = re.fullmatch(
+            r'CommandListSetTexturesComponent(\d+)'
+            r'(?:Route(?:Base|[0-9a-fA-F]{8}))?_ib(\d+)', header)
+        if not setter:
+            continue
+        setter_component = int(setter.group(1))
+        setter_ib = int(setter.group(2))
+        for resource_match in re.finditer(
+                r'\bps-t\d+\s*=\s*ref\s+'
+                r'(ResourceTexture_C(\d+)_[0-9a-fA-F]{8}_ib(\d+))\b',
+                block):
+            resource = resource_match.group(1)
+            resource_component = int(resource_match.group(2))
+            resource_ib = int(resource_match.group(3))
+            if resource_component != setter_component:
+                errors.append(
+                    "%s references component C%d resource %s; expected C%d"
+                    % (header, resource_component, resource,
+                       setter_component))
+            if resource_ib != setter_ib:
+                errors.append(
+                    "%s references IB%d resource %s; expected IB%d"
+                    % (header, resource_ib, resource, setter_ib))
     return errors
 
 
@@ -835,8 +917,8 @@ def audit_cross_scene_ini(mod_ini_path, routing, roles, *, own_excluded=None, dr
         errors.extend(_ps_resource_scope.audit_ps_resource_scope(
             text, slot_restore_contract))
     errors.extend(_audit_skip_vars_declared(text))
+    errors.extend(_audit_no_legacy_component_hash_gates(text))
     errors.extend(_audit_draw_geometry(text))
-    errors.extend(_audit_foldhost_component_fallback_scope(text, routing))
 
     for tag, label in sorted(own_excluded.items()):
         if tag not in roles:

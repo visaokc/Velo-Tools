@@ -363,8 +363,8 @@ def reproject_morph(body_meshes, face_meshes, body_segs, seg_comp, face_draws, t
 
 # ------------------------------------------------- 2) blend VG remap application
 
-def apply_blend_remap(body_meshes, vg_remap_table, body_seg, tag):
-    """Per the VG table voted by the producer, relabel the blend indices of the vertices of some body component (the body_seg draw segment) -> ``Blend_<tag>.buf``.
+def apply_blend_remap(body_meshes, vg_remap_table, body_segments, tag):
+    """Relabel blend indices for every retained draw segment of one body component.
 
     blend = R8_UINT stride16 (8 idx + 8 wt). Only relabel slots that are "a vertex of this component + this slot's weight>0 + this VG is in the table";
     VG slots not in the table keep their original value (the external script likewise leaves these slots untouched, byte-for-byte identical on both sides, verified). Returns the output filename.
@@ -372,8 +372,11 @@ def apply_blend_remap(body_meshes, vg_remap_table, body_seg, tag):
     body_meshes = Path(body_meshes)
     blend = _rd(body_meshes / "Blend.buf", np.uint8).reshape(-1, 16).copy()
     body_idx = _rd(body_meshes / "Index.buf", np.uint32)
-    bcd, bod = body_seg
-    seg_verts = np.unique(body_idx[bod:bod + bcd])
+    segment_vertices = [
+        body_idx[int(offset):int(offset) + int(count)]
+        for count, offset in body_segments
+    ]
+    seg_verts = np.unique(np.concatenate(segment_vertices))
     table = {int(k): int(v) for k, v in vg_remap_table.items()}
     bidx, bwt = blend[:, :8], blend[:, 8:]
     for v in seg_verts:
@@ -422,22 +425,8 @@ def _fold_slot_runs(body_text, bc):
     return before_trigger, after_trigger, before_cleanup
 
 
-def _component_hash_fallback_var(body_text, bc):
-    name = "$component_hash_fallback_c%d" % int(bc)
-    if re.search(re.escape(name) + r'(?:\b|_)', body_text):
-        return name
-    return None
-
-
-def _resource_override_trigger_lines(body_text, bc, indent=""):
-    var = _component_hash_fallback_var(body_text, bc)
-    if not var:
-        return ["%srun = CommandListTriggerResourceOverrides" % indent]
-    return [
-        "%s%s = 1" % (indent, var),
-        "%srun = CommandListTriggerResourceOverrides" % indent,
-        "%s%s = 0" % (indent, var),
-    ]
+def _resource_override_trigger_lines(indent=""):
+    return ["%srun = CommandListTriggerResourceOverrides" % indent]
 
 
 def _fold_format_tag_twins(body_text, bc, fc, tag, mfi, mic):
@@ -536,7 +525,6 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
     }
     out, seen_draw, header_done, pending_comment = [], False, False, None
     draw_ordinal = 0
-    fallback_var = _component_hash_fallback_var(body_text, bc)
     for ln in native.rstrip("\n").split("\n"):
         s = ln.strip()
         if not header_done and s.startswith("[TextureOverrideComponent"):
@@ -580,7 +568,7 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             indent = ln[:len(ln) - len(ln.lstrip())]
             bt, at, bcl = _fold_slot_runs(body_text, bc)
             out.extend("%s%s" % (indent, r) for r in bt)
-            out.extend(_resource_override_trigger_lines(body_text, bc, indent))
+            out.extend(_resource_override_trigger_lines(indent))
             out.extend("%s%s" % (indent, r) for r in at)
             out.append("%srun = CommandListOverrideSharedResources" % indent)
             for run_line in _draw_geometry_run_lines(
@@ -589,11 +577,9 @@ def _build_merged_foldhost(body_text, bc, fc, tag, fh, mfi, mic, vg_shift=0, vg_
             out.extend("%s%s" % (indent, r) for r in bcl)
             out.append("%srun = CommandListCleanupSharedResources" % indent)
             seen_draw = True
-        elif fallback_var and s in ("%s = 1" % fallback_var, "%s = 0" % fallback_var):
-            pending_comment = None
         elif s == "run = CommandListTriggerResourceOverrides":
             indent = ln[:len(ln) - len(ln.lstrip())]
-            out.extend(_resource_override_trigger_lines(body_text, bc, indent))
+            out.extend(_resource_override_trigger_lines(indent))
             pending_comment = None
         elif s.startswith("; Draw "):
             pending_comment = ln
@@ -771,7 +757,7 @@ def emit_fold_sections(body_text, face_text, fold_entry, body_draws, face_match,
                      "if $mod_enabled",
                      "    handling = skip"]
             lines += ["    %s" % r for r in bt]
-            lines += _resource_override_trigger_lines(body_text, bc, "    ")
+            lines += _resource_override_trigger_lines("    ")
             lines += ["    %s" % r for r in at]
             lines.append("    run = %s" % ovr)
             lines += _draw_geometry_run_lines(
@@ -831,9 +817,25 @@ def apply_fold(work, fold_entry, tag, morph_ref=None, draw_excludes=None):
             morph_scale=(fold_entry["fold"].get("morph_selfcheck") or {}).get("scale"))
     else:
         batch_counts = []
+    fold_draw_excludes = {
+        int(k): set(v or set())
+        for k, v in (draw_excludes or {}).items()
+    }
     for k, table in vg_remap.items():
-        if bd.get(int(k)):
-            apply_blend_remap(body / "Meshes", table, bd[int(k)][0], "c%dremap" % int(k))
+        component_id = int(k)
+        draws = body_plan.get(component_id)
+        if draws:
+            selected_ordinals = resolve_fold_draw_ordinals(
+                draws, fold_draw_excludes.get(component_id))
+            retained_segments = [
+                draws[ordinal][:2]
+                for ordinal in selected_ordinals
+            ]
+            if not retained_segments:
+                continue
+            apply_blend_remap(
+                body / "Meshes", table, retained_segments,
+                "c%dremap" % component_id)
     if comp_map:
         new_body = emit_fold_sections(body_text, face_text, fold_entry, body_plan, fm, batch_counts, tag,
                                         has_morph=has_morph, comp_map=comp_map,
