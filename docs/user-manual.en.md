@@ -1,666 +1,900 @@
 # Velo Tools User Manual
 
-Velo Tools is a Blender add-on for GIMI-ecosystem mod authoring. It combines
-shared Blender-side helpers with game-specific workflows for:
+This manual covers Velo Tools 1.4.1. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
-- **Arknights: Endfield** through a vendored EFMI workflow plus Velo extensions.
-- **Wuthering Waves** through a vendored WWMI workflow plus Velo extensions.
-
-Velo Tools requires Blender 3.6+ and is developed/tested primarily on Blender 4.4.
+Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
 ## Table of Contents
 
-1. [Quick Guide](#quick-guide)
-2. [Install and Update](#install-and-update)
-3. [Opening Velo Tools and Selecting a Game](#opening-velo-tools-and-selecting-a-game)
+1. [Start Here](#start-here)
+2. [Install, Update, and Coexistence](#install-update-and-coexistence)
+3. [Project Data Flow](#project-data-flow)
 4. [Shared Tools](#shared-tools)
-   - [Vertex Group Tools and General Mapping](#vertex-group-tools-and-general-mapping)
-   - [Mesh Tools](#mesh-tools)
-   - [Weight Tools](#weight-tools)
-5. [Arknights: Endfield / EFMI Workflow](#arknights-endfield--efmi-workflow)
-   - [EFMI Import, Extract and Export](#efmi-import-extract-and-export)
-   - [CrossIB](#crossib)
-   - [EFMI ShapeKey Export](#efmi-shapekey-export)
-6. [Wuthering Waves / WWMI Workflow](#wuthering-waves--wwmi-workflow)
-   - [WWMI Extract / Import / Export](#wwmi-extract--import--export)
-   - [Per-Component (from Merged)](#per-component-from-merged)
-   - [LOD](#lod)
-   - [Cross-Scene Multi-IB](#cross-scene-multi-ib)
-   - [Slot-Style Texture Export](#slot-style-texture-export)
-   - [Merge Form Textures](#merge-form-textures)
-   - [Form Anchors](#form-anchors)
-   - [Raw Mesh](#raw-mesh)
-7. [FAQ and Limits](#faq-and-limits)
+5. [EFMI End-to-End](#efmi-end-to-end)
+6. [WWMI Single-IB](#wwmi-single-ib)
+7. [WWMI Extended](#wwmi-extended)
+8. [Read and Validate Output](#read-and-validate-output)
+9. [Troubleshooting by Symptom](#troubleshooting-by-symptom)
+10. [Limits and Glossary](#limits-and-glossary)
 
-## Quick Guide
+## Start Here
 
-1. Download the latest `velo_tools-<version>.zip` from the GitHub Releases page.
-2. In Blender, install the zip with **Edit -> Preferences -> Add-ons -> Install from Disk...**.
-3. Enable **Velo-Tools**.
-4. Press `N` in the 3D Viewport and open the **Velo Tools** sidebar tab.
-5. Use the top function tabs:
-   - **Vertex Group Tools** for name mapping and batch vertex-group operations.
-   - **Mesh Tools** for material splitting/merging, shape-key aggregation and multi-object sculpt helpers.
-   - **Weight Tools** for robust weight transfer, mirroring, donor normalization, smoothing and group limiting.
-   - **Game** for EFMI or WWMI workflows.
-6. In the **Game** tab, choose the target game:
-   - **Arknights: Endfield / EFMI** for EFMI import/export, CrossIB and EFMI ShapeKey export.
-   - **Wuthering Waves / WWMI** for WWMI extraction/import/export, LOD, cross-scene multi-IB, slot-style texture export, Merge Form Textures, form anchors, Per-Component (from Merged) and Raw Mesh.
+### Requirements
 
-## Install and Update
+- Blender 3.6 or newer is required.
+- Blender 4.4 is the primary development and test version.
+- A working game-side GIMI environment is required to capture Frame Dumps and load the exported mod.
+- Velo Tools does not replace the game-side loader or teach capture hotkeys.
 
-### Install
+Use a fresh Frame Dump for any workflow that depends on current runtime Hash, shader, texture-slot, or LOD evidence.
 
-1. Download the latest release zip named like `velo_tools-<version>.zip`.
-2. In Blender, open **Edit -> Preferences -> Add-ons**.
-3. Click **Install from Disk...** and select the zip.
-4. Enable **Velo-Tools**.
-5. Open **View3D -> Sidebar (`N`) -> Velo Tools**.
+### Find the UI
 
-### Update
+Install and enable **Velo-Tools**, then open the 3D Viewport sidebar with `N`. Select the **Velo Tools** tab.
 
-Velo Tools includes its own host-level updater. Open **Edit -> Preferences -> Add-ons -> Velo-Tools** and use the update panel.
+The add-on uses Simplified Chinese UI labels. This manual shows the exact Chinese label first, followed by its English meaning.
+
+| Exact UI label | English meaning | Use it for |
+| --- | --- | --- |
+| **顶点组工具** | Vertex Group Tools | Batch vertex-group work and name mapping |
+| **网格工具** | Mesh Tools | Materials, collection routing, sculpt helpers, and ShapeKey aggregation |
+| **权重工具** | Weight Tools | Transfer, mirror, normalize, smooth, and repair weights |
+| **游戏** | Game | EFMI and WWMI game workflows |
+
+Inside **游戏 (Game)**, choose **终末地 (Arknights: Endfield)** or **鸣潮 (Wuthering Waves)**.
+
+### Choose the Correct Workflow
+
+| Goal | Workflow |
+| --- | --- |
+| Rename or compare vertex groups | **顶点组工具 (Vertex Group Tools)** |
+| Prepare materials, collections, or shared ShapeKeys | **网格工具 (Mesh Tools)** |
+| Transfer or repair weights | **权重工具 (Weight Tools)** |
+| Make a normal Endfield character mod | [EFMI End-to-End](#efmi-end-to-end) |
+| Reuse EFMI geometry through another component pass | [EFMI CrossIB](#efmi-crossib) |
+| Export custom EFMI runtime ShapeKeys | [EFMI Custom ShapeKey Export](#efmi-custom-shapekey-export) |
+| Make a normal single-IB WWMI character mod | [WWMI Single-IB](#wwmi-single-ib) |
+| Add WWMI distance LODs | [WWMI LOD](#wwmi-lod) |
+| Support several WWMI scene-specific IBs | [WWMI Cross-Scene Multi-IB](#wwmi-cross-scene-multi-ib) |
+| Handle WWMI texture streaming or Hash-change cases | [WWMI Texture Strategy](#wwmi-texture-strategy) |
+| Edit WWMI VFX, scene, or non-character geometry | [WWMI Raw Mesh](#wwmi-raw-mesh) |
+
+EFMI **CrossIB** and WWMI **cross-scene multi-IB** are different systems. CrossIB borrows an EFMI component pass. WWMI cross-scene merges several extracted scene routes into one authoring source.
+
+## Install, Update, and Coexistence
+
+### Install a Release
+
+1. Open the [GitHub Releases](https://github.com/visaokc/Velo-Tools/releases) page.
+2. Download the release asset named `velo_tools-<version>.zip`.
+3. In Blender, open **Edit -> Preferences -> Add-ons**.
+4. Click **Install from Disk...** and select the zip without extracting it.
+5. Enable **Velo-Tools**.
+6. Restart Blender if the panels do not appear immediately.
+
+Use the release asset, not GitHub's automatically generated source archive. The release asset has the installable add-on layout.
+
+### Update Velo Tools
+
+Open **Edit -> Preferences -> Add-ons -> Velo-Tools** and use the Velo updater.
 
 - Stable releases are shown by default.
-- Enable pre-release updates only if you intentionally want beta/pre-release builds.
-- Restart Blender after an update.
-- Do not use the updater from a development junction/source-link install.
+- Enable pre-release updates only when you deliberately want a test build.
+- Restart Blender after the updater finishes.
+- Update Velo Tools as one add-on. Do not update its embedded EFMI or WWMI cores separately.
 
-The EFMI and WWMI cores inside Velo Tools are vendored/forked under Velo namespaces.
-Their upstream per-game updaters are neutralized; update Velo Tools itself instead
-of updating the embedded cores separately.
+> **Source-link warning:** never run the updater from a developer junction or source-link installation. The updater replaces files in the install directory, which would be the linked repository.
 
-## Opening Velo Tools and Selecting a Game
+### Coexistence with Standalone Tools
 
-Open the 3D Viewport sidebar with `N`, then select the **Velo Tools** tab.
+Velo Tools uses its own namespaced EFMI and WWMI forks. It can coexist with standalone EFMI-Tools and WWMI-Tools.
 
-The main panel has four function areas:
+The embedded per-game updaters are disabled. Use the Velo host-level updater for the Velo copy and each standalone tool's own updater for its separate copy.
 
-| Area | Purpose |
-| --- | --- |
-| Vertex Group Tools | Vertex-group operations, mapping tables and visual mapping checks. |
-| Mesh Tools | Material tools, split/merge helpers, multi-object sculpt helpers and shape-key aggregation. |
-| Weight Tools | Robust weight transfer, mirror transfer, donor normalization, smoothing and group limiting. |
-| Game | EFMI / WWMI game-specific mod workflows. |
+If Blender shows duplicate Velo installations, disable the stale copy and keep one `velo_tools` add-on directory.
 
-When **Game** is active, use the game dropdown to choose:
+## Project Data Flow
 
-- **Arknights: Endfield / EFMI**
-- **Wuthering Waves / WWMI**
+### The Five Working Stages
 
-Only the selected game's panels are shown.
+1. **Frame Dump**: runtime capture containing buffers, textures, draw calls, and usually `log.txt`.
+2. **Object source folder**: extracted components, metadata, textures, and Velo sidecars.
+3. **Merged source folder**: optional WWMI cross-scene authoring root.
+4. **Blender component collection**: editable meshes selected in the export panel.
+5. **Mod output folder**: generated `mod.ini`, `Meshes`, `Textures`, and optional support files.
+
+Keep the Frame Dump, object source, and mod output as separate stages. Do not use the mod output as the object source.
+
+For WWMI cross-scene work, the merged source folder becomes the object source. Import and export from that root rather than from one of its child IB folders.
+
+### Generated Data Files
+
+| File | Producer | Consumer and purpose |
+| --- | --- | --- |
+| `Metadata.json` | EFMI/WWMI extraction | Import/export geometry, component, skeleton, and LOD metadata |
+| `TextureUsage.json` | EFMI/WWMI extraction | Basic texture attribution and import-time material assignment |
+| `ShaderTextureUsage.json` | Velo WWMI extraction | Shader-pair, `ps-tN`, format, freshness, and form evidence for slot-style export |
+| `VertexGroupMap.json` | Velo EFMI extraction | Unified-to-component-local vertex-group translation for EFMI Merged mode |
+| `CrossIB.json` | Velo EFMI extraction or CrossIB sidecar tool | EFMI provider/consumer pass evidence |
+| `ShaderOverride.ini` | Velo EFMI CrossIB sidecar tool | Shader-to-filter overrides paired with `CrossIB.json` |
+| `CrossSceneRouting.json` | Velo WWMI cross-scene merge | Scene IB roles, component routing, splits, and namespace ownership |
+
+Treat these files as generated contracts. Re-run the producer when captures or routing change instead of manually guessing missing identities.
+
+### Freshness Matters
+
+Runtime resource identities can change after a game update. Texture streaming can also expose identities that were absent from an older capture.
+
+Velo reads resource identity from FrameAnalysis evidence, STU metadata, and names such as `t=<hash>.dds`. It does not derive a game texture Hash from DDS bytes or image similarity.
+
+If the current game uses an identity that is absent from the selected source evidence, capture a fresh dump and rebuild the affected object source.
 
 ## Shared Tools
 
-### Vertex Group Tools and General Mapping
+### Vertex-Group Operations and General Mapping
 
-Use this area when you need to rename, map, inspect or clean vertex groups before export.
+Open **顶点组工具 (Vertex Group Tools)**.
 
-Common tasks:
+The **顶点组操作 (Vertex Group Operations)** panel provides batch merge, gap filling, unused-group removal, and all-group removal.
 
-1. Select a source mesh and target mesh.
-2. Build or load a mapping table.
-3. Fill rows from the source object.
-4. Run position-based matching into the table.
-5. Apply source/target renaming or restore original names.
-6. Use the overlay/unmatched list to inspect mapping quality.
+Save the `.blend` before destructive cleanup. **Remove all vertex groups** is not a matching operation and removes the entire group set.
 
-The mapping table can be stored as an internal Blender text block or imported/exported
-as a file.
+Use **通用顶点组映射 (General Vertex-Group Mapping)** when source and target group names differ.
 
-Batch vertex-group operations include:
+1. Choose **源物体 (Source Object)** and **目标物体 (Target Object)**.
+2. Optionally choose an armature if renaming should include bones.
+3. Click **从源物体补行 (Fill Rows from Source)**.
+4. Click **按位置匹配→写入本表 (Match by Position -> Write to Table)**.
+5. Review distances and unresolved rows.
+6. Apply the required source or target rename action.
+7. Export the table or sync it to a Blender text block if it must travel with the `.blend`.
 
-- Merge vertex groups.
-- Fill gaps in vertex groups.
-- Remove unused vertex groups.
-- Remove all vertex groups.
+Enable **通用映射 - 可视化校对（重心连线） (General Mapping Visual Check)** to inspect centroid links. Use **未匹配列表 (Unmatched List)** to resolve rows instead of accepting a partial table blindly.
 
-### Mesh Tools
+The optional maximum-distance threshold rejects weak matches. Start without an arbitrary large threshold, inspect the overlay, then set a meaningful project-scale limit.
 
-Mesh Tools are shared helpers used before game export.
+### Mesh Preparation
 
-Main panels:
+Open **网格工具 (Mesh Tools)**.
 
-- **Multi-object sculpt**: create a merged sculpt object, apply sculpt edits back and apply sculpt edits with shape keys.
-- **Material tools**: add a `Component` prefix, generate materials, split by material, merge by texture, fill missing mesh data, apply modifiers on objects with shape keys and convert vertex colors.
-- **Material routing**: preview material groups under the active game export collection, split by material or texture into collections and assign virtual material groups to target collections.
-- **Shape-key aggregation**: scan mesh shape keys in a collection, rename them into `Deform N <name>` order and synchronize values across meshes that share the same shape-key name.
+#### Multi-Object Sculpt
 
-Use shape-key aggregation for Blender-side organization. EFMI runtime ShapeKey export
-is a separate game-specific feature described below.
+Use **多物体雕刻 (Multi-Object Sculpt)** to create a temporary merged sculpt object, sculpt across seams, then apply the result back.
+
+Choose the ShapeKey-aware apply action when the source objects contain ShapeKeys. Use the ordinary apply action only when the result does not need ShapeKey preservation.
+
+#### Material Tools
+
+The **材质工具 (Material Tools)** panel can:
+
+- add a `Component N` prefix to selected objects;
+- create same-name materials;
+- split meshes by material;
+- merge selected meshes by texture;
+- fill missing mesh data;
+- apply modifiers on objects with ShapeKeys;
+- convert vertex colors.
+
+Set **形态键清理阈值 (ShapeKey Cleanup Threshold)** before split/merge operations when tiny ShapeKey deltas should be discarded.
+
+#### Material-to-Collection Routing
+
+Use **按材质分离所属集合 (Route Material Splits to Collections)** after selecting the game export component collection.
+
+1. Click **刷新材质分组 (Refresh Material Groups)**.
+2. Inspect the collection tree and virtual material leaves.
+3. Add real child collections where needed.
+4. Assign virtual leaves to their destination collections.
+5. Run split by material or split by texture.
+
+Collection rows are real Blender collections. Leaf rows are a preview of final material grouping, not current mesh objects.
+
+These operations may disable **忽略嵌套集合 (Ignore Nested Collections)** so newly routed child collections remain exportable. Re-check that option before export.
+
+#### Shared ShapeKey Aggregation
+
+Use **形态键聚合 (按集合) (ShapeKey Aggregation by Collection)** to scan equal-name ShapeKeys across meshes, synchronize their values, and rename them into `Deform N <name>` order.
+
+This is a Blender organization tool. It is not the EFMI runtime ShapeKey exporter described later.
 
 ### Weight Tools
 
-Weight Tools are for transferring one source vertex group onto a target mesh while
-preserving the rest of the weight ecosystem.
+Open **权重工具 (Weight Tools)**.
 
-Typical flow:
+#### Recommended Transfer Flow
 
-1. Set **Source Mesh**.
-2. Choose **Source Vertex Group**.
-3. Optionally choose a **Mirror Vertex Group**.
-4. Set **Target Mesh** and optional **Target Armature**.
-5. Pick the transfer engine:
-   - **Robust**: surface matching plus inpaint; the default Velo path.
-   - **Surface interpolation transfer**: Blender Data Transfer style surface interpolation.
-6. Confirm or override the target group names.
-7. Review donor groups used for normalization.
-8. Run **Weight Transfer**.
-9. Review the last report.
+1. In **工作对象 (Working Objects)**, choose the source mesh and source vertex group.
+2. Choose a mirror source group if both sides should be transferred.
+3. Choose the target mesh and optional target armature.
+4. In **传递设置 (Transfer Settings)**, choose an engine.
+5. Confirm the target group, mirror target, and donor preview.
+6. Configure smoothing, group limits, and normalization in **后处理 (Postprocess)**.
+7. Click **执行权重传递 (Run Weight Transfer)**.
+8. Open or copy the last report, then test deformation in Pose Mode.
 
-Important behaviors:
+#### Choose an Engine
 
-- Robust transfer uses source-side weight context to avoid writing weak, non-authoritative isolated weights.
-- Donor groups are used during normalization and act as a maximum donor set, not a requirement to fill every slot.
-- Manual donor slots are strict.
-- Auto-filled donor slots are preview choices until you edit them.
-- Mirror transfer can resolve numeric or named mirror pairs and can persist manual mirror mappings in the scene.
-- Locked ordinary groups are treated as protected capacity during limit/normalize.
-- Smoothing is seam-safe and can be disabled.
-- Selected-vertex repair works in Edit Mode and leaves unresolved vertices selected.
+- **Robust** performs surface matching followed by inpaint. It is the default Velo path.
+- **面插值传递 (Surface Interpolation Transfer)** uses Blender Data Transfer with `POLYINTERP_NEAREST`.
 
-## Arknights: Endfield / EFMI Workflow
+Robust uses a whole-island positive-evidence gate. A disconnected target island with no positive source evidence remains zero instead of receiving invented inpaint weights.
 
-Velo Tools embeds an EFMI workflow under the Velo Tools game tab. Choose
-**Game -> Arknights: Endfield / EFMI**.
+Use **高级 (Advanced)** only when geometry requires different distance, normal-angle, normal-flip, inpaint, evaluated-mesh, or dilation settings.
 
-### EFMI Import, Extract and Export
+#### Target and Donor Rules
 
-The EFMI panel provides the usual EFMI modes, localized and hosted inside Velo Tools:
+With **手动指定承接组 (Specify Target Group Manually)** off, Velo resolves the target through the active MMD mapping. Turn it on only when you need an explicit override.
 
-- **Extract Frame Data**
-- **Import Object**
-- **Extract LOD Data**
-- **Export Mod**
+The donor count is a maximum from 1 to 6. Automatic selection does not add weak groups merely to fill every slot.
 
-Common EFMI export fields include:
+Manual donor and mirror-donor choices are strict. Velo validates them before writing target weights. A failed operation restores the target's previous weight memberships.
 
-- Component collection.
-- Object source folder.
-- Mod output folder.
-- Export skeleton mode.
-- Mirror mesh.
-- Apply modifiers.
-- Copy textures.
-- Write `mod.ini`.
-- Ignore nested/hidden collections or hidden objects.
-- Ignore muted shape keys.
-- Add missing vertex groups.
-- Fill missing mesh data.
-- Allow export without LODs.
+Locked ordinary groups are protected capacity during limit and normalization. The new target group is preserved first; eligible donors are compressed into the remaining capacity.
 
-For extraction, use a valid Frame Dump folder and an output folder. Optional filters
-can skip static objects, small textures, `.jpg` textures, objects/components below
-thresholds or selected resource hashes.
+#### Mirror, Merge, and Repair
 
-### CrossIB
+Use **镜像映射组 (Mirror Mapping Groups)** to store manual left/right pairs for component objects and to mirror the active group from the authoritative side.
 
-CrossIB lets one component borrow another component's rendering pipeline across index buffers.
+Use **权重组转移 (Weight-Group Transfer)** to move one group's weights into another or to merge mapping rows that share one target.
 
-Use it from the EFMI export workflow:
+In Edit Mode, **按比例规格化选中顶点 (Normalize Selected Vertices Proportionally)** repairs only selected vertices. It does not create weights in groups that were absent.
 
-1. Switch to **Game -> Arknights: Endfield / EFMI**.
-2. Set mode to **Export Mod**.
-3. Open **Cross Index Buffer / CrossIB**.
-4. Enable **Use Cross Index Buffer**.
-5. Generate or merge `CrossIB.json` from a Frame Dump if the object source folder does not already contain sidecar data.
-6. Add mappings:
-   - **Object mapping**: one mesh object acts as a provider.
-   - **Collection mapping**: every mesh in the collection can act as a provider.
-7. Set the target component for each mapping.
-8. Export normally.
+Seam-safe smoothing blocks propagation across UV seams. **限制每顶点组数量 (Limit Groups per Vertex)** excludes locked and Velo-special groups from editable candidates.
 
-Notes:
+Weight Tools accelerate authoring; they do not replace deformation review. Inspect joints, seams, mirrored areas, and previously disconnected islands before export.
 
-- `CrossIB.json` and `ShaderOverride.ini` sidecars are consumed directly when present.
-- Additional scene dumps can be accumulated into the same sidecar data.
-- Use overwrite/rebuild only when you intentionally want to recompute from scratch.
+## EFMI End-to-End
 
-### EFMI ShapeKey Export
+Choose **游戏 (Game) -> 终末地 (Arknights: Endfield)**.
 
-EFMI ShapeKey export is an export-time feature for custom shape keys.
+### 1. Extract an EFMI Object Source
 
-Basic naming rule:
+Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
+
+1. Select a valid **Frame Dump 目录 (Frame Dump Folder)**.
+2. Select an **输出目录 (Output Folder)**.
+3. Configure object, component, and texture filters.
+4. Configure the Velo compatibility options.
+5. Run **从 Dump 提取模型 (Extract Model from Dump)**.
+
+Important Velo extraction options:
+
+- **生成 VertexGroupMap.json** is required for later Merged import/export.
+- **生成 CrossIB.json** also writes `ShaderOverride.ini` for later CrossIB work.
+- **组件过滤 (Component Filter)** accepts ranges such as `0-8` or `0,1,5-7`.
+
+Filtered EFMI output is renumbered continuously as `Component 0..N`. Do not assume the output component number is still the capture's original ordinal.
+
+**提取后导入 Blender (Import After Extraction)** is convenient for inspection. **容忍提取错误 (Tolerate Extraction Errors)** skips failed objects, so review the report before using the result as a production source.
+
+### 2. Import the EFMI Object
+
+Set **模式 (Mode)** to **导入对象 (Import Object)**.
+
+1. Select the extracted **对象源目录 (Object Source Folder)**.
+2. Choose vertex-color storage.
+3. Choose the import skeleton mode.
+4. Enable component sub-collections and texture import as needed.
+5. Run **导入模型 (Import Model)**.
+
+| Import mode | Use it when | Contract |
+| --- | --- | --- |
+| **Merged（统一顶点组）** | You want unified cross-component bone names | Requires `VertexGroupMap.json` |
+| **Per-Component（部件独立）** | You want component-local vertex groups | Uses each component's local numbering |
+
+**按组件创建子集合 (Create Component Sub-Collections)** creates `C0`, `C1`, and later children. It also keeps nested collection export enabled.
+
+**导入贴图 (Import Textures)** reads `TextureUsage.json` and assigns source DDS textures where they exist.
+
+### 3. Edit and Export EFMI
+
+Edit the imported component collection. Keep recognizable `Component N` object identity and review vertex groups before export.
+
+Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
+
+1. Select the component collection.
+2. Select the same object source folder used for import.
+3. Select the mod output folder.
+4. Choose the matching export skeleton mode.
+5. Keep texture copy and `mod.ini` writing enabled for a complete export.
+6. Configure optional CrossIB or custom ShapeKey features.
+7. Run **导出 Mod (Export Mod)**.
+
+EFMI Merged export uses `VertexGroupMap.json` to translate unified authoring names back to component-local runtime numbering.
+
+If an old project stored its map only inside `Metadata.json`, run **从旧 Metadata 转换 VertexGroupMap (Convert VertexGroupMap from Legacy Metadata)** before Merged export.
+
+> **Nested collection warning:** if component objects are inside `C0/C1/...` children, enabling **忽略嵌套集合 (Ignore Nested Collections)** can produce an empty export.
+
+### EFMI LOD
+
+EFMI LOD data is separate from `VertexGroupMap.json`.
+
+1. Extract the base object first.
+2. Capture a dump while the game is drawing the desired LOD.
+3. Set **模式 (Mode)** to **提取 LOD 数据 (Extract LOD Data)**.
+4. Select the LOD dump and existing object source folder.
+5. Tune geometry filters only if the default match fails.
+6. Run **从 Dump 提取 LOD (Extract LOD from Dump)**, then export normally.
+
+**允许无 LOD 导出 (Allow Export without LODs)** bypasses the metadata requirement. In open-world use, a mod without required LOD data may fail to load correctly at distance.
+
+### EFMI CrossIB
+
+Use **Cross Index Buffer（跨 IB） (Cross Index Buffer)** when selected source geometry must be drawn through another EFMI component's rendering pass.
+
+The mapping direction is `source object or collection -> target component`:
+
+- the left side supplies the provider geometry;
+- the right-side target component is the consumer pass that borrows and draws it.
+
+Workflow:
+
+1. Enter EFMI **导出 Mod (Export Mod)** with partial export off.
+2. Expand **Cross Index Buffer（跨 IB）**.
+3. Enable **启用跨 IB（CrossIB） (Enable CrossIB)**.
+4. Confirm `CrossIB.json` and `ShaderOverride.ini` exist in the object source.
+5. Add an object mapping or collection mapping.
+6. Choose the target component for every mapping.
+7. Export normally.
+
+If the sidecars are missing, use **生成 CrossIB.json（选帧转储） (Generate CrossIB.json from Frame Dump)**.
+
+Use **合并新场景 dump（累积） (Merge New Scene Dump, Accumulate)** for new scenes. The default unions new shader evidence into the existing sidecars.
+
+Use **覆盖重建（不累积） (Overwrite and Rebuild)** only when you intentionally want to discard old evidence and recompute with the current classifier.
+
+If a selected dump does not contain the target character, Velo refuses it and leaves the existing `CrossIB.json` unchanged.
+
+### EFMI Custom ShapeKey Export
+
+This export-time feature is separate from shared ShapeKey aggregation.
+
+Name runtime ShapeKeys with this contract:
 
 ```text
 Deform <slot> <name>
 ```
 
-Examples:
+Whitespace is optional. These are all valid:
 
 ```text
 Deform 1 Smile
-Deform 2 Blink
-Deform12 CapeLift
+Deform2Blink
+deform 12 CapeLift
 ```
 
 Workflow:
 
-1. Put shape keys on meshes inside the active EFMI component collection.
-2. Name keys as `Deform <number> <name>`.
-3. In EFMI advanced export options, enable **Export custom shape keys**.
-4. Keep **Merge Buffer Files** enabled unless you need legacy per-slot buffers.
-5. Check the detected shape-key list.
-6. Fix naming conflicts before export.
-7. Export normally.
+1. Put the ShapeKeys on meshes inside the EFMI component collection.
+2. Open EFMI export **高级 (Advanced)**.
+3. Enable **导出自定义 ShapeKey (Export Custom ShapeKeys)**.
+4. Keep **合并 Buffer 文件 (Merge Buffer Files)** enabled for normal use.
+5. Review the live detected list and click a row to jump to its object.
+6. Fix every conflict, then export.
 
-Limits:
+Export is blocked by any of these conflicts:
 
-- Duplicate `(slot, name)` entries on one object block export.
-- The same name assigned to different Deform slots blocks export.
-- The same Deform slot mapped to different names across components blocks export.
-- Export variable names are sanitized to INI-safe ASCII identifiers; collisions after sanitization block export.
-- Merged ShapeKey export supports many slots, but every channel must map to one shape key.
+- duplicate `(slot, name)` ShapeKey blocks on one object;
+- the same name assigned to different slots;
+- the same slot assigned to different names across components;
+- sanitized INI identifiers that collide.
 
-## Wuthering Waves / WWMI Workflow
+With buffer merging on, each component receives two extra merged buffer files regardless of its Deform-key count. The default position buffer is never merged.
 
-Choose **Game -> Wuthering Waves / WWMI**.
+With buffer merging off, Velo writes legacy per-slot delta, lookup, and frequency-index files.
 
-Velo Tools embeds a namespaced WWMI workflow and adds Velo-only helper panels. It
-can coexist with a standalone WWMI-Tools install because Velo uses its own fork namespace.
+The generated runtime globals use the ShapeKey name. Keep names stable if external INI logic refers to them.
 
-### WWMI Extract / Import / Export
+## WWMI Single-IB
 
-#### Extract Objects From Dump
+Choose **游戏 (Game) -> 鸣潮 (Wuthering Waves)**.
 
-Use this mode to convert a WWMI Frame Dump into an object source folder.
+### 1. Extract a WWMI Object Source
 
-Fields/options include:
+Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
-- Frame Dump folder.
-- Output folder.
-- Skip small textures.
-- Minimum texture size.
-- Skip `.jpg` textures.
-- Skip known cubemap textures.
-- Skip same-slot hash textures.
-- Skip dirty/inherited slot records when log freshness evidence is available.
-
-Extraction also writes texture usage data used by slot-style texture export.
-
-#### Import Object
-
-Use this mode to import an extracted object source folder into Blender.
-
-Key fields/options:
+1. Select a Frame Dump containing the target at the required distance and form.
+2. Select an output folder.
+3. Configure texture filters.
+4. Run **从 Dump 提取模型 (Extract Model from Dump)**.
 
-- Object source folder.
-- Vertex color storage.
-- Import skeleton type:
-  - **Merged**
-  - **Per-Component**
-- Import as component sub-collections.
-- Import textures.
-- Skip empty vertex groups.
-- Mirror mesh.
+Velo preserves the stock `TextureUsage.json` output and also writes `ShaderTextureUsage.json` for slot-style texture work.
 
-Velo import extras:
+**贴图过滤：跳过 Dirty Slot (Skip Dirty Slots)** keeps slots with explicit `PSSetShaderResources` evidence from `log.txt`. If no usable log evidence exists, Velo preserves legacy STU records instead of guessing deletions.
 
-- **Import as component sub-collections** creates `C0`, `C1`, ... sub-collections under the imported object collection and wires the export collection automatically.
-- **Import textures** assigns diffuse/source textures to imported meshes when texture usage data is available.
-- Turning these options off reproduces a more stock single-collection, no-material import behavior.
-
-#### Export Mod
-
-Use this mode to export the edited Blender collection as a WWMI mod.
-
-Main fields/options:
-
-- Component collection.
-- Object source folder.
-- Mod output folder.
-- Skeleton:
-  - **Merged**
-  - **Per-Component**
-  - **Per-Component (from Merged)**
-- Mirror mesh.
-- Apply all modifiers.
-- Copy textures.
-- Write `mod.ini`.
-- Comment `mod.ini`.
-- Ignore nested collections.
-- Ignore hidden collections.
-- Ignore hidden objects.
-- Ignore muted shape keys.
-- Partial export options for advanced buffer-only exports.
+Filters such as small texture, `.jpg`, known cubemap, and same-slot same-Hash can remove useful assets. Change defaults only when you understand the capture.
 
-For ordinary full exports, keep `write_ini` and `copy_textures` enabled.
+### 2. Import the WWMI Object
 
-### Per-Component (from Merged)
+Set **模式 (Mode)** to **导入对象 (Import Object)**.
 
-**Per-Component (from Merged)** is a Velo export mode for WWMI.
+1. Select the extracted object source folder.
+2. Choose vertex-color storage.
+3. Choose **Merged** or **Per-Component** import.
+4. Keep component sub-collections on for organized `C0/C1/...` authoring.
+5. Enable texture import if you want source DDS previews.
+6. Run **导入模型 (Import Model)**.
 
-Use it when you want to:
+Texture import prefers `ShaderTextureUsage.json` and falls back to `TextureUsage.json`.
 
-- Edit with a **Merged** skeleton and unified vertex-group list.
-- Export a **Per-Component** runtime mod.
-- Avoid the runtime downsides of pure Merged mode in cases where Per-Component output is preferable.
-- Let Velo remap unified vertex groups back to component-local groups during export.
+### 3. Choose a WWMI Skeleton Strategy
 
-Behavior:
-
-- You import/edit in a Merged authoring style.
-- On export, Velo remaps unified vertex groups into component-local IDs.
-- If a vertex is weighted to bones outside the owning component's allowed range, export fails with an actionable error.
-- For cross-scene projects, this mode is the validated path for edited body, own-buffer and editable-IB outputs.
-
-Use normal **Merged** if you intentionally need unrestricted unified weighting at
-runtime. Use normal **Per-Component** if you authored directly in component-local groups.
-
-### LOD
-
-The WWMI LOD workflow adds LOD data to an already extracted object source folder,
-then emits LOD-aware export sections during mod export.
-
-Workflow:
-
-1. Extract/import the main object first.
-2. Capture a Frame Dump while the target is rendered at LOD distance.
-3. Open **LOD Data Extraction**.
-4. Set:
-   - LOD Frame Dump folder.
-   - Object source folder.
-5. Tune filters if needed:
-   - Minimum component vertex count.
-   - Object hash blacklist.
-   - Geometry match threshold.
-6. Use advanced settings only when matching fails:
-   - Matching method: voxel or point cloud.
-   - Voxel size / sample size.
-   - Prefilter candidate count.
-   - Vertex-group matcher candidate count.
-   - Allow overwrite.
-   - Skip LODs below threshold.
-7. Click **Extract LOD Data**.
-8. Export normally.
-
-Notes:
-
-- Capture the LOD dump when the game is actually drawing the LOD mesh.
-- Existing LOD data is protected unless overwrite is enabled.
-- Cross-scene exports can carry LOD data through the merged workflow.
-
-### Cross-Scene Multi-IB
-
-Cross-scene multi-IB merges one base extraction plus additional IB-specific
-extractions into a single editable source folder.
-
-Use it when a character/object has multiple scene-specific IBs and you want one
-edited model to work across them.
-
-Workflow:
-
-1. Prepare a base extracted object folder.
-2. Prepare one or more additional IB folders.
-3. Open **Cross-Scene Merge**.
-4. Set the base folder.
-5. Add each IB folder and choose its role:
-   - **Fold**: fold into the base; editing the base covers that scene where compatible.
-   - **Editable**: import as independently editable geometry, usually when it is a separate form or ownership domain.
-6. Set the merge output folder.
-7. Click **Merge Cross-Scene**.
-8. Import the merged output folder with **Import Object**.
-9. Edit the merged Blender collection.
-10. Export normally with **Export Mod**.
+Import offers **Merged** and **Per-Component**. Export adds **Per-Component (from Merged)**.
 
-The export hook detects `CrossSceneRouting.json` in the object source folder and
-automatically builds the final multi-scene mod.
+| Strategy | Authoring | Runtime and limits |
+| --- | --- | --- |
+| **Merged** | Unified vertex-group list | Easy cross-component weights and skeleton scale; one-frame update delay; pauses when several identical targets are on screen |
+| **Per-Component** | Component-local groups | No one-frame delay; simpler runtime; restricted weights; no custom skeleton scale |
+| **Per-Component (from Merged)** | Import and edit as Merged | Exports component-local runtime buffers after translating unified groups |
 
-Important notes:
+Use **Per-Component (from Merged)** when you want Merged authoring but Per-Component runtime behavior.
 
-- The merged folder is the authoring source for the cross-scene project.
-- The final export applies stock-like output options at the final merged output stage.
-- FoldHost routing keeps a single canonical draw owner for each actual draw.
-- Slot-style texture export is supported in this path.
-- Per-Component (from Merged) is recommended for many cross-scene authoring cases.
-- If you change source captures or routing assumptions, rerun the merge step.
+The translation is strict. A component with nonzero weight on a bone outside its allowed component map fails export. Move or clear that weight instead of bypassing the error.
 
-### Slot-Style Texture Export
+For a normal Per-Component project, import and export as Per-Component. Do not select **from Merged** for data that was authored with local group names.
 
-Slot-style texture export is a WWMI/Velo feature that replaces texture-hash
-matching with draw-scope `ps-tN` slot rebinding.
+### 4. Edit and Export WWMI
 
-Enable it in **Export Mod -> Velo compatibility options -> Slot-style textures**.
+Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
 
-Why use it:
+1. Select the component collection.
+2. Select the same object source folder used for import.
+3. Select the mod output folder.
+4. Select the intended export skeleton strategy.
+5. Keep **复制贴图 (Copy Textures)** and **写出 mod.ini (Write mod.ini)** enabled.
+6. Keep **写入注释 (Comment INI)** enabled when human-readable output matters.
+7. Configure any Velo compatibility options.
+8. Export and review Blender's final status.
 
-- Game texture hashes can change across streaming residency/mip states.
-- Slot-style export binds mod textures inside component draw scopes.
-- Conditions are based on positive `ps-tN` DXGI format-family layout evidence, not shader hashes.
-- The output is designed to be conservative and auditable.
+The complete path writes `mod.ini`, `Meshes`, and `Textures`.
 
-Typical workflow:
+**部分导出 (Partial Export)** is an advanced buffer-only path. It disables INI generation and resource copying, so its output is not a complete standalone mod.
 
-1. Extract the object with recent Velo Tools so `ShaderTextureUsage.json` exists.
-2. Import and edit the object.
-3. In Export Mod, enable **Slot-style textures**.
-4. Optionally refresh the component list.
-5. Leave components checked if they should use slot-style export.
-6. Uncheck components that should retain native hash-style replacement.
-7. Export normally.
+The default WWMI texture path is native Hash-style replacement. Slot-style is optional and described in [WWMI Texture Strategy](#wwmi-texture-strategy).
 
-Behavior and limits:
+## WWMI Extended
 
-- By default, if no component list is populated, all eligible components are treated as slot-style.
-- Unchecked components retain native hash-style replacement, gated by the owning `$object_detected_ibN` state in cross-scene output.
-- Hash-style `ResourceTexture` and `TextureOverride` sections are shown as adjacent native-order pairs when the relationship is unambiguous.
-- Empty `ResourceBypassPST0..8` sections are intentional runtime backup handles for `ps-t0..8` when that IB has a slot transaction; unused generated groups are removed and rejected by audit.
-- Final cross-scene component-bearing section names use merged-root component ids; `_ibN` identifies the owning IB namespace.
-- Unsupported ambiguous components fail closed instead of producing unsafe hash/probe logic.
-- Same-layout multi-form components need better slot evidence or component exclusion.
-- Slot command lists use direct `ps-tN = ref ResourceTexture...` assignments.
-- Cross-scene slot-style export audits resource sections, DDS existence, format-family matches and command-list structure.
-- Pixel shader resources `ps-t0..8` are backed up/restored around texture-triggered draw transactions to avoid lazy resource state leaking across shader transitions.
+### WWMI LOD
 
-Use slot-style for texture streaming robustness. Do not use it as a magic fix for
-components whose runtime state cannot be distinguished by slot layout.
+The WWMI LOD tool adds distance geometry to an existing object source.
 
-### Merge Form Textures
+1. Extract the base object first.
+2. Capture a Frame Dump while the game is actually drawing the target LOD.
+3. Open **LOD 数据提取 (LOD Data Extraction)**.
+4. Select the LOD dump and existing object source folder.
+5. Set component and Hash filters if needed.
+6. Run **提取 LOD 数据 (Extract LOD Data)**.
+7. Export the mod normally.
 
-Use **Merge Form Textures** for multi-form WWMI characters or objects whose forms
-bind different texture sets.
+Existing LOD data is protected unless overwrite is enabled.
 
-Workflow:
+Start with the default voxel matcher. If matching fails, tune the error threshold, voxel size, prefilter candidates, or switch to point-cloud matching.
 
-1. Capture one RAW Frame Dump per extra form.
-2. Open **Merge Form Textures**.
-3. Set:
-   - Form Frame Dump.
-   - Object source folder.
-   - Optional form label.
-4. Click **Merge Form Textures**.
-5. Repeat for additional forms or additional captures of the same form.
-6. Enable slot-style export and export normally.
+LOD evidence can flow through a WWMI cross-scene merged source. Capture each LOD while that geometry is visible, not at the main model's distance.
 
-Notes:
+### WWMI Cross-Scene Multi-IB
 
-- You do not need to perform a second full object extraction for the extra form.
-- The merge reads the RAW Frame Dump and updates the object folder's texture usage data.
-- Reusing a form label can add more evidence for the same form.
-- The output is stored in the object source folder's texture usage data and used at export time.
-- Only actual same-VB multi-form components should become multi-form slot domains; separate editable/other-VB components remain single-form domains.
+Use **跨场景折叠合并 (Cross-Scene Fold Merge)** when one target uses different IB routes in different scenes.
 
-### Form Anchors
+Prepare one base extracted folder and one extracted folder for every additional scene IB.
 
-Form anchors are optional WWMI metadata for form tracking.
+#### Choose an IB Role
 
-Use them only when you understand which form-exclusive draw reliably identifies a form.
+| Role | Meaning |
+| --- | --- |
+| **折入基底 (Fold into Base)** | The base authoring geometry represents this route |
+| **独立可编辑 (Editable)** | The route owns separate geometry, form, or authoring identity |
 
-Supported anchor formats:
+`Fold` does not mean every route is forced into one physical buffer. Velo redirects compatible data and automatically keeps an own-buffer path when format or skeleton evidence requires it.
 
-- **8 hex characters**: a `vb0` hash from dump filenames.
-- **16 hex characters**: a pixel shader hash.
+`Editable` becomes independently editable geometry with its own component identity in the merged source.
 
-Do not use an `ib` hash as a form anchor; it does not participate in WWMI draw
-matching for this purpose.
+#### Merge and Author
 
-Manual format:
+1. Set the base extracted folder.
+2. Add each additional IB folder.
+3. Assign `Fold` or `Editable` to every row.
+4. Select a new merge output folder.
+5. Run **合并跨场景 (Merge Cross-Scene)**.
+6. Import the merged output folder with normal WWMI import.
+7. Edit the resulting component collection.
+8. Export with normal WWMI export.
+
+The merged root contains `CrossSceneRouting.json`. Its presence activates the cross-scene export orchestrator automatically.
+
+Always keep the merged root as **对象源目录 (Object Source Folder)**. Do not switch back to the base folder or a folder under `scene_ibs`.
+
+Re-run the merge when source captures, roles, split objects, or routing assumptions change.
+
+**Per-Component (from Merged)** is the recommended cross-scene path when authoring uses unified groups but runtime output should remain component-local.
+
+Final cross-scene component names use merged-root global component IDs. A suffix such as `_ib1` is only the owning IB namespace; it is not a second local component number.
+
+### WWMI Texture Strategy
+
+#### Native Hash-Style
+
+Hash-style replacement uses the captured texture resource identity. It is the default when **插槽风格贴图 (Slot-Style Textures)** is off.
+
+Use Hash-style when the target identities are stable and no texture-streaming fallback is observed.
+
+Hash-style cannot infer an identity missing from the source. A visually identical DDS can still have a different runtime Hash.
+
+#### Slot-Style
+
+Slot-style replacement binds mod resources directly to `ps-tN` slots inside component draw transactions.
+
+Enable **插槽风格贴图 (Slot-Style Textures)** under WWMI export **Velo 兼容选项 (Velo Compatibility Options)**.
+
+Requirements:
+
+- a recent `ShaderTextureUsage.json`;
+- recorded DDS format metadata;
+- enough fresh slot-layout evidence to distinguish every emitted branch;
+- every referenced mod DDS present in the object source or output.
+
+Velo emits only branches with a complete positive assignment signature. Every assigned slot must also appear as fresh positive format-family evidence.
+
+Ambiguous or incomplete evidence fails closed. Velo does not emit broad fallback probes merely to make export succeed.
+
+#### Mix Hash and Slot by Component
+
+Hash-style and slot-style can coexist in one mod.
+
+1. Enable slot-style.
+2. Click **列出组件 (List Components)**.
+3. Leave components checked when they should use slot-style.
+4. Uncheck a component when it must retain native Hash-style replacement.
+
+An unchecked component is an absolute opt-out. Velo must not force it back into slot-style because routing or provenance happens to be available.
+
+In cross-scene output, an opted-out Hash override is gated by its owning `$object_detected_ibN`. Shared identities OR only the proven owner IB flags.
+
+Velo does not add a separate component runtime gate. Legacy `$component_hash_fallback_*` variables are invalid and rejected by audit.
+
+#### Slot Transactions and Restore Safety
+
+Velo backs up `ps-t0..8`, binds the selected resources, draws, cleans up, then restores the previous resource state.
+
+Selective no-restore is derived only when final branch evidence proves one unique displaced slot. Otherwise Velo uses a full restore.
+
+This prevents a later outline or body draw from matching stale textures while still preserving a slot only when the runtime transition requires it.
+
+### Multi-Form Texture Evidence
+
+Use **形态贴图合并 (Merge Form Textures)** when one WWMI target has several forms with different texture bindings.
+
+1. Capture a near-distance RAW Frame Dump for one extra form while its textures are fully bound.
+2. Select that dump and the object source folder.
+3. Enter a stable form label or let Velo assign one.
+4. Run **合并形态贴图数据 (Merge Form Texture Data)**.
+5. Repeat for every extra form.
+
+You do not need to perform another full object extraction for an extra form.
+
+Reuse the same form label with dumps from other distances to accumulate that form's additional streaming identities. Use the label `base` when evidence belongs to the base form.
+
+The merge updates `ShaderTextureUsage.json` and copies required form textures into the object source.
+
+Only real same-VB form variants should share a form domain. Separate editable or different-VB geometry stays in its own domain.
+
+### Optional Form Anchors
+
+**formid 辅助判据 (formid Auxiliary Criterion)** is off by default. It may narrow a branch that is already safe by local slot-layout evidence.
+
+It cannot rescue a component whose forms have indistinguishable slot layouts.
+
+Supported manual anchor identities:
+
+- 8 hexadecimal characters: a `vb0` Hash;
+- 16 hexadecimal characters: a pixel shader Hash.
+
+An `ib` Hash is not a valid form anchor. A vertex shader Hash has the same reliability problem and is not accepted as a supported manual format.
+
+Use `hash:formLabel`, separated by commas, spaces, or newlines.
+
+The anchor finder compares the base dump with extra-form dump rows. It lists character geometry confirmed by character constant-buffer and body evidence.
+
+VFX or UI anchors may require manual in-game `vb0` confirmation.
+
+If exactly one form has no anchor, the watchdog can identify it by elimination when no anchored form appears during the frame.
+
+After a game update, refresh stale anchors from new dumps. Do not convert an unrelated `ib` value merely because it is visible in a filename.
+
+### WWMI Raw Mesh
+
+Use **原始网格工具 (Raw Mesh Tools)** for VFX, scene, environment, or static geometry that the normal skinned-character pose chain does not detect.
+
+Do not use Raw Mesh as a substitute for the standard character workflow.
+
+#### Extract
+
+1. Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
+2. Select a Frame Dump and output parent folder.
+3. Enter comma- or newline-separated VB/IB Hash values.
+4. Leave **Position 元素 (Position Element)** empty unless automatic detection fails.
+5. Run **按 Hash 提取网格 (Extract Mesh by Hash)**.
+
+A VB Hash selects the whole `VB0` object and all draw calls sharing it. An IB Hash selects the matching draw/component.
+
+If one Hash resolves across several objects, Velo refuses the ambiguous request. Use a specific `VB0` or IB identity.
+
+#### Import
+
+Set Raw Mesh mode to **导入对象 (Import Object)** and import the consolidated folder.
+
+Velo exposes the selected Position element as editable geometry and preserves raw per-slot bytes as mesh attributes and object metadata.
+
+#### Export
+
+Select the imported collection, a mod output folder, and one mode:
+
+| Mode | Topology | Attribute behavior |
+| --- | --- | --- |
+| **自动 (Auto)** | Detects change | Faithful if unchanged; Rebuild otherwise |
+| **保真直通 (Faithful)** | Must remain unchanged | Re-encodes Position; passes other stored bytes through |
+| **重建 (Rebuild)** | May change | Rebuilds layout; non-standard attributes are best-effort and lossy |
+
+Faithful refuses a changed index count. Rebuild may zero-fill or lose attributes that Blender cannot represent cleanly.
+
+Raw Mesh output uses independent plain 3dmigoto overrides. Each component matches its own source Hash and original draw range.
+
+## Read and Validate Output
+
+### Advanced Export Panels
+
+EFMI and WWMI expose advanced panels for metadata and generated INI behavior.
+
+#### Mod Info
+
+**Mod 信息 (Mod Info)** can set the mod name, author, description, link, and logo.
+
+The logo must be a 512x512 `.dds` using BC7 SRGB. It is exported as `Textures/Logo.dds`.
+
+#### INI Template
+
+**INI 模板 (INI Template)** can replace the complete generated `mod.ini` with a custom Jinja2 template stored in Blender or an external file.
+
+Use the default template unless you maintain the full runtime contract yourself. A stale custom template can omit resources or logic introduced by a newer Velo release.
+
+Live template update rewrites `mod.ini` as the template changes. Point it only at a disposable or intended output, and stop live update before changing projects.
+
+#### INI Toggles
+
+**INI 开关 (INI Toggles)** generates state variables, hotkeys, object visibility states, and optional custom conditions.
+
+- Use spaces for keys in one combination.
+- Use semicolons to separate several hotkey combinations.
+- `AND` conditions evaluate before `OR` conditions.
+- Import/export uses JSON text; choose replace or clear behavior deliberately.
+
+Validate every state in game. A syntactically valid toggle can still target the wrong object or conflict with custom INI logic.
+
+#### Partial Export
+
+**部分导出 (Partial Export)** selects individual buffer classes. It intentionally skips complete INI and resource delivery.
+
+Use it only to update an existing mod whose unchanged files are already present. Do not distribute a partial export as a complete package.
+
+### Expected Full-Export Layout
 
 ```text
-hash:formLabel
+<mod-output>/
+  mod.ini
+  Meshes/
+  Textures/
 ```
 
-Multiple anchors can be separated by commas, spaces or newlines.
+Optional features can add shader, toggle, or logo resources.
 
-Examples:
+### Reading a Velo WWMI INI
 
-```text
-1234abcd:base
-89abcdef:form2
-0123456789abcdef:form3
-```
+Velo 1.4.1 sorts generated sections by function without changing match-bearing override order.
 
-Anchor finder workflow:
+When one texture resource maps to one Hash override, the output places its `ResourceTexture` immediately before the matching `TextureOverride`, matching native WWMI reading order.
 
-1. Enable slot-style export.
-2. Enable the optional form-id auxiliary/anchor section when needed.
-3. Set the base form dump.
-4. Add extra form dump rows and labels.
-5. Click **Find Form Anchors**.
-6. Review candidates.
-7. Click **Apply** on useful candidates.
-8. Export.
+Shared or ambiguous resources are not moved into a false one-to-one pair.
 
-Important limits:
+Cross-scene component-bearing names use the merged/global component ID. `_ibN` identifies the owning IB namespace.
 
-- `$form_id` is optional auxiliary state, not the default texture discriminator.
-- It cannot rescue a component whose slot-layout evidence is completely indistinguishable unless that component is excluded from slot-style export.
-- Prefer `vb0` anchors when possible because geometry identity is generally more stable than shader identity.
-- If exactly one form is unanchored, the watchdog can infer it by elimination when no anchored form appears in a frame.
-- If anchors become stale after a game update, refresh dumps and re-run the finder.
+Geometry is extracted into a shared command list only when at least two callers reuse the identical body. Single-use draw bodies stay inline.
 
-### Raw Mesh
+Sections named `ResourceBypassPST0..8` are intentionally empty dynamic reference handles. Backup lists assign the current `ps-t0..8` resources into them before a slot transaction.
 
-Raw Mesh is a WWMI/Velo sub-tool for non-character geometry such as VFX-layer or
-scene/environment meshes that the stock pose-chain extractor may not detect.
+Do not delete those empty sections. Velo removes generated handle groups with no transaction and rejects malformed or unreferenced groups during audit.
 
-It has its own panel and modes:
+### Texture Delivery and Author Edits
 
-- **Extract**
-- **Import**
-- **Export**
+For a full cross-scene texture export, every top-level merge-root DDS filename must exist in the final `Textures` folder.
 
-#### Raw Mesh Extract
+Velo copies only missing files. If the output already contains a same-name author-edited DDS, Velo preserves it.
 
-Fields:
+Output-only DDS files and non-DDS tools are not deleted.
 
-- Frame Dump folder.
-- Output folder.
-- Hash list.
-- Optional output folder name.
-- Optional Position element override.
-- Texture filters.
+If files with the same Hash contain conflicting payloads, export fails before overwriting the output. Identical payloads may be delivered under every required filename.
 
-Hash list behavior:
+Turning **复制贴图 (Copy Textures)** off, or using partial export, intentionally skips final texture delivery.
 
-- A `VB` hash pulls the whole `VB0` object and auto-splits components.
-- An `IB` hash pulls the matching draw/component.
-- Multiple hashes can be comma-separated.
+### Static and Runtime Validation
 
-#### Raw Mesh Import
+After export:
 
-Import the consolidated folder produced by Raw Mesh Extract.
+1. Read Blender's final status message.
+2. Treat a cross-scene self-check or static-audit warning as a failed export.
+3. Confirm `mod.ini` exists for a full export.
+4. Confirm every referenced Mesh, Texture, and shader file exists.
+5. Test the mod in every supported runtime state.
 
-Velo creates editable mesh objects while preserving raw per-slot bytes as mesh attributes.
+For a normal character, test initial load, character switch, menu/showcase re-entry, and an F10 reload.
 
-#### Raw Mesh Export
+For cross-scene work, test every merged scene from a cold entry and after scene switching.
 
-Export fields:
+For multi-form work, test every form, repeated switches, and streamed near/far states.
 
-- Component collection.
-- Mod output folder.
-- Export mode:
-  - **Auto**
-  - **Faithful**
-  - **Rebuild**
+For LOD work, test the model at each intended distance.
 
-Modes:
+For mixed Hash/slot work, verify both slot-enabled and opted-out components. An opted-out component must remain on its native Hash path.
 
-- **Faithful**: topology must stay unchanged; only edited positions are re-encoded, and other vertex attributes pass through byte-for-byte.
-- **Rebuild**: allows topology changes/remeshing, but non-standard attributes are best-effort and can be lossy.
-- **Auto**: uses Faithful when topology is unchanged, otherwise Rebuild.
+## Troubleshooting by Symptom
 
-Output:
+### The EFMI or WWMI Panels Are Missing
 
-- Independent plain 3dmigoto per-component overrides.
-- Each component matches its own source hash and original draw range.
-- Textures are copied when available from the source extraction.
+Open the 3D Viewport sidebar, choose **Velo Tools**, select **游戏 (Game)**, then choose **终末地** or **鸣潮**.
 
-Limits:
+If the tab is absent, confirm **Velo-Tools** is enabled and restart Blender.
 
-- Raw Mesh is not the normal skinned-character workflow.
-- Faithful mode refuses topology changes.
-- Rebuild mode can lose or zero-fill attributes that Blender cannot represent cleanly.
-- This tool is intentionally isolated from the vendored WWMI core.
+### The Updater Fails or Tries to Modify Source Files
 
-## FAQ and Limits
+Do not use the updater from a junction/source-link install. Remove the development link or install a release asset into a normal add-on directory first.
 
-### Can I install Velo Tools together with standalone EFMI-Tools or WWMI-Tools?
+### Import Succeeds but Textures Are Missing
 
-Yes. Velo embeds namespaced EFMI/WWMI forks and avoids registering the same upstream
-updater/operator IDs. Use the Velo Tools updater for Velo Tools itself.
+Confirm texture import was enabled and the object source still contains its DDS files.
 
-### Which Blender version should I use?
+EFMI uses `TextureUsage.json`. WWMI prefers `ShaderTextureUsage.json` and falls back to `TextureUsage.json`.
 
-Blender 3.6+ is required. Blender 4.4 is the primary tested version.
+### Export Finds No Component Objects
 
-### Why do I not see EFMI or WWMI panels?
+Confirm the correct component collection is selected.
 
-Open **Velo Tools -> Game**, then choose the game from the dropdown. Game-specific
-panels are only shown when the Game tab and the matching game are active.
+If meshes are in `C0/C1/...` child collections, disable **忽略嵌套集合 (Ignore Nested Collections)**.
 
-### Which WWMI skeleton mode should I use?
+Also check hidden collection, hidden object, and muted ShapeKey filters.
 
-- Use **Merged** for unrestricted unified authoring/runtime behavior.
-- Use **Per-Component** for direct component-local authoring.
-- Use **Per-Component (from Merged)** when you want Merged-style editing but Per-Component runtime output.
+### EFMI Merged Import or Export Reports a Missing Map
 
-### Why did Per-Component (from Merged) export fail?
+Generate `VertexGroupMap.json` during extraction. For an older source, use the legacy Metadata conversion action.
 
-Most likely a mesh contains weights outside the owning component's allowed
-vertex-group/bone range. Fix the weights or move those weights to valid
-component-local groups.
+`VertexGroupMap.json` is not LOD data; extract LOD data separately when required.
 
-### Why did slot-style texture export fail?
+### Per-Component (from Merged) Rejects Stray Weights
 
-Slot-style export is conservative. Common causes:
+The reported group maps outside that component's allowed local bone set. Move the weight to a valid bone or clear it to zero.
 
-- Missing or stale `ShaderTextureUsage.json`.
-- A component's forms share the same slot layout and cannot be distinguished without texture identity.
-- A required DDS/resource is missing.
-- A component should retain native hash-style replacement and be unchecked in the slot component list.
+Do not rename the error away. Per-Component runtime buffers cannot express that cross-component weight.
 
-### Should I enable slot-style textures for every mod?
+### A PFM Split Object Disappears
 
-No. Use it when texture streaming/hash churn is a problem or when you need
-cross-scene slot-aware exports. Stock hash-style export remains the default and
-is still useful.
+Keep exact `Component N` identity in object names and export from the merged source collection. Rebuild cross-scene routing after changing split ownership.
 
-### Can form anchors use `ib` hashes?
+Check nested/hidden filters before assuming the draw was removed by runtime logic.
 
-No. Use `vb0` hashes or pixel shader hashes. `ib` hashes do not work as form anchors.
+### A WWMI Texture Stays Native
 
-### Why is my LOD extraction not matching?
+For Hash-style, compare the runtime identity with the selected dump. A new streaming identity requires fresh dump evidence.
 
-Make sure the Frame Dump was captured while the game was actually rendering the
-LOD mesh. Then tune the geometry matcher threshold, voxel size or candidate counts.
+For slot-style, confirm the component is checked, STU is current, and export did not report an ambiguous branch.
 
-### Why did CrossIB miss a scene?
+Entering another scene first can warm streamed resources and hide a stale capture problem. Always test cold entry as well as hot scene switching.
 
-Generate or accumulate sidecar data from additional Frame Dumps. CrossIB can merge
-new scene shader evidence into existing sidecars.
+### A Replaced Texture Looks Green or Like a Normal Map
 
-### Can I edit topology in Raw Mesh?
+First verify that the diffuse Resource points to the intended DDS rather than a normal-map Hash or slot.
 
-Yes, but only with **Rebuild** mode, and non-standard attributes may be lossy. Use
-**Faithful** when you only edit positions and want byte-preserving output.
+Then inspect the complete slot assignment signature and restore transaction. Do not fix the symptom by hardcoding one component or slot.
 
-### Can Weight Tools replace manual weight painting?
+### Slot-Style Export Aborts
 
-No. Weight Tools accelerates transfer, mirroring, normalization, smoothing and
-repair, but you should still inspect the result in Blender.
+Common causes are:
 
-### Are private/local paths required in this manual?
+- missing or stale `ShaderTextureUsage.json`;
+- missing DDS format metadata;
+- a required assignment slot absent from the positive signature;
+- indistinguishable form layouts;
+- a missing DDS/resource;
+- malformed cross-scene routing.
 
-No. Use your own project folders. The manual intentionally uses generic names such
-as object source folder, Frame Dump folder and mod output folder.
+Refresh the dump/STU or uncheck only the affected component so it uses native Hash-style. Do not weaken the slot signature or add an unproven fallback branch.
+
+### Form Switching Flickers Back to Native Textures
+
+Capture near and far RAW dumps for that form and merge them under the same label.
+
+Confirm every same-VB form is represented. Use anchors only as an auxiliary gate after slot-layout branches are already safe.
+
+### Cross-Scene Export Misses a Scene
+
+Confirm that scene's extracted IB folder is present in the merge and has the correct `Fold` or `Editable` role.
+
+Re-run the merge and keep the merged root as the object source during import and export.
+
+### Cross-Scene Output Is Missing a Root DDS
+
+Confirm **复制贴图 (Copy Textures)** is enabled and partial export is off.
+
+If export reports a same-Hash payload conflict, resolve the conflicting source files. Do not overwrite one payload arbitrarily.
+
+### CrossIB Misses a Scene or Pass
+
+Feed a Frame Dump from the missing scene into **合并新场景 dump（累积） (Merge New Scene Dump, Accumulate)**.
+
+If the dump does not contain the character, Velo leaves the previous sidecar unchanged. Capture again while the target is actually drawn.
+
+### LOD Matching Fails
+
+Capture while the game draws the desired LOD, not the main mesh.
+
+Then adjust the geometry error threshold, voxel/sample size, prefilter candidates, or matcher method. Enable overwrite only when replacing existing LOD evidence deliberately.
+
+### EFMI ShapeKey Export Is Blocked
+
+Inspect the detected list for duplicate slot/name pairs, one name on several slots, or several names on one slot.
+
+Rename the conflicting keys consistently. Non-Deform ShapeKeys are ignored rather than exported.
+
+### Weight Transfer Fails Before Writing
+
+Check manual target, donor, mirror target, and mirror-donor selections. Manual choices are strict and are validated before mutation.
+
+If a disconnected island stays zero, it has no positive source evidence. Adjust the source geometry or matching settings instead of forcing inpaint.
+
+### Raw Mesh Reports an Ambiguous Hash
+
+Use the specific `VB0` Hash for one object or the specific IB Hash for one draw.
+
+A generic VB identity shared by several objects is deliberately rejected.
+
+### Raw Mesh Faithful Export Rejects Topology
+
+Faithful requires the original topology and index count. Undo the topology edit or choose Rebuild and accept the non-standard attribute loss.
+
+### The INI Contains Empty `ResourceBypassPST` Sections
+
+They are required slot-transaction backup handles. Their values are assigned at runtime, so an empty declaration is correct.
+
+## Limits and Glossary
+
+### Limits
+
+- Velo cannot infer game resource identity from texture pixels.
+- A stale dump cannot describe Hash or shader identities introduced later.
+- Slot-style export cannot safely separate forms with identical observable slot layouts.
+- Form anchors cannot replace missing slot evidence.
+- Per-Component runtime output cannot express arbitrary cross-component weights.
+- Raw Mesh Rebuild cannot preserve every non-standard vertex attribute.
+- Weight transfer still requires visual deformation review.
+- Custom INI templates remain the author's responsibility.
+
+### Glossary
+
+| Term | Meaning |
+| --- | --- |
+| **Frame Dump** | Runtime capture used as extraction and matching evidence |
+| **Object source folder** | Extracted authoring input consumed by import and export |
+| **Component** | One logical mesh/draw partition in EFMI or WWMI metadata |
+| **VB / VB0** | Vertex buffer / primary vertex-buffer identity |
+| **IB** | Index-buffer identity and draw-index source |
+| **Hash-style** | Texture replacement matched by captured resource Hash |
+| **Slot-style** | Texture replacement rebound to `ps-tN` inside a draw transaction |
+| **STU** | `ShaderTextureUsage.json`, Velo's WWMI shader/slot evidence file |
+| **Merged** | Unified vertex-group authoring/runtime strategy |
+| **Per-Component** | Component-local vertex-group runtime strategy |
+| **PFM** | Per-Component (from Merged): unified authoring, local runtime output |
+| **Fold** | WWMI scene route authored from the base geometry |
+| **Editable** | WWMI scene route with independent editable geometry |
+| **CrossIB** | EFMI provider geometry drawn through a target component pass |
+| **Cross-scene** | WWMI merge of several scene-specific IB routes |
+| **Form anchor** | Optional `vb0` or pixel-shader identity used to narrow a safe form branch |
+| **Raw Mesh** | WWMI path for non-character geometry with preserved raw slot bytes |
+| **Owning IB namespace** | `_ibN` suffix and lifecycle state isolating one cross-scene route |
