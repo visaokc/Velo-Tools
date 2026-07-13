@@ -27,8 +27,6 @@ from . import transform
 
 _INSTALLED = False
 _ORIG_BUILD_FROM_TEMPLATE = None
-_SLOT_CONTRACT_FILENAME = '.velo_slot_contract.json'
-
 # Last export's report lines (operators may surface them to the UI).
 last_report = []
 
@@ -54,9 +52,6 @@ def install():
         del last_report[:]
         try:
             source_folder = resolve_path(cfg.object_source_folder)
-            # Cross-scene (CrossSceneRouting.json present) is now supported: the body export reads the
-            # merged root STU (orchestrator trims it to the base components first) and each sub-IB
-            # exports its own slot layer; the assembler keeps them per-IB. No degrade here anymore.
             form_freshness = []
             form_pass_depth = []
             forms, texture_info, load_warnings = generator.load_forms(
@@ -101,7 +96,7 @@ def install():
                 manual_anchors=manual_anchors,
                 freshness=form_freshness,
                 pass_depth=form_pass_depth,
-                slot_eligible_components=_read_slot_eligible(context),
+                slot_eligible_components=read_global_eligible(context),
                 local_form_discriminator=local_discriminator,
                 local_discriminator_audit=local_audit,
                 formid_auxiliary_anchors=manual_anchors,
@@ -114,8 +109,6 @@ def install():
                 raise generator.SlotStyleDegrade(
                     generator._format_slot_unrepresented(slot_issues))
             result = transform.apply(result, plan)
-            if _eligible_override_active:
-                _write_slot_contract(cfg, plan)
             if formid_auxiliary:
                 for anchor_hash, form_id in manual_anchors:
                     kind = 'shader (ps)' if len(anchor_hash) == 16 else 'resource (vb0)'
@@ -302,37 +295,32 @@ def _read_lod_ranges(source_folder):
 
 
 def _read_cross_scene_route_context(source_folder):
-    """Return fold route -> merged component ids from CrossSceneRouting.json."""
-    routing_path = source_folder / 'CrossSceneRouting.json'
-    if not routing_path.is_file():
+    """Return schema-v3 fold route -> global component ids."""
+    manifest_path = source_folder / 'CrossSceneManifest.json'
+    if not manifest_path.is_file():
         return None
     try:
-        with open(routing_path, encoding='utf-8') as f:
-            payload = json.load(f)
+        from ..crossscene.manifest import load_manifest
+        payload = load_manifest(source_folder)
     except Exception as exc:
         raise generator.SlotStyleDegrade(
-            f'failed to read CrossSceneRouting.json: {exc}')
-    scene_ibs = payload.get('scene_ibs') if isinstance(payload, dict) else None
-    if not isinstance(scene_ibs, list):
-        raise generator.SlotStyleDegrade(
-            'CrossSceneRouting.json has no scene_ibs list')
+            f'failed to read CrossSceneManifest.json: {exc}')
 
     routes = {}
-    for index, entry in enumerate(scene_ibs):
+    for index, entry in enumerate(payload.get('runtime_ibs') or []):
         if not isinstance(entry, dict):
             raise generator.SlotStyleDegrade(
-                f'CrossSceneRouting.json scene_ibs[{index}] is not an object')
-        if entry.get('foldable') is not True:
+                f'CrossSceneManifest.json runtime_ibs[{index}] is not an object')
+        if entry.get('kind') != 'fold':
             continue
-        route = str(entry.get('vb0_hash') or entry.get('ib_hash') or '').strip().lower()
+        route = str(entry.get('ib_hash') or '').strip().lower()
         if not re.fullmatch(r'[0-9a-f]{8}', route):
             raise generator.SlotStyleDegrade(
-                f'CrossSceneRouting.json scene_ibs[{index}] has no valid route hash')
-        fold = entry.get('fold')
-        comp_map = fold.get('comp_map') if isinstance(fold, dict) else None
+                f'CrossSceneManifest.json runtime_ibs[{index}] has no valid route hash')
+        comp_map = entry.get('component_map')
         if not isinstance(comp_map, dict) or not comp_map:
             raise generator.SlotStyleDegrade(
-                f'CrossSceneRouting.json route {route} has no fold.comp_map')
+                f'CrossSceneManifest.json route {route} has no component_map')
         components = set()
         try:
             for value in comp_map.values():
@@ -342,7 +330,7 @@ def _read_cross_scene_route_context(source_folder):
                 components.add(comp_id)
         except (TypeError, ValueError):
             raise generator.SlotStyleDegrade(
-                f'CrossSceneRouting.json route {route} has an invalid fold.comp_map')
+                f'CrossSceneManifest.json route {route} has an invalid component_map')
         routes.setdefault(route, set()).update(components)
     return routes
 
@@ -350,60 +338,6 @@ def _read_cross_scene_route_context(source_folder):
 def _report(message: str):
     print(message)
     last_report.append(message)
-
-
-def _write_slot_contract(cfg, plan):
-    output_folder = resolve_path(cfg.mod_output_folder)
-    output_folder.mkdir(parents=True, exist_ok=True)
-    payload = {
-        'version': 2,
-        'branch_contract': dict(getattr(plan, 'branch_contract', None) or {}),
-        'restore_contract': dict(getattr(plan, 'restore_contract', None) or {}),
-        'component_route_lists': {
-            str(comp_id): {
-                str(route): str(command_list)
-                for route, command_list in sorted(route_lists.items())
-            }
-            for comp_id, route_lists in sorted(
-                (getattr(plan, 'component_route_lists', None) or {}).items())
-        },
-    }
-    (output_folder / _SLOT_CONTRACT_FILENAME).write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + '\n',
-        encoding='utf-8',
-    )
-
-
-# Per-export slot-eligibility override (cross-scene). The cross-scene orchestrator runs N sub-exports,
-# each with a DIFFERENT local component numbering, so the global UI rules (chosen in MERGED numbering)
-# must be translated and injected per sub-export. cfg is a Blender PropertyGroup (no arbitrary
-# attributes), so the channel is module-level: set_eligible_override(value) makes the next
-# build_from_template use `value` verbatim (a set of eligible LOCAL component ids, or None = all
-# eligible); clear_eligible_override() restores the global-UI-rules behavior.
-_eligible_override = None
-_eligible_override_active = False
-_volatile_hash_override = None
-_volatile_hash_override_active = False
-
-
-def set_eligible_override(value):
-    global _eligible_override, _eligible_override_active
-    _eligible_override, _eligible_override_active = value, True
-
-
-def clear_eligible_override():
-    global _eligible_override_active
-    _eligible_override_active = False
-
-
-def set_volatile_hash_override(value):
-    global _volatile_hash_override, _volatile_hash_override_active
-    _volatile_hash_override, _volatile_hash_override_active = value, True
-
-
-def clear_volatile_hash_override():
-    global _volatile_hash_override_active
-    _volatile_hash_override_active = False
 
 
 def read_global_eligible(context):
@@ -419,18 +353,8 @@ def read_global_eligible(context):
     return {r.component_id for r in rules if r.use_slot}
 
 
-def _read_slot_eligible(context):
-    """The eligibility the generator should use for THIS export: the per-export override the
-    cross-scene orchestrator set (if any), else the global UI rules."""
-    if _eligible_override_active:
-        return _eligible_override
-    return read_global_eligible(context)
-
-
 def _read_volatile_assignment_hashes(context):
     """Hashes proven to drift across service slots in the current runtime set."""
-    if _volatile_hash_override_active:
-        return _volatile_hash_override
     try:
         values = context.scene.vtww_slot_settings.volatile_assignment_hashes
     except Exception:

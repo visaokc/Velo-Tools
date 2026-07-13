@@ -111,6 +111,10 @@ class CompiledMod:
     slot_plan: Any = None
     section_routes: Dict[str, str] = field(default_factory=dict)
     report: Dict[str, Any] = field(default_factory=dict)
+    ini_ir: Optional[CrossSceneIR] = None
+
+    def render_ini(self) -> str:
+        return self.ini_ir.render() if self.ini_ir is not None else self.ini_text
 
 
 def _template_source(skeleton_mode: str, comment_ini: bool) -> str:
@@ -1152,8 +1156,12 @@ def compile_cross_scene(units: Sequence[Any], manifest: Mapping[str, Any],
         text = transform.apply(text, plan, section_routes=section_routes)
         text = _clone_route_format_tags(text, manifest, plan)
 
+    final_ir = CrossSceneIR.parse(text)
+    final_ir.assert_unique()
     from ..._wwmi_core.blender_export.ini_maker import IniMaker
-    text = IniMaker.with_checksum(text)
+    text = IniMaker.with_checksum(final_ir.render())
+    final_ir = CrossSceneIR.parse(text)
+    text = final_ir.render()
     report = _validate_compiled(text, buffers, textures, logo_source)
     report.update({
         "roles": ["body"] + [str(entry["ib_hash"])
@@ -1172,7 +1180,10 @@ def compile_cross_scene(units: Sequence[Any], manifest: Mapping[str, Any],
             "tex_slot": sorted(plan.covered_resource_indices),
             "tex_blindzone": list(plan.blind_zone),
         })
-    return CompiledMod(text, buffers, textures, plan, section_routes, report)
+    return CompiledMod(
+        text, buffers, textures, plan, section_routes, report,
+        ini_ir=final_ir,
+    )
 
 
 def _safe_meshes_path(output: Path) -> Path:
@@ -1222,7 +1233,7 @@ def write_compiled_mod(compiled: CompiledMod, output: Path | str,
                     shutil.copy2(gates.logo_source, logo)
             textures_written = True
         if gates.write_ini:
-            _write_ini_with_backup(output / "mod.ini", compiled.ini_text)
+            _write_ini_with_backup(output / "mod.ini", compiled.render_ini())
             ini_written = True
     report = dict(compiled.report)
     report.update({

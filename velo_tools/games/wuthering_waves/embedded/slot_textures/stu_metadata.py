@@ -194,6 +194,10 @@ def _variant_record(label, entry, component_block):
         value = entry.get(key) if isinstance(entry, dict) else None
         if value not in (None, ''):
             variant[key] = value
+        component_value = (component_block[1].get(key)
+                           if isinstance(component_block[1], dict) else None)
+        if component_value not in (None, ''):
+            variant[key] = component_value
     for key in (
             constants.FORM_ANCHOR_LABEL_KEY,
             constants.FORM_ANCHOR_VB0_KEY,

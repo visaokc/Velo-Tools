@@ -393,21 +393,26 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
                           for d in dumps]
             if cfg.object_source_folder.strip():
                 source_folder = resolve_path(cfg.object_source_folder)
-                routing_path = source_folder / 'CrossSceneRouting.json'
-                if routing_path.is_file():
+                manifest_path = source_folder / 'CrossSceneManifest.json'
+                legacy_path = source_folder / 'CrossSceneRouting.json'
+                if manifest_path.is_file():
                     detected = anchors.detect_object_hash(all_loaded)
                     if not detected:
                         raise ValueError(
                             "dump 里找不到跨全部形态出现的蒙皮多组件对象——"
                             "确认各 dump 抓帧时角色都在画面内（或在对象文件夹"
                             "字段指定提取文件夹精确指定）")
-                    with open(routing_path, encoding='utf-8') as f:
-                        routing = json.load(f)
+                    from ..crossscene.manifest import load_manifest
+                    routing = load_manifest(source_folder)
                     object_hash, note = anchors.choose_cross_scene_object_hash(
                         detected, routing)
                     detect_note = (
                         f"跨场景识别角色: {object_hash}"
                         f"（候选 {len(detected)} 个）") if object_hash else note
+                elif legacy_path.is_file():
+                    raise ValueError(
+                        "检测到旧版 CrossSceneRouting.json schema v2；"
+                        "请先重新执行“合并跨场景”")
                 else:
                     meta_path = source_folder / 'Metadata.json'
                     if meta_path.is_file():

@@ -117,7 +117,7 @@ For WWMI cross-scene work, the merged source folder becomes the object source. I
 | `VertexGroupMap.json` | Velo EFMI extraction | Unified-to-component-local vertex-group translation for EFMI Merged mode |
 | `CrossIB.json` | Velo EFMI extraction or CrossIB sidecar tool | EFMI provider/consumer pass evidence |
 | `ShaderOverride.ini` | Velo EFMI CrossIB sidecar tool | Shader-to-filter overrides paired with `CrossIB.json` |
-| `CrossSceneRouting.json` | Velo WWMI cross-scene merge | Scene IB roles, component routing, splits, and namespace ownership |
+| `CrossSceneManifest.json` | Velo WWMI cross-scene merge | Self-contained scene IB ownership, component/VG/LOD/fold routes, and canonical morph mapping |
 
 Treat these files as generated contracts. Re-run the producer when captures or routing change instead of manually guessing missing identities.
 
@@ -501,9 +501,22 @@ Prepare one base extracted folder and one extracted folder for every additional 
 7. Edit the resulting component collection.
 8. Export with normal WWMI export.
 
-The merged root contains `CrossSceneRouting.json`. Its presence activates the cross-scene export orchestrator automatically.
+The merged root contains `CrossSceneManifest.json` schema v3. Its presence activates the cross-scene direct compiler automatically.
 
-Always keep the merged root as **对象源目录 (Object Source Folder)**. Do not switch back to the base folder or a folder under `scene_ibs`.
+The merged root is self-contained and is the only persistent source of truth:
+
+```text
+<merged-root>/
+  Component N.fmt/.vb/.ib
+  Metadata.json
+  ShaderTextureUsage.json
+  CrossSceneManifest.json
+  *.dds
+```
+
+It does not contain or require `scene_ibs/*`. Always keep this root as **对象源目录 (Object Source Folder)**; do not switch back to one of the original extraction folders.
+
+Legacy roots containing only `CrossSceneRouting.json` schema v2 are rejected. Re-run **合并跨场景 (Merge Cross-Scene)** with the current Velo version instead of copying old child folders forward.
 
 Re-run the merge when source captures, roles, split objects, or routing assumptions change.
 
@@ -576,6 +589,8 @@ You do not need to perform another full object extraction for an extra form.
 Reuse the same form label with dumps from other distances to accumulate that form's additional streaming identities. Use the label `base` when evidence belongs to the base form.
 
 The merge updates `ShaderTextureUsage.json` and copies required form textures into the object source.
+
+For a schema-v3 cross-scene root, the same operation writes only the root `ShaderTextureUsage.json`: manifest component maps translate fold-route local evidence into global Components. It never creates or updates child STU files.
 
 Only real same-VB form variants should share a form domain. Separate editable or different-VB geometry stays in its own domain.
 
@@ -660,6 +675,8 @@ Use the default template unless you maintain the full runtime contract yourself.
 
 Live template update rewrites `mod.ini` as the template changes. Point it only at a disposable or intended output, and stop live update before changing projects.
 
+Cross-scene export does not support arbitrary custom Jinja templates or live template update. It rejects either option before writing output because the direct compiler owns the complete multi-IB INI contract. Ordinary single-IB template behavior is unchanged.
+
 #### INI Toggles
 
 **INI 开关 (INI Toggles)** generates state variables, hotkeys, object visibility states, and optional custom conditions.
@@ -711,6 +728,8 @@ For a full cross-scene texture export, every top-level merge-root DDS filename m
 Velo copies only missing files. If the output already contains a same-name author-edited DDS, Velo preserves it.
 
 Output-only DDS files and non-DDS tools are not deleted.
+
+A DDS deleted from the aggregate root is excluded from every newly compiled Resource, assignment, fallback, and restore plan. An older copy may remain in the output folder, but the regenerated INI does not reference it.
 
 If files with the same Hash contain conflicting payloads, export fails before overwriting the output. Identical payloads may be delivered under every required filename.
 
@@ -819,6 +838,8 @@ Confirm that scene's extracted IB folder is present in the merge and has the cor
 
 Re-run the merge and keep the merged root as the object source during import and export.
 
+If the root contains only `CrossSceneRouting.json`, it is schema v2 and must be re-merged. Do not restore an old `scene_ibs` folder as a workaround.
+
 ### Cross-Scene Output Is Missing a Root DDS
 
 Confirm **复制贴图 (Copy Textures)** is enabled and partial export is off.
@@ -895,6 +916,8 @@ They are required slot-transaction backup handles. Their values are assigned at 
 | **Editable** | WWMI scene route with independent editable geometry |
 | **CrossIB** | EFMI provider geometry drawn through a target component pass |
 | **Cross-scene** | WWMI merge of several scene-specific IB routes |
+| **Self-contained aggregate root** | The only persistent cross-scene source: aggregate buffers, metadata/STU, top-level DDS, and schema-v3 manifest, with no child payload dependency |
+| **Canonical morph namespace** | The aggregate root's stable runtime ShapeKey ID space, including deterministically assigned IDs for proven source-only morphs |
 | **Form anchor** | Optional `vb0` or pixel-shader identity used to narrow a safe form branch |
 | **Raw Mesh** | WWMI path for non-character geometry with preserved raw slot bytes |
 | **Owning IB namespace** | `_ibN` suffix and lifecycle state isolating one cross-scene route |

@@ -357,7 +357,7 @@ def register():
     except Exception:
         import traceback
         traceback.print_exc()
-    # Cross-scene export hook: if the export source contains CrossSceneRouting.json -> go through the orchestrator to fold/merge into a multi-scene mod (otherwise zero impact).
+    # Cross-scene hook: schema-v3 aggregate roots use the direct compiler; ordinary roots stay on the stock path.
     try:
         from .embedded.crossscene import patch as _xspatch
         _xspatch.install()

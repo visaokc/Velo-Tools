@@ -1,9 +1,9 @@
 """Cross-scene merge UI -- the "base + each IB (with role) + output -> merge" panel + operators.
 
-The merge operator calls the producer ``xscene_merge.build_cross_scene_merge`` to produce an
-editable merged folder + ``CrossSceneRouting.json``; afterwards the user imports that folder with
-the existing import operator, edits one mesh, and clicks the regular "Export Mod" -- the hook in
-``patch.py`` then automatically folds and merges out a mod that works across all scenes.
+The merge operator calls the producer ``xscene_merge.build_cross_scene_merge`` to produce a
+self-contained editable aggregate root plus ``CrossSceneManifest.json``. The user imports that
+root, edits one mesh, and clicks the regular "Export Mod"; ``patch.py`` routes it through the
+schema-v3 direct compiler without child output folders.
 
 There are only two roles: ``Fold`` (fold into base) and ``Editable`` (independently editable, as a new component).
 Registration is handled by this module's register()/unregister() (new classes + Scene properties), not via _wwmi_core's auto_load.
@@ -63,7 +63,7 @@ class VTWW_OT_xscene_ib_remove(bpy.types.Operator):
 class VTWW_OT_xscene_merge(bpy.types.Operator):
     bl_idname = "vtww.xscene_merge"
     bl_label = "合并跨场景"
-    bl_description = "合并基底 + 各 IB → 一份可编辑提取文件夹 + CrossSceneRouting.json"
+    bl_description = "合并基底 + 各 IB → 自包含聚合根 + CrossSceneManifest.json"
 
     def execute(self, context):
         s = context.scene

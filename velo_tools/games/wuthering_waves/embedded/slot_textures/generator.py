@@ -386,7 +386,7 @@ def _component_form_routes(
     """Return validated component-local scene routes for audit forms.
 
     A component enters route mode only when every extra form containing that
-    component names a route that is present in CrossSceneRouting.json and maps
+    component names a route that is present in CrossSceneManifest.json and maps
     back to that merged component. Partial route evidence is rejected so a
     normal local discriminator conflict remains visible instead of being
     silently split into an unverified route.

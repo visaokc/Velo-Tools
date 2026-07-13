@@ -582,7 +582,7 @@ WWMI 的 **Mod 信息**、**INI 模板** 和 **INI 开关**与 EFMI 使用相同
 - **INI 模板**可以存于内置编辑器或外部文件，并可开启实时更新。
 - **INI 开关**可以建立变量、状态、对象、热键和自定义条件，也支持 JSON 导入导出。
 
-启用 **使用自定义模板**后，模板接管完整 `mod.ini`。LOD、跨场景、插槽风格等 Velo 扩展可能需要默认模板或导出后处理；高级组合前应先在独立输出目录验证。
+启用 **使用自定义模板**后，模板接管完整 `mod.ini`。普通单 IB 仍可使用该功能；跨场景 direct compiler 不兼容任意 Jinja 自定义模板或实时更新，检测到任一选项会在写入输出前明确取消导出。
 
 ### 6.8 单 IB 导出验收
 
@@ -678,12 +678,25 @@ LOD 支持 Merged、Per-Component，以及内部转换后的 Per-Component (from
 3. 添加每个 **IB 文件夹**，并选择角色。
 4. 设置 **输出**。
 5. 点击 **合并跨场景**。
-6. 确认输出包含 `CrossSceneRouting.json`。
+6. 确认输出包含 `CrossSceneManifest.json` schema v3。
 7. 用 **导入对象** 导入这个合并对象源目录。
 8. 编辑合并工程。
 9. 用 **导出 Mod** 正常导出。
 
 导出时以合并目录作为 **对象源目录**。不要再切回某个子 IB 的原始提取目录。
+
+聚合根是唯一持久事实源，只包含：
+
+```text
+<聚合根>/
+  Component N.fmt/.vb/.ib
+  Metadata.json
+  ShaderTextureUsage.json
+  CrossSceneManifest.json
+  *.dds
+```
+
+聚合根不生成、也不依赖 `scene_ibs/*`。只有旧 `CrossSceneRouting.json` schema v2 的目录会被直接拒绝；请用当前版本重新执行 **合并跨场景**，不要把旧子目录复制回来。
 
 #### Component 与 IB 命名
 
@@ -760,6 +773,8 @@ slot-style 可以提高贴图流送场景下的重绑稳定性，但不能替代
 6. 点击 **合并形态贴图数据**。
 7. 对其它形态或同一形态的补充 Dump 重复。
 8. 启用插槽风格贴图后导出。
+
+对 `CrossSceneManifest.json` schema v3 聚合根，此操作只更新根 `ShaderTextureUsage.json`：fold route 的 local Component 证据会经 manifest 映射为 global Component，不会创建或更新任何子 STU。
 
 重复使用同一形态标签会累积该形态的证据。只有真实共享同一 VB 的多形态 Component 才应进入同一个多形态 slot 域；独立可编辑或其它 VB 的 Component 应保持独立。
 
@@ -926,6 +941,7 @@ ps-tN = ref ResourceTexture...
 - 输出中额外的 DDS 和非 DDS 工具文件不会因为补交付而删除。
 - 根目录同 Hash 多文件且内容相同时，按各自文件名交付。
 - 同一 Hash 对应冲突内容时，导出在写入前失败关闭，而不是任选一份。
+- 聚合根已经删除的 DDS 不会进入新 INI 的 Resource、assignment、fallback 或 restore；输出目录中的旧同名/额外 DDS 可以保留在磁盘上，但不会被新 INI 重新引用。
 
 “保留已有文件”意味着旧测试贴图也会保留。重新使用输出目录前，应确认现有 DDS 就是你想发布的版本。
 
@@ -995,7 +1011,7 @@ WWMI 应确认导入和导出的骨架模式一致。若使用 Per-Component (fr
 
 CrossIB 应从目标场景的新 Frame Dump 累积 sidecar。跨场景 WWMI 应把目标 IB 作为有效条目加入 **跨场景折叠合并**，选择正确角色，再重新合并、导入和导出。
 
-如果来源证据或路由已经改变，旧 `CrossIB.json`、`ShaderOverride.ini` 或 `CrossSceneRouting.json` 不能代表新场景。
+如果来源证据或路由已经改变，旧 `CrossIB.json`、`ShaderOverride.ini` 或 `CrossSceneManifest.json` 不能代表新场景。只有 `CrossSceneRouting.json` 的跨场景根属于 schema v2，必须重新合并，不能通过恢复 `scene_ibs` 继续导出。
 
 ### 9.6 插槽风格贴图导出失败
 
@@ -1104,6 +1120,8 @@ CrossIB 应从目标场景的新 Frame Dump 累积 sidecar。跨场景 WWMI 应�
 | Mod | 最终加载到游戏中的成品目录。 |
 | Frame Dump / Dump | 3Dmigoto 抓取的当帧资源、draw 和日志证据。 |
 | 对象源目录 | 从 Dump 提取或合并后，供 Blender 导入和再次导出的数据目录。 |
+| 自包含聚合根 | 跨场景唯一持久对象源：聚合 Buffer、Metadata/STU、顶层 DDS 与 schema-v3 manifest，不依赖子 payload。 |
+| canonical morph namespace | 聚合根稳定的 runtime ShapeKey ID 空间，也包含为真正来源独有 morph 确定性分配的新 ID。 |
 | IB | Index Buffer，用于描述索引和 draw 范围身份。 |
 | VB | Vertex Buffer，用于描述顶点数据和几何身份。 |
 | Hash | 3Dmigoto 资源 identity，不是 DDS 像素内容的校验值。 |

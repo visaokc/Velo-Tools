@@ -299,18 +299,21 @@ def detect_object_hash(loaded_dumps: List[object]) -> List[ObjectCandidate]:
 def choose_cross_scene_object_hash(detected: List[ObjectCandidate], routing: dict):
     """Pick the shared scene-IB object for cross-scene form-anchor search.
 
-    A merged SceneIB root has the showcase vb0 in Metadata.json, but an
+    A merged aggregate root has the base vb0 in Metadata.json, but an
     alternate-form raw dump may not draw that showcase object. The anchor
     finder must instead use the object that appears across the compared raw
-    dumps and is known to the cross-scene routing (for the current test case:
-    89d30421, not the root 8287b2f2).
+    dumps and is known to the schema-v3 manifest.
     """
     scene_hashes = set()
-    for scene in (routing or {}).get("scene_ibs") or []:
+    scenes = (routing or {}).get("runtime_ibs") or []
+    for scene in scenes:
         for key in ("vb0_hash", "ib_hash"):
             h = scene.get(key)
             if h:
                 scene_hashes.add(str(h).lower())
+        native_hash = (scene.get("native_metadata") or {}).get("vb0_hash")
+        if native_hash:
+            scene_hashes.add(str(native_hash).lower())
     for cand in detected or []:
         if cand.vb0.lower() in scene_hashes:
             return cand.vb0, (

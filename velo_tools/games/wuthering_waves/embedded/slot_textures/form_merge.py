@@ -280,21 +280,40 @@ def _merge_variant_records(dst_components, src_components):
     # passes, not mip ladders.
     dst_seated = set()
     for dst_vs in dst_components.values():
-        for dst_ps in dst_vs.values():
+        if not isinstance(dst_vs, dict):
+            continue
+        for vs_key, dst_ps in dst_vs.items():
+            if not str(vs_key).startswith('vs=') or not isinstance(dst_ps, dict):
+                continue
             for dst_slots in dst_ps.values():
+                if not isinstance(dst_slots, dict):
+                    continue
                 for rec in dst_slots.values():
                     if isinstance(rec, dict) and rec.get('hash'):
                         dst_seated.add(rec['hash'])
     src_seated = set()
     for src_vs in src_components.values():
-        for src_ps in src_vs.values():
+        if not isinstance(src_vs, dict):
+            continue
+        for vs_key, src_ps in src_vs.items():
+            if not str(vs_key).startswith('vs=') or not isinstance(src_ps, dict):
+                continue
             for src_slots in src_ps.values():
+                if not isinstance(src_slots, dict):
+                    continue
                 for rec in src_slots.values():
                     if isinstance(rec, dict) and rec.get('hash'):
                         src_seated.add(rec['hash'])
     for comp, src_vs in src_components.items():
         dst_vs = dst_components.setdefault(comp, OrderedDict())
         for vs_key, src_ps in src_vs.items():
+            if not str(vs_key).startswith('vs='):
+                existing = dst_vs.get(vs_key)
+                if existing is not None and existing != src_ps:
+                    raise FormMergeError(
+                        f'{comp} has conflicting {vs_key} route metadata')
+                dst_vs[vs_key] = src_ps
+                continue
             dst_ps = dst_vs.setdefault(vs_key, OrderedDict())
             for ps_key, src_slots in src_ps.items():
                 dst_slots = dst_ps.get(ps_key)
@@ -415,18 +434,49 @@ def _entry_label(entry):
 
 def _usage_paths_for_anchor_write(object_source_folder):
     root = Path(object_source_folder)
-    paths = []
     base_path = root / constants.BASE_USAGE_FILENAME
-    if base_path.is_file():
-        paths.append(base_path)
-    scene_dir = root / 'scene_ibs'
-    if scene_dir.is_dir():
-        paths.extend(sorted(
-            p / constants.BASE_USAGE_FILENAME
-            for p in scene_dir.iterdir()
-            if (p / constants.BASE_USAGE_FILENAME).is_file()
-        ))
-    return paths
+    return [base_path] if base_path.is_file() else []
+
+
+def _remap_cross_scene_form_components(components_usage, component_map,
+                                       route_hash):
+    mapping = {int(local): int(global_id)
+               for local, global_id in (component_map or {}).items()}
+    remapped = OrderedDict()
+    for component_name, block in components_usage.items():
+        try:
+            local_id = int(str(component_name).rsplit(' ', 1)[-1])
+            global_id = mapping[local_id]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise FormMergeError(
+                f'CrossSceneManifest component_map does not cover '
+                f'{component_name}') from exc
+        target_name = f'Component {global_id}'
+        if target_name in remapped:
+            raise FormMergeError(
+                f'CrossSceneManifest maps multiple local components to '
+                f'{target_name}')
+        target = OrderedDict(block)
+        target['vb0_hash'] = route_hash
+        remapped[target_name] = target
+    return remapped
+
+
+def _merge_cross_scene_texture_sources(target, sources, component_map):
+    mapping = {int(local): int(global_id)
+               for local, global_id in (component_map or {}).items()}
+    for texture_hash, (path, component_ids) in sources.items():
+        try:
+            mapped = {str(mapping[int(component_id)])
+                      for component_id in component_ids}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise FormMergeError(
+                f'CrossSceneManifest component_map does not cover texture '
+                f'{texture_hash}') from exc
+        if texture_hash in target:
+            target[texture_hash][1].update(mapped)
+        else:
+            target[texture_hash] = (path, mapped)
 
 
 def refresh_local_discriminator_audit_in_usage(usage):
@@ -554,72 +604,87 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
 
     mesh_objects, surviving = collect_mesh_objects(dump_path, texture_filter)
 
-    # Cross-scene merged root: still lift every routed form texture into the root for legacy
-    # hash-style compatibility, but preserve foldable scene-IB form variants locally. The export
-    # orchestrator remaps those local form records back onto body/base component ids for slot-style
-    # form switching.
-    routing_path = object_source_folder / 'CrossSceneRouting.json'
-    if routing_path.is_file():
-        with open(routing_path, encoding='utf-8') as f:
-            routing = json.load(f)
-        routes_by_ib = {str(s.get('ib_hash') or s.get('vb0_hash')).lower(): s
-                        for s in (routing.get('scene_ibs') or [])
-                        if s.get('ib_hash') or s.get('vb0_hash')}
-        scene_dir = object_source_folder / 'scene_ibs'
-        ib_hashes = ({p.name for p in scene_dir.iterdir() if p.is_dir()}
-                     if scene_dir.is_dir() else set())
-        ib_hashes.update(routes_by_ib)
-        ib_hashes_lower = {h.lower() for h in ib_hashes}
+    manifest_path = object_source_folder / 'CrossSceneManifest.json'
+    legacy_path = object_source_folder / 'CrossSceneRouting.json'
+    if legacy_path.is_file() and not manifest_path.is_file():
+        raise FormMergeError(
+            '检测到旧版 CrossSceneRouting.json schema v2；请先使用当前 '
+            'Velo Tools 重新执行“合并跨场景”')
+    if manifest_path.is_file():
+        from ..crossscene.manifest import load_manifest
+        manifest = load_manifest(object_source_folder)
+        routes_by_ib = {}
+        for entry in manifest.get('runtime_ibs') or []:
+            hashes = {
+                str(entry.get('ib_hash') or '').strip().lower(),
+                str(entry.get('vb0_hash') or '').strip().lower(),
+                str((entry.get('native_metadata') or {}).get('vb0_hash')
+                    or '').strip().lower(),
+            }
+            for route_hash in hashes - {''}:
+                routes_by_ib[route_hash] = entry
         combined = {}
         lifted = []
         fold_forms_written = []
-        fold_forms_missing = []
+        usage_path = object_source_folder / constants.BASE_USAGE_FILENAME
+        if not usage_path.is_file():
+            raise FormMergeError(
+                f'{constants.BASE_USAGE_FILENAME} is missing from the '
+                'schema-v3 aggregate root')
+        with open(usage_path, encoding='utf-8') as f:
+            usage = json.load(f)
+        multi_components = set()
+        merged_form_components = OrderedDict()
+        fold_routes_written = []
         for vb0, obj in mesh_objects.items():
             key = vb0.lower()
-            if ib_hashes_lower and key not in ib_hashes_lower:
+            route = routes_by_ib.get(key)
+            if route is None:
                 continue
             components_usage, src = _build_components_usage(
                 obj, surviving.get(vb0), evidence)
-            for tex_hash, entry in src.items():
-                combined.setdefault(tex_hash, entry)
+            component_map = route.get('component_map') or {}
+            _merge_cross_scene_texture_sources(
+                combined, src, component_map)
             lifted.append(vb0)
-            route = routes_by_ib.get(key)
-            if not route or not route.get('foldable'):
+            if route.get('kind') != 'fold':
                 continue
-            if not ((route.get('fold') or {}).get('comp_map')):
-                continue
-            usage_path = (object_source_folder
-                          / (route.get('source_folder') or '')
-                          / constants.BASE_USAGE_FILENAME)
-            if not usage_path.is_file():
-                fold_forms_missing.append(vb0)
-                continue
-            with open(usage_path, encoding='utf-8') as f:
-                usage = json.load(f)
+            route_hash = str(route.get('ib_hash') or key).lower()
+            remapped_usage = _remap_cross_scene_form_components(
+                components_usage, component_map, route_hash)
+            duplicate_components = set(merged_form_components) & set(remapped_usage)
+            if duplicate_components:
+                raise FormMergeError(
+                    'schema-v3 form dump maps multiple routes to the same '
+                    'global component(s): '
+                    + ', '.join(sorted(duplicate_components)))
+            merged_form_components.update(remapped_usage)
+            multi_components.update(
+                int(component_name.rsplit(' ', 1)[-1])
+                for component_name in remapped_usage)
+            fold_routes_written.append((route_hash, len(remapped_usage)))
+        if multi_components:
+            first_route = fold_routes_written[0][0]
             entry, replaced, variants_added = _upsert_extra_form(
-                usage, components_usage, form_label, dump_path.name,
-                'vb0', route.get('vb0_hash') or vb0)
+                usage, merged_form_components, form_label, dump_path.name,
+                'manifest', first_route)
             stu_metadata.sync_form_component_modes(
-                usage, multi_components=[
-                    int(c.rsplit(' ', 1)[-1])
-                    for c in components_usage
-                    if str(c).startswith('Component ')
-                ])
+                usage, multi_components=sorted(multi_components))
             refresh_local_discriminator_audit_in_usage(usage)
             stu_metadata.write_usage(usage_path, usage)
-            fold_forms_written.append({
-                'ib_hash': vb0,
+            fold_forms_written.extend({
+                'ib_hash': route_hash,
                 'usage_file': str(usage_path),
                 'label': entry['label'],
                 'replaced': replaced,
                 'variants_added': variants_added,
-                'components': len(components_usage),
-            })
+                'components': component_count,
+            } for route_hash, component_count in fold_routes_written)
         copied = _copy_form_textures(object_source_folder, combined)
         return {'mode': 'cross_scene', 'lifted_ibs': sorted(lifted),
                 'textures_copied': copied, 'form_label': form_label.strip(),
                 'fold_extra_forms': fold_forms_written,
-                'fold_extra_forms_missing': sorted(fold_forms_missing)}
+                'fold_extra_forms_missing': []}
 
     mesh_object, matched_by = _match_object(mesh_objects, vb0_hash, cb4_hash)
 
