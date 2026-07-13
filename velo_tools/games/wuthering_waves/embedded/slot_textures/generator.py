@@ -19,6 +19,16 @@ class SlotStyleDegrade(Exception):
     """Raised when slot-style generation cannot proceed safely."""
 
 
+class LocalDiscriminatorConflict(SlotStyleDegrade):
+    """Carries components whose root-catalog subset cannot stay slot-style."""
+
+    def __init__(self, problems: List[dict]):
+        self.problems = list(problems)
+        self.components = frozenset(
+            int(problem["component"]) for problem in self.problems)
+        super().__init__(_format_local_conflict_message(self.problems))
+
+
 # comp_id -> ps_hash -> slot -> texture hash (None = conflicting multi-state
 # binding seen for that slot; generator must not assign it).
 FormData = Dict[int, Dict[str, Dict[int, Optional[str]]]]
@@ -226,6 +236,16 @@ def load_forms(object_source_folder: Path,
             base_raw = json.load(f)
     except Exception as e:
         raise SlotStyleDegrade(f'failed to read {constants.BASE_USAGE_FILENAME}: {e}')
+    forms, texture_info, memory_warnings = load_forms_from_usage(
+        base_raw,
+        freshness_out=freshness_out,
+        pass_depth_out=pass_depth_out,
+    )
+    warnings.extend(memory_warnings)
+
+    if len(forms) > 1:
+        return forms, texture_info, warnings
+
     multi_components = _multi_component_ids_from_usage(base_raw)
 
     def _form_freshness() -> Optional[Dict[Tuple[int, str, int], bool]]:
@@ -236,13 +256,7 @@ def load_forms(object_source_folder: Path,
 
     base_fresh = _form_freshness()
     base_depth = _form_pass_depth()
-    forms: List[Tuple[str, FormData]] = [
-        ('base', normalize_usage(
-            base_raw, 'base', warnings, texture_info, base_fresh, base_depth))]
-    if freshness_out is not None:
-        freshness_out.append(base_fresh)
-    if pass_depth_out is not None:
-        pass_depth_out.append(base_depth)
+    forms = forms
 
     extra_entries = stu_metadata.form_entries(base_raw)
     if not extra_entries:
@@ -274,6 +288,56 @@ def load_forms(object_source_folder: Path,
         if pass_depth_out is not None:
             pass_depth_out.append(entry_depth)
 
+    if freshness_out is not None and not any(freshness_out):
+        warnings.append(
+            f'{constants.BASE_USAGE_FILENAME} has no binding-freshness flags - '
+            'dirty slot filtering is unavailable for this extraction')
+    return forms, texture_info, warnings
+
+
+def load_forms_from_usage(
+        base_raw: dict,
+        freshness_out: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+        pass_depth_out: Optional[List[PassDepth]] = None,
+) -> Tuple[List[Tuple[str, FormData]], TextureInfo, List[str]]:
+    """Load base and embedded form maps from an in-memory STU document."""
+    if not isinstance(base_raw, dict):
+        raise SlotStyleDegrade(
+            f'{constants.BASE_USAGE_FILENAME} has an unexpected shape')
+    warnings: List[str] = []
+    texture_info: TextureInfo = {}
+    multi_components = _multi_component_ids_from_usage(base_raw)
+
+    def _freshness():
+        value = {} if freshness_out is not None else None
+        if freshness_out is not None:
+            freshness_out.append(value)
+        return value
+
+    def _pass_depth():
+        value = {} if pass_depth_out is not None else None
+        if pass_depth_out is not None:
+            pass_depth_out.append(value)
+        return value
+
+    forms: List[Tuple[str, FormData]] = [(
+        'base',
+        normalize_usage(
+            base_raw, 'base', warnings, texture_info,
+            _freshness(), _pass_depth()),
+    )]
+    for entry in stu_metadata.form_entries(base_raw):
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get('label') or entry.get('source') or f'form{len(forms) + 1}'
+        components = _filter_extra_form_components(
+            entry.get('components'), multi_components)
+        forms.append((
+            label,
+            normalize_usage(
+                components, label, warnings, texture_info,
+                _freshness(), _pass_depth()),
+        ))
     if freshness_out is not None and not any(freshness_out):
         warnings.append(
             f'{constants.BASE_USAGE_FILENAME} has no binding-freshness flags - '
@@ -2677,7 +2741,7 @@ def _local_branches_from_audit(audit: dict,
     problems = _local_conflict_messages(
         branch_records, slot_eligible_components)
     if problems:
-        raise SlotStyleDegrade(_format_local_conflict_message(problems))
+        raise LocalDiscriminatorConflict(problems)
     return (component_branches, assigned_hashes,
             suppressed_weak_branches, suppressed_weak_hashes,
             route_split_components)
@@ -2696,7 +2760,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                       slot_eligible_components: Optional[Set[int]] = None,
                       local_discriminator_audit: Optional[dict] = None,
                       formid_auxiliary_anchors: Optional[List[Tuple[str, int]]] = None,
-                      volatile_assignment_hashes: Optional[Set[str]] = None) -> SlotPlan:
+                      volatile_assignment_hashes: Optional[Set[str]] = None,
+                      texture_hash_allowlist: Optional[Set[str]] = None) -> SlotPlan:
     warnings: List[str] = list(load_warnings or [])
     anchor_resources, watchdog_form, gated_forms = _anchor_runtime_state(
         forms, formid_auxiliary_anchors, warnings)
@@ -2705,11 +2770,25 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     forms, dirty_hashes_raw, dirty_slots, phantom_pairs = _filtered_forms(
         forms, freshness, warnings)
     alias = _variant_aliases(texture_info)
-    mod_hashes = {h: res for h, res in textures}
-    resource_to_section_for_exclusion = {
-        res: f'TextureOverrideTexture{index}'
-        for index, (_h, res) in enumerate(textures)
+    allowed_hashes = (None if texture_hash_allowlist is None else {
+        str(texture_hash).strip().lower()
+        for texture_hash in texture_hash_allowlist
+    })
+
+    def _allowed_texture(texture_hash: str) -> bool:
+        return allowed_hashes is None or texture_hash.lower() in allowed_hashes
+
+    mod_hashes = {
+        h: res for h, res in textures if _allowed_texture(h)
     }
+    resource_to_section_for_exclusion = {}
+    for texture_hash, resource in textures:
+        if not _allowed_texture(texture_hash):
+            continue
+        match = re.fullmatch(r'ResourceTexture(\d+)', resource)
+        if match:
+            resource_to_section_for_exclusion[resource] = (
+                f'TextureOverrideTexture{match.group(1)}')
     if not mod_hashes:
         raise SlotStyleDegrade('mod has no textures, nothing to do')
 
@@ -2833,7 +2912,9 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                         live_fallback.get(canon, 'unsafe hash fallback'),
                         source, slot)
     if slot_eligible_components is not None:
-        resource_to_hash_for_exclusion = {res: h for h, res in textures}
+        resource_to_hash_for_exclusion = {
+            res: h for h, res in textures if _allowed_texture(h)
+        }
         for comp_id in list(component_branches):
             if comp_id in slot_eligible_components:
                 continue
@@ -2880,7 +2961,9 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         merged_component_branches[comp_id] = merged
     component_branches = merged_component_branches
 
-    resource_to_hash = {res: h for h, res in textures}
+    resource_to_hash = {
+        res: h for h, res in textures if _allowed_texture(h)
+    }
     all_assigned_hashes: Set[str] = set()
     for branches in component_branches.values():
         for branch in branches:
@@ -3081,6 +3164,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     phantom_suppressed: List[Tuple[str, str]] = []
     has_freshness_evidence = freshness is not None and any(freshness)
     for index, (h, _res) in enumerate(textures):
+        if not _allowed_texture(h):
+            continue
         canon = _canon(h) or h
         if canon in all_assigned_hashes and canon not in live_fallback:
             covered_resource_indices.add(index)
@@ -3339,7 +3424,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                local_form_discriminator: bool = False,
                local_discriminator_audit: Optional[dict] = None,
                formid_auxiliary_anchors: Optional[List[Tuple[str, int]]] = None,
-               volatile_assignment_hashes: Optional[Set[str]] = None) -> SlotPlan:
+               volatile_assignment_hashes: Optional[Set[str]] = None,
+               texture_hash_allowlist: Optional[Set[str]] = None) -> SlotPlan:
     """Build a concise XQFA-style slot plan.
 
     The legacy probe/mark/backup/restore machinery is intentionally absent:
@@ -3362,10 +3448,21 @@ def build_plan(forms: List[Tuple[str, FormData]],
             slot_eligible_components=slot_eligible_components,
             local_discriminator_audit=local_discriminator_audit,
             formid_auxiliary_anchors=formid_auxiliary_anchors,
-            volatile_assignment_hashes=volatile_assignment_hashes)
+            volatile_assignment_hashes=volatile_assignment_hashes,
+            texture_hash_allowlist=texture_hash_allowlist)
     warnings: List[str] = list(load_warnings or [])
     multi_form = len(forms) > 1
-    mod_hashes = {h: res for h, res in textures}
+    allowed_hashes = (None if texture_hash_allowlist is None else {
+        str(texture_hash).strip().lower()
+        for texture_hash in texture_hash_allowlist
+    })
+
+    def _allowed_texture(texture_hash: str) -> bool:
+        return allowed_hashes is None or texture_hash.lower() in allowed_hashes
+
+    mod_hashes = {
+        h: res for h, res in textures if _allowed_texture(h)
+    }
     if not mod_hashes:
         raise SlotStyleDegrade('mod has no textures, nothing to do')
 
@@ -3377,10 +3474,14 @@ def build_plan(forms: List[Tuple[str, FormData]],
     live_fallback: Dict[str, str] = {}
     component_hash_fallbacks: Dict[str, List[ComponentHashFallback]] = {}
     unsafe_fallback: List[Dict[str, object]] = []
-    resource_to_section_for_exclusion = {
-        res: f'TextureOverrideTexture{index}'
-        for index, (_h, res) in enumerate(textures)
-    }
+    resource_to_section_for_exclusion = {}
+    for texture_hash, resource in textures:
+        if not _allowed_texture(texture_hash):
+            continue
+        match = re.fullmatch(r'ResourceTexture(\d+)', resource)
+        if match:
+            resource_to_section_for_exclusion[resource] = (
+                f'TextureOverrideTexture{match.group(1)}')
 
     def _canon(tex_hash: Optional[str]) -> Optional[str]:
         if tex_hash is None:
@@ -3571,7 +3672,9 @@ def build_plan(forms: List[Tuple[str, FormData]],
                 'slot command lists were emitted')
         raise SlotStyleDegrade('no component produced any slot assignment')
 
-    resource_to_hash = {res: h for h, res in textures}
+    resource_to_hash = {
+        res: h for h, res in textures if _allowed_texture(h)
+    }
 
     component_branches: Dict[int, List[_Branch]] = {}
     conflict_count = 0
@@ -3781,6 +3884,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
     phantom_only_resource_indices: Set[int] = set()
     phantom_suppressed: List[Tuple[str, str]] = []
     for index, (h, _res) in enumerate(textures):
+        if not _allowed_texture(h):
+            continue
         canon = _canon(h) or h
         if canon in all_assigned_hashes and canon not in live_fallback:
             covered_resource_indices.add(index)

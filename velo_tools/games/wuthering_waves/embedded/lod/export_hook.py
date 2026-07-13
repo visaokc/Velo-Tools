@@ -124,6 +124,35 @@ def _snapshot_lod_export_state(exporter):
 
 
 def _prepare_lod_export(exporter):
+    try:
+        with open(exporter.object_source_folder / 'Metadata.json', encoding='utf-8') as f:
+            metadata = json.load(f)
+    except Exception:
+        return
+    excluded_names = set()
+    manifest_path = exporter.object_source_folder / 'CrossSceneManifest.json'
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            excluded_names = {
+                str((entry.get('split_route') or {}).get('split_object'))
+                for entry in manifest.get('runtime_ibs') or []
+                if entry.get('kind') == 'own_buffer'
+                and (entry.get('split_route') or {}).get('split_object')
+            }
+        except Exception:
+            excluded_names = set()
+    prepare_lod_export_memory(
+        exporter,
+        metadata=metadata,
+        excluded_names=excluded_names,
+        cleanup_stale=True,
+    )
+
+
+def prepare_lod_export_memory(exporter, *, metadata, excluded_names=(),
+                              cleanup_stale=False):
+    """Attach LOD IR and buffers without reading or deleting export folders."""
     cfg = exporter.cfg
 
     # Gates: silently / verbosely skip configurations out of scope.
@@ -134,16 +163,22 @@ def _prepare_lod_export(exporter):
     if getattr(cfg, 'use_custom_template', False):
         print('[LOD] Custom ini template active — LOD sections skipped.')
         return
-    routing_path = exporter.object_source_folder / 'CrossSceneRouting.json'
-    is_cross_scene = routing_path.is_file()
-
-    try:
-        with open(exporter.object_source_folder / 'Metadata.json', encoding='utf-8') as f:
-            metadata = json.load(f)
-    except Exception:
-        return
-
     full_components_meta = metadata.get('components') or []
+    merged_components = exporter.merged_object.components
+    exporter.extracted_object.velo_lods = []
+    exporter.extracted_object.velo_lod_excluded_objects = sorted(
+        str(value) for value in (excluded_names or ()))
+    exporter.extracted_object.velo_draws = [
+        [
+            {
+                'name': temp_obj.name,
+                'index_count': int(temp_obj.index_count),
+                'index_offset': int(temp_obj.index_offset),
+            }
+            for temp_obj in component.objects
+        ]
+        for component in merged_components
+    ]
     lod_groups = {}  # lod_object_name -> {component_id: entry}
     for component_id, component_meta in enumerate(full_components_meta):
         for lod_entry in component_meta.get('lods') or []:
@@ -168,11 +203,11 @@ def _prepare_lod_export(exporter):
         print('[LOD] Blend/Index buffers unavailable, LOD overrides skipped.')
         return
 
-    # Regenerate LOD buffers from scratch (incl. legacy round-2 leftovers).
-    for stale in exporter.meshes_path.glob('BlendLOD*.buf'):
-        stale.unlink()
-    for stale in exporter.meshes_path.glob('VeloLod*.buf'):
-        stale.unlink()
+    if cleanup_stale and hasattr(exporter, 'meshes_path'):
+        for stale in exporter.meshes_path.glob('BlendLOD*.buf'):
+            stale.unlink()
+        for stale in exporter.meshes_path.glob('VeloLod*.buf'):
+            stale.unlink()
 
     if is_merged:
         # True merged ids: 16-bit truth when the merged object exceeds 256 VGs.
@@ -192,7 +227,6 @@ def _prepare_lod_export(exporter):
     weights = blend.get_field(weights_name)
 
     index_data = index_buffer.get_field(0).ravel()
-    merged_components = exporter.merged_object.components
     component_object_ranges = [
         [
             (obj.name, obj.index_offset, obj.index_count)
@@ -215,21 +249,7 @@ def _prepare_lod_export(exporter):
         component_of_vertex = _remap.build_vertex_component_map(
             index_data, index_layout, true_vg_ids.shape[0])
 
-    # Cross-scene split objects (parts wrapped by an own-buffer IB, e.g. X.001)
-    # do not exist in the dungeon LOD objects: exclude their rows from the LOD
-    # blend and their draws from the LOD path (the own-buffer sub-mod covers
-    # them with its own LOD sections when matched).
-    excluded_names = set()
-    if is_cross_scene:
-        try:
-            routing = json.loads(routing_path.read_text(encoding='utf-8'))
-            excluded_names = {
-                split.get('split_object')
-                for split in (routing.get('base') or {}).get('splits') or []
-                if split.get('split_object')
-            }
-        except Exception:
-            excluded_names = set()
+    excluded_names = {str(value) for value in (excluded_names or ())}
 
     excluded_vertex_mask = None
     if excluded_names:
@@ -250,17 +270,6 @@ def _prepare_lod_export(exporter):
     )
 
     velo_lods = []
-    velo_draws = [
-        [
-            {
-                'name': temp_obj.name,
-                'index_count': int(temp_obj.index_count),
-                'index_offset': int(temp_obj.index_offset),
-            }
-            for temp_obj in component.objects
-        ]
-        for component in merged_components
-    ]
 
     try:
         for lod_index, (lod_object_name, entries) in enumerate(ordered_groups):
@@ -330,7 +339,6 @@ def _prepare_lod_export(exporter):
 
     exporter.extracted_object.velo_lods = velo_lods
     exporter.extracted_object.velo_lod_excluded_objects = sorted(excluded_names)
-    exporter.extracted_object.velo_draws = velo_draws
 
     total_sections = sum(
         1 for lod in velo_lods for entry in lod['components'] if entry is not None)

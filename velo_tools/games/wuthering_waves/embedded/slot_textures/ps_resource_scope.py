@@ -9,6 +9,8 @@ _SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
 _RUN_RE = re.compile(r"^(\s*)run\s*=\s*([A-Za-z0-9_]+)\s*$", re.I)
 _TRIGGER_RE = re.compile(
     r"^CommandListTriggerResourceOverrides((?:_ib\d+)*)$", re.I)
+_CLEANUP_RE = re.compile(
+    r"^CommandListCleanupSharedResources((?:_ib\d+)*)$", re.I)
 _SETTER_RE = re.compile(
     r"^(CommandListSetTexturesComponent\d+"
     r"(?:Route(?:Base|[0-9a-f]{8}))?)((?:_ib\d+)*)$", re.I)
@@ -50,6 +52,13 @@ def _section_spans(lines: Sequence[str]) -> List[Tuple[str, int, int]]:
 
 def _trigger_suffix(command: str) -> Optional[str]:
     match = _TRIGGER_RE.fullmatch(command)
+    if not match:
+        return None
+    return (match.group(1) or "").casefold()
+
+
+def _cleanup_suffix(command: str) -> Optional[str]:
+    match = _CLEANUP_RE.fullmatch(command)
     if not match:
         return None
     return (match.group(1) or "").casefold()
@@ -194,12 +203,24 @@ def _transactions(lines: Sequence[str], start: int, end: int):
         parsed = _run_command(lines[index].strip())
         if not parsed:
             continue
-        suffix = _trigger_suffix(parsed[1])
-        if suffix is None:
+        trigger_suffix = _trigger_suffix(parsed[1])
+        if trigger_suffix is None:
             continue
-        limit = _next_trigger(lines, index + 1, end, suffix)
+        limit = _next_trigger(lines, index + 1, end, trigger_suffix)
+        suffix = trigger_suffix
         cleanup = _find_next_run(
             lines, index + 1, limit, _cleanup_name(suffix))
+        if cleanup is None and trigger_suffix == "":
+            scoped_cleanups = []
+            for candidate in range(index + 1, limit):
+                candidate_run = _run_command(lines[candidate].strip())
+                if candidate_run is None:
+                    continue
+                candidate_suffix = _cleanup_suffix(candidate_run[1])
+                if candidate_suffix:
+                    scoped_cleanups.append((candidate, candidate_suffix))
+            if len(scoped_cleanups) == 1:
+                cleanup, suffix = scoped_cleanups[0]
         boundary = previous_cleanup.get(suffix, start) + 1
         if cleanup is not None:
             previous_cleanup[suffix] = cleanup

@@ -1,6 +1,7 @@
-"""Cross-scene fold consumer (M2 core) -- folds a "foldable" dungeon IB into the base buffer, never touching ``_wwmi_core``.
+"""Cross-scene fold consumer for the schema-v3 direct compiler.
 
-Ported from the game-verified standalone prototype ``xscene_fold_prep.py`` + generalized, driven by the ``fold`` section of ``CrossSceneRouting.json``.
+Fold routes reproject geometry and morph data from the self-contained aggregate
+root into the body resource domain without touching ``_wwmi_core``.
 Three hard modules:
   1. ``reproject_morph``  -- reproject dungeon shapekeys onto the base vertex order via dun2body (exactly once per shapekey per vid,
      to prevent over-accumulation by ShapeKeyLoader.hlsl's InterlockedAdd -> sticking / eyeballs bursting out).
@@ -15,7 +16,8 @@ Phase strategy (plan "reproduce first, then extend"):
   * M2 (holes, unedited): the morph body<->dungeon correspondence is rebuilt by **export-layer position matching** -- same algorithm and data as the external one -> byte-for-byte == green mod.
   * M3 (edited): switch to **VertexId + producer correspondence** (position-independent) for edit robustness; blend remap is already edit-robust since it's applied via the VG table.
 
-This module's buffer/ini functions are pure numpy / strings, with no bpy dependency; orchestration (exporting each IB, calling this module, merging) lives in the orchestrator.
+This module's buffer/INI functions are pure numpy/strings with no bpy dependency;
+the direct compiler consumes their output while constructing the final IR.
 """
 import re
 from collections import defaultdict

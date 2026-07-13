@@ -39,12 +39,14 @@ from . import ps_resource_scope
 from .generator import SlotPlan, SlotStyleDegrade
 
 _SECTION_RE = re.compile(r'^\[([^\]]+)\]\s*$')
-_COMP_ID_RE = re.compile(r'component\s*(\d+)\s*$', re.I)
+_COMP_ID_RE = re.compile(r'component\s*(\d+)(?:[^0-9].*)?$', re.I)
 _RANGE_SECTION_RE = re.compile(r'^textureoverridecomponent(\d+)$')
 _FIRST_INDEX_RE = re.compile(r'^match_first_index\s*=\s*(\d+)\s*$', re.I)
 _INDEX_COUNT_RE = re.compile(r'^match_index_count\s*=\s*(\d+)\s*$', re.I)
 
 _TRIGGER_LINE = 'run = commandlisttriggerresourceoverrides'
+_TRIGGER_LINE_RE = re.compile(
+    r'run\s*=\s*commandlisttriggerresourceoverrides(?:_ib\d+)*$', re.I)
 _CONSTANTS_SECTION = 'constants'
 _PRESENT_SECTION = 'present'
 
@@ -83,7 +85,9 @@ def extract_component_ranges(ini_text: str) -> Dict[int, Tuple[int, int]]:
     return ranges
 
 
-def apply(ini_text: str, plan: SlotPlan) -> str:
+def apply(ini_text: str, plan: SlotPlan, *,
+          section_routes: Optional[Dict[str, str]] = None,
+          disabled_sections: Optional[Set[str]] = None) -> str:
     lines = ini_text.split('\n')
     spans = _section_spans(lines)
     if not spans:
@@ -111,6 +115,14 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
     injected_components = set()
     found_constants = False
     found_present = False
+
+    section_routes = {
+        str(name).strip().lower(): str(route).strip().lower()
+        for name, route in (section_routes or {}).items()
+    }
+    disabled_sections = {
+        str(name).strip().lower() for name in (disabled_sections or set())
+    }
 
     for name, start, end in spans:
         lname = name.strip().lower()
@@ -158,8 +170,24 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
         comp_match = _COMP_ID_RE.search(name.strip())
         if not comp_match:
             continue
+        if lname in disabled_sections:
+            continue
         comp_id = int(comp_match.group(1))
-        list_name = plan.component_list_names.get(comp_id)
+        list_name = None
+        route_lists = (getattr(plan, 'component_route_lists', None) or {}).get(
+            comp_id, {})
+        route = section_routes.get(lname)
+        if route_lists:
+            list_name = route_lists.get(route or 'base')
+        if list_name is None:
+            list_name = plan.component_list_names.get(comp_id)
+        scope_match = re.search(r'(_ib\d+)$', name.strip(), re.I)
+        if list_name is not None and scope_match:
+            scoped_name = list_name + scope_match.group(1)
+            restore_contract = getattr(plan, 'restore_contract', None) or {}
+            if any(str(key).casefold() == scoped_name.casefold()
+                   for key in restore_contract):
+                list_name = scoped_name
         if list_name is None:
             continue
 
@@ -169,7 +197,7 @@ def apply(ini_text: str, plan: SlotPlan) -> str:
             if stripped.startswith(';'):
                 continue
             low = stripped.lower()
-            if low == _TRIGGER_LINE:
+            if low == _TRIGGER_LINE or _TRIGGER_LINE_RE.fullmatch(stripped):
                 trigger_indices.append(i)
         if not trigger_indices:
             continue

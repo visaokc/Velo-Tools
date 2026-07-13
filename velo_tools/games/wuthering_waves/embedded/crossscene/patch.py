@@ -1,21 +1,8 @@
-"""Cross-scene export hook -- monkey-patch ``VTWW_Export.execute``.
+"""Route schema-v3 WWMI aggregate roots into the Velo direct compiler.
 
-When the user clicks the regular "Export Mod" on a base imported and edited from a
-merged folder: if the export source folder contains ``CrossSceneRouting.json``, it
-automatically runs the cross-scene orchestrator (folds and merges into a single mod
-that works across all scenes); otherwise it does the stock export as-is (zero impact
-on non-cross-scene projects).
-
-- **Prefix gating**: only patch the velo vendored ``VTWW_Export`` (class name taken
-  from the game registry), never touching the same-named operator of a standalone
-  WWMI-Tools installed separately by the user.
-- **Recursion guard**: inside the orchestrator, re-exporting each sub IB and
-  re-exporting the morph reference (the reference also points at the merged folder
-  containing the JSON) will trigger ``vtww.export_mod`` again; once ``_IN_XSCENE`` is
-  set, this patch passes straight through to orig (stock) and no longer recurses into
-  the cross-scene branch.
-- Idempotent: already-patched classes are skipped (``_PATCHED``). Never modify
-  ``_wwmi_core``.
+The patch is Velo-prefix gated, idempotent, and leaves ordinary single-IB WWMI
+imports/exports untouched. Legacy schema-v2 roots are rejected with a re-aggregate
+message instead of falling through to the stock single-IB path.
 """
 from __future__ import annotations
 
@@ -26,7 +13,6 @@ from pathlib import Path
 import bpy
 
 _PATCHED = {}
-_IN_XSCENE = [False]
 
 
 def _find_vtww_export():
@@ -51,23 +37,21 @@ def _find_vtww_export():
 
 def _make_patched(orig_execute):
     def patched(self, context):
-        if _IN_XSCENE[0]:
-            return orig_execute(self, context)  # recursion guard: sub-export/reference-export goes stock
         cfg = getattr(context.scene, "VTWW_settings", None)
         src = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
-        routing = (Path(bpy.path.abspath(src)) / "CrossSceneRouting.json") if src else None
+        root = Path(bpy.path.abspath(src)) if src else None
+        manifest = (root / "CrossSceneManifest.json") if root else None
+        legacy = (root / "CrossSceneRouting.json") if root else None
         base_col = getattr(cfg, "component_collection", None) if cfg is not None else None
-        if not (routing and routing.is_file()) or base_col is None:
+        if not ((manifest and manifest.is_file()) or (legacy and legacy.is_file())) or base_col is None:
             return orig_execute(self, context)  # not cross-scene -> stock export as-is
         from . import orchestrator
-        # Write the merged mod DIRECTLY into the user's output folder (like a stock single-IB export),
-        # not a hardcoded `cross_scene_velo` subfolder. The assembler cleans only its own products
-        # (Meshes/ Textures/ mod.ini), so sibling files in the output folder are left intact.
+        # Write the compiled mod directly into the user's selected output root.
         out = str(Path(bpy.path.abspath(cfg.mod_output_folder)))
-        _IN_XSCENE[0] = True
         try:
             rep = orchestrator.build_cross_scene_mod(
-                context, cfg, base_col, str(Path(bpy.path.abspath(src))), out, hole=False)
+                context, cfg, base_col, str(root), out, hole=False,
+                excluded_buffers=self.get_excluded_buffers(context))
         except Exception as e:
             traceback.print_exc()
             try:
@@ -77,8 +61,6 @@ def _make_patched(orig_execute):
             except Exception:
                 pass
             return {'CANCELLED'}
-        finally:
-            _IN_XSCENE[0] = False
         try:
             msg = "Cross-scene mod exported to %s | roles=%s" % (out, rep.get("roles"))
             if rep.get("slot_style"):
@@ -111,8 +93,7 @@ def _make_patched(orig_execute):
                 print("[velo.xscene] body hash fallback suppressed %d hash(es): %s"
                       % (len(suppressed), detail or ", ".join(suppressed)))
             if not rep.get("sound", True):
-                # The assembler self-check failed (dangling refs / missing files / texture or skeleton
-                # mismatch): the mod was written but may not work -- never report this as a clean success.
+                # The final IR audit failed; never report this as a clean success.
                 msg += (" | self-check FAILED: %d dangling ref(s), %d missing file(s)"
                         % (len(rep.get("dangling") or []), len(rep.get("missing") or [])))
                 root_missing = rep.get("root_dds_missing") or []
@@ -150,7 +131,7 @@ def install():
         return
     _PATCHED[id(cls)] = (cls, cls.execute)
     cls.execute = _make_patched(cls.execute)
-    print("[velo.xscene-hook] patched VTWW_Export.execute (cross-scene fold on CrossSceneRouting.json)")
+    print("[velo.xscene-hook] patched VTWW_Export.execute (schema-v3 direct compiler)")
 
 
 def remove():
@@ -221,20 +202,37 @@ def _find_vtww_import():
     return None
 
 
-def _is_xscene_merged_import(context):
+def _xscene_import_root(context):
     cfg = getattr(context.scene, "VTWW_settings", None)
-    if cfg is None or getattr(cfg, "import_skeleton_type", "") != "MERGED":
-        return False
+    if cfg is None:
+        return None
     src = getattr(cfg, "object_source_folder", "")
     if not src:
-        return False
-    return (Path(bpy.path.abspath(src)) / "CrossSceneRouting.json").is_file()
+        return None
+    root = Path(bpy.path.abspath(src))
+    if ((root / "CrossSceneManifest.json").is_file()
+            or (root / "CrossSceneRouting.json").is_file()):
+        return root
+    return None
 
 
 def _make_patched_import(orig_execute):
     def patched(self, context):
-        if not _is_xscene_merged_import(context):
+        root = _xscene_import_root(context)
+        if root is None:
             return orig_execute(self, context)  # stock import: zero impact
+        from .manifest import CrossSceneManifestError, load_manifest
+        try:
+            load_manifest(root)
+        except CrossSceneManifestError as exc:
+            try:
+                self.report({'ERROR'}, str(exc))
+            except Exception:
+                pass
+            return {'CANCELLED'}
+        cfg = getattr(context.scene, "VTWW_settings", None)
+        if getattr(cfg, "import_skeleton_type", "") != "MERGED":
+            return orig_execute(self, context)
         from ..._wwmi_core.blender_import import blender_import as _bi
         real_re = _bi.re
         _bi.re = _ReShim(real_re)
