@@ -268,7 +268,8 @@ def _make_patched(orig_execute):
             self.report({'ERROR'}, "Per-Component (from Merged)：未选择 component collection。")
             return {'CANCELLED'}
         src = bpy.path.abspath(getattr(cfg, "object_source_folder", "") or "")
-        if (Path(src) / "CrossSceneRouting.json").is_file():
+        if ((Path(src) / "CrossSceneManifest.json").is_file()
+                or (Path(src) / "CrossSceneRouting.json").is_file()):
             return orig_execute(self, context)
         try:
             vg_maps = _load_vg_maps(src)

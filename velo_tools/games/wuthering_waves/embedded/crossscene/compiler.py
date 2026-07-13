@@ -263,17 +263,31 @@ def _normalized_cfg(cfg: Any) -> Any:
 
 
 def _root_textures(root: Path, cfg: Any) -> Tuple[Any, ...]:
-    from ..._wwmi_core.blender_export.texture_collector import get_textures
-    excluded = (
-        ['af26db30', '1320a071', '10d7937d', '87505b2b',
-         'e5df00a8', 'ec2fecec', 'd313d349']
-        if bool(cfg.skip_known_cubemap_textures) else []
+    from ..._wwmi_core.blender_export.texture_collector import Texture
+    from .texture_delivery import build_delivery_inventory
+
+    excluded = ({'af26db30', '1320a071', '10d7937d', '87505b2b',
+                 'e5df00a8', 'ec2fecec', 'd313d349'}
+                if bool(cfg.skip_known_cubemap_textures) else set())
+    inventory = build_delivery_inventory(root, ())
+    return tuple(
+        Texture(
+            hash=item.texture_hash or "",
+            path=item.path,
+            filename=item.name,
+        )
+        for item in inventory.root_files
+        if item.texture_hash not in excluded
     )
-    return tuple(sorted(
-        get_textures(root, excluded),
-        key=lambda texture: (
-            str(texture.hash).casefold(), str(texture.filename).casefold()),
-    ))
+
+
+def _ini_textures(textures: Sequence[Any]) -> Tuple[Any, ...]:
+    by_hash = {}
+    for texture in textures:
+        texture_hash = str(texture.hash).strip().lower()
+        if re.fullmatch(r"[0-9a-f]{8}", texture_hash):
+            by_hash.setdefault(texture_hash, texture)
+    return tuple(by_hash[key] for key in sorted(by_hash))
 
 
 def _unit_has_geometry(unit: Any) -> bool:
@@ -1080,6 +1094,7 @@ def compile_cross_scene(units: Sequence[Any], manifest: Mapping[str, Any],
     mode = cfg_view.mod_skeleton_type
     textures = (_root_textures(root, cfg)
                 if settings.selection.objects else ())
+    ini_textures = _ini_textures(textures)
     try:
         from ..._wwmi_core.migoto_io.blender_interface.utility import resolve_path
         logo_source = resolve_path(cfg.mod_logo)
@@ -1088,7 +1103,8 @@ def compile_cross_scene(units: Sequence[Any], manifest: Mapping[str, Any],
 
     template = _template_source(mode, bool(cfg.comment_ini))
     body = units[0]
-    body_text = _render(template, _maker(body, cfg_view, textures, logo_source))
+    body_text = _render(
+        template, _maker(body, cfg_view, ini_textures, logo_source))
     ir = (CrossSceneIR.parse(body_text) if _unit_has_geometry(body)
           else _empty_body_ir(body_text, body))
     section_routes: Dict[str, str] = {}
@@ -1129,7 +1145,7 @@ def compile_cross_scene(units: Sequence[Any], manifest: Mapping[str, Any],
     text = ir.render()
 
     plan = _slot_plan(
-        settings.context, root, cfg, settings.selection, manifest, textures)
+        settings.context, root, cfg, settings.selection, manifest, ini_textures)
     if plan is not None:
         from ..slot_textures import transform
         _add_scoped_setter_aliases(plan, section_routes)
