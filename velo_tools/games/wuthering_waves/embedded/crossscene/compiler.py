@@ -19,6 +19,14 @@ _LOCAL_REF_RE = re.compile(
     re.I,
 )
 _FILENAME_RE = re.compile(r"^\s*filename\s*=\s*(\S+)\s*$", re.I | re.M)
+_UNIT_LOCAL_VAR_RE = re.compile(
+    r"\$(object_detected|state_id|lod_level|merge_status_id|"
+    r"mesh_vertex_count|shapekey_vertex_count)(?![A-Za-z0-9_])"
+)
+_OBJECT_GATE_LINE_RE = re.compile(
+    r"^(\s*)if\s+\$object_detected(?:_ib\d+)?(?:\s*==\s*1)?\s*$",
+    re.I,
+)
 
 
 class CrossSceneCompileError(RuntimeError):
@@ -161,7 +169,7 @@ def _unit_fragment_source(source: str, skeleton_mode: str) -> str:
 
 
 def specialize_unit_template(source: str, suffix: str) -> str:
-    """Assign child section/resource identities before Jinja rendering."""
+    """Assign final unit section, resource, and variable identities before rendering."""
     placeholders: Dict[str, str] = {}
 
     def protect(value: str) -> str:
@@ -176,6 +184,8 @@ def specialize_unit_template(source: str, suffix: str) -> str:
 
     def dynamic_repl(match: re.Match[str]) -> str:
         value = match.group(1)
+        if re.match(r"^(?:Resource|TextureOverride)Texture\{\{", value):
+            return protect(value)
         if "Component" in value:
             value = re.sub(
                 r"\{\{\s*loop\.index0\s*\}\}",
@@ -187,13 +197,15 @@ def specialize_unit_template(source: str, suffix: str) -> str:
     source = dynamic.sub(dynamic_repl, source)
     source = source.replace(
         "$merge_status_id_{{ loop.index0 }}",
-        protect("$merge_status_id_{{ component_ids[loop.index0] }}"),
+        protect("$merge_status_id_{{ component_ids[loop.index0] }}" + suffix),
     )
     for stem in ("offset", "count"):
         token = f"$shapekey_vertex_{stem}_batch{{{{ loop.index0 }}}}"
         source = source.replace(token, protect(token + suffix))
-    source = source.replace("$mesh_vertex_count", "$mesh_vertex_count" + suffix)
-    source = source.replace("$shapekey_vertex_count", "$shapekey_vertex_count" + suffix)
+    source = _UNIT_LOCAL_VAR_RE.sub(
+        lambda match: match.group(0) + suffix,
+        source,
+    )
     source = source.replace(
         "filename = Meshes/{{ buffer_name }}.buf",
         "filename = Meshes/{{ buffer_name }}" + suffix + ".buf",
@@ -208,7 +220,10 @@ def specialize_unit_template(source: str, suffix: str) -> str:
 
     def static_repl(match: re.Match[str]) -> str:
         value = match.group(1)
-        return value if value in globals_kept else value + suffix
+        if (value in globals_kept
+                or re.fullmatch(r"(?:Resource|TextureOverride)Texture\d+", value)):
+            return value
+        return value + suffix
 
     source = static.sub(static_repl, source)
     for key, value in placeholders.items():
@@ -298,13 +313,17 @@ def _unit_has_geometry(unit: Any) -> bool:
     return bool(unit.buffers) and int(unit.merged_object.index_count) > 0
 
 
+def _object_var(suffix: str) -> str:
+    return "$object_detected" + suffix
+
+
 def _empty_override(name: str, vb_hash: str, first: int, count: int,
-                    reason: str) -> IniSectionIR:
+                    reason: str, object_var: str) -> IniSectionIR:
     return IniSectionIR(name, [
         f"hash = {vb_hash}",
         f"match_first_index = {first}",
         f"match_index_count = {count}",
-        "$object_detected = 1",
+        f"{object_var} = 1",
         "if $mod_enabled",
         "    handling = skip",
         f"    ; Draw skipped: {reason}",
@@ -315,11 +334,12 @@ def _empty_override(name: str, vb_hash: str, first: int, count: int,
 def _empty_body_ir(rendered: str, body: Any) -> CrossSceneIR:
     """Keep native common sections and replace geometry with empty skips."""
     source = CrossSceneIR.parse(rendered)
+    suffix = body.plan.suffix
     exact = {
         "constants",
         "present",
-        "commandlistregistermod",
-        "commandlistprocesstoggles",
+        f"commandlistregistermod{suffix}".casefold(),
+        f"commandlistprocesstoggles{suffix}".casefold(),
         "commandlisttriggerresourceoverrides",
     }
     prefixes = (
@@ -338,7 +358,8 @@ def _empty_body_ir(rendered: str, body: Any) -> CrossSceneIR:
     present.lines = [
         line for line in present.lines
         if not re.search(
-            r"run\s*=\s*CommandList(?:InitializeBlendRemaps|UpdateMergedSkeleton)\s*$",
+            r"run\s*=\s*CommandList(?:InitializeBlendRemaps|UpdateMergedSkeleton)"
+            r"(?:_ib\d+)?\s*$",
             line,
             re.I,
         )
@@ -349,7 +370,7 @@ def _empty_body_ir(rendered: str, body: Any) -> CrossSceneIR:
         "components") or []
     for local_id, global_id in body.plan.component_map:
         component = components[local_id]
-        name = f"TextureOverrideComponent{global_id}"
+        name = f"TextureOverrideComponent{global_id}{suffix}"
         if name.casefold() not in existing:
             result.sections.append(_empty_override(
                 name,
@@ -357,6 +378,7 @@ def _empty_body_ir(rendered: str, body: Any) -> CrossSceneIR:
                 int(component.get("index_offset", 0)),
                 int(component.get("index_count", 0)),
                 "component excluded by ExportSelection",
+                _object_var(suffix),
             ))
             existing.add(name.casefold())
     return result
@@ -381,6 +403,7 @@ def _append_empty_unit_routes(ir: CrossSceneIR, unit: Any) -> None:
                 int(component.get("index_offset", 0)),
                 int(component.get("index_count", 0)),
                 "component excluded by ExportSelection",
+                _object_var(unit.plan.suffix),
             ))
             existing.add(full_name.casefold())
         for level, lod in enumerate(component.get("lods") or [], start=1):
@@ -397,11 +420,13 @@ def _append_empty_unit_routes(ir: CrossSceneIR, unit: Any) -> None:
                 int(lod.get("index_offset", 0)),
                 int(lod.get("index_count", 0)),
                 "LOD component excluded by ExportSelection",
+                _object_var(unit.plan.suffix),
             ))
             existing.add(lod_name.casefold())
 
 
-def _append_child_globals(ir: CrossSceneIR, units: Sequence[Any], cfg: Any) -> None:
+def _append_unit_globals(ir: CrossSceneIR, units: Sequence[Any], cfg: Any,
+                         mode: str) -> None:
     constants = ir.get("Constants")
     existing = {line.strip().casefold() for line in constants.lines}
 
@@ -411,18 +436,15 @@ def _append_child_globals(ir: CrossSceneIR, units: Sequence[Any], cfg: Any) -> N
             constants.lines.append(line)
             existing.add(key)
 
-    active_units = [unit for unit in units if _unit_has_geometry(unit)]
-    if any(getattr(unit.extracted_object, "velo_lods", None)
-           for unit in active_units):
-        add("global $lod_level = 0")
     formatter = None
     if bool(cfg.use_ini_toggles):
         from ..._wwmi_core.blender_export.text_formatter import TextFormatter
         formatter = TextFormatter()
-    for unit in units[1:]:
+    for unit in units:
+        suffix = unit.plan.suffix
+        add(f"global {_object_var(suffix)} = 0")
         if not _unit_has_geometry(unit):
             continue
-        suffix = unit.plan.suffix
         add(f"global $mesh_vertex_count{suffix} = {unit.merged_object.vertex_count}")
         add(f"global $shapekey_vertex_count{suffix} = "
             f"{unit.merged_object.shapekeys.vertex_count}")
@@ -431,28 +453,141 @@ def _append_child_globals(ir: CrossSceneIR, units: Sequence[Any], cfg: Any) -> N
                 f"{batch.vertex_offset}")
             add(f"global $shapekey_vertex_count_batch{index}{suffix} = "
                 f"{batch.vertex_count}")
-        for _local_id, global_id in unit.plan.component_map:
-            add(f"global $merge_status_id_{global_id} = 0")
+        if getattr(unit.extracted_object, "velo_lods", None):
+            add(f"global $lod_level{suffix} = 0")
+        if mode == "MERGED":
+            add(f"global $state_id{suffix} = 0")
+            add(f"global $merge_status_id{suffix} = 0")
+            for _local_id, global_id in unit.plan.component_map:
+                add(f"global $merge_status_id_{global_id}{suffix} = 0")
         if formatter is not None:
             for component in unit.merged_object.components:
                 for obj in component.objects:
                     add(f"global {formatter.format_ini_drawvar(obj.name)} = 1")
 
 
-def _append_child_present(ir: CrossSceneIR, units: Sequence[Any], mode: str) -> None:
+def _compile_present(ir: CrossSceneIR, units: Sequence[Any], mode: str,
+                     cfg: Any) -> None:
     present = ir.get("Present")
-    for unit in units[1:]:
-        if not _unit_has_geometry(unit):
-            continue
+    object_vars = [_object_var(unit.plan.suffix) for unit in units]
+    detected = " || ".join(object_vars)
+    body_suffix = units[0].plan.suffix
+    lines = [f"if {detected}"]
+    if bool(cfg.use_ini_toggles):
+        lines.extend([
+            "    if $mod_enabled",
+            f"        run = CommandListProcessToggles{body_suffix}",
+            "    else",
+            "        if $mod_id == -1000",
+            f"            run = CommandListRegisterMod{body_suffix}",
+            "        endif",
+            "    endif",
+        ])
+    else:
+        lines.extend([
+            "    if !$mod_enabled",
+            "        if $mod_id == -1000",
+            f"            run = CommandListRegisterMod{body_suffix}",
+            "        endif",
+            "    endif",
+        ])
+    lines.append("endif")
+    for unit in units:
         suffix = unit.plan.suffix
-        lines = ["", f"; Cross-scene resource domain {unit.plan.resource_domain}",
-                 "if $object_detected && $mod_enabled"]
-        if unit.merged_object.blend_remap_count > 0:
-            lines.append(f"    run = CommandListInitializeBlendRemaps{suffix}")
-        if mode == "MERGED":
-            lines.append(f"    run = CommandListUpdateMergedSkeleton{suffix}")
+        object_var = _object_var(suffix)
+        lines.extend([
+            "",
+            f"; Cross-scene resource domain {unit.plan.resource_domain}",
+            f"if {object_var} && $mod_enabled",
+            f"    post {object_var} = 0",
+        ])
+        if _unit_has_geometry(unit):
+            if unit.merged_object.blend_remap_count > 0:
+                lines.append(f"    run = CommandListInitializeBlendRemaps{suffix}")
+            if mode == "MERGED":
+                lines.append(f"    run = CommandListUpdateMergedSkeleton{suffix}")
         lines.append("endif")
-        present.lines.extend(lines)
+    present.lines = lines
+
+
+def _component_object_vars(units: Sequence[Any]) -> Dict[int, Tuple[str, ...]]:
+    output: Dict[int, List[str]] = {}
+    for unit in units:
+        object_var = _object_var(unit.plan.suffix)
+        for _local_id, global_id in unit.plan.component_map:
+            values = output.setdefault(int(global_id), [])
+            if object_var not in values:
+                values.append(object_var)
+    return {component_id: tuple(values)
+            for component_id, values in output.items()}
+
+
+def _apply_domain_object_gates(
+        ir: CrossSceneIR,
+        units: Sequence[Any],
+        texture_components: Mapping[str, Iterable[int]],
+) -> None:
+    """Bind global texture/setter gates to their owning resource domains."""
+    component_vars = _component_object_vars(units)
+    all_vars = tuple(_object_var(unit.plan.suffix) for unit in units)
+
+    def vars_for_components(component_ids: Iterable[int]) -> Tuple[str, ...]:
+        result = []
+        for component_id in component_ids:
+            for value in component_vars.get(int(component_id), ()):
+                if value not in result:
+                    result.append(value)
+        return tuple(result)
+
+    for section in ir.sections:
+        variables: Tuple[str, ...] = ()
+        setter = re.match(r"CommandListSetTexturesComponent(\d+)", section.name, re.I)
+        if setter is not None:
+            variables = component_vars.get(int(setter.group(1)), ())
+        elif re.fullmatch(r"TextureOverrideTexture\d+", section.name, re.I):
+            component_ids = []
+            for line in section.lines:
+                match = re.match(r"\s*;\s*opt_out_component\s*=\s*(.+)", line, re.I)
+                if match:
+                    component_ids.extend(
+                        int(value) for value in re.findall(r"\d+", match.group(1)))
+            if not component_ids:
+                texture_hash = ""
+                for line in section.lines:
+                    match = re.match(r"\s*hash\s*=\s*([0-9a-f]+)", line, re.I)
+                    if match:
+                        texture_hash = match.group(1).lower()
+                        break
+                component_ids = list(texture_components.get(texture_hash, ()))
+            variables = vars_for_components(component_ids)
+            if not variables:
+                variables = all_vars
+        if not variables:
+            continue
+        expression = " || ".join(variables)
+        section.lines = [
+            (_OBJECT_GATE_LINE_RE.sub(
+                lambda match: f"{match.group(1)}if {expression}", line)
+             if _OBJECT_GATE_LINE_RE.match(line) else line)
+            for line in section.lines
+        ]
+
+
+def _assert_object_domain_isolation(text: str, units: Sequence[Any]) -> None:
+    leaked = re.search(r"\$object_detected(?!_ib\d+\b)", text)
+    if leaked is not None:
+        line = text.count("\n", 0, leaked.start()) + 1
+        raise CrossSceneCompileError(
+            f"shared $object_detected leaked into final INI at line {line}")
+    declared = re.findall(
+        r"^\s*global\s+(\$object_detected_ib\d+)\s*=", text, re.I | re.M)
+    expected = [_object_var(unit.plan.suffix) for unit in units]
+    if len(declared) != len(set(value.casefold() for value in declared)):
+        raise CrossSceneCompileError("duplicate object-detection domain global")
+    if {value.casefold() for value in declared} != {
+            value.casefold() for value in expected}:
+        raise CrossSceneCompileError(
+            "object-detection domain declarations do not match ExportUnit ownership")
 
 
 def _buffer_bytes(buffer: Any) -> bytes:
@@ -484,7 +619,8 @@ def _component_draws(body: Any, component_id: int) -> List[Any]:
 
 
 def _fold_morph_buffers(body: Any, entry: Mapping[str, Any],
-                        component_ids: Iterable[int]) -> Tuple[Dict[str, bytes], List[int]]:
+                        component_ids: Iterable[int],
+                        suffix: str) -> Tuple[Dict[str, bytes], List[int]]:
     import numpy as np
     from .fold import _iter_key_entries
 
@@ -546,14 +682,16 @@ def _fold_morph_buffers(body: Any, entry: Mapping[str, Any],
 
     tag = str(entry["ib_hash"])
     return {
-        f"ShapeKeyOffset_{tag}.buf": np.asarray(output_offsets, np.uint32).tobytes(),
-        f"ShapeKeyVertexId_{tag}.buf": np.asarray(output_vids, np.uint32).tobytes(),
-        f"ShapeKeyVertexOffset_{tag}.buf": bytes(output_rows),
+        f"ShapeKeyOffset_{tag}{suffix}.buf": np.asarray(
+            output_offsets, np.uint32).tobytes(),
+        f"ShapeKeyVertexId_{tag}{suffix}.buf": np.asarray(
+            output_vids, np.uint32).tobytes(),
+        f"ShapeKeyVertexOffset_{tag}{suffix}.buf": bytes(output_rows),
     }, batch_counts
 
 
 def _fold_morph_ini(entry: Mapping[str, Any], batch_counts: Sequence[int],
-                    unrestricted: bool, merged: bool) -> str:
+                    unrestricted: bool, merged: bool, suffix: str) -> str:
     shapes = (entry.get("native_metadata") or {}).get("shapekeys") or {}
     if not batch_counts:
         return ""
@@ -563,24 +701,24 @@ def _fold_morph_ini(entry: Mapping[str, Any], batch_counts: Sequence[int],
     offset = 0
     for index, count in enumerate(batch_counts):
         lines.extend([
-            f";VELO_CONST global $shapekey_vertex_offset_batch{index}_{tag} = {offset}",
-            f";VELO_CONST global $shapekey_vertex_count_batch{index}_{tag} = {count}",
+            f";VELO_CONST global $shapekey_vertex_offset_batch{index}_{tag}{suffix} = {offset}",
+            f";VELO_CONST global $shapekey_vertex_count_batch{index}_{tag}{suffix} = {count}",
         ])
         offset += count
     lines.extend([
-        f"[TextureOverrideShapeKeyOffsets_{tag}]",
+        f"[TextureOverrideShapeKeyOffsets_{tag}{suffix}]",
         f"hash = {shapes.get('offsets_hash', '')}",
         "match_priority = 0",
         "override_byte_stride = 24",
-        "override_vertex_count = $mesh_vertex_count",
+        f"override_vertex_count = $mesh_vertex_count{suffix}",
         "",
-        f"[TextureOverrideShapeKeyScale_{tag}]",
+        f"[TextureOverrideShapeKeyScale_{tag}{suffix}]",
         f"hash = {shapes.get('scale_hash', '')}",
         "match_priority = 0",
         "override_byte_stride = 4",
-        "override_vertex_count = $mesh_vertex_count",
+        f"override_vertex_count = $mesh_vertex_count{suffix}",
         "",
-        f"[CommandListSetupShapeKeysBatch_{tag}]",
+        f"[CommandListSetupShapeKeysBatch_{tag}{suffix}]",
     ])
     for index, batch in enumerate(batches):
         lines.extend([
@@ -588,75 +726,77 @@ def _fold_morph_ini(entry: Mapping[str, Any], batch_counts: Sequence[int],
             f"$\\WWMIv1\\shapekey_vertex_offset_original_batch{index} = "
             f"{batch.get('vertex_offset', 0)}",
             f"$\\WWMIv1\\shapekey_vertex_offset_custom_batch{index} = "
-            f"$shapekey_vertex_offset_batch{index}_{tag}",
+            f"$shapekey_vertex_offset_batch{index}_{tag}{suffix}",
         ])
     lines.extend([
-        f"cs-t33 = ResourceShapeKeyOffsetBuffer_{tag}",
-        "cs-u5 = ResourceCustomShapeKeyValuesRW",
-        "cs-u6 = ResourceShapeKeyCBRW",
+        f"cs-t33 = ResourceShapeKeyOffsetBuffer_{tag}{suffix}",
+        f"cs-u5 = ResourceCustomShapeKeyValuesRW{suffix}",
+        f"cs-u6 = ResourceShapeKeyCBRW{suffix}",
         "run = CustomShader\\WWMIv1\\ShapeKeyBatchOverrider",
         "",
-        f"[CommandListLoadShapeKeysBatch_{tag}]",
+        f"[CommandListLoadShapeKeysBatch_{tag}{suffix}]",
     ])
     for index, batch in enumerate(batches):
         lines.extend([
             f"$\\WWMIv1\\shapekey_dispatch_size_y_original_batch{index} = "
             f"{batch.get('dispatch_y', 0)}",
             f"$\\WWMIv1\\shapekey_vertex_count_batch{index} = "
-            f"$shapekey_vertex_count_batch{index}_{tag}",
+            f"$shapekey_vertex_count_batch{index}_{tag}{suffix}",
         ])
     lines.extend([
-        f"cs-t0 = ResourceShapeKeyVertexIdBuffer_{tag}",
-        f"cs-t1 = ResourceShapeKeyVertexOffsetBuffer_{tag}",
-        "cs-u6 = ResourceShapeKeyCBRW",
+        f"cs-t0 = ResourceShapeKeyVertexIdBuffer_{tag}{suffix}",
+        f"cs-t1 = ResourceShapeKeyVertexOffsetBuffer_{tag}{suffix}",
+        f"cs-u6 = ResourceShapeKeyCBRW{suffix}",
         "run = CommandList\\WWMIv1\\LoadShapeKeysBatch",
         "",
-        f"[TextureOverrideShapeKeyLoaderCallback_{tag}]",
+        f"[TextureOverrideShapeKeyLoaderCallback_{tag}{suffix}]",
         f"hash = {shapes.get('offsets_hash', '')}",
         "match_priority = 0",
         "if $mod_enabled",
-        "    if cs == 3381.3333" + (" && ResourceMergedSkeleton !== null" if merged else ""),
+        "    if cs == 3381.3333" + (
+            f" && ResourceMergedSkeleton{suffix} !== null" if merged else ""),
         "        handling = skip",
-        f"        run = CommandListSetupShapeKeysBatch_{tag}",
-        f"        run = CommandListLoadShapeKeysBatch_{tag}",
+        f"        run = CommandListSetupShapeKeysBatch_{tag}{suffix}",
+        f"        run = CommandListLoadShapeKeysBatch_{tag}{suffix}",
         "    endif",
         "endif",
         "",
-        f"[CommandListMultiplyShapeKeys_{tag}]",
-        "$\\WWMIv1\\custom_vertex_count = $mesh_vertex_count",
+        f"[CommandListMultiplyShapeKeys_{tag}{suffix}]",
+        f"$\\WWMIv1\\custom_vertex_count = $mesh_vertex_count{suffix}",
         "run = CustomShader\\WWMIv1\\ShapeKeyMultiplier",
         "",
-        f"[TextureOverrideShapeKeyMultiplierCallback_{tag}]",
+        f"[TextureOverrideShapeKeyMultiplierCallback_{tag}{suffix}]",
         f"hash = {shapes.get('offsets_hash', '')}",
         "match_priority = 0",
         "if $mod_enabled",
-        "    if cs == 3381.4444" + (" && ResourceMergedSkeleton !== null" if merged else ""),
+        "    if cs == 3381.4444" + (
+            f" && ResourceMergedSkeleton{suffix} !== null" if merged else ""),
         "        handling = skip",
-        f"        run = CommandListMultiplyShapeKeys_{tag}",
+        f"        run = CommandListMultiplyShapeKeys_{tag}{suffix}",
     ])
     if unrestricted:
-        lines.append("        run = CommandListApplyShapeKeys")
+        lines.append(f"        run = CommandListApplyShapeKeys{suffix}")
     lines.extend([
         "    endif",
         "endif",
         "",
-        f"[ResourceShapeKeyOffsetBuffer_{tag}]",
+        f"[ResourceShapeKeyOffsetBuffer_{tag}{suffix}]",
         "type = Buffer",
         "format = DXGI_FORMAT_R32G32B32A32_UINT",
         "stride = 16",
-        f"filename = Meshes/ShapeKeyOffset_{tag}.buf",
+        f"filename = Meshes/ShapeKeyOffset_{tag}{suffix}.buf",
         "",
-        f"[ResourceShapeKeyVertexIdBuffer_{tag}]",
+        f"[ResourceShapeKeyVertexIdBuffer_{tag}{suffix}]",
         "type = Buffer",
         "format = DXGI_FORMAT_R32_UINT",
         "stride = 4",
-        f"filename = Meshes/ShapeKeyVertexId_{tag}.buf",
+        f"filename = Meshes/ShapeKeyVertexId_{tag}{suffix}.buf",
         "",
-        f"[ResourceShapeKeyVertexOffsetBuffer_{tag}]",
+        f"[ResourceShapeKeyVertexOffsetBuffer_{tag}{suffix}]",
         "type = Buffer",
         "format = DXGI_FORMAT_R16_FLOAT",
         "stride = 2",
-        f"filename = Meshes/ShapeKeyVertexOffset_{tag}.buf",
+        f"filename = Meshes/ShapeKeyVertexOffset_{tag}{suffix}.buf",
     ])
     return "\n".join(lines) + "\n"
 
@@ -670,6 +810,8 @@ def _append_fold_units(ir: CrossSceneIR, body: Any, manifest: Mapping[str, Any],
         from ..._wwmi_core.blender_export.text_formatter import TextFormatter
         formatter = TextFormatter()
     constants = ir.get("Constants")
+    suffix = body.plan.suffix
+    object_var = _object_var(suffix)
     for entry in manifest.get("runtime_ibs") or []:
         if entry.get("kind") != "fold":
             continue
@@ -679,11 +821,11 @@ def _append_fold_units(ir: CrossSceneIR, body: Any, manifest: Mapping[str, Any],
             for local, global_id in (entry.get("component_map") or {}).items()
         }
         morph_buffers, batch_counts = _fold_morph_buffers(
-            body, entry, component_map.values())
+            body, entry, component_map.values(), suffix)
         buffers.update(morph_buffers)
         morph_ini = _fold_morph_ini(
             entry, batch_counts,
-            bool(cfg.unrestricted_custom_shape_keys), merged)
+            bool(cfg.unrestricted_custom_shape_keys), merged, suffix)
         morph_constants = []
         morph_lines = []
         for line in morph_ini.splitlines():
@@ -700,13 +842,13 @@ def _append_fold_units(ir: CrossSceneIR, body: Any, manifest: Mapping[str, Any],
         for local_id, global_id in sorted(component_map.items()):
             native = native_components[local_id]
             draws = _component_draws(body, global_id)
-            host_name = f"TextureOverride_FoldHost_{tag}_C{local_id}"
-            draw_name = f"CommandListDrawComponent{global_id}_fold_{tag}"
+            host_name = f"TextureOverride_FoldHost_{tag}_C{local_id}{suffix}"
+            draw_name = f"CommandListDrawComponent{global_id}_fold_{tag}{suffix}"
             lines = [
                 f"hash = {tag}",
                 f"match_first_index = {int(native.get('index_offset', 0))}",
                 f"match_index_count = {int(native.get('index_count', 0))}",
-                "$object_detected = 1",
+                f"{object_var} = 1",
                 "if $mod_enabled",
             ]
             if not draws:
@@ -727,32 +869,34 @@ def _append_fold_units(ir: CrossSceneIR, body: Any, manifest: Mapping[str, Any],
                     shift, vg_count = _merge_offset_shift(remap)
                     vg_offset += shift
                 lines.extend([
-                    f"    if $merge_status_id_{global_id} != 2",
+                    f"    if $merge_status_id_{global_id}{suffix} != 2",
                     f"        $\\WWMIv1\\vg_offset = {vg_offset}",
                     f"        $\\WWMIv1\\vg_count = {vg_count}",
-                    f"        $merge_status_id = $merge_status_id_{global_id}",
-                    "        run = CommandListMergeSkeleton",
-                    f"        $merge_status_id_{global_id} = $merge_status_id",
+                    f"        $merge_status_id{suffix} = "
+                    f"$merge_status_id_{global_id}{suffix}",
+                    f"        run = CommandListMergeSkeleton{suffix}",
+                    f"        $merge_status_id_{global_id}{suffix} = "
+                    f"$merge_status_id{suffix}",
                     "    endif",
-                    "    if ResourceMergedSkeleton !== null",
+                    f"    if ResourceMergedSkeleton{suffix} !== null",
                     "        handling = skip",
                 ])
                 component = body.merged_object.components[global_id]
                 if component.blend_remap_vg_count > 0:
                     lines.extend([
-                        f"        ResourceBlendBufferOverride = ref "
-                        f"ResourceRemappedBlendBufferComponent{global_id}",
-                        f"        ResourceMergedSkeletonOverride = ref "
-                        f"ResourceRemappedSkeletonComponent{global_id}",
-                        f"        ResourceExtraMergedSkeletonOverride = ref "
-                        f"ResourceExtraRemappedSkeletonComponent{global_id}",
+                        f"        ResourceBlendBufferOverride{suffix} = ref "
+                        f"ResourceRemappedBlendBufferComponent{global_id}{suffix}",
+                        f"        ResourceMergedSkeletonOverride{suffix} = ref "
+                        f"ResourceRemappedSkeletonComponent{global_id}{suffix}",
+                        f"        ResourceExtraMergedSkeletonOverride{suffix} = ref "
+                        f"ResourceExtraRemappedSkeletonComponent{global_id}{suffix}",
                     ])
                 lines.extend([f"        run = {draw_name}", "    endif", "endif"])
             else:
                 lines.extend(["    handling = skip", f"    run = {draw_name}", "endif"])
             ir.sections.append(IniSectionIR(host_name, lines))
 
-            shared_override = "CommandListOverrideSharedResources"
+            shared_override = f"CommandListOverrideSharedResources{suffix}"
             remap = remaps.get(str(global_id))
             if remap and not merged:
                 import numpy as np
@@ -769,15 +913,16 @@ def _append_fold_units(ir: CrossSceneIR, body: Any, manifest: Mapping[str, Any],
                     for seat in range(8):
                         if blend[vertex, 8 + seat] and int(blend[vertex, seat]) in table:
                             blend[vertex, seat] = table[int(blend[vertex, seat])]
-                filename = f"Blend_fold_{tag}_C{global_id}.buf"
+                filename = f"Blend_fold_{tag}_C{global_id}{suffix}.buf"
                 buffers[filename] = blend.tobytes()
-                shared_override = f"CommandListOverrideSharedResources_fold_{tag}_C{global_id}"
+                shared_override = (
+                    f"CommandListOverrideSharedResources_fold_{tag}_C{global_id}{suffix}")
                 ir.sections.append(IniSectionIR(shared_override, [
-                    "run = CommandListOverrideSharedResources",
-                    f"vb4 = ResourceBlendBuffer_fold_{tag}_C{global_id}",
+                    f"run = CommandListOverrideSharedResources{suffix}",
+                    f"vb4 = ResourceBlendBuffer_fold_{tag}_C{global_id}{suffix}",
                 ]))
                 ir.sections.append(IniSectionIR(
-                    f"ResourceBlendBuffer_fold_{tag}_C{global_id}", [
+                    f"ResourceBlendBuffer_fold_{tag}_C{global_id}{suffix}", [
                         "type = Buffer", "format = DXGI_FORMAT_R8_UINT", "stride = 16",
                         f"filename = Meshes/{filename}",
                     ]))
@@ -796,7 +941,7 @@ def _append_fold_units(ir: CrossSceneIR, body: Any, manifest: Mapping[str, Any],
                 else:
                     draw_lines.append(
                         f"drawindexed = {obj.index_count}, {obj.index_offset}, 0")
-            draw_lines.append("run = CommandListCleanupSharedResources")
+            draw_lines.append(f"run = CommandListCleanupSharedResources{suffix}")
             ir.sections.append(IniSectionIR(draw_name, draw_lines))
             section_routes[draw_name.casefold()] = tag
 
@@ -943,7 +1088,12 @@ def _slot_plan(context: Any, root: Path, cfg: Any, selection: Any,
     return plan
 
 
-def _clone_route_format_tags(text: str, manifest: Mapping[str, Any], plan: Any) -> str:
+def _clone_route_format_tags(
+        text: str,
+        manifest: Mapping[str, Any],
+        plan: Any,
+        domain_suffixes: Optional[Mapping[str, str]] = None,
+) -> str:
     if plan is None:
         return text
     ir = CrossSceneIR.parse(text)
@@ -956,8 +1106,9 @@ def _clone_route_format_tags(text: str, manifest: Mapping[str, Any], plan: Any) 
         if not any(line.strip().lower().startswith("match_format")
                    for line in section.lines):
             continue
+        format_suffix = re.sub(r"_ib\d+$", "", match.group(2), flags=re.I)
         format_sources.setdefault(int(match.group(1)), []).append(
-            (match.group(2), section))
+            (format_suffix, section))
 
     def clone(source: IniSectionIR, name: str, first: int, count: int) -> None:
         lines = []
@@ -973,6 +1124,9 @@ def _clone_route_format_tags(text: str, manifest: Mapping[str, Any], plan: Any) 
 
     for entry in manifest.get("runtime_ibs") or []:
         tag = str(entry["ib_hash"])
+        domain_suffix = (domain_suffixes or {}).get(tag.lower())
+        if domain_suffix is None:
+            domain_suffix = "_ib0" if entry.get("kind") == "fold" else ""
         metadata = entry.get("native_metadata") or {}
         components = metadata.get("components") or []
         for local_raw, global_raw in (entry.get("component_map") or {}).items():
@@ -984,7 +1138,8 @@ def _clone_route_format_tags(text: str, manifest: Mapping[str, Any], plan: Any) 
             component = components[local_id]
             for suffix, section in format_sources.get(global_id, []):
                 full_name = (
-                    f"TextureOverrideRouteFormat_{tag}_C{local_id}_Base_{suffix}")
+                    f"TextureOverrideRouteFormat_{tag}_C{local_id}_Base_"
+                    f"{suffix}{domain_suffix}")
                 clone(
                     section,
                     full_name,
@@ -994,7 +1149,8 @@ def _clone_route_format_tags(text: str, manifest: Mapping[str, Any], plan: Any) 
                 for level, lod in enumerate(component.get("lods") or [], start=1):
                     clone(
                         section,
-                        f"TextureOverrideRouteFormat_{tag}_C{local_id}_L{level}_{suffix}",
+                        f"TextureOverrideRouteFormat_{tag}_C{local_id}_L{level}_"
+                        f"{suffix}{domain_suffix}",
                         int(lod.get("index_offset", 0)),
                         int(lod.get("index_count", 0)),
                     )
@@ -1107,13 +1263,19 @@ def compile_cross_scene(units: Sequence[Any], manifest: Mapping[str, Any],
 
     template = _template_source(mode, bool(cfg.comment_ini))
     body = units[0]
+    body_component_ids = [global_id
+                          for _local_id, global_id in body.plan.component_map]
+    body_template = specialize_unit_template(template, body.plan.suffix)
     body_text = _render(
-        template, _maker(body, cfg_view, ini_textures, logo_source))
+        body_template,
+        _maker(body, cfg_view, ini_textures, logo_source),
+        component_ids=body_component_ids,
+    )
     ir = (CrossSceneIR.parse(body_text) if _unit_has_geometry(body)
           else _empty_body_ir(body_text, body))
     section_routes: Dict[str, str] = {}
     for section in ir.sections:
-        if re.search(r"CommandListDrawComponent\d+$", section.name, re.I):
+        if re.search(r"CommandListDrawComponent\d+_ib0$", section.name, re.I):
             section_routes[section.name.casefold()] = "base"
 
     fragment_source = _unit_fragment_source(template, mode)
@@ -1141,8 +1303,8 @@ def compile_cross_scene(units: Sequence[Any], manifest: Mapping[str, Any],
     for unit in units:
         _append_empty_unit_routes(ir, unit)
 
-    _append_child_globals(ir, units, cfg)
-    _append_child_present(ir, units, mode)
+    _append_unit_globals(ir, units, cfg, mode)
+    _compile_present(ir, units, mode, cfg)
     buffers = _collect_unit_buffers(units)
     _append_fold_units(ir, body, manifest, cfg, buffers, section_routes)
     ir.assert_unique()
@@ -1154,10 +1316,24 @@ def compile_cross_scene(units: Sequence[Any], manifest: Mapping[str, Any],
         from ..slot_textures import transform
         _add_scoped_setter_aliases(plan, section_routes)
         text = transform.apply(text, plan, section_routes=section_routes)
-        text = _clone_route_format_tags(text, manifest, plan)
+        domain_suffixes = {
+            str(unit.plan.ib_hash).lower(): unit.plan.suffix
+            for unit in units[1:]
+        }
+        domain_suffixes.update({
+            str(entry["ib_hash"]).lower(): body.plan.suffix
+            for entry in manifest.get("runtime_ibs") or []
+            if entry.get("kind") == "fold"
+        })
+        text = _clone_route_format_tags(
+            text, manifest, plan, domain_suffixes=domain_suffixes)
 
     final_ir = CrossSceneIR.parse(text)
+    from ...xscene_textures import cross_scene_root_texture_component_ids
+    texture_components = cross_scene_root_texture_component_ids(root, manifest)
+    _apply_domain_object_gates(final_ir, units, texture_components)
     final_ir.assert_unique()
+    _assert_object_domain_isolation(final_ir.render(), units)
     from ..._wwmi_core.blender_export.ini_maker import IniMaker
     text = IniMaker.with_checksum(final_ir.render())
     final_ir = CrossSceneIR.parse(text)

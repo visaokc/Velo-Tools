@@ -235,7 +235,7 @@ def plan_export_units(
         identity="body",
         kind="body",
         ib_hash=str(base.get("vb0_hash") or ""),
-        suffix="",
+        suffix="_ib0",
         resource_domain="ib0",
         component_map=body_map,
         selected=body_selected,
@@ -254,7 +254,7 @@ def plan_export_units(
             identity=f"fold:{entry['ib_hash']}",
             kind="fold",
             ib_hash=str(entry["ib_hash"]),
-            suffix="",
+            suffix="_ib0",
             resource_domain="ib0",
             component_map=component_map,
             selected=tuple(
