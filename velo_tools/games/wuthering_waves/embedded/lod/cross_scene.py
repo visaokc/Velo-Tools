@@ -56,14 +56,13 @@ def _merge_entry(component_meta: dict, entry: dict):
     component_meta["lods"] = lods
 
 
-def merge_lods_into_base(merged_meta: dict, routing: dict, scene_metas: dict) -> int:
+def merge_lods_into_base(merged_meta: dict, manifest: dict, scene_metas: dict) -> int:
     """Merges per-IB lods entries into the merged root Metadata.json dict.
 
     Args:
         merged_meta: the merged folder's Metadata.json (mutated in place).
-        routing: the CrossSceneRouting.json dict (fold comp_map/vg_remap,
-            editable merged/local component lists).
-        scene_metas: {ib_hash: parsed scene_ibs/<hash>/Metadata.json}.
+        manifest: the CrossSceneManifest.json schema-v3 dict.
+        scene_metas: {ib_hash: native Metadata.json dict}.
 
     Returns the number of entries merged (0 = nothing to write back).
     """
@@ -71,9 +70,9 @@ def merge_lods_into_base(merged_meta: dict, routing: dict, scene_metas: dict) ->
     merged_count = 0
 
     # Foldable dungeon IBs -> base components, vg chain pre-composed.
-    for scene in routing.get("scene_ibs") or []:
-        fold = scene.get("fold")
-        if not scene.get("foldable") or not fold:
+    for scene in manifest.get("runtime_ibs") or []:
+        fold = scene.get("fold_route")
+        if scene.get("kind") != "fold" or not fold:
             continue
         ib_meta = scene_metas.get(scene.get("ib_hash")) or {}
         ib_components = ib_meta.get("components") or []
@@ -91,11 +90,15 @@ def merge_lods_into_base(merged_meta: dict, routing: dict, scene_metas: dict) ->
                 merged_count += 1
 
     # Editable IBs -> merged component numbers, entries unchanged.
-    for record in routing.get("editable_ibs") or []:
+    for record in manifest.get("runtime_ibs") or []:
+        if record.get("kind") != "editable":
+            continue
         ib_meta = scene_metas.get(record.get("ib_hash")) or {}
         ib_components = ib_meta.get("components") or []
-        for local_index, merged_index in zip(record.get("local_components") or [],
-                                             record.get("merged_components") or []):
+        component_map = record.get("component_map") or {}
+        for local_index, merged_index in sorted(
+                (int(local), int(merged))
+                for local, merged in component_map.items()):
             if local_index >= len(ib_components) or merged_index >= len(components):
                 continue
             for entry in (ib_components[local_index].get("lods") or []):

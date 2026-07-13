@@ -111,7 +111,7 @@ def remap_form_component_modes(stu: dict, id_map: dict) -> dict:
 
 
 def merge_fold_form_component_modes(root_stu: dict,
-                                    scene_root: Path,
+                                    runtime_sources: dict,
                                     fold_data: dict) -> bool:
     """Fold source form variants into the remapped root component blocks."""
     if isinstance(root_stu, dict):
@@ -136,7 +136,8 @@ def merge_fold_form_component_modes(root_stu: dict,
         }
         if not comp_map:
             continue
-        stu = _read_stu(Path(scene_root) / str(ib_hash))
+        source = (runtime_sources or {}).get(str(ib_hash)) or {}
+        stu = source.get("stu") or {}
         for entry in stu_metadata.form_entries(stu):
             if not isinstance(entry, dict):
                 continue
@@ -327,24 +328,16 @@ def _merge_usage_component_ids(out: dict[str, set[int]], components: dict, id_ma
 
 
 def _route_component_map(scene: dict) -> dict[int, int]:
-    if scene.get("foldable"):
-        mapped = {}
-        for k, v in ((scene.get("fold") or {}).get("comp_map") or {}).items():
-            try:
-                mapped[int(k)] = int(v)
-            except Exception:
-                continue
-        return mapped
-    bases = []
-    for value in ((scene.get("derive") or {}).get("base_components") or []):
+    mapped = {}
+    for key, value in ((scene or {}).get("component_map") or {}).items():
         try:
-            bases.append(int(value))
+            mapped[int(key)] = int(value)
         except Exception:
             continue
-    return {local: merged for local, merged in enumerate(bases)}
+    return mapped
 
 
-def cross_scene_root_texture_component_ids(merge_root: Path, routing: dict) -> dict[str, set[int]]:
+def cross_scene_root_texture_component_ids(merge_root: Path, manifest: dict) -> dict[str, set[int]]:
     """Map texture hash -> merged component ids that consume it in a cross-scene merge root."""
     merge_root = Path(merge_root)
     out: dict[str, set[int]] = {}
@@ -354,25 +347,11 @@ def cross_scene_root_texture_component_ids(merge_root: Path, routing: dict) -> d
     for components in _extra_form_component_maps(root_stu):
         _merge_usage_component_ids(out, components)
 
-    for scene in (routing or {}).get("scene_ibs") or []:
-        scene_stu = _read_stu(merge_root / (scene.get("source_folder") or ""))
-        id_map = _route_component_map(scene)
-        _merge_usage_component_ids(out, _component_map(scene_stu), id_map)
-        for components in _extra_form_component_maps(scene_stu):
-            _merge_usage_component_ids(out, components, id_map)
-
-    for editable in (routing or {}).get("editable_ibs") or []:
-        try:
-            id_map = {
-                int(local): int(merged)
-                for local, merged in zip(editable.get("local_components") or [],
-                                         editable.get("merged_components") or [])
-            }
-        except Exception:
-            id_map = {}
-        editable_stu = _read_stu(merge_root / (editable.get("source_folder") or ""))
-        _merge_usage_component_ids(out, _component_map(editable_stu), id_map)
-        for components in _extra_form_component_maps(editable_stu):
+    for runtime in (manifest or {}).get("runtime_ibs") or []:
+        runtime_stu = runtime.get("native_stu") or {}
+        id_map = _route_component_map(runtime)
+        _merge_usage_component_ids(out, _component_map(runtime_stu), id_map)
+        for components in _extra_form_component_maps(runtime_stu):
             _merge_usage_component_ids(out, components, id_map)
 
     return out
@@ -390,11 +369,11 @@ def _rewrite_usage_filenames(obj, hash_to_name: dict[str, str]) -> None:
             _rewrite_usage_filenames(item, hash_to_name)
 
 
-def canonicalize_cross_scene_root_textures(merge_root: Path, routing: dict) -> dict:
+def canonicalize_cross_scene_root_textures(merge_root: Path, manifest: dict) -> dict:
     """Rename root DDS files so their Components-* prefix reflects merged component ids after hash dedupe."""
     merge_root = Path(merge_root)
     root_files = _root_texture_files(merge_root)
-    component_ids = cross_scene_root_texture_component_ids(merge_root, routing)
+    component_ids = cross_scene_root_texture_component_ids(merge_root, manifest)
     canonical_names = {}
     renamed = {}
 
@@ -435,7 +414,7 @@ def _add_reasons(reasons: dict[str, set[str]], hashes: set[str], reason: str) ->
         reasons.setdefault(h, set()).add(reason)
 
 
-def cross_scene_root_texture_keep_set(merge_root: Path, routing: dict) -> tuple[set[str], dict[str, str], dict[str, str]]:
+def cross_scene_root_texture_keep_set(merge_root: Path, manifest: dict) -> tuple[set[str], dict[str, str], dict[str, str]]:
     """Compute root-level DDS hashes kept by cross-scene slot/resource consumers.
 
     The keep set is intentionally broader than the body slot plan: editable and
@@ -457,38 +436,30 @@ def cross_scene_root_texture_keep_set(merge_root: Path, routing: dict) -> tuple[
             _add_reasons(keep_reasons, effective, keep_reason)
 
     root_stu = _read_stu(merge_root)
-    keep_count = int(((routing or {}).get("base") or {}).get("component_count") or 0)
+    keep_count = int(((manifest or {}).get("base") or {}).get("component_count") or 0)
     consume(_component_map(root_stu), "root-stu")
     for components in _extra_form_component_maps(root_stu):
         consume(components, "root-extra-form")
 
-    for scene in (routing or {}).get("scene_ibs") or []:
-        source = scene.get("source_folder") or ""
-        scene_stu = _read_stu(merge_root / source)
-        if scene.get("foldable"):
-            consume(_component_map(scene_stu), "fold-native-local", keep=False)
-            comp_map = {}
-            for k, v in ((scene.get("fold") or {}).get("comp_map") or {}).items():
-                try:
-                    comp_map[int(k)] = int(v)
-                except Exception:
-                    continue
-            for components in _extra_form_component_maps(scene_stu):
+    for runtime in (manifest or {}).get("runtime_ibs") or []:
+        runtime_stu = runtime.get("native_stu") or {}
+        kind = runtime.get("kind")
+        if kind == "fold":
+            consume(_component_map(runtime_stu), "fold-native-local", keep=False)
+            comp_map = _route_component_map(runtime)
+            for components in _extra_form_component_maps(runtime_stu):
                 mapped = _component_map(
                     components,
                     lambda local: local in comp_map and 0 <= comp_map[local] < keep_count)
                 consume(mapped, "fold-form")
-        else:
-            consume(_component_map(scene_stu), "own-buffer")
-            for components in _extra_form_component_maps(scene_stu):
+        elif kind == "own_buffer":
+            consume(_component_map(runtime_stu), "own-buffer")
+            for components in _extra_form_component_maps(runtime_stu):
                 consume(components, "own-buffer-form")
-
-    for editable in (routing or {}).get("editable_ibs") or []:
-        source = editable.get("source_folder") or ""
-        editable_stu = _read_stu(merge_root / source)
-        consume(_component_map(editable_stu), "editable")
-        for components in _extra_form_component_maps(editable_stu):
-            consume(components, "editable-form")
+        elif kind == "editable":
+            consume(_component_map(runtime_stu), "editable")
+            for components in _extra_form_component_maps(runtime_stu):
+                consume(components, "editable-form")
 
     for h in set(root_files) - set(evidence_reasons):
         keep_reasons.setdefault(h, set()).add("root-unclassified-fallback")
@@ -499,11 +470,11 @@ def cross_scene_root_texture_keep_set(merge_root: Path, routing: dict) -> tuple[
     return keep, keep_map, evidence_map
 
 
-def prune_cross_scene_root_textures(merge_root: Path, routing: dict) -> dict:
-    """Delete redundant root-level DDS files, leaving scene_ibs/* evidence untouched."""
+def prune_cross_scene_root_textures(merge_root: Path, manifest: dict) -> dict:
+    """Delete redundant root DDS files from the aggregate delivery inventory."""
     merge_root = Path(merge_root)
     root_files = _root_texture_files(merge_root)
-    keep, keep_reasons, evidence_reasons = cross_scene_root_texture_keep_set(merge_root, routing)
+    keep, keep_reasons, evidence_reasons = cross_scene_root_texture_keep_set(merge_root, manifest)
     pruned = {}
     for h, path in sorted(root_files.items()):
         if h in keep:

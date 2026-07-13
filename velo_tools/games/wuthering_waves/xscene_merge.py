@@ -1,19 +1,22 @@
-"""WWMI cross-scene multi-IB merge -- preprocessing producer (host driver layer, never touches ``_wwmi_core``).
+"""WWMI cross-scene aggregate producer (host driver layer, never touches ``_wwmi_core``).
 
-Merges "base IB extract (showcase 8287b2f2 = Component 0-7 whole character) + N dungeon IB
-folders extracted from other frames (clothes/face/waist bear)" into **one editable extract folder** + one ``CrossSceneRouting.json``:
+Merges one base extract and additional runtime IB extracts into a self-contained
+editable aggregate root plus ``CrossSceneManifest.json`` schema v3.
 
 - Uses **position grid matching** (same mesh, bit-identical positions -> exact, no EFMI Chamfer heuristic)
   to find the base component set each dungeon IB corresponds to; detects "one IB fully wrapped by a single Component"
   (waist bear ⊆ Component 5) -> triggers a **buffer-level split** of that Component into ``Component 5``(remainder) +
   ``Component 5.001``(bear) as two ``.vb/.ib/.fmt`` sets, so after import the bear is an independently editable sub-object.
-- Each dungeon IB's native extract is copied whole into ``scene_ibs/<hash>/``, for the later "one-click smart export" to reimport per IB as host.
-- ``CrossSceneRouting.json`` records all routing info needed at export time (see ``_build_routing``).
+- Native runtime metadata and texture usage are embedded in the manifest; no
+  child extract directory remains after aggregation.
+- Fold-only ShapeKeys are canonicalized into the aggregate buffers at merge
+  time, so export never falls back to pristine child payloads.
 
 This module only reads ``_wwmi_core``'s buffer/fmt I/O (``NumpyBuffer``/``MigotoFormat``), changing none of its lines.
 The export consumer side is implemented separately in ``embedded/crossscene/`` (monkey-patches ``VTWW_Export.execute``).
 """
 
+import copy
 import json
 import re
 import shutil
@@ -23,8 +26,11 @@ from pathlib import Path
 import numpy as np
 
 from ._wwmi_core.migoto_io.data_model.byte_buffer import (
-    MigotoFormat, NumpyBuffer, Semantic, AbstractSemantic,
+    AbstractSemantic, BufferSemantic, DXGIFormat, MigotoFormat, NumpyBuffer,
+    Semantic,
 )
+from .embedded.crossscene import manifest as crossscene_manifest
+from .embedded.crossscene import morph as crossscene_morph
 from .embedded.lod import cross_scene as lod_cross_scene
 from .embedded.slot_textures import constants as slot_constants
 from .embedded.slot_textures import form_merge as slot_form_merge
@@ -55,6 +61,17 @@ def _hash8_or_empty(value):
 def _editable_record_vb0_hash(eib, metadata):
     return (_hash8_or_empty((eib or {}).get("vb0_hash"))
             or _hash8_or_empty((metadata or {}).get("vb0_hash")))
+
+
+def _read_json_or_empty(folder, filename):
+    path = Path(folder) / filename
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _merge_form_anchors_into_root(root_stu, source_folders):
@@ -436,11 +453,6 @@ def _build_host_vg_table(out_dir, split_name, split_vb, host_folder):
     }, None
 
 
-_MORPH_SAMPLE = 3000   # corresponded vertex pairs per component used for shapekey delta voting
-_MORPH_MIN_SIG = 8     # min sampled entries with signal for a key to be votable
-_MORPH_RESID_MAX = 0.05
-
-
 def _read_shapekey_deltas(folder, name):
     """{global shapekey id: (N,3) float32 deltas} from a component vb's inline SHAPEKEY columns.
     The element's semantic index IS the game shapekey id (the importer names keys
@@ -455,95 +467,149 @@ def _read_shapekey_deltas(folder, name):
     return out
 
 
-def _vote_morph_id_map(out_dir, base_comps, ib_dir, fold_entry):
-    """Vote a "dungeon shapekey id -> base shapekey id" translation table for a morph-carrying
-    foldable IB by comparing both extracts' inline per-key deltas at fold-corresponded vertex
-    pairs (pristine vs pristine -- the only moment the comparison is valid; the user edits the
-    base afterwards). Per dungeon key, the base key minimizing the scalar-fit residual
-    (f*base_delta ~= dungeon_delta) wins; low-signal or ambiguous keys stay unvoted -- the
-    export side falls back to pristine reprojection for them, so voting can only improve,
-    never regress. The fitted f doubles as the cross-pipeline delta scale (expected ~1).
+def _fmt_with_layout(fmt_text, layout):
+    """Render an existing FMT header with a replaced vertex layout."""
+    header = re.split(r"(?m)^element\[0\]:", fmt_text, maxsplit=1)[0]
+    lines = []
+    stride_replaced = False
+    for line in header.rstrip().splitlines():
+        if line.strip().lower().startswith("stride:"):
+            lines.append(f"stride: {layout.stride}")
+            stride_replaced = True
+        else:
+            lines.append(line)
+    if not stride_replaced:
+        lines.insert(0, f"stride: {layout.stride}")
+    return "\n".join(lines) + "\n" + layout.to_string()
 
-    Returns (id_map {dungeon_id: base_id} voted keys only, selfcheck)."""
-    votes = defaultdict(lambda: defaultdict(int))
-    fits = defaultdict(list)
-    qual = defaultdict(set)  # per dungeon key: ALL base candidates whose residual qualifies
-    keys_seen = set()
-    ambiguous = 0
+
+def _append_canonical_shapekey(folder, name, canonical_id, deltas):
+    """Append one canonical ShapeKey semantic to an aggregate component."""
+    vb, ib, fmt_text = _read_comp(Path(folder), name)
+    abstract = AbstractSemantic(Semantic.ShapeKey, int(canonical_id))
+    if vb.layout.get_element(abstract) is not None:
+        raise ValueError(
+            f"aggregate {name} already contains ShapeKey {canonical_id}")
+    layout = copy.deepcopy(vb.layout)
+    semantic = BufferSemantic(
+        abstract,
+        DXGIFormat.R16G16B16_FLOAT,
+        offset=layout.stride,
+    )
+    layout.semantics.append(semantic)
+    layout.stride += semantic.stride
+    expanded = NumpyBuffer(layout, size=len(vb.data))
+    for existing in vb.layout.semantics:
+        expanded.set_field(existing.get_name(), vb.get_field(existing.get_name()))
+    values = np.zeros((len(vb.data), 3), dtype=np.float32)
+    values[:min(len(values), len(deltas))] = deltas[:len(values)]
+    expanded.set_field(abstract, values)
+    _write_comp(
+        Path(folder), name, expanded, ib,
+        _fmt_with_layout(fmt_text, layout),
+    )
+
+
+def _aggregate_shapekey_ids(folder):
+    ids = set()
+    for name in _comp_names(Path(folder)):
+        vb, _, _ = _read_comp(Path(folder), name)
+        ids.update(
+            int(element.abstract.index)
+            for element in vb.layout.semantics
+            if element.abstract.enum == Semantic.ShapeKey
+        )
+    return ids
+
+
+def _canonicalize_fold_morphs(out_dir, base_comps, ib_dir, fold_entry,
+                              next_canonical_id):
+    """Resolve one fold IB into the aggregate canonical morph namespace."""
     ib_names = _comp_names(Path(ib_dir))
-    for bc_s, info in (fold_entry.get("corr") or {}).items():
-        bc = int(bc_s)
-        base_sk = _read_shapekey_deltas(out_dir, base_comps[bc])
-        ib_sk = _read_shapekey_deltas(ib_dir, ib_names[info["ib_comp"]])
-        if not base_sk or not ib_sk:
-            continue
-        pairs = [(int(bl), int(il)) for bl, il in info["map"].items()]
-        if len(pairs) > _MORPH_SAMPLE:
-            pairs = pairs[::len(pairs) // _MORPH_SAMPLE]
-        bl = np.array([p[0] for p in pairs])
-        il = np.array([p[1] for p in pairs])
-        base_ids = sorted(base_sk)
-        B = np.stack([base_sk[b][bl] for b in base_ids])   # (KB, S, 3)
-        for d, dd_full in sorted(ib_sk.items()):
-            dd = dd_full[il]                                # (S, 3)
-            sig = (np.abs(dd) > 1e-5).any(axis=1)
-            keys_seen.add(d)
-            if int(sig.sum()) < _MORPH_MIN_SIG:
-                continue
-            ddm = dd[sig]
-            Bm = B[:, sig]
-            den = np.maximum((Bm * Bm).sum(axis=(1, 2)), 1e-12)
-            f = (Bm * ddm).sum(axis=(1, 2)) / den
-            resid = (((f[:, None, None] * Bm - ddm) ** 2).sum(axis=(1, 2))
-                     / max(float((ddm ** 2).sum()), 1e-12))
-            order = np.argsort(resid)
-            best = int(order[0])
-            if resid[best] >= _MORPH_RESID_MAX:
-                continue
-            # Near-duplicate base keys can fit comparably well; picking the best is data-safe
-            # (their deltas coincide on the folded vertices), so ambiguity is only tracked --
-            # the modal-offset tie-break below settles the EDIT semantics.
-            if len(order) > 1 and float(resid[int(order[1])]) < _MORPH_RESID_MAX:
-                ambiguous += 1
-            qual[d].update(base_ids[int(i)] for i in np.flatnonzero(resid < _MORPH_RESID_MAX))
-            votes[d][base_ids[best]] += int(sig.sum())
-            fits[d].append(float(f[best]))
-    id_map, scales = {}, []
-    conflicts = 0
-    for d, v in votes.items():
-        if len(v) > 1:
-            conflicts += 1
-        id_map[d] = max(v, key=v.get)
-        scales.append(float(np.median(fits[d])))
-    # Modal-offset tie-break: twin base keys (identical deltas on the folded vertices, e.g.
-    # body-combo expressions whose face share equals a pure-face key) make the residual winner
-    # arbitrary -- byte-equal output, but the EDITED key the dungeon follows would be the twin
-    # instead of the structurally corresponding one. The dominant id offset across all winners
-    # is the structural truth (the scene pipeline renumbers after dropping leading base-only
-    # keys); when the offset-matching candidate also qualifies, prefer it.
-    tie_broken = 0
-    if id_map:
-        offset_hist = defaultdict(int)
-        for d, b in id_map.items():
-            offset_hist[b - d] += 1
-        modal_offset = max(offset_hist, key=offset_hist.get)
-        for d in sorted(id_map):
-            cand = d + modal_offset
-            if cand != id_map[d] and cand in qual[d]:
-                id_map[d] = cand
-                tie_broken += 1
-    else:
-        modal_offset = None
-    chk = {
-        "keys_seen": len(keys_seen), "voted": len(id_map),
-        "unvoted": len(keys_seen) - len(id_map),
-        "unvoted_ids": sorted(keys_seen - set(id_map)),
-        "ambiguous": ambiguous, "cross_component_conflicts": conflicts,
-        "modal_offset": modal_offset, "tie_broken_to_modal": tie_broken,
-        "identity": all(k == v for k, v in id_map.items()) if id_map else None,
-        "scale": (round(float(np.median(scales)), 6) if scales else None),
+    correspondences = []
+    base_ids = set()
+    source_ids = set()
+    for source_component_str, base_component_value in sorted(
+            (fold_entry.get("comp_map") or {}).items(),
+            key=lambda item: int(item[0])):
+        source_component = int(source_component_str)
+        base_component = int(base_component_value)
+        base_position_rows = _positions(
+            _read_comp(Path(out_dir), base_comps[base_component])[0])
+        source_position_rows = _positions(
+            _read_comp(Path(ib_dir), ib_names[source_component])[0])
+        base_grid = _build_grid(base_position_rows)
+        pairs = []
+        for source_row, position in enumerate(source_position_rows):
+            base_row = _nearest(position, base_position_rows, base_grid)
+            if base_row is not None:
+                pairs.append((int(base_row), int(source_row)))
+        correspondences.append((base_component, source_component, pairs))
+        base_ids.add(base_component)
+        source_ids.add(source_component)
+
+    base_deltas = {
+        component: _read_shapekey_deltas(out_dir, base_comps[component])
+        for component in sorted(base_ids)
     }
-    return id_map, chk
+    source_deltas = {
+        component: _read_shapekey_deltas(ib_dir, ib_names[component])
+        for component in sorted(source_ids)
+    }
+    base_positions = {
+        component: _positions(_read_comp(Path(out_dir), base_comps[component])[0])
+        for component in sorted(base_ids)
+    }
+    resolution = crossscene_morph.resolve_morph_bindings(
+        base_deltas,
+        source_deltas,
+        correspondences,
+        base_positions,
+    )
+
+    runtime_morphs = {}
+    all_source_ids = sorted({
+        int(key_id)
+        for component in source_deltas.values()
+        for key_id in component
+    })
+    for source_id in all_source_ids:
+        projected = crossscene_morph.reproject_unique_key(
+            source_id, source_deltas, correspondences)
+        if source_id in resolution.empty_ids:
+            runtime_morphs[str(source_id)] = {
+                "canonical_id": None,
+                "scale": 1.0,
+                "empty": True,
+            }
+            continue
+        canonical_id = resolution.bindings.get(source_id)
+        scale = float(
+            resolution.diagnostics.get(source_id, {}).get("scale") or 1.0)
+        if canonical_id is None:
+            canonical_id = int(next_canonical_id)
+            next_canonical_id += 1
+            scale = 1.0
+            for component, deltas in sorted(projected.items()):
+                _append_canonical_shapekey(
+                    out_dir, base_comps[int(component)], canonical_id, deltas)
+        runtime_morphs[str(source_id)] = {
+            "canonical_id": int(canonical_id),
+            "scale": round(scale, 9),
+            "empty": False,
+        }
+
+    report = {
+        "modal_offset": resolution.modal_offset,
+        "mapped": len(resolution.bindings),
+        "canonicalized": len(resolution.unmapped_ids),
+        "empty": len(resolution.empty_ids),
+        "diagnostics": {
+            str(key): value
+            for key, value in sorted(resolution.diagnostics.items())
+        },
+    }
+    return runtime_morphs, report, next_canonical_id
 
 
 def build_fold_correspondence(out_dir, base_comps, base_pos_c, base_pos_g, base_grid_g, comp_of_g, dspec):
@@ -637,18 +703,25 @@ def _validate_same_character(base, dungeon_specs, editable_ibs):
 
 
 def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs=None):
-    """Main entry: write out the merged extract folder + scene_ibs/ + CrossSceneRouting.json + deduplicated textures.
-    editable_ibs: list of independently editable extra IBs [{hash, folder, role}] (e.g. form2 face 4e4dc18e) --
-    their components are renamed and copied into the merge root after the base (C8-11), can be imported and edited together, and form their own IB group at export.
-    Returns a report dict."""
+    """Build a self-contained schema-v3 cross-scene aggregate root."""
     base = Path(base_folder)
     out = Path(out_folder)
+    editable_ibs = list(editable_ibs or [])
     _validate_same_character(base, dungeon_specs, editable_ibs)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
 
     info, base_comps, base_off = analyze(base, dungeon_specs)
+    base_native_metadata = _read_json_or_empty(base, "Metadata.json")
+    base_native_stu = _read_json_or_empty(base, "ShaderTextureUsage.json")
+    runtime_native = {
+        str(spec["hash"]): {
+            "metadata": _read_json_or_empty(spec["folder"], "Metadata.json"),
+            "stu": _read_json_or_empty(spec["folder"], "ShaderTextureUsage.json"),
+        }
+        for spec in list(dungeon_specs) + editable_ibs
+    }
 
     # 1) Copy all base components' vb/ib/fmt into the merge root (the wrapped one will later be overwritten by the split).
     for name in base_comps:
@@ -695,27 +768,13 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
                     "对该拆件的编辑不会传播到该场景。" % (split_name, spec["hash"], why))
         splits.append(rec)
 
-    # 3) Copy each dungeon IB's native extract whole into scene_ibs/<hash>/ (for export to reimport per IB as host).
-    scene_root = out / "scene_ibs"
+    # 3) Lift runtime textures into the aggregate delivery inventory. Native
+    # metadata and STU stay in the manifest rather than child directories.
     for spec in dungeon_specs:
         d = Path(spec["folder"])
-        dst = scene_root / spec["hash"]
-        dst.mkdir(parents=True, exist_ok=True)
-        for f in d.iterdir():
-            if f.is_file():
-                shutil.copy2(f, dst / f.name)
-        # Lift this fold IB's own textures to the merge root (deduped by hash). Hash-style
-        # cross-scene texture emission is file-driven from the merge root (the body export's
-        # source); fold IBs are NOT in the assembler's mods list (their export is geometry-only,
-        # then discarded), so otherwise their textures reach the mod only if the showcase base
-        # happened to capture them. Lifting carries form-merged alternate-form textures (placed
-        # into the IB folder, e.g. a dual-form clothing IB) into the mod and completes any
-        # textures the showcase did not capture. The author still prunes unwanted ones at the root.
         _copy_textures(d, out)
 
-    # 3.5) editable_ibs (independently editable extra IBs, e.g. form2 face 4e4dc18e): copy whole into scene_ibs/<hash>/
-    #      + rename their Component 0..M and copy into the merge root as Component <next..> (after the base C0..N-1).
-    #      .fmt/.vb/.ib as-is (with inline shapekey SHAPEKEY elements, keeping the high stride) -> import carries each one's own shapekeys.
+    # 3.5) Append editable runtime IB components to the aggregate root.
     editable_ib_records = []
     editable_warnings = []
     editable_stu_additions = {}
@@ -725,11 +784,6 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     for eib in (editable_ibs or []):
         h = eib["hash"]
         src = Path(eib["folder"])
-        dst = scene_root / h
-        dst.mkdir(parents=True, exist_ok=True)
-        for f in src.iterdir():
-            if f.is_file():
-                shutil.copy2(f, dst / f.name)
         local_names = _comp_names(src)
         merged_comps = []
         for li, lname in enumerate(local_names):
@@ -743,7 +797,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         source_label = f"{role} {h}" if role else h
         editable_stu_sources.update(
             editable_stu_component_sources(source_label, id_map))
-        eib_meta = json.loads((src / "Metadata.json").read_text()) if (src / "Metadata.json").exists() else {}
+        eib_meta = runtime_native[h]["metadata"]
         sk = eib_meta.get("shapekeys", {}) or {}
         # Gather the extra IB's textures into the merge root (deduplicated), re-basing their
         # Components-{ids} prefix from the IB's own 0-based numbering to the merged numbering.
@@ -770,7 +824,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         editable_vb0_hash = _editable_record_vb0_hash(eib, eib_meta)
         editable_ib_records.append({
             "ib_hash": h, "vb0_hash": editable_vb0_hash,
-            "role": eib.get("role", ""), "source_folder": f"scene_ibs/{h}",
+            "role": eib.get("role", ""),
             "merged_components": merged_comps, "local_components": list(range(len(local_names))),
             "has_shapekeys": bool(sk.get("offsets_hash")), "offsets_hash": sk.get("offsets_hash", ""),
         })
@@ -875,26 +929,53 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
             fold_data[spec["hash"]] = build_fold_correspondence(
                 out, base_comps, base_pos_c, base_pos_g, base_grid_g, _comp_of_g, spec)
 
-    # 3.8) For morph-carrying foldable IBs, vote the shapekey id translation table (dungeon key
-    #      id -> base key id) on pristine data. The export side then derives the dungeon morph
-    #      from the EDITED shape keys for voted keys; unvoted keys keep pristine reprojection.
+    # 3.8) Resolve every fold ShapeKey into the aggregate canonical namespace.
+    # Keys without a base equivalent are projected into the root now; export has
+    # no pristine child fallback.
+    existing_canonical_ids = _aggregate_shapekey_ids(out)
+    next_canonical_id = max(existing_canonical_ids, default=-1) + 1
     for spec, meta in zip(dungeon_specs, info):
         fd = fold_data.get(spec["hash"])
         if not meta.get("foldable") or not fd:
             continue
-        try:
-            ib_meta = json.loads((Path(spec["folder"]) / "Metadata.json").read_text())
-        except Exception:
-            ib_meta = {}
+        ib_meta = runtime_native[str(spec["hash"])]["metadata"]
         if not int(((ib_meta.get("shapekeys") or {}).get("shapekey_count")) or 0):
             continue
-        id_map, chk = _vote_morph_id_map(out, base_comps, Path(spec["folder"]), fd)
-        fd["morph_id_map"] = {str(k): int(v) for k, v in sorted(id_map.items())}
-        fd["morph_selfcheck"] = chk
+        runtime_morphs, morph_report, next_canonical_id = _canonicalize_fold_morphs(
+            out,
+            base_comps,
+            Path(spec["folder"]),
+            fd,
+            next_canonical_id,
+        )
+        fd["runtime_morphs"] = runtime_morphs
+        fd["morph_selfcheck"] = morph_report
 
-    # 4) Write CrossSceneRouting.json.
-    routing = _build_routing(base, base_comps, info, splits, editable_ib_records, fold_data)
-    (out / "CrossSceneRouting.json").write_text(json.dumps(routing, indent=2, ensure_ascii=False))
+    if next_canonical_id > max(existing_canonical_ids, default=-1) + 1:
+        meta_path = out / "Metadata.json"
+        merged_meta = _read_json_or_empty(out, "Metadata.json")
+        shapekeys = merged_meta.setdefault("shapekeys", {})
+        shapekeys["shapekey_count"] = max(
+            int(shapekeys.get("shapekey_count") or 0),
+            next_canonical_id,
+        )
+        meta_path.write_text(
+            json.dumps(merged_meta, indent=4, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    # 4) Build the self-contained manifest. It is written after root metadata,
+    # STU, LOD and texture canonicalization have reached their final state.
+    manifest = _build_manifest_v3(
+        base_native_metadata,
+        base_native_stu,
+        base_comps,
+        info,
+        splits,
+        runtime_native,
+        editable_ib_records,
+        fold_data,
+    )
 
     root_stu_path = out / "ShaderTextureUsage.json"
     if root_stu_path.exists():
@@ -903,7 +984,8 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         except Exception:
             root_stu = {}
         if isinstance(root_stu, dict):
-            changed = merge_fold_form_component_modes(root_stu, scene_root, fold_data)
+            changed = merge_fold_form_component_modes(
+                root_stu, runtime_native, fold_data)
             if changed:
                 slot_form_merge.refresh_local_discriminator_audit_in_usage(root_stu)
                 stu_metadata.write_usage(root_stu_path, root_stu)
@@ -916,25 +998,27 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     meta_path = out / "Metadata.json"
     if meta_path.exists():
         merged_meta = json.loads(meta_path.read_text())
-        scene_metas = {}
-        for spec in list(dungeon_specs) + list(editable_ibs or []):
-            scene_meta_path = scene_root / spec["hash"] / "Metadata.json"
-            if scene_meta_path.exists():
-                scene_metas[spec["hash"]] = json.loads(scene_meta_path.read_text())
-        lod_entries_merged = lod_cross_scene.merge_lods_into_base(merged_meta, routing, scene_metas)
+        scene_metas = {
+            ib_hash: payload["metadata"]
+            for ib_hash, payload in runtime_native.items()
+        }
+        lod_entries_merged = lod_cross_scene.merge_lods_into_base(
+            merged_meta, manifest, scene_metas)
         if lod_entries_merged:
             meta_path.write_text(json.dumps(merged_meta, indent=4, ensure_ascii=False))
 
-    texture_canonical = canonicalize_cross_scene_root_textures(out, routing)
+    texture_canonical = canonicalize_cross_scene_root_textures(out, manifest)
     if texture_canonical.get("root_textures_renamed"):
         print("[velo.xscene] canonicalized merge-root texture name(s): %s"
               % ", ".join("%s:%s" % (h, n)
                            for h, n in sorted(texture_canonical["root_textures_renamed"].items())))
 
-    texture_prune = prune_cross_scene_root_textures(out, routing)
+    texture_prune = prune_cross_scene_root_textures(out, manifest)
     if texture_prune.get("root_textures_pruned"):
         print("[velo.xscene] pruned redundant merge-root texture hash(es): %s"
               % ", ".join(texture_prune["root_textures_pruned"]))
+
+    crossscene_manifest.write_manifest(out, manifest)
 
     # Foolproof: if a fold(dungeon) IB's overlap ratio with the base mesh is too low (barely the same mesh) -> likely
     # an independent morph (e.g. another form's face); mis-setting it as Fold would fold it into the base buffer and break it.
@@ -951,7 +1035,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
 
     return {
         "out_folder": str(out), "base_components": len(base_comps),
-        "splits": splits, "scene_ibs": [s["hash"] for s in dungeon_specs],
+        "splits": splits, "runtime_ibs": [s["hash"] for s in dungeon_specs],
         "editable_ibs": editable_ib_records, "warnings": warnings,
         "lod_entries_merged": lod_entries_merged,
         **texture_canonical,
@@ -963,78 +1047,156 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     }
 
 
-def _fold_for_routing(fold):
-    """Drop the bulky per-vertex ``corr`` table before serialization.
-
-    ``corr`` (base->IB per-vertex correspondence) is a build-time intermediate only: it is
-    consumed in-memory to vote ``vg_remap`` (``_vote_vg_remap``) and ``morph_id_map``
-    (``_vote_morph_id_map``), both of which run before this routing dict is built. The export
-    consumer never reads ``corr`` back, and its per-component coverage is already summarized in
-    ``selfcheck`` -- so persisting it only bloated the JSON (it was the dominant size term).
-    Everything else (comp_map / vg_remap / selfcheck / morph_id_map / morph_selfcheck) is kept."""
+def _fold_for_manifest(fold):
+    """Drop merge-only vertex correspondence from a persistent fold route."""
     if not fold:
         return fold
-    return {k: v for k, v in fold.items() if k != "corr"}
+    return {
+        key: value
+        for key, value in fold.items()
+        if key not in {"corr", "runtime_morphs", "morph_selfcheck"}
+    }
 
 
-def _build_routing(base, base_comps, info, splits, editable_ib_records=None, fold_data=None):
-    base_meta = {}
-    mp = base / "Metadata.json"
-    if mp.exists():
-        base_meta = json.loads(mp.read_text())
+def _editable_object_names(base_comps, splits, editable_ib_records):
     editable = list(base_comps)
     for s in splits:
         if s["split_object"] not in editable:
-            # insert the sub-part name right after the parent component
             i = editable.index(s["base_object"])
             editable.insert(i + 1, s["split_object"])
     for rec in (editable_ib_records or []):
         for mi in rec["merged_components"]:
             editable.append(f"Component {mi}")
+    return editable
 
+
+def _own_buffer_component_map(meta, native_metadata):
+    local_count = len(native_metadata.get("components") or [])
+    base_components = [int(value) for value in meta.get("base_components") or []]
+    wrapped = meta.get("wrapped_in")
+    if local_count == 1 and wrapped is not None:
+        return {"0": int(wrapped)}
+    if local_count == len(base_components):
+        return {
+            str(local): int(merged)
+            for local, merged in enumerate(base_components)
+        }
+    raise RuntimeError(
+        "own-buffer IB %s cannot derive an unambiguous local-to-aggregate "
+        "component map" % meta.get("hash"))
+
+
+def _build_manifest_v3(base_metadata, base_stu, base_comps, info, splits,
+                       runtime_native, editable_ib_records=None, fold_data=None):
+    """Build the path-free persistent contract for one aggregate root."""
+    editable_ib_records = list(editable_ib_records or [])
+    fold_data = fold_data or {}
     split_by_ib = {s["ib_hash"]: s for s in splits}
-    scene_ibs = []
+    runtime_ibs = []
     for meta in info:
-        h = meta["hash"]
-        s = split_by_ib.get(h)
-        # whether the face has morph: read this IB extract's Metadata.shapekeys.offsets_hash
-        morph = None
-        d_meta_path = base.parent  # placeholder; real morph info is read by the export side from scene_ibs/<hash>/Metadata.json
-        scene_ibs.append({
-            "ib_hash": h, "vb0_hash": h, "role": meta["role"],
-            "source_folder": f"scene_ibs/{h}",
-            # foldable=True -> fold (bind base buffer, consumer M2 goes through fold.py); False -> own-buffer (host-transfer).
-            # Additive field: the existing orchestrator doesn't read it, behavior unchanged; the M2 consumer routes on it.
-            "foldable": meta.get("foldable"),
+        ib_hash = str(meta["hash"])
+        payload = runtime_native[ib_hash]
+        native_metadata = payload["metadata"]
+        fold = fold_data.get(ib_hash) or {}
+        if meta.get("foldable"):
+            kind = "fold"
+            component_map = {
+                str(local): int(merged)
+                for local, merged in (fold.get("comp_map") or {}).items()
+            }
+        else:
+            kind = "own_buffer"
+            component_map = _own_buffer_component_map(meta, native_metadata)
+        split = split_by_ib.get(ib_hash)
+        entry = {
+            "kind": kind,
+            "ib_hash": ib_hash,
+            "vb0_hash": (
+                _hash8_or_empty(native_metadata.get("vb0_hash")) or ib_hash),
+            "role": meta.get("role", ""),
+            "native_metadata": native_metadata,
+            "native_stu": payload["stu"],
+            "native_component_range": list(range(
+                len(native_metadata.get("components") or []))),
+            "component_map": component_map,
             "derive": {
                 "method": ("fold" if meta.get("foldable")
                            else ("delta" if meta["role"] == "face" else "absolute")),
-                "base_components": meta["base_components"],
-                "source_object": (s["split_object"] if s else None),
+                "base_components": [int(value) for value in meta["base_components"]],
+                "source_object": (split["split_object"] if split else None),
                 "correspondence": "position_grid",
             },
-            # fold correspondence (foldable only): comp_map + VG remap + selfcheck + voted morph_id_map.
-            # the consumer uses these to reproject morph / relabel blend / emit redirect sections; None for non-foldable.
-            # The bulky per-vertex `corr` table is build-time only and stripped here (see _fold_for_routing).
-            "fold": _fold_for_routing((fold_data or {}).get(h)),
-            "object_detected_var": f"$object_detected_{h}",
+            "fold_route": _fold_for_manifest(fold) if kind == "fold" else None,
+            "runtime_morphs": fold.get("runtime_morphs") or {},
+            "morph_report": fold.get("morph_selfcheck") or {},
+            "lod_route": {
+                "component_map": component_map,
+                "vg_remap": (fold.get("vg_remap") or {}) if kind == "fold" else {},
+            },
+            "object_detected_var": f"$object_detected_{ib_hash}",
+        }
+        if split:
+            entry["split_route"] = {
+                key: value
+                for key, value in split.items()
+                if key != "ib_hash"
+            }
+        runtime_ibs.append(entry)
+
+    for record in editable_ib_records:
+        ib_hash = str(record["ib_hash"])
+        payload = runtime_native[ib_hash]
+        native_metadata = payload["metadata"]
+        component_map = {
+            str(local): int(merged)
+            for local, merged in zip(
+                record.get("local_components") or [],
+                record.get("merged_components") or [],
+            )
+        }
+        runtime_ibs.append({
+            "kind": "editable",
+            "ib_hash": ib_hash,
+            "vb0_hash": (
+                _hash8_or_empty(record.get("vb0_hash"))
+                or _hash8_or_empty(native_metadata.get("vb0_hash"))
+                or ib_hash),
+            "role": record.get("role", ""),
+            "native_metadata": native_metadata,
+            "native_stu": payload["stu"],
+            "native_component_range": list(range(
+                len(native_metadata.get("components") or []))),
+            "component_map": component_map,
+            "vg_base_offset": int(record.get("vg_base_offset") or 0),
+            "derive": {"method": "editable"},
+            "fold_route": None,
+            "runtime_morphs": {},
+            "morph_report": {},
+            "lod_route": {"component_map": component_map, "vg_remap": {}},
+            "object_detected_var": f"$object_detected_{ib_hash}",
         })
 
     return {
-        "schema_version": 2,
+        "schema_version": crossscene_manifest.SCHEMA_VERSION,
         "generator": "velo_tools.games.wuthering_waves.xscene_merge",
         "grid_size": GRID, "match_tol": TOL,
         "base": {
-            "vb0_hash": base_meta.get("vb0_hash", base.name),
-            "cb4_hash": base_meta.get("cb4_hash", ""),
+            "vb0_hash": base_metadata.get("vb0_hash", ""),
+            "cb4_hash": base_metadata.get("cb4_hash", ""),
             "component_count": len(base_comps),
-            "editable_objects": editable,
+            "native_metadata": base_metadata,
+            "native_stu": base_stu,
+            "native_component_range": list(range(len(base_comps))),
+            "editable_objects": _editable_object_names(
+                base_comps, splits, editable_ib_records),
             "splits": splits,
         },
-        "scene_ibs": scene_ibs,
-        "editable_ibs": editable_ib_records or [],
+        "runtime_ibs": runtime_ibs,
         "object_detected_or_gate": (
             [f"$object_detected_{m['hash']}" for m in info]
-            + [f"$object_detected_{rec['ib_hash']}" for rec in (editable_ib_records or [])]),
-        "textures": {"dedup_by_hash": True, "note": "final dedup done by export assembler"},
+            + [f"$object_detected_{rec['ib_hash']}" for rec in editable_ib_records]),
+        "textures": {
+            "catalog_source": "root_dds_inventory",
+            "dedup_by_hash": True,
+        },
     }
