@@ -345,6 +345,13 @@ def register():
     # Register scene properties ourselves (don't call the upstream top-level register(), so the trigger_mod_export timer isn't wired up).
     # The scene property name also uses the fork namespace, avoiding conflicts with standalone WWMI-Tools' Scene.wwmi_tools_settings.
     bpy.types.Scene.VTWW_settings = bpy.props.PointerProperty(type=_wsettings.VTWW_Settings)
+    try:
+        from ...core.export import material_partition as _material_partition
+        from ._wwmi_core.blender_export.blender_export import ObjectMergerWWMI
+        _material_partition.install(ObjectMergerWWMI, "VTWW_settings")
+    except Exception:
+        import traceback
+        traceback.print_exc()
     # For the single container (VELO_PT_game): collapse-header text + body draw (proxies the vendored root panel draw via a Shim).
     _DESCRIPTOR.header_label = "鸣潮 WWMI"
     _DESCRIPTOR.draw_body = _a2.make_draw_body(_wui.VTWW_PT_SIDEBAR)
@@ -449,6 +456,12 @@ def register():
 
 
 def unregister():
+    try:
+        from ...core.export import material_partition as _material_partition
+        from ._wwmi_core.blender_export.blender_export import ObjectMergerWWMI
+        _material_partition.remove(ObjectMergerWWMI)
+    except Exception:
+        pass
     try:
         from .embedded import raw_mesh as _rawmesh
         _rawmesh.unregister()

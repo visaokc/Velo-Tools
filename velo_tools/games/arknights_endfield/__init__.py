@@ -494,6 +494,12 @@ def _patch_velo_settings():
     _patch_shapekey_texts()
     _patch_toolbox_texts()
 
+    _vsettings.VTEF_Settings.__annotations__["velo_auto_split_by_material"] = BoolProperty(
+        name="导出时自动按材质拆分",
+        description="导出临时对象时按带 Component 前缀的实际材质自动拆分；不会修改场景对象",
+        default=True,
+    )
+
     _vsettings.VTEF_Settings.__annotations__["generate_vertex_group_map"] = BoolProperty(
         name=_zh("生成 VertexGroupMap.json"),
         description=_zh("提取对象时生成 Velo 的统一顶点组映射 sidecar。该文件只服务 Merged 导入/导出，不替代 EFMI 的 LOD 映射。"),
@@ -536,6 +542,13 @@ def register():
     _patch_velo_settings()
     _al.register()
     bpy.types.Scene.VTEF_settings = bpy.props.PointerProperty(type=_vsettings.VTEF_Settings)
+    try:
+        from ...core.export import material_partition as _material_partition
+        from ._efmi_core.blender_export.blender_export import ObjectMergerEFMI
+        _material_partition.install(ObjectMergerEFMI, "VTEF_settings")
+    except Exception:
+        import traceback
+        traceback.print_exc()
     # For the single container (VELO_PT_game): collapse-header text + body draw (proxies the vendored root panel draw via a Shim).
     from ._efmi_core.addon import ui as _vui_desc
     _DESCRIPTOR.header_label = _zh("终末地 EFMI")
@@ -581,6 +594,12 @@ def unregister_embedded_late():
 
 
 def unregister():
+    try:
+        from ...core.export import material_partition as _material_partition
+        from ._efmi_core.blender_export.blender_export import ObjectMergerEFMI
+        _material_partition.remove(ObjectMergerEFMI)
+    except Exception:
+        pass
     try:
         _a2.ungate("VTEF_PT_SIDEBAR")
     except Exception:

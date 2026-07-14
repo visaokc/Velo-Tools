@@ -336,10 +336,18 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
         local_id = global_to_local.get(selected.component_id)
         if local_id is None:
             continue
+        from .....core.export import material_partition
+        partition_plan = material_partition.prepare_cross_scene_object(
+            selected.object,
+            selected.name,
+            bool(plan.manifest_entry.get("apply_modifiers", False)),
+        )
         ordinal = per_local_count.get(local_id, 0)
         per_local_count[local_id] = ordinal + 1
         name = _local_name(local_id, ordinal)
         obj = _copy_input_object(selected.object, collection, name)
+        obj["_velo_export_source_name"] = selected.name
+        material_partition.cache_plan(obj, partition_plan)
         labels[obj.name] = selected.name
 
         if plan.kind == "body" and cfg.mod_skeleton_type == "COMPONENT_FROM_MERGED":

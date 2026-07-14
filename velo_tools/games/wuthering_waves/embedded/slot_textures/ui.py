@@ -16,6 +16,7 @@ import bpy
 _MISSING = object()
 _orig_slot_style_annotation = _MISSING
 _orig_skip_dirty_slot_annotation = _MISSING
+_orig_auto_split_annotation = _MISSING
 _orig_draw_menu_export_mod = None
 _orig_draw_menu_extract_frame_data = None
 
@@ -25,13 +26,15 @@ _orig_draw_menu_extract_frame_data = None
 def inject_settings():
     """Adds the export option to VTWW_Settings. Must run BEFORE the vendored
     settings class is registered (same constraint as _patch_tool_mode)."""
-    global _orig_slot_style_annotation, _orig_skip_dirty_slot_annotation
+    global _orig_slot_style_annotation, _orig_skip_dirty_slot_annotation, _orig_auto_split_annotation
     from ..._wwmi_core.addon import settings as _wsettings
 
     _orig_slot_style_annotation = _wsettings.VTWW_Settings.__annotations__.get(
         "velo_slot_style_textures", _MISSING)
     _orig_skip_dirty_slot_annotation = _wsettings.VTWW_Settings.__annotations__.get(
         "skip_slot_residual_textures", _MISSING)
+    _orig_auto_split_annotation = _wsettings.VTWW_Settings.__annotations__.get(
+        "velo_auto_split_by_material", _MISSING)
     _wsettings.VTWW_Settings.__annotations__["velo_slot_style_textures"] = bpy.props.BoolProperty(
         name="插槽风格贴图",
         description=(
@@ -50,10 +53,15 @@ def inject_settings():
         ),
         default=True,
     )
+    _wsettings.VTWW_Settings.__annotations__["velo_auto_split_by_material"] = bpy.props.BoolProperty(
+        name="导出时自动按材质拆分",
+        description="导出临时对象时按带 Component 前缀的实际材质自动拆分；不会修改场景对象",
+        default=True,
+    )
 
 
 def restore_settings():
-    global _orig_slot_style_annotation, _orig_skip_dirty_slot_annotation
+    global _orig_slot_style_annotation, _orig_skip_dirty_slot_annotation, _orig_auto_split_annotation
     from ..._wwmi_core.addon import settings as _wsettings
 
     if _orig_slot_style_annotation is _MISSING:
@@ -68,6 +76,12 @@ def restore_settings():
         _wsettings.VTWW_Settings.__annotations__["skip_slot_residual_textures"] = (
             _orig_skip_dirty_slot_annotation)
     _orig_skip_dirty_slot_annotation = _MISSING
+    if _orig_auto_split_annotation is _MISSING:
+        _wsettings.VTWW_Settings.__annotations__.pop("velo_auto_split_by_material", None)
+    else:
+        _wsettings.VTWW_Settings.__annotations__["velo_auto_split_by_material"] = (
+            _orig_auto_split_annotation)
+    _orig_auto_split_annotation = _MISSING
 
 
 # --------------------------------------------------------- export menu wrap --
@@ -86,6 +100,8 @@ def _patch_export_menu():
         layout = self.layout
         box = layout.box()
         box.label(text="Velo 兼容选项", icon="TOOL_SETTINGS")
+        if hasattr(cfg, "velo_auto_split_by_material"):
+            box.prop(cfg, "velo_auto_split_by_material")
         if hasattr(cfg, "velo_slot_style_textures"):
             box.prop(cfg, "velo_slot_style_textures")
             slot_cfg = getattr(context.scene, "vtww_slot_settings", None)

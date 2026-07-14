@@ -28,7 +28,7 @@ def velo_controls_for_mode(mode: str) -> tuple[str, ...]:
     if mode == "IMPORT_OBJECT":
         return ("import_as_component_collections",)
     if mode == "EXPORT_MOD":
-        return ("convert_legacy_vertex_group_map",)
+        return ("auto_split_by_material", "convert_legacy_vertex_group_map")
     return ()
 
 
@@ -46,6 +46,8 @@ def _draw_velo_inline_controls(layout, cfg, mode: str) -> None:
         box.prop(cfg, "extract_components_filter")
     if "import_as_component_collections" in controls and hasattr(cfg, "import_as_component_collections"):
         box.prop(cfg, "import_as_component_collections")
+    if "auto_split_by_material" in controls and hasattr(cfg, "velo_auto_split_by_material"):
+        box.prop(cfg, "velo_auto_split_by_material")
     if "convert_legacy_vertex_group_map" in controls:
         box.operator(VTEF_OT_convert_legacy_vertex_group_map.bl_idname, icon="FILE_REFRESH")
     layout.row()

@@ -300,6 +300,8 @@ Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
 6. Configure optional CrossIB or custom ShapeKey features.
 7. Run **导出 Mod (Export Mod)**.
 
+**Velo 兼容选项 (Velo Compatibility) -> 导出时自动按材质拆分 (Auto Split by Material on Export)** is enabled by default. If one joined object actually uses at least two `Component N`-prefixed materials, Velo separates only the export copy and keeps the scene object and ShapeKeys unchanged. Every used material in this mode must match the object's Component; conflicts report the collection, object, and material slot and stop export. Objects with no material, one material, or only unprefixed preview materials retain native object-name behavior. Turning the option off restores the complete legacy path without validation or splitting.
+
 EFMI Merged export uses `VertexGroupMap.json` to translate unified authoring names back to component-local runtime numbering.
 
 If an old project stored its map only inside `Metadata.json`, run **从旧 Metadata 转换 VertexGroupMap (Convert VertexGroupMap from Legacy Metadata)** before Merged export.
@@ -446,6 +448,8 @@ Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
 6. Keep **写入注释 (Comment INI)** enabled when human-readable output matters.
 7. Configure any Velo compatibility options.
 8. Export and review Blender's final status.
+
+**导出时自动按材质拆分 (Auto Split by Material on Export)** follows the same rules for WWMI single-IB, Cross-Scene, and **Per-Component (from Merged)** exports. Current WWMI hidden-object and collection options remain authoritative. Material ownership conflicts fail closed; disabling the option performs neither validation nor partitioning.
 
 The complete path writes `mod.ini`, `Meshes`, and `Textures`.
 
