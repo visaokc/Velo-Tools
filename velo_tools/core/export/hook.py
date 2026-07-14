@@ -16,6 +16,7 @@ import json
 import re
 import sys
 import traceback
+from contextlib import nullcontext
 from pathlib import Path
 
 import bpy
@@ -336,28 +337,36 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
                 pass
             return {'CANCELLED'}
         try:
-            state = _get_export_state(context, settings_attr)
-        except Exception:
-            traceback.print_exc()
-        try:
             from ...mesh import operators as _mesh_ops
-
-            mesh_state = _mesh_ops.prepare_material_route_export(context)
         except Exception:
             traceback.print_exc()
-        try:
-            return orig_execute(self, context)
-        finally:
+            _mesh_ops = None
+        transaction = (
+            _mesh_ops.suspend_material_route_auto_refresh(context.scene)
+            if _mesh_ops is not None else nullcontext()
+        )
+        with transaction:
             try:
-                from ...mesh import operators as _mesh_ops
-
-                _mesh_ops.restore_material_route_export(mesh_state)
+                state = _get_export_state(context, settings_attr)
             except Exception:
                 traceback.print_exc()
             try:
-                _restore_export_state(state)
+                if _mesh_ops is not None:
+                    mesh_state = _mesh_ops.prepare_material_route_export(context)
             except Exception:
                 traceback.print_exc()
+            try:
+                return orig_execute(self, context)
+            finally:
+                try:
+                    if _mesh_ops is not None:
+                        _mesh_ops.restore_material_route_export(mesh_state)
+                except Exception:
+                    traceback.print_exc()
+                try:
+                    _restore_export_state(state)
+                except Exception:
+                    traceback.print_exc()
 
     return patched
 

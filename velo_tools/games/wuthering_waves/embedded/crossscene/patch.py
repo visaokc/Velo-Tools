@@ -46,12 +46,14 @@ def _make_patched(orig_execute):
         if not ((manifest and manifest.is_file()) or (legacy and legacy.is_file())) or base_col is None:
             return orig_execute(self, context)  # not cross-scene -> stock export as-is
         from . import orchestrator
+        from .....mesh import operators as mesh_operators
         # Write the compiled mod directly into the user's selected output root.
         out = str(Path(bpy.path.abspath(cfg.mod_output_folder)))
         try:
-            rep = orchestrator.build_cross_scene_mod(
-                context, cfg, base_col, str(root), out, hole=False,
-                excluded_buffers=self.get_excluded_buffers(context))
+            with mesh_operators.suspend_material_route_auto_refresh(context.scene):
+                rep = orchestrator.build_cross_scene_mod(
+                    context, cfg, base_col, str(root), out, hole=False,
+                    excluded_buffers=self.get_excluded_buffers(context))
         except Exception as e:
             traceback.print_exc()
             try:

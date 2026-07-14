@@ -13,6 +13,8 @@ import bpy
 import numpy as np
 from bpy.app.handlers import persistent
 
+from .route_refresh import SceneRefreshGate
+
 
 # ---------------------------------------------------------------------------
 # Shared
@@ -27,6 +29,7 @@ _PRESERVE_EMPTY_COLLECTION_KEY = "velo_preserve_empty_collection"
 _EXPORT_TEMP_SUFFIX = "__velo_export"
 _ROUTE_AUTO_SIG = {}
 _ROUTE_AUTO_REFRESHING = [False]
+_ROUTE_REFRESH_GATE = SceneRefreshGate()
 
 
 def is_real_mesh(obj):
@@ -697,7 +700,7 @@ def _depsgraph_may_affect_route_tree(root, depsgraph):
         if update_id is None:
             continue
         if isinstance(update_id, bpy.types.Scene):
-            return True
+            continue
         if isinstance(update_id, bpy.types.Material):
             return True
         if isinstance(update_id, bpy.types.Collection):
@@ -705,14 +708,23 @@ def _depsgraph_may_affect_route_tree(root, depsgraph):
                 return True
             continue
         if isinstance(update_id, bpy.types.Object):
-            if is_real_mesh(update_id) and any(
+            if (is_real_mesh(update_id)
+                    and not is_export_temp_object(update_id)
+                    and any(
                 _collection_is_descendant(root, collection)
                 for collection in getattr(update_id, "users_collection", ())
-            ):
+                    )):
                 return True
             continue
         if isinstance(update_id, bpy.types.Mesh):
-            return True
+            if any(
+                    is_real_mesh(obj)
+                    and not is_export_temp_object(obj)
+                    and getattr(obj, "data", None) == update_id
+                    for obj in root.all_objects
+            ):
+                return True
+            continue
     return False
 
 
@@ -779,6 +791,22 @@ def refresh_material_route_items(scene, *, route_pairs=None, actual_targets=None
     return len(route_settings.route_items)
 
 
+def _refresh_suspended_material_routes(scene):
+    _ROUTE_AUTO_REFRESHING[0] = True
+    try:
+        refresh_material_route_items(scene)
+        if getattr(bpy.context, "scene", None) == scene:
+            bpy.context.view_layer.update()
+    finally:
+        _ROUTE_AUTO_REFRESHING[0] = False
+
+
+def suspend_material_route_auto_refresh(scene):
+    """Collapse export-time depsgraph churn into at most one route refresh."""
+    return _ROUTE_REFRESH_GATE.suspend(
+        scene, _refresh_suspended_material_routes)
+
+
 @persistent
 def _route_depsgraph_handler(scene, depsgraph):
     if _ROUTE_AUTO_REFRESHING[0]:
@@ -789,6 +817,9 @@ def _route_depsgraph_handler(scene, depsgraph):
     if route_settings is None or root is None:
         if scene_key is not None:
             _ROUTE_AUTO_SIG.pop(scene_key, None)
+        return
+    if _ROUTE_REFRESH_GATE.is_suspended(scene):
+        _ROUTE_REFRESH_GATE.mark_dirty(scene)
         return
     if not _depsgraph_may_affect_route_tree(root, depsgraph):
         return
