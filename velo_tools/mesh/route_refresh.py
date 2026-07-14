@@ -50,4 +50,3 @@ class SceneRefreshGate:
             self._dirty.discard(key)
             if dirty:
                 refresh(scene)
-
