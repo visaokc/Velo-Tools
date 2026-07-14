@@ -50,7 +50,7 @@ def build_cross_scene_mod(
     )
     compiled = compile_cross_scene(
         units,
-        root.manifest,
+        root,
         CompilerSettings(
             context=context,
             cfg=cfg,

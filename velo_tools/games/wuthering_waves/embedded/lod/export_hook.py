@@ -38,6 +38,7 @@ from ..._wwmi_core.blender_export import ini_maker as _im_module
 from ..._wwmi_core.migoto_io.data_model.byte_buffer import NumpyBuffer, AbstractSemantic, Semantic
 
 from . import remap as _remap
+from .cross_scene import collect_active_lod_groups
 
 _INSTALLED = False
 _ORIG_BUILD_DATA_BUFFERS = None
@@ -179,12 +180,12 @@ def prepare_lod_export_memory(exporter, *, metadata, excluded_names=(),
         ]
         for component in merged_components
     ]
-    lod_groups = {}  # lod_object_name -> {component_id: entry}
-    for component_id, component_meta in enumerate(full_components_meta):
-        for lod_entry in component_meta.get('lods') or []:
-            name = lod_entry.get('lod_object_name')
-            if name:
-                lod_groups.setdefault(name, {})[component_id] = lod_entry
+    active_component_ids = {
+        component_id
+        for component_id, component in enumerate(merged_components)
+        if component.objects
+    }
+    lod_groups = collect_active_lod_groups(metadata, active_component_ids)
     if not lod_groups:
         if metadata.get('lods'):
             print('[LOD] Legacy top-level "lods" metadata found — the schema has moved into '

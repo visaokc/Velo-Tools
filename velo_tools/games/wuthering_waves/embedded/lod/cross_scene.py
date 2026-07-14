@@ -44,6 +44,20 @@ def compose_lod_entry_for_base(entry: dict, base_vg_remap) -> dict:
     return composed_entry
 
 
+def collect_active_lod_groups(metadata: dict, active_component_ids) -> dict:
+    """Collect LOD groups owned by components present in one export unit."""
+    active = {int(component_id) for component_id in active_component_ids}
+    groups = {}
+    for component_id, component_meta in enumerate(metadata.get("components") or []):
+        if component_id not in active:
+            continue
+        for lod_entry in component_meta.get("lods") or []:
+            name = lod_entry.get("lod_object_name")
+            if name:
+                groups.setdefault(name, {})[component_id] = lod_entry
+    return groups
+
+
 def _merge_entry(component_meta: dict, entry: dict):
     """Same per-component merge semantics as the single-IB extract flow:
     same lod_object_name overwrites, list sorted by vertex_count desc."""

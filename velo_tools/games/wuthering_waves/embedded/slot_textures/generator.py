@@ -512,6 +512,15 @@ def build_local_discriminator_audit_from_usage(
 
 # -------------------------------------------------------------------- plan --
 
+@dataclass(frozen=True)
+class SlotSection:
+    name: str
+    lines: Tuple[str, ...]
+    kind: str
+    component_id: Optional[int] = None
+    level: Optional[int] = None
+
+
 @dataclass
 class SlotPlan:
     block_text: str
@@ -535,6 +544,7 @@ class SlotPlan:
     branch_contract: Dict[str, Dict[str, object]] = field(default_factory=dict)
     restore_contract: Dict[str, Dict[str, object]] = field(default_factory=dict)
     component_route_lists: Dict[int, Dict[str, str]] = field(default_factory=dict)
+    sections: Tuple[SlotSection, ...] = ()
 
 
 def _slot_issue_entry(tex_hash: str, comp_id: int, reason: str,
@@ -1884,7 +1894,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
     audit_forms = _local_audit_forms(forms, filtered_forms, texture_info)
     alias = _variant_aliases(texture_info)
     canonical_seats = _component_hash_canonical_slots(
-        audit_forms, alias, form_routes)
+        filtered_forms, alias, form_routes)
     ambiguous_primary: List[str] = []
     primary_passes = _primary_passes_by_form(
         audit_forms, texture_info, freshness, pass_depth, alias,
@@ -3045,6 +3055,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     used_families: Dict[int, Set[float]] = {}
     component_list_names: Dict[int, str] = {}
     body_chunks: List[str] = []
+    typed_sections: List[SlotSection] = []
     branch_contract: Dict[str, Dict[str, object]] = {}
     restore_contract: Dict[str, Dict[str, object]] = {}
     component_route_lists: Dict[int, Dict[str, str]] = {}
@@ -3120,6 +3131,12 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             chunk.append('    endif')
             chunk.append('endif')
             body_chunks.append('\n'.join(chunk))
+            typed_sections.append(SlotSection(
+                name=name,
+                lines=tuple(chunk[2:]),
+                kind='setter',
+                component_id=comp_id,
+            ))
             branch_contract[name] = _serialized_branch_contract(
                 comp_id, list(emitted), route=route,
                 emitted_form_gates=gated_forms)
@@ -3248,15 +3265,24 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         out.append('')
         out.append('; -- Optional formid auxiliary anchors')
         for h, form_id in sorted(anchor_resources):
-            out.append('')
-            out.append(f'[{constants.SEC_RESOURCE_ANCHOR.format(anchor_hash=h)}]')
-            out.append(f'hash = {h}')
-            out.append('allow_duplicate_hash = true')
-            out.append('match_priority = 0')
-            out.append('match_first_index = 0')
-            out.append(f'{constants.VAR_FORM} = {form_id}')
+            anchor_name = constants.SEC_RESOURCE_ANCHOR.format(anchor_hash=h)
+            anchor_lines = [
+                f'hash = {h}',
+                'allow_duplicate_hash = true',
+                'match_priority = 0',
+                'match_first_index = 0',
+                f'{constants.VAR_FORM} = {form_id}',
+            ]
             if watchdog_form is not None:
-                out.append(f'{constants.VAR_ANCHOR_SEEN} = 1')
+                anchor_lines.append(f'{constants.VAR_ANCHOR_SEEN} = 1')
+            typed_sections.append(SlotSection(
+                name=anchor_name,
+                lines=tuple(anchor_lines),
+                kind='anchor',
+            ))
+            out.append('')
+            out.append(f'[{anchor_name}]')
+            out.extend(anchor_lines)
     out.extend(body_chunks)
 
     format_section_count = 0
@@ -3277,15 +3303,28 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                 name, text = group_families[key][prefix]
                 for member in constants.emitted_format_members(name):
                     for template, level, (first, count) in ranges:
+                        section_name = template.format(
+                            component_id=comp_id,
+                            format_name=member,
+                            level=level,
+                        )
+                        section_lines = (
+                            f'match_first_index = {first}',
+                            f'match_index_count = {count}',
+                            f'match_priority = {constants.FORMAT_TAG_PRIORITY}',
+                            f'match_format = {member}',
+                            f'filter_index = {text}',
+                        )
+                        typed_sections.append(SlotSection(
+                            name=section_name,
+                            lines=section_lines,
+                            kind='format_tag',
+                            component_id=comp_id,
+                            level=level,
+                        ))
                         out.append('')
-                        out.append('[' + template.format(component_id=comp_id,
-                                                         format_name=member,
-                                                         level=level) + ']')
-                        out.append(f'match_first_index = {first}')
-                        out.append(f'match_index_count = {count}')
-                        out.append(f'match_priority = {constants.FORMAT_TAG_PRIORITY}')
-                        out.append(f'match_format = {member}')
-                        out.append(f'filter_index = {text}')
+                        out.append(f'[{section_name}]')
+                        out.extend(section_lines)
                         format_section_count += 1
     out.append('')
 
@@ -3324,6 +3363,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         branch_contract=branch_contract,
         restore_contract=restore_contract,
         component_route_lists=component_route_lists,
+        sections=tuple(typed_sections),
         warnings=warnings,
         stats={
             'forms': len(forms),

@@ -192,7 +192,9 @@ def _usage_component_ids(value: Any) -> Dict[str, set[int]]:
     def walk(item: Any, component_id: int | None = None) -> None:
         if isinstance(item, dict):
             texture_hash = str(item.get("hash") or "").lower()
-            if component_id is not None and _HASH_RE.fullmatch(texture_hash):
+            if (component_id is not None
+                    and item.get("fresh") is not False
+                    and _HASH_RE.fullmatch(texture_hash)):
                 result.setdefault(texture_hash, set()).add(component_id)
             for key, child in item.items():
                 match = _COMPONENT_KEY_RE.fullmatch(str(key))

@@ -321,10 +321,12 @@ def _merge_usage_component_ids(out: dict[str, set[int]], components: dict, id_ma
                 continue
             merged = id_map[local]
         for slots in _iter_pair_slots(comp_pairs):
-            for rec in slots.values():
-                h = _record_hash(rec)
-                if h:
-                    out.setdefault(h, set()).add(int(merged))
+            for record in slots.values():
+                if not _record_fresh(record):
+                    continue
+                texture_hash = _record_hash(record)
+                if texture_hash:
+                    out.setdefault(texture_hash, set()).add(int(merged))
 
 
 def _route_component_map(scene: dict) -> dict[int, int]:
