@@ -1844,27 +1844,25 @@ def _mod_info_lines(value: Any, fallback: str) -> List[str]:
 
 def _add_mod_info_sections(ir: CrossSceneIR, units: Sequence[Any],
                            cfg: Any, logo_source: Path) -> None:
+    configured_name = str(getattr(cfg, "mod_name", "") or "")
+    fields = (
+        ("ModName", configured_name or "om_sc", "Unknown Mod Name"),
+        ("ModAuthor", getattr(cfg, "mod_author", ""), "Unknown Mod Author"),
+        ("ModDesc", getattr(cfg, "mod_desc", ""), "Empty Mod Description"),
+        ("ModLink", getattr(cfg, "mod_link", ""), "Empty Mod Link"),
+    )
     for unit in units:
         suffix = str(unit.plan.suffix)
         order = _unit_order(unit)
-        configured_name = str(getattr(cfg, "mod_name", "") or "")
-        default_name = ("om_sc" if unit.plan.kind == "body"
-                        else f"om_{unit.plan.ib_hash}")
-        fields = (
-            ("ModName", configured_name or default_name, "Unknown Mod Name"),
-            ("ModAuthor", getattr(cfg, "mod_author", ""), "Unknown Mod Author"),
-            ("ModDesc", getattr(cfg, "mod_desc", ""), "Empty Mod Description"),
-            ("ModLink", getattr(cfg, "mod_link", ""), "Empty Mod Link"),
-        )
         register = [
             f"$\\WWMIv1\\required_wwmi_version = "
             f"$required_wwmi_version{suffix}",
             f"$\\WWMIv1\\object_guid = $object_guid{suffix}",
-            f"Resource\\WWMIv1\\ModName = ref ResourceModName{suffix}",
-            f"Resource\\WWMIv1\\ModAuthor = ref ResourceModAuthor{suffix}",
-            f"Resource\\WWMIv1\\ModDesc = ref ResourceModDesc{suffix}",
-            f"Resource\\WWMIv1\\ModLink = ref ResourceModLink{suffix}",
-            f"Resource\\WWMIv1\\ModLogo = ref ResourceModLogo{suffix}",
+            "Resource\\WWMIv1\\ModName = ref ResourceModName",
+            "Resource\\WWMIv1\\ModAuthor = ref ResourceModAuthor",
+            "Resource\\WWMIv1\\ModDesc = ref ResourceModDesc",
+            "Resource\\WWMIv1\\ModLink = ref ResourceModLink",
+            "Resource\\WWMIv1\\ModLogo = ref ResourceModLogo",
             "run = CommandList\\WWMIv1\\RegisterMod",
             f"$mod_id{suffix} = $\\WWMIv1\\mod_id",
             f"if $mod_id{suffix} >= 0",
@@ -1874,20 +1872,19 @@ def _add_mod_info_sections(ir: CrossSceneIR, units: Sequence[Any],
         ir.add_section(
             f"CommandListRegisterMod{suffix}", register,
             phase=IniPhase.MOD_STATE, ib_order=order, role="register")
-        for stem, value, fallback in fields:
-            ir.add_section(
-                f"Resource{stem}{suffix}",
-                _mod_info_lines(value, fallback),
-                phase=IniPhase.MOD_INFO,
-                ib_order=order,
-                role="mod_info",
-            )
-        logo_lines = (["filename = Textures/Logo.dds"]
-                      if logo_source.is_file()
-                      else ["; filename = Textures/Logo.dds"])
+    for stem, value, fallback in fields:
         ir.add_section(
-            f"ResourceModLogo{suffix}", logo_lines,
-            phase=IniPhase.MOD_INFO, ib_order=order, role="mod_info")
+            f"Resource{stem}",
+            _mod_info_lines(value, fallback),
+            phase=IniPhase.MOD_INFO,
+            role="mod_info",
+        )
+    logo_lines = (["filename = Textures/Logo.dds"]
+                  if logo_source.is_file()
+                  else ["; filename = Textures/Logo.dds"])
+    ir.add_section(
+        "ResourceModLogo", logo_lines,
+        phase=IniPhase.MOD_INFO, role="mod_info")
 
 
 def _buffer_resource(name: str, suffix: str) -> str:
