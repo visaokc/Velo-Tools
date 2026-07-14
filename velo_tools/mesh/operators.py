@@ -795,8 +795,6 @@ def _refresh_suspended_material_routes(scene):
     _ROUTE_AUTO_REFRESHING[0] = True
     try:
         refresh_material_route_items(scene)
-        if getattr(bpy.context, "scene", None) == scene:
-            bpy.context.view_layer.update()
     finally:
         _ROUTE_AUTO_REFRESHING[0] = False
 
