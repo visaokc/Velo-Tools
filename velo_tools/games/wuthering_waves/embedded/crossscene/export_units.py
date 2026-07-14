@@ -217,16 +217,10 @@ def plan_export_units(
     base = manifest["base"]
     base_count = int(base["component_count"])
     runtime = tuple(manifest.get("runtime_ibs") or ())
-    split_names = {
-        str(entry.get("split_route", {}).get("split_object"))
-        for entry in runtime
-        if entry.get("kind") == "own_buffer" and entry.get("split_route")
-    }
-    split_names.discard("None")
 
     body_selected = tuple(
         item for item in selection.objects
-        if item.component_id < base_count and item.name not in split_names
+        if item.component_id < base_count
     )
     body_map = tuple((component_id, component_id)
                      for component_id in range(base_count))
@@ -503,15 +497,16 @@ def build_export_units(
         context: Any,
         cfg: Any,
         selection: ExportSelection,
-        manifest: Mapping[str, Any],
+        root: Any,
         *,
         excluded_buffers: Iterable[str] = (),
         hole: bool = False,
         hole_frac: int = 2,
 ) -> Tuple[ExportUnit, ...]:
     """Encode body/own/editable units; fold routes reuse the body resource domain."""
+    manifest = root.manifest
     plans = plan_export_units(selection, manifest)
-    aggregate_metadata = manifest["base"]["native_metadata"]
+    aggregate_metadata = root.metadata
     units = []
     for plan in plans:
         if plan.kind == "fold":
@@ -531,8 +526,8 @@ def build_export_units(
             empty_local_components=plan.empty_local_components,
             manifest_entry=entry,
         )
-        metadata = (manifest["base"]["native_metadata"] if plan.kind == "body"
-                    else entry["native_metadata"])
+        metadata = (aggregate_metadata if plan.kind == "body"
+                    else entry["runtime_layout"])
         units.append(_build_geometry_unit(
             context, cfg, plan, metadata, excluded_buffers, hole, hole_frac))
     return tuple(units)

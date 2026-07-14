@@ -27,12 +27,12 @@ def build_cross_scene_mod(
         write_compiled_mod,
     )
     from .export_units import build_export_units
-    from .manifest import load_manifest
+    from .manifest import load_cross_scene_root
     from .selection import capture_export_selection
 
     del workdir
-    root = Path(merged_folder)
-    manifest = load_manifest(root)
+    root_path = Path(merged_folder)
+    root = load_cross_scene_root(root_path)
     selection = capture_export_selection(
         context,
         cfg,
@@ -43,18 +43,18 @@ def build_cross_scene_mod(
         context,
         cfg,
         selection,
-        manifest,
+        root,
         excluded_buffers=tuple(excluded_buffers or ()),
         hole=bool(hole),
         hole_frac=int(hole_frac),
     )
     compiled = compile_cross_scene(
         units,
-        manifest,
+        root.manifest,
         CompilerSettings(
             context=context,
             cfg=cfg,
-            root=root,
+            root=root_path,
             selection=selection,
         ),
     )

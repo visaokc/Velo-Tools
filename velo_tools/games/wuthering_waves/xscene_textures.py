@@ -338,7 +338,7 @@ def _route_component_map(scene: dict) -> dict[int, int]:
 
 
 def cross_scene_root_texture_component_ids(merge_root: Path, manifest: dict) -> dict[str, set[int]]:
-    """Map texture hash -> merged component ids that consume it in a cross-scene merge root."""
+    """Map texture hash to consumers recorded by the final root STU."""
     merge_root = Path(merge_root)
     out: dict[str, set[int]] = {}
 
@@ -346,13 +346,6 @@ def cross_scene_root_texture_component_ids(merge_root: Path, manifest: dict) -> 
     _merge_usage_component_ids(out, _component_map(root_stu))
     for components in _extra_form_component_maps(root_stu):
         _merge_usage_component_ids(out, components)
-
-    for runtime in (manifest or {}).get("runtime_ibs") or []:
-        runtime_stu = runtime.get("native_stu") or {}
-        id_map = _route_component_map(runtime)
-        _merge_usage_component_ids(out, _component_map(runtime_stu), id_map)
-        for components in _extra_form_component_maps(runtime_stu):
-            _merge_usage_component_ids(out, components, id_map)
 
     return out
 
@@ -415,14 +408,7 @@ def _add_reasons(reasons: dict[str, set[str]], hashes: set[str], reason: str) ->
 
 
 def cross_scene_root_texture_keep_set(merge_root: Path, manifest: dict) -> tuple[set[str], dict[str, str], dict[str, str]]:
-    """Compute root-level DDS hashes kept by cross-scene slot/resource consumers.
-
-    The keep set is intentionally broader than the body slot plan: editable and
-    own-buffer scene IBs keep their own slot resources, while foldable native
-    local textures do not keep root DDS unless they are remapped through
-    component-local form variants into the body form plan. Files absent from
-    every STU are kept as legacy blind-zone fallbacks.
-    """
+    """Compute DDS retention exclusively from the final root STU."""
     merge_root = Path(merge_root)
     root_files = _root_texture_files(merge_root)
     keep_reasons: dict[str, set[str]] = {}
@@ -436,33 +422,9 @@ def cross_scene_root_texture_keep_set(merge_root: Path, manifest: dict) -> tuple
             _add_reasons(keep_reasons, effective, keep_reason)
 
     root_stu = _read_stu(merge_root)
-    keep_count = int(((manifest or {}).get("base") or {}).get("component_count") or 0)
     consume(_component_map(root_stu), "root-stu")
     for components in _extra_form_component_maps(root_stu):
         consume(components, "root-extra-form")
-
-    for runtime in (manifest or {}).get("runtime_ibs") or []:
-        runtime_stu = runtime.get("native_stu") or {}
-        kind = runtime.get("kind")
-        if kind == "fold":
-            consume(_component_map(runtime_stu), "fold-native-local", keep=False)
-            comp_map = _route_component_map(runtime)
-            for components in _extra_form_component_maps(runtime_stu):
-                mapped = _component_map(
-                    components,
-                    lambda local: local in comp_map and 0 <= comp_map[local] < keep_count)
-                consume(mapped, "fold-form")
-        elif kind == "own_buffer":
-            consume(_component_map(runtime_stu), "own-buffer")
-            for components in _extra_form_component_maps(runtime_stu):
-                consume(components, "own-buffer-form")
-        elif kind == "editable":
-            consume(_component_map(runtime_stu), "editable")
-            for components in _extra_form_component_maps(runtime_stu):
-                consume(components, "editable-form")
-
-    for h in set(root_files) - set(evidence_reasons):
-        keep_reasons.setdefault(h, set()).add("root-unclassified-fallback")
 
     keep = set(keep_reasons)
     keep_map = {h: "+".join(sorted(v)) for h, v in sorted(keep_reasons.items())}

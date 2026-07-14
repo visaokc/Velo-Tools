@@ -714,7 +714,6 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
 
     info, base_comps, base_off = analyze(base, dungeon_specs)
     base_native_metadata = _read_json_or_empty(base, "Metadata.json")
-    base_native_stu = _read_json_or_empty(base, "ShaderTextureUsage.json")
     runtime_native = {
         str(spec["hash"]): {
             "metadata": _read_json_or_empty(spec["folder"], "Metadata.json"),
@@ -968,7 +967,6 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     # STU, LOD and texture canonicalization have reached their final state.
     manifest = _build_manifest_v3(
         base_native_metadata,
-        base_native_stu,
         base_comps,
         info,
         splits,
@@ -1086,7 +1084,23 @@ def _own_buffer_component_map(meta, native_metadata):
         "component map" % meta.get("hash"))
 
 
-def _build_manifest_v3(base_metadata, base_stu, base_comps, info, splits,
+def _runtime_layout_for_manifest(metadata):
+    """Keep only runtime draw/encoding facts that the aggregate root cannot supply."""
+    return {
+        key: metadata.get(key)
+        for key in (
+            "vb0_hash",
+            "cb4_hash",
+            "vertex_count",
+            "index_count",
+            "components",
+            "shapekeys",
+            "export_format",
+        )
+    }
+
+
+def _build_manifest_v3(base_metadata, base_comps, info, splits,
                        runtime_native, editable_ib_records=None, fold_data=None):
     """Build the path-free persistent contract for one aggregate root."""
     editable_ib_records = list(editable_ib_records or [])
@@ -1114,8 +1128,7 @@ def _build_manifest_v3(base_metadata, base_stu, base_comps, info, splits,
             "vb0_hash": (
                 _hash8_or_empty(native_metadata.get("vb0_hash")) or ib_hash),
             "role": meta.get("role", ""),
-            "native_metadata": native_metadata,
-            "native_stu": payload["stu"],
+            "runtime_layout": _runtime_layout_for_manifest(native_metadata),
             "native_component_range": list(range(
                 len(native_metadata.get("components") or []))),
             "component_map": component_map,
@@ -1162,8 +1175,7 @@ def _build_manifest_v3(base_metadata, base_stu, base_comps, info, splits,
                 or _hash8_or_empty(native_metadata.get("vb0_hash"))
                 or ib_hash),
             "role": record.get("role", ""),
-            "native_metadata": native_metadata,
-            "native_stu": payload["stu"],
+            "runtime_layout": _runtime_layout_for_manifest(native_metadata),
             "native_component_range": list(range(
                 len(native_metadata.get("components") or []))),
             "component_map": component_map,
@@ -1184,8 +1196,6 @@ def _build_manifest_v3(base_metadata, base_stu, base_comps, info, splits,
             "vb0_hash": base_metadata.get("vb0_hash", ""),
             "cb4_hash": base_metadata.get("cb4_hash", ""),
             "component_count": len(base_comps),
-            "native_metadata": base_metadata,
-            "native_stu": base_stu,
             "native_component_range": list(range(len(base_comps))),
             "editable_objects": _editable_object_names(
                 base_comps, splits, editable_ib_records),
