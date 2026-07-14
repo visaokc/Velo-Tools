@@ -24,9 +24,13 @@ import json
 import re
 import sys
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 
 import bpy
+
+
+_VG_SORT_BATCH_DEPTH = [0]
 
 MODE_VALUE = 'COMPONENT_FROM_MERGED'
 _TMP_PREFIX = '__vpfm_tmp_local_'
@@ -139,6 +143,12 @@ def _move_vertex_group(obj, from_index, to_index):
 def _sort_vertex_groups_by_name(obj):
     if obj is None or getattr(obj, "type", None) != 'MESH':
         return False
+    if _VG_SORT_BATCH_DEPTH[0] > 0:
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.vertex_group_sort()
+        obj.select_set(False)
+        return True
     active_obj = bpy.context.view_layer.objects.active
     selected = list(getattr(bpy.context, "selected_objects", ()) or [])
     active_mode = getattr(active_obj, "mode", "OBJECT") if active_obj is not None else "OBJECT"
@@ -151,6 +161,40 @@ def _sort_vertex_groups_by_name(obj):
         bpy.ops.object.vertex_group_sort()
         return True
     finally:
+        try:
+            bpy.ops.object.select_all(action='DESELECT')
+            for selected_obj in selected:
+                selected_obj.select_set(True)
+            if active_obj is not None:
+                bpy.context.view_layer.objects.active = active_obj
+            if active_obj is not None and active_mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode=active_mode)
+        except Exception:
+            pass
+
+
+@contextmanager
+def batch_vertex_group_sort_context():
+    """Share Blender selection and mode setup across consecutive VG sorts."""
+    if _VG_SORT_BATCH_DEPTH[0] > 0:
+        _VG_SORT_BATCH_DEPTH[0] += 1
+        try:
+            yield
+        finally:
+            _VG_SORT_BATCH_DEPTH[0] -= 1
+        return
+
+    active_obj = bpy.context.view_layer.objects.active
+    selected = list(getattr(bpy.context, "selected_objects", ()) or [])
+    active_mode = getattr(active_obj, "mode", "OBJECT") if active_obj is not None else "OBJECT"
+    _VG_SORT_BATCH_DEPTH[0] = 1
+    try:
+        if active_obj is not None and active_mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.object.select_all(action='DESELECT')
+        yield
+    finally:
+        _VG_SORT_BATCH_DEPTH[0] = 0
         try:
             bpy.ops.object.select_all(action='DESELECT')
             for selected_obj in selected:

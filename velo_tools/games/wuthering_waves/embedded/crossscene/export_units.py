@@ -424,8 +424,16 @@ def _build_geometry_unit(context: Any, cfg: Any, plan: ExportUnitPlan,
     merged_object = None
     merged_mesh = None
     try:
-        inputs, labels = _prepare_inputs(
-            context, cfg, plan, collection, metadata, hole, hole_frac)
+        if (cfg.mod_skeleton_type == "COMPONENT_FROM_MERGED"
+                and plan.kind in {"body", "editable"}):
+            from ..per_from_merged import batch_vertex_group_sort_context
+            sort_context = batch_vertex_group_sort_context()
+        else:
+            from contextlib import nullcontext
+            sort_context = nullcontext()
+        with sort_context:
+            inputs, labels = _prepare_inputs(
+                context, cfg, plan, collection, metadata, hole, hole_frac)
         from ..._wwmi_core.blender_export.blender_export import ObjectMergerWWMI
         merger = ObjectMergerWWMI(
             extracted_object=extracted,
