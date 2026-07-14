@@ -407,22 +407,28 @@ def _normalized_cfg(cfg: Any) -> Any:
     return Proxy()
 
 
-def _root_textures(root: Path, cfg: Any) -> Tuple[Any, ...]:
-    from ..._wwmi_core.blender_export.texture_collector import Texture
-    from .texture_delivery import build_delivery_inventory
-
+def _root_texture_rows(root: Any, cfg: Any) -> Tuple[Tuple[str, Path, str], ...]:
     excluded = ({'af26db30', '1320a071', '10d7937d', '87505b2b',
                  'e5df00a8', 'ec2fecec', 'd313d349'}
                 if bool(cfg.skip_known_cubemap_textures) else set())
-    inventory = build_delivery_inventory(root, ())
+    return tuple(
+        (item.texture_hash, item.path, item.name)
+        for item in sorted(
+            root.dds_catalog.values(), key=lambda value: value.name.casefold())
+        if item.texture_hash not in excluded
+    )
+
+
+def _root_textures(root: Any, cfg: Any) -> Tuple[Any, ...]:
+    from ..._wwmi_core.blender_export.texture_collector import Texture
+
     return tuple(
         Texture(
-            hash=item.texture_hash or "",
-            path=item.path,
-            filename=item.name,
+            hash=texture_hash,
+            path=path,
+            filename=name,
         )
-        for item in inventory.root_files
-        if item.texture_hash not in excluded
+        for texture_hash, path, name in _root_texture_rows(root, cfg)
     )
 
 
@@ -3462,7 +3468,7 @@ def compile_cross_scene(units: Sequence[Any], root: Any,
     mode = _mode(cfg)
     if mode not in {"COMPONENT", "MERGED"}:
         raise CrossSceneCompileError(f"unknown skeleton mode {mode!r}")
-    textures = (_root_textures(root.path, cfg)
+    textures = (_root_textures(root, cfg)
                 if settings.selection.objects else ())
     ini_textures = _ini_textures(textures)
     texture_plan = _texture_plan(units, root, settings, ini_textures)
