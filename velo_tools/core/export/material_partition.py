@@ -198,23 +198,37 @@ def _clean_fragment_shape_keys(context, obj) -> None:
 
 def _split_object_by_material(context, obj) -> list:
     import bpy
+    from ...mesh.split_normals import (
+        capture_split_corner_normals,
+        restore_split_corner_normals,
+    )
 
     active = context.view_layer.objects.active
     selected = list(context.selected_objects)
     previous_mode = getattr(context.object, "mode", "OBJECT") if context.object else "OBJECT"
     before = {item.as_pointer() for item in bpy.data.objects}
+    normal_attribute = capture_split_corner_normals(obj.data)
     try:
-        if context.object and context.object.mode != "OBJECT":
+        try:
+            if context.object and context.object.mode != "OBJECT":
+                bpy.ops.object.mode_set(mode="OBJECT")
+            bpy.ops.object.select_all(action="DESELECT")
+            obj.hide_set(False)
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.separate(type="MATERIAL")
             bpy.ops.object.mode_set(mode="OBJECT")
-        bpy.ops.object.select_all(action="DESELECT")
-        obj.hide_set(False)
-        obj.select_set(True)
-        context.view_layer.objects.active = obj
-        bpy.ops.object.mode_set(mode="EDIT")
-        bpy.ops.mesh.separate(type="MATERIAL")
-        bpy.ops.object.mode_set(mode="OBJECT")
-        created = [item for item in bpy.data.objects if item.as_pointer() not in before]
-        return [obj, *created]
+        finally:
+            if context.object and context.object.mode != "OBJECT":
+                bpy.ops.object.mode_set(mode="OBJECT")
+            split_results = [obj]
+            split_results.extend(
+                item for item in bpy.data.objects
+                if item.as_pointer() not in before and item.type == "MESH"
+            )
+            restore_split_corner_normals(split_results, normal_attribute)
+        return split_results
     except Exception:
         for item in [item for item in bpy.data.objects if item.as_pointer() not in before]:
             if item.type == "MESH":

@@ -14,6 +14,7 @@ import numpy as np
 from bpy.app.handlers import persistent
 
 from .route_refresh import SceneRefreshGate
+from .split_normals import capture_split_corner_normals, restore_split_corner_normals
 
 
 # ---------------------------------------------------------------------------
@@ -1527,6 +1528,8 @@ def _split_meshes_by_material(context, sources, *, threshold, preserve_component
         if len(src.material_slots) <= 1:
             skipped_single += 1
             continue
+        split_before = set(context.scene.objects)
+        normal_attribute = capture_split_corner_normals(src.data)
         bpy.ops.object.select_all(action='DESELECT')
         src.select_set(True)
         context.view_layer.objects.active = src
@@ -1534,12 +1537,18 @@ def _split_meshes_by_material(context, sources, *, threshold, preserve_component
             bpy.ops.object.mode_set(mode='EDIT')
             bpy.ops.mesh.select_all(action='SELECT')
             bpy.ops.mesh.separate(type='MATERIAL')
-            split_sources += 1
         finally:
             try:
                 bpy.ops.object.mode_set(mode='OBJECT')
             except RuntimeError:
                 pass
+            split_results = [src]
+            split_results.extend(
+                obj for obj in context.scene.objects
+                if obj not in split_before and is_real_mesh(obj)
+            )
+            restore_split_corner_normals(split_results, normal_attribute)
+        split_sources += 1
 
     targets = set(sources)
     for obj in context.scene.objects:
@@ -1795,7 +1804,8 @@ class VELO_OT_split_by_material_to_collections(bpy.types.Operator):
     bl_label = "按材质分离并归纳到集合"
     bl_description = (
         "手动对当前导出部件集合内选中的网格按材质拆分；"
-        "单材质网格会直接跳过；拆分后的单材质部件会自动保留 Component 前缀并归入当前材质树指定的集合"
+        "保持拆分前的边界法向；单材质网格会直接跳过；"
+        "拆分后的单材质部件会自动保留 Component 前缀并归入当前材质树指定的集合"
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -1942,6 +1952,7 @@ class VELO_OT_split_by_material(bpy.types.Operator):
     bl_label = "按材质拆分网格"
     bl_description = (
         "对每个选中网格: 进入编辑模式按材质拆分, "
+        "保持拆分前的边界法向, "
         "拆分后的每个子物体只保留实际使用的材质槽, "
         "并清理零位移的形态键"
     )
