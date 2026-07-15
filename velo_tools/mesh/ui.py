@@ -10,7 +10,6 @@ _SHAPEKEY_COUNT_UNITS = 3.0
 _SHAPEKEY_VALUE_UNITS = 8.0
 _SHAPEKEY_MINIMUM_NAME_UNITS = 6.0
 _SHAPEKEY_LAYOUT_MARGIN_UNITS = 2.0
-_SHAPEKEY_LIST_HEADER_TRAILING_UNITS = 0.9
 
 
 def _shapekey_available_units(context):
@@ -19,24 +18,9 @@ def _shapekey_available_units(context):
     return max(float(context.region.width) / widget_pixels - _SHAPEKEY_LAYOUT_MARGIN_UNITS, 1.0)
 
 
-def _shapekey_content_row(layout, total_units, list_header):
+def _shapekey_columns(layout, context):
+    content_units = _shapekey_available_units(context)
     row = layout.row(align=True)
-    if not list_header:
-        return row, total_units
-    trailing = min(_SHAPEKEY_LIST_HEADER_TRAILING_UNITS, total_units * 0.2)
-    content_units = max(total_units - trailing, 1.0)
-    trailing_split = row.split(
-        factor=content_units / total_units,
-        align=True,
-    )
-    content = trailing_split.row(align=True)
-    trailing_split.row(align=True).label(text="")
-    return content, content_units
-
-
-def _shapekey_columns(layout, context, list_header=False):
-    available_units = _shapekey_available_units(context)
-    row, content_units = _shapekey_content_row(layout, available_units, list_header)
     checkbox_units, name_units, count_units, value_units = shapekey_column_units(
         content_units,
         checkbox_units=_SHAPEKEY_CHECKBOX_UNITS,
@@ -281,6 +265,14 @@ class VELO_PT_shapekey_panel(bpy.types.Panel):
         row.enabled = s.target_collection is not None
         row.operator("velo.refresh_shapekey_list",
                      icon='FILE_REFRESH', text="强制刷新")
+        eligible = [item for item in s.shapekey_items if not item.is_deform_numbered]
+        all_selected = bool(eligible) and all(item.selected for item in eligible)
+        row.operator(
+            "velo.toggle_shapekey_rename_selection",
+            text="全不选" if all_selected else "全选",
+            icon='CHECKBOX_HLT' if all_selected else 'CHECKBOX_DEHLT',
+            depress=all_selected,
+        )
         row.operator("velo.rename_shapekeys_deform",
                      icon='SORTALPHA', text="自动重命名")
 
@@ -292,21 +284,6 @@ class VELO_PT_shapekey_panel(bpy.types.Panel):
             return
 
         layout.label(text=f"共 {n} 种形态键 (自动同步; 改名会刷新到所有网格)")
-        checkbox, name, count, value = _shapekey_columns(layout, context, list_header=True)
-        eligible = [item for item in s.shapekey_items if not item.is_deform_numbered]
-        all_selected = bool(eligible) and all(item.selected for item in eligible)
-        checkbox.operator(
-            "velo.toggle_shapekey_rename_selection",
-            text="",
-            icon='CHECKBOX_HLT' if all_selected else 'CHECKBOX_DEHLT',
-            emboss=False,
-            depress=all_selected,
-        )
-        name.label(text="名称")
-        count.alignment = 'CENTER'
-        count.label(text="数量")
-        value.alignment = 'CENTER'
-        value.label(text="值")
         layout.template_list(
             "VELO_UL_shapekey_agg", "",
             s, "shapekey_items",
