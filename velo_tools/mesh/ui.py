@@ -10,6 +10,7 @@ _SHAPEKEY_COUNT_UNITS = 3.0
 _SHAPEKEY_VALUE_UNITS = 8.0
 _SHAPEKEY_MINIMUM_NAME_UNITS = 6.0
 _SHAPEKEY_LAYOUT_MARGIN_UNITS = 2.0
+_SHAPEKEY_COLUMN_SNAPSHOTS = {}
 
 
 def _shapekey_available_units(context):
@@ -18,9 +19,7 @@ def _shapekey_available_units(context):
     return max(float(context.region.width) / widget_pixels - _SHAPEKEY_LAYOUT_MARGIN_UNITS, 1.0)
 
 
-def _shapekey_columns(layout, context):
-    content_units = _shapekey_available_units(context)
-    row = layout.row(align=True)
+def _shapekey_column_factors(content_units):
     checkbox_units, name_units, count_units, value_units = shapekey_column_units(
         content_units,
         checkbox_units=_SHAPEKEY_CHECKBOX_UNITS,
@@ -29,14 +28,42 @@ def _shapekey_columns(layout, context):
         minimum_name_units=_SHAPEKEY_MINIMUM_NAME_UNITS,
     )
     total_units = checkbox_units + name_units + count_units + value_units
-    checkbox_split = row.split(factor=checkbox_units / total_units, align=True)
+    remaining_units = name_units + count_units + value_units
+    return (
+        checkbox_units / total_units,
+        name_units / remaining_units,
+        count_units / (count_units + value_units),
+    )
+
+
+def _snapshot_shapekey_columns(context):
+    """Capture one column layout for the complete UIList redraw."""
+    region_key = context.region.as_pointer()
+    _SHAPEKEY_COLUMN_SNAPSHOTS[region_key] = _shapekey_column_factors(
+        _shapekey_available_units(context)
+    )
+
+
+def _shapekey_columns(layout, context):
+    # UIList rows can redraw in separate batches during a region resize. Every
+    # row must consume the panel's single snapshot instead of measuring again.
+    factors = _SHAPEKEY_COLUMN_SNAPSHOTS.get(context.region.as_pointer())
+    if factors is None:
+        factors = _shapekey_column_factors(
+            _SHAPEKEY_CHECKBOX_UNITS
+            + _SHAPEKEY_MINIMUM_NAME_UNITS
+            + _SHAPEKEY_COUNT_UNITS
+            + _SHAPEKEY_VALUE_UNITS
+        )
+    checkbox_factor, name_factor, count_factor = factors
+    row = layout.row(align=True)
+    checkbox_split = row.split(factor=checkbox_factor, align=True)
     checkbox = checkbox_split.row(align=True)
     remaining = checkbox_split.row(align=True)
-    remaining_units = name_units + count_units + value_units
-    name_split = remaining.split(factor=name_units / remaining_units, align=True)
+    name_split = remaining.split(factor=name_factor, align=True)
     name = name_split.row(align=True)
     fixed_right = name_split.row(align=True)
-    right_split = fixed_right.split(factor=count_units / (count_units + value_units), align=True)
+    right_split = fixed_right.split(factor=count_factor, align=True)
     count = right_split.row(align=True)
     value = right_split.row(align=True)
     return checkbox, name, count, value
@@ -284,6 +311,7 @@ class VELO_PT_shapekey_panel(bpy.types.Panel):
             return
 
         layout.label(text=f"共 {n} 种形态键 (自动同步; 改名会刷新到所有网格)")
+        _snapshot_shapekey_columns(context)
         layout.template_list(
             "VELO_UL_shapekey_agg", "",
             s, "shapekey_items",
@@ -378,6 +406,7 @@ def register():
 
 
 def unregister():
+    _SHAPEKEY_COLUMN_SNAPSHOTS.clear()
     for c in reversed(_classes):
         try:
             bpy.utils.unregister_class(c)
