@@ -52,7 +52,7 @@ def remap_ui_state(selected_by_name, active_name, name_remap=None):
 
 def shapekey_column_units(
         total_units, checkbox_units=1.6, count_units=3.0,
-        value_units=10.0, minimum_name_units=6.0):
+        value_units=8.0, minimum_name_units=6.0):
     """Keep utility columns fixed once the name column reaches its minimum width."""
     total_units = max(float(total_units), 1.0)
     minimum_total = checkbox_units + count_units + value_units + minimum_name_units

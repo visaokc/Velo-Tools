@@ -7,10 +7,9 @@ from .shapekey_model import shapekey_column_units
 
 _SHAPEKEY_CHECKBOX_UNITS = 1.6
 _SHAPEKEY_COUNT_UNITS = 3.0
-_SHAPEKEY_VALUE_UNITS = 10.0
+_SHAPEKEY_VALUE_UNITS = 8.0
 _SHAPEKEY_MINIMUM_NAME_UNITS = 6.0
 _SHAPEKEY_LAYOUT_MARGIN_UNITS = 2.0
-_SHAPEKEY_LIST_HEADER_LEADING_UNITS = 0.4
 _SHAPEKEY_LIST_HEADER_TRAILING_UNITS = 0.9
 
 
@@ -24,15 +23,10 @@ def _shapekey_content_row(layout, total_units, list_header):
     row = layout.row(align=True)
     if not list_header:
         return row, total_units
-    leading = min(_SHAPEKEY_LIST_HEADER_LEADING_UNITS, total_units * 0.1)
     trailing = min(_SHAPEKEY_LIST_HEADER_TRAILING_UNITS, total_units * 0.2)
-    leading_split = row.split(factor=leading / total_units, align=True)
-    leading_split.row(align=True).label(text="")
-    after_leading = leading_split.row(align=True)
-    after_leading_units = total_units - leading
-    content_units = max(after_leading_units - trailing, 1.0)
-    trailing_split = after_leading.split(
-        factor=content_units / after_leading_units,
+    content_units = max(total_units - trailing, 1.0)
+    trailing_split = row.split(
+        factor=content_units / total_units,
         align=True,
     )
     content = trailing_split.row(align=True)

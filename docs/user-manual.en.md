@@ -195,7 +195,7 @@ These operations may disable **忽略嵌套集合 (Ignore Nested Collections)** 
 
 #### Shared ShapeKey Aggregation
 
-Use **形态键聚合 (按集合) (ShapeKey Aggregation by Collection)** to scan equal-name ShapeKeys across meshes and synchronize their names and values. The list is deterministic: existing `Deform N` entries appear first in numeric order, followed by all other names in case-insensitive natural A-Z order. Widening the sidebar gives the extra space to the name field; the value slider is capped at 10 Blender UI units.
+Use **形态键聚合 (按集合) (ShapeKey Aggregation by Collection)** to scan equal-name ShapeKeys across meshes and synchronize their names and values. The list is deterministic: existing `Deform N` entries appear first in numeric order, followed by all other names in case-insensitive natural A-Z order. Widening the sidebar gives the extra space to the name field; the value slider is capped at 8 Blender UI units.
 
 The left checkbox selects entries for **自动重命名 (Auto Rename)**. All entries start unchecked, and the header checkbox selects or clears every unnumbered entry. Existing `Deform N` names are protected and cannot be selected for automatic renaming. New IDs are discovered dynamically from the collection and begin at the current maximum plus one (or 1 when no ID exists), preserving the full original name as the suffix. Hover over `xN` to see every mesh object that contains that ShapeKey. Refreshing or automatic rescanning preserves the checked rows and active row by name.
 
