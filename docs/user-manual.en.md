@@ -1,6 +1,6 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.4.1. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.5.0. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
@@ -731,7 +731,7 @@ Optional features can add shader, toggle, or logo resources.
 
 ### Reading a Velo WWMI INI
 
-Velo 1.4.1 sorts generated sections by function without changing match-bearing override order.
+Velo sorts generated sections by function without changing match-bearing override order.
 
 When one texture resource maps to one Hash override, the output places its `ResourceTexture` immediately before the matching `TextureOverride`, matching native WWMI reading order.
 
