@@ -1055,6 +1055,15 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
         soft_max=999,
     )
 
+    mesh_auto_material_on_rename: BoolProperty(
+        name="改名时自动同步材质球",
+        description=(
+            "开启后，当前游戏 Export Mod 部件集合及其子集合中的单材质网格物体改名时，"
+            "自动同步 mesh 与材质球名称；多材质槽物体不处理"
+        ),
+        default=False,
+    )
+
     # Top-of-main-panel tab switch
     active_tab: EnumProperty(
         name="功能区",

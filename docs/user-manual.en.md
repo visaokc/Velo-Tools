@@ -175,6 +175,8 @@ The **材质工具 (Material Tools)** panel can:
 - apply modifiers on objects with ShapeKeys;
 - convert vertex colors.
 
+The icon-only toggle beside **选中物体生成材质球 (Create Materials for Selected Objects)** enables automatic same-name material synchronization. It is off by default and uses Blender's highlighted toggle state while enabled. The setting is saved with the scene and only watches mesh objects inside the current game's **组件集合 (Component Collection)** and its child collections. Renaming a mesh with zero or one material slot synchronizes its mesh and material names; meshes with two or more material slots are left unchanged. Newly created, duplicated, or imported objects are first recorded without modification and are processed only after a later rename.
+
 Set **形态键清理阈值 (ShapeKey Cleanup Threshold)** before split/merge operations when tiny ShapeKey deltas should be discarded.
 
 #### Material-to-Collection Routing

@@ -8,11 +8,13 @@ Design principles:
 """
 
 import re
+import traceback
 
 import bpy
 import numpy as np
 from bpy.app.handlers import persistent
 
+from .material_name_sync import RenameTracker
 from .route_refresh import SceneRefreshGate
 from .split_normals import capture_split_corner_normals, restore_split_corner_normals
 
@@ -31,6 +33,9 @@ _EXPORT_TEMP_SUFFIX = "__velo_export"
 _ROUTE_AUTO_SIG = {}
 _ROUTE_AUTO_REFRESHING = [False]
 _ROUTE_REFRESH_GATE = SceneRefreshGate()
+_MATERIAL_NAME_TRACKER = RenameTracker()
+_AUTO_MATERIAL_SYNCING = [False]
+_MATERIAL_NAME_MSGBUS_OWNER = object()
 
 
 def is_real_mesh(obj):
@@ -836,6 +841,111 @@ def _route_depsgraph_handler(scene, depsgraph):
         _ROUTE_AUTO_REFRESHING[0] = False
 
 
+def _automatic_material_scope_key(scene, root):
+    settings = getattr(scene, "velo_tools", None)
+    active_game = getattr(settings, "active_game", "") if settings else ""
+    try:
+        root_key = int(root.as_pointer())
+    except Exception:
+        root_key = id(root)
+    return active_game, root_key
+
+
+def _automatic_material_seed(root):
+    for obj in root.all_objects:
+        if not is_real_mesh(obj) or is_export_temp_object(obj):
+            continue
+        try:
+            object_key = int(obj.as_pointer())
+        except Exception:
+            object_key = id(obj)
+        yield object_key, obj.name
+
+
+def _automatic_material_scan_scene(scene):
+    if _ROUTE_REFRESH_GATE.is_suspended(scene) or _ROUTE_AUTO_REFRESHING[0]:
+        return
+    settings = getattr(scene, "velo_tools", None)
+    enabled = bool(getattr(settings, "mesh_auto_material_on_rename", False)) if settings else False
+    root = get_export_component_root(scene) if enabled else None
+    scene_key = _route_scene_sig_key(scene)
+    if scene_key is None:
+        return
+    scope_key = _automatic_material_scope_key(scene, root) if root is not None else None
+    if not _MATERIAL_NAME_TRACKER.prepare(
+            scene_key,
+            enabled,
+            scope_key,
+            _automatic_material_seed(root) if root is not None else (),
+    ):
+        return
+
+    renamed = []
+    for obj in root.all_objects:
+        if not is_real_mesh(obj) or is_export_temp_object(obj):
+            continue
+        try:
+            object_key = int(obj.as_pointer())
+        except Exception:
+            object_key = id(obj)
+        known, previous_name = _MATERIAL_NAME_TRACKER.previous(scene_key, object_key)
+        _MATERIAL_NAME_TRACKER.record(scene_key, object_key, obj.name)
+        if known and previous_name != obj.name:
+            renamed.append(obj)
+
+    if not renamed:
+        return
+    _AUTO_MATERIAL_SYNCING[0] = True
+    try:
+        for obj in renamed:
+            try:
+                _sync_object_material_name(obj, skip_multiple_slots=True)
+            except (ReferenceError, RuntimeError, TypeError, ValueError):
+                traceback.print_exc()
+    finally:
+        _AUTO_MATERIAL_SYNCING[0] = False
+
+
+def _automatic_material_name_msgbus_notify():
+    if _AUTO_MATERIAL_SYNCING[0]:
+        return
+    for scene in bpy.data.scenes:
+        _automatic_material_scan_scene(scene)
+
+
+def _automatic_material_name_timer():
+    if not _AUTO_MATERIAL_SYNCING[0]:
+        for scene in bpy.data.scenes:
+            _automatic_material_scan_scene(scene)
+    return 0.1
+
+
+def _subscribe_automatic_material_name_msgbus():
+    bpy.msgbus.clear_by_owner(_MATERIAL_NAME_MSGBUS_OWNER)
+    bpy.msgbus.subscribe_rna(
+        key=(bpy.types.Object, "name"),
+        owner=_MATERIAL_NAME_MSGBUS_OWNER,
+        args=(),
+        notify=_automatic_material_name_msgbus_notify,
+        options={'PERSISTENT'},
+    )
+
+
+@persistent
+def _automatic_material_name_handler(scene, _depsgraph):
+    if (_AUTO_MATERIAL_SYNCING[0]
+            or _ROUTE_AUTO_REFRESHING[0]
+            or _ROUTE_REFRESH_GATE.is_suspended(scene)):
+        return
+    _automatic_material_scan_scene(scene)
+
+
+@persistent
+def _reset_automatic_material_name_tracking(*_args):
+    _MATERIAL_NAME_TRACKER.reset()
+    _subscribe_automatic_material_name_msgbus()
+
+
 def _find_route_item(route_settings, component_id, material_name):
     if route_settings is None or not material_name:
         return None
@@ -1281,6 +1391,63 @@ class VELO_OT_add_component_prefix(bpy.types.Operator):
 # 2) Generate same-named materials for selected objects
 # ---------------------------------------------------------------------------
 
+def _claim_name(collection, target_block, name):
+    """Make one data-block exclusively own a target name."""
+    existing = collection.get(name)
+    if existing is target_block:
+        return True
+    if existing is not None:
+        removed = False
+        if isinstance(existing, bpy.types.Mesh):
+            removed = _remove_zero_user_mesh(existing)
+        elif isinstance(existing, bpy.types.Material):
+            try:
+                if existing.users == 0 and not bool(getattr(existing, "use_fake_user", False)):
+                    bpy.data.materials.remove(existing)
+                    removed = True
+            except Exception:
+                removed = False
+        if not removed:
+            existing.name = f"__velo_displaced__{name}"
+    target_block.name = name
+    return target_block.name == name
+
+
+def _get_or_create_named_material(name):
+    material = bpy.data.materials.get(name)
+    if material is None:
+        material = bpy.data.materials.new(name=name)
+        _claim_name(bpy.data.materials, material, name)
+    return material
+
+
+def _sync_object_material_name(obj, *, skip_multiple_slots=False):
+    if not is_real_mesh(obj) or obj.data is None:
+        return False
+    if skip_multiple_slots and len(obj.data.materials) > 1:
+        return False
+
+    obj_name = obj.name
+    if obj.data.users > 1:
+        obj.data = obj.data.copy()
+    _claim_name(bpy.data.meshes, obj.data, obj_name)
+
+    materials = obj.data.materials
+    if len(materials) == 0:
+        materials.append(_get_or_create_named_material(obj_name))
+        return True
+
+    material = materials[0]
+    if material is None:
+        materials[0] = _get_or_create_named_material(obj_name)
+        return True
+    if material.users > 1:
+        material = material.copy()
+        materials[0] = material
+    _claim_name(bpy.data.materials, material, obj_name)
+    return True
+
+
 class VELO_OT_gen_material_for_selected(bpy.types.Operator):
     bl_idname = "velo.gen_material_for_selected"
     bl_label = "选中物体生成同名材质球"
@@ -1300,53 +1467,10 @@ class VELO_OT_gen_material_for_selected(bpy.types.Operator):
             self.report({'WARNING'}, "请先选择至少一个网格物体")
             return {'CANCELLED'}
 
-        def _claim_name(collection, target_block, name):
-            """Make the selected object's data-block exclusively own the target name.
-            If another data-block already holds this name, force-rename it out of the way first
-            (the displaced one gets a `__velo_displaced__` prefix, to avoid Blender auto-appending `.001`).
-            Returns whether the name was set successfully (target_block.name == name)."""
-            existing = collection.get(name)
-            if existing is target_block:
-                return True
-            if existing is not None:
-                removed = False
-                if isinstance(existing, bpy.types.Mesh):
-                    removed = _remove_zero_user_mesh(existing)
-                elif isinstance(existing, bpy.types.Material):
-                    try:
-                        if existing.users == 0 and not bool(getattr(existing, "use_fake_user", False)):
-                            bpy.data.materials.remove(existing)
-                            removed = True
-                    except Exception:
-                        removed = False
-                if not removed:
-                    existing.name = f"__velo_displaced__{name}"
-            target_block.name = name
-            return target_block.name == name
-
         processed = 0
         for obj in meshes:
-            obj_name = obj.name
-            # Make the mesh single-user, so renaming only affects the current object
-            if obj.data.users > 1:
-                obj.data = obj.data.copy()
-            _claim_name(bpy.data.meshes, obj.data, obj_name)
-            mats = obj.data.materials
-            if len(mats) == 0:
-                # Prefer reusing a same-named material; create a new one only if none exists
-                mat = bpy.data.materials.get(obj_name)
-                if mat is None:
-                    mat = bpy.data.materials.new(name=obj_name)
-                    # new() appends .001 on a name clash, so claim the name again
-                    _claim_name(bpy.data.materials, mat, obj_name)
-                mats.append(mat)
-            else:
-                mat = mats[0]
-                if mat.users > 1:
-                    mat = mat.copy()
-                    mats[0] = mat
-                _claim_name(bpy.data.materials, mat, obj_name)
-            processed += 1
+            if _sync_object_material_name(obj):
+                processed += 1
 
         self.report({'INFO'}, f"完成: 处理 {processed} 个物体")
         return {'FINISHED'}
@@ -2006,16 +2130,47 @@ def register():
     for c in _classes:
         bpy.utils.register_class(c)
     bpy.types.Scene.velo_material_route_tools = bpy.props.PointerProperty(type=VELO_MaterialRouteSettings)
+    _subscribe_automatic_material_name_msgbus()
+    if not bpy.app.timers.is_registered(_automatic_material_name_timer):
+        bpy.app.timers.register(_automatic_material_name_timer, first_interval=0.1, persistent=True)
+    if _automatic_material_name_handler not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_automatic_material_name_handler)
     if _route_depsgraph_handler not in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.append(_route_depsgraph_handler)
+    for handlers in (
+            bpy.app.handlers.load_post,
+            bpy.app.handlers.undo_post,
+            bpy.app.handlers.redo_post,
+    ):
+        if _reset_automatic_material_name_tracking not in handlers:
+            handlers.append(_reset_automatic_material_name_tracking)
 
 
 def unregister():
+    for handlers in (
+            bpy.app.handlers.redo_post,
+            bpy.app.handlers.undo_post,
+            bpy.app.handlers.load_post,
+    ):
+        if _reset_automatic_material_name_tracking in handlers:
+            try:
+                handlers.remove(_reset_automatic_material_name_tracking)
+            except ValueError:
+                pass
     if _route_depsgraph_handler in bpy.app.handlers.depsgraph_update_post:
         try:
             bpy.app.handlers.depsgraph_update_post.remove(_route_depsgraph_handler)
         except ValueError:
             pass
+    if _automatic_material_name_handler in bpy.app.handlers.depsgraph_update_post:
+        try:
+            bpy.app.handlers.depsgraph_update_post.remove(_automatic_material_name_handler)
+        except ValueError:
+            pass
+    bpy.msgbus.clear_by_owner(_MATERIAL_NAME_MSGBUS_OWNER)
+    if bpy.app.timers.is_registered(_automatic_material_name_timer):
+        bpy.app.timers.unregister(_automatic_material_name_timer)
+    _MATERIAL_NAME_TRACKER.reset()
     _ROUTE_AUTO_SIG.clear()
     if hasattr(bpy.types.Scene, "velo_material_route_tools"):
         del bpy.types.Scene.velo_material_route_tools

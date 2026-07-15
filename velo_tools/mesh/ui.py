@@ -161,8 +161,16 @@ class VELO_PT_mesh_actions(bpy.types.Panel):
         )
         prefix_row.prop(context.scene.velo_tools, "mesh_component_prefix_id", text="")
 
-        col.operator("velo.gen_material_for_selected",
-                     icon='MATERIAL', text="选中物体生成材质球")
+        material_row = col.row(align=True)
+        material_row.operator("velo.gen_material_for_selected",
+                              icon='MATERIAL', text="选中物体生成材质球")
+        material_row.prop(
+            context.scene.velo_tools,
+            "mesh_auto_material_on_rename",
+            text="",
+            icon='FILE_REFRESH',
+            toggle=True,
+        )
         sub = col.row(align=True)
         sub.enabled = sel_count > 0
         sub.operator("velo.split_by_material",
