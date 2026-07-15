@@ -2,21 +2,65 @@
 
 import bpy
 
+from .shapekey_model import shapekey_column_units
+
 
 _SHAPEKEY_CHECKBOX_UNITS = 1.6
 _SHAPEKEY_COUNT_UNITS = 3.0
 _SHAPEKEY_VALUE_UNITS = 10.0
+_SHAPEKEY_MINIMUM_NAME_UNITS = 6.0
+_SHAPEKEY_LAYOUT_MARGIN_UNITS = 2.0
+_SHAPEKEY_LIST_HEADER_LEADING_UNITS = 0.4
+_SHAPEKEY_LIST_HEADER_TRAILING_UNITS = 0.9
 
 
-def _shapekey_columns(layout):
+def _shapekey_available_units(context):
+    system = context.preferences.system
+    widget_pixels = 20.0 * float(system.ui_scale) * float(getattr(system, "pixel_size", 1.0))
+    return max(float(context.region.width) / widget_pixels - _SHAPEKEY_LAYOUT_MARGIN_UNITS, 1.0)
+
+
+def _shapekey_content_row(layout, total_units, list_header):
     row = layout.row(align=True)
-    checkbox = row.row(align=True)
-    checkbox.ui_units_x = _SHAPEKEY_CHECKBOX_UNITS
-    name = row.row(align=True)
-    count = row.row(align=True)
-    count.ui_units_x = _SHAPEKEY_COUNT_UNITS
-    value = row.row(align=True)
-    value.ui_units_x = _SHAPEKEY_VALUE_UNITS
+    if not list_header:
+        return row, total_units
+    leading = min(_SHAPEKEY_LIST_HEADER_LEADING_UNITS, total_units * 0.1)
+    trailing = min(_SHAPEKEY_LIST_HEADER_TRAILING_UNITS, total_units * 0.2)
+    leading_split = row.split(factor=leading / total_units, align=True)
+    leading_split.row(align=True).label(text="")
+    after_leading = leading_split.row(align=True)
+    after_leading_units = total_units - leading
+    content_units = max(after_leading_units - trailing, 1.0)
+    trailing_split = after_leading.split(
+        factor=content_units / after_leading_units,
+        align=True,
+    )
+    content = trailing_split.row(align=True)
+    trailing_split.row(align=True).label(text="")
+    return content, content_units
+
+
+def _shapekey_columns(layout, context, list_header=False):
+    available_units = _shapekey_available_units(context)
+    row, content_units = _shapekey_content_row(layout, available_units, list_header)
+    checkbox_units, name_units, count_units, value_units = shapekey_column_units(
+        content_units,
+        checkbox_units=_SHAPEKEY_CHECKBOX_UNITS,
+        count_units=_SHAPEKEY_COUNT_UNITS,
+        value_units=_SHAPEKEY_VALUE_UNITS,
+        minimum_name_units=_SHAPEKEY_MINIMUM_NAME_UNITS,
+    )
+    total_units = checkbox_units + name_units + count_units + value_units
+    checkbox_split = row.split(factor=checkbox_units / total_units, align=True)
+    checkbox = checkbox_split.row(align=True)
+    remaining = checkbox_split.row(align=True)
+    remaining_units = name_units + count_units + value_units
+    name_split = remaining.split(factor=name_units / remaining_units, align=True)
+    name = name_split.row(align=True)
+    fixed_right = name_split.row(align=True)
+    right_split = fixed_right.split(factor=count_units / (count_units + value_units), align=True)
+    count = right_split.row(align=True)
+    value = right_split.row(align=True)
     return checkbox, name, count, value
 
 
@@ -108,7 +152,7 @@ def _draw_collection_tree(layout, root, collection, route_settings, depth=0):
 
 class VELO_UL_shapekey_agg(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        checkbox, name, count, value = _shapekey_columns(layout)
+        checkbox, name, count, value = _shapekey_columns(layout, context)
         checkbox.enabled = not item.is_deform_numbered
         checkbox.prop(item, "selected", text="")
         name.prop(item, "name", text="", emboss=True, icon='SHAPEKEY_DATA')
@@ -254,7 +298,7 @@ class VELO_PT_shapekey_panel(bpy.types.Panel):
             return
 
         layout.label(text=f"共 {n} 种形态键 (自动同步; 改名会刷新到所有网格)")
-        checkbox, name, count, value = _shapekey_columns(layout)
+        checkbox, name, count, value = _shapekey_columns(layout, context, list_header=True)
         eligible = [item for item in s.shapekey_items if not item.is_deform_numbered]
         all_selected = bool(eligible) and all(item.selected for item in eligible)
         checkbox.operator(
