@@ -832,7 +832,21 @@ class VELO_ShapeKeyAggItem(bpy.types.PropertyGroup):
         update=_on_shapekey_agg_name_update,
     )
     original_name: StringProperty()
+    selected: BoolProperty(
+        name="选择自动重命名",
+        description="仅勾选的未编号形态键会参与自动重命名",
+        default=False,
+    )
     count: IntProperty(default=0, description="该名称在多少个网格上出现")
+    contributor_names: StringProperty(
+        name="贡献对象",
+        description="包含该形态键的全部网格对象名称",
+    )
+    is_deform_numbered: BoolProperty(
+        name="已有 Deform 编号",
+        description="已有 Deform 编号的形态键受保护，不参与自动重命名",
+        default=False,
+    )
     value: FloatProperty(
         name="值",
         default=0.0,

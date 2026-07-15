@@ -5,58 +5,66 @@ properties.py (to centralize management with existing properties); this module
 handles: scan/refresh, auto-listening (depsgraph), batch renaming.
 """
 
-import re
-
 import bpy
+from bpy.props import IntProperty, StringProperty
 
 from .. import properties as props_mod
 from .operators import is_real_mesh
+from .shapekey_model import (
+    aggregation_signature,
+    build_rename_plan,
+    deform_number,
+    natural_key,
+    remap_ui_state,
+    sorted_shapekey_names,
+    unique_temp_names,
+)
 
 
 # ---------------------------------------------------------------------------
 # Shared: scan / signature / write list
 # ---------------------------------------------------------------------------
 
-# Prefixes like "Deform 12 ", "Deform12 ", "Deform 3", "deform  7 _", etc.
-_DEFORM_PREFIX_RE = re.compile(r"^\s*[Dd]eform\s*\d+\s*", re.UNICODE)
-
-
-def _strip_deform_prefix(name: str) -> str:
-    if not name:
-        return name
-    return _DEFORM_PREFIX_RE.sub("", name).lstrip()
-
-
 def _scan_collection(coll):
-    """Scan the collection, returning (order_list, count_dict, first_value_dict).
-    order_list follows first-encountered order, having skipped Basis and .placeholder.
-    """
-    agg = {}
-    order = []
+    """Return deterministic names, counts, values, and contributing object names."""
+    contributors = {}
     first_value = {}
     if coll is None:
-        return order, agg, first_value
-    for obj in coll.all_objects:
+        return [], {}, first_value, contributors
+    objects = sorted(coll.all_objects, key=lambda obj: natural_key(obj.name))
+    for obj in objects:
         if not is_real_mesh(obj):
             continue
         sk = obj.data.shape_keys
         if not sk:
             continue
         for kb in sk.key_blocks[1:]:
-            if kb.name not in agg:
-                agg[kb.name] = 0
-                order.append(kb.name)
+            if kb.name not in contributors:
+                contributors[kb.name] = []
                 first_value[kb.name] = kb.value
-            agg[kb.name] += 1
-    return order, agg, first_value
+            contributors[kb.name].append(obj.name)
+    order = sorted_shapekey_names(contributors)
+    count = {name: len(contributors[name]) for name in order}
+    return order, count, first_value, contributors
 
 
-def _signature(order, count):
-    """Lightweight signature: tuple of (name, count). Triggers a refresh only when names are added/removed or count changes."""
-    return tuple((n, count[n]) for n in order)
+def _signature(order, contributors):
+    """Include contributor identity so same-count membership changes refresh tooltips."""
+    return aggregation_signature(order, contributors)
 
 
-def _populate(settings, order, count, first_value):
+def _populate(settings, order, count, first_value, contributors, name_remap=None):
+    name_remap = name_remap or {}
+    selected_by_name = {
+        (item.original_name or item.name): bool(item.selected)
+        for item in settings.shapekey_items
+    }
+    active_name = None
+    if 0 <= settings.active_shapekey_index < len(settings.shapekey_items):
+        active_item = settings.shapekey_items[settings.active_shapekey_index]
+        old_active = active_item.original_name or active_item.name
+        active_name = old_active
+    selected, active_name = remap_ui_state(selected_by_name, active_name, name_remap)
     props_mod._suspend_shapekey_update = True
     try:
         settings.shapekey_items.clear()
@@ -64,13 +72,22 @@ def _populate(settings, order, count, first_value):
             it = settings.shapekey_items.add()
             it.name = name
             it.original_name = name
+            it.selected = selected.get(name, False)
             it.count = count[name]
+            it.contributor_names = "\n".join(contributors[name])
+            it.is_deform_numbered = deform_number(name) is not None
             it.value = first_value.get(name, 0.0)
+        if active_name in order:
+            settings.active_shapekey_index = order.index(active_name)
+        elif order:
+            settings.active_shapekey_index = min(settings.active_shapekey_index, len(order) - 1)
+        else:
+            settings.active_shapekey_index = 0
     finally:
         props_mod._suspend_shapekey_update = False
 
 
-def refresh_shapekey_list(context, force=False):
+def refresh_shapekey_list(context, force=False, name_remap=None):
     """Unified refresh entry point called by external code (operator / callback / handler).
     Returns True if the list was actually rebuilt.
     """
@@ -89,11 +106,11 @@ def refresh_shapekey_list(context, force=False):
             _LAST_SIG[0] = None
         return False
 
-    order, count, first_value = _scan_collection(coll)
-    sig = _signature(order, count)
+    order, count, first_value, contributors = _scan_collection(coll)
+    sig = _signature(order, contributors)
     if not force and sig == _LAST_SIG[0]:
         return False
-    _populate(s, order, count, first_value)
+    _populate(s, order, count, first_value, contributors, name_remap=name_remap)
     _LAST_SIG[0] = sig
     return True
 
@@ -126,6 +143,45 @@ class VELO_OT_refresh_shapekey_list(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class VELO_OT_toggle_shapekey_rename_selection(bpy.types.Operator):
+    bl_idname = "velo.toggle_shapekey_rename_selection"
+    bl_label = "全选/全不选可重命名形态键"
+    bl_description = "仅切换尚无 Deform 编号的条目"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        s = context.scene.velo_tools
+        return any(not item.is_deform_numbered for item in s.shapekey_items)
+
+    def execute(self, context):
+        eligible = [
+            item for item in context.scene.velo_tools.shapekey_items
+            if not item.is_deform_numbered
+        ]
+        target = not all(item.selected for item in eligible)
+        for item in eligible:
+            item.selected = target
+        return {'FINISHED'}
+
+
+class VELO_OT_shapekey_contributors_tooltip(bpy.types.Operator):
+    bl_idname = "velo.shapekey_contributors_tooltip"
+    bl_label = "形态键所在对象"
+    bl_options = {'INTERNAL'}
+
+    count: IntProperty(options={'HIDDEN'})
+    object_names: StringProperty(options={'HIDDEN'})
+
+    @classmethod
+    def description(cls, _context, properties):
+        names = properties.object_names or "（无）"
+        return f"该形态键出现在 {properties.count} 个网格对象中：\n{names}"
+
+    def execute(self, _context):
+        return {'FINISHED'}
+
+
 # ---------------------------------------------------------------------------
 # Operator: auto-rename -> "Deform N <basename>"
 # ---------------------------------------------------------------------------
@@ -134,8 +190,8 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
     bl_idname = "velo.rename_shapekeys_deform"
     bl_label = "自动重命名 (Deform N)"
     bl_description = (
-        "按当前列表顺序为集合里所有形态键重命名为 'Deform N <原名>'; "
-        "已有 'DeformXX'/'Deform XX ' 前缀会被覆盖"
+        "仅为已勾选且尚无 Deform 编号的形态键分配新编号; "
+        "已有编号和未勾选条目保持不变"
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -151,36 +207,29 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
             self.report({'WARNING'}, "请先选择集合并刷新形态键")
             return {'CANCELLED'}
 
-        # Current list order = first-encountered order; numbering follows this order
-        items = list(s.shapekey_items)
-        plan = []  # [(old_name, final_name), ...]
-        used_finals = set()
-        for idx, it in enumerate(items, start=1):
-            old = it.name
-            if not old:
-                continue
-            base = _strip_deform_prefix(old)
-            if not base:
-                base = old  # Edge case where the whole name is a Deform prefix; fall back to original name
-            final = f"Deform {idx} {base}"
-            # Guard against the edge case: same base appearing twice with the same index -> impossible (idx is unique)
-            used_finals.add(final)
-            if final != old:
-                plan.append((old, final))
+        order, _count, _first_value, _contributors = _scan_collection(coll)
+        selected_names = {
+            item.original_name or item.name
+            for item in s.shapekey_items
+            if item.selected
+        }
+        plan = build_rename_plan(order, selected_names)
+        skipped = len(selected_names) - len(plan)
 
         if not plan:
-            self.report({'INFO'}, "已经全部符合 Deform 命名规则")
+            self.report({'INFO'}, f"没有可重命名的已勾选条目（已选择 {len(selected_names)}，跳过 {skipped}）")
             return {'CANCELLED'}
 
         meshes = [o for o in coll.all_objects if is_real_mesh(o) and o.data.shape_keys]
 
-        # Two-pass rename to avoid mid-way name collisions (a new name may equal another existing shape key's name)
-        # Pass 1: old -> __velo_tmp_<i>__
-        tmp_names = []  # [(mesh -> kb_ref, tmp_name, final_name)]
-        # We locate by mesh+old_name, then after renaming to tmp record tmp -> final
-        rename_map = {}  # mesh_id -> list of (tmp, final)
-        for i, (old, final) in enumerate(plan):
-            tmp = f"__velo_tmp_sk_{i}__"
+        occupied_names = {
+            kb.name
+            for obj in meshes
+            for kb in obj.data.shape_keys.key_blocks
+        }
+        temp_names = unique_temp_names(occupied_names, len(plan))
+        rename_map = {}
+        for (old, final), tmp in zip(plan, temp_names):
             for o in meshes:
                 kb = o.data.shape_keys.key_blocks.get(old)
                 if kb is None:
@@ -201,10 +250,13 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
                 kb.name = final
                 renamed += 1
 
-        # Force-refresh the list (order follows first appearance of new names, i.e. Deform 1, 2, ...)
-        refresh_shapekey_list(context, force=True)
+        final_by_old = dict(plan)
+        refresh_shapekey_list(context, force=True, name_remap=final_by_old)
 
-        self.report({'INFO'}, f"自动重命名完成: 处理 {len(plan)} 种, 共改 {renamed} 个形态键")
+        self.report(
+            {'INFO'},
+            f"自动重命名完成：选择 {len(selected_names)} 种，修改 {len(plan)} 种/{renamed} 个形态键，跳过 {skipped} 种",
+        )
         return {'FINISHED'}
 
 
@@ -234,22 +286,24 @@ def _depsgraph_handler(scene, _depsgraph):
     # Collection switched -> force rebuild
     if coll.name != _LAST_COLL_NAME[0]:
         _LAST_COLL_NAME[0] = coll.name
-        order, count, first_value = _scan_collection(coll)
-        _populate(s, order, count, first_value)
-        _LAST_SIG[0] = _signature(order, count)
+        order, count, first_value, contributors = _scan_collection(coll)
+        _populate(s, order, count, first_value, contributors)
+        _LAST_SIG[0] = _signature(order, contributors)
         return
 
     # Same collection -> compare signatures
-    order, count, first_value = _scan_collection(coll)
-    sig = _signature(order, count)
+    order, count, first_value, contributors = _scan_collection(coll)
+    sig = _signature(order, contributors)
     if sig == _LAST_SIG[0]:
         return
-    _populate(s, order, count, first_value)
+    _populate(s, order, count, first_value, contributors)
     _LAST_SIG[0] = sig
 
 
 _classes = (
     VELO_OT_refresh_shapekey_list,
+    VELO_OT_toggle_shapekey_rename_selection,
+    VELO_OT_shapekey_contributors_tooltip,
     VELO_OT_rename_shapekeys_deform,
 )
 

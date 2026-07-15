@@ -3,6 +3,23 @@
 import bpy
 
 
+_SHAPEKEY_CHECKBOX_UNITS = 1.6
+_SHAPEKEY_COUNT_UNITS = 3.0
+_SHAPEKEY_VALUE_UNITS = 10.0
+
+
+def _shapekey_columns(layout):
+    row = layout.row(align=True)
+    checkbox = row.row(align=True)
+    checkbox.ui_units_x = _SHAPEKEY_CHECKBOX_UNITS
+    name = row.row(align=True)
+    count = row.row(align=True)
+    count.ui_units_x = _SHAPEKEY_COUNT_UNITS
+    value = row.row(align=True)
+    value.ui_units_x = _SHAPEKEY_VALUE_UNITS
+    return checkbox, name, count, value
+
+
 def _iter_virtual_items(_ops, route_settings, root, collection):
     entries = []
     for index, item in enumerate(route_settings.route_items):
@@ -91,14 +108,19 @@ def _draw_collection_tree(layout, root, collection, route_settings, depth=0):
 
 class VELO_UL_shapekey_agg(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        row = layout.row(align=True)
-        row.prop(item, "name", text="", emboss=True, icon='SHAPEKEY_DATA')
-        sub = row.row()
-        sub.enabled = False
-        sub.label(text=f"x{item.count}")
-        slider = row.row(align=True)
-        slider.scale_x = 1.4
-        slider.prop(item, "value", text="", slider=True)
+        checkbox, name, count, value = _shapekey_columns(layout)
+        checkbox.enabled = not item.is_deform_numbered
+        checkbox.prop(item, "selected", text="")
+        name.prop(item, "name", text="", emboss=True, icon='SHAPEKEY_DATA')
+        count.alignment = 'CENTER'
+        tooltip = count.operator(
+            "velo.shapekey_contributors_tooltip",
+            text=f"x{item.count}",
+            emboss=False,
+        )
+        tooltip.count = item.count
+        tooltip.object_names = item.contributor_names
+        value.prop(item, "value", text="", slider=True)
 
 
 def _is_mesh_tab(context):
@@ -232,6 +254,21 @@ class VELO_PT_shapekey_panel(bpy.types.Panel):
             return
 
         layout.label(text=f"共 {n} 种形态键 (自动同步; 改名会刷新到所有网格)")
+        checkbox, name, count, value = _shapekey_columns(layout)
+        eligible = [item for item in s.shapekey_items if not item.is_deform_numbered]
+        all_selected = bool(eligible) and all(item.selected for item in eligible)
+        checkbox.operator(
+            "velo.toggle_shapekey_rename_selection",
+            text="",
+            icon='CHECKBOX_HLT' if all_selected else 'CHECKBOX_DEHLT',
+            emboss=False,
+            depress=all_selected,
+        )
+        name.label(text="名称")
+        count.alignment = 'CENTER'
+        count.label(text="数量")
+        value.alignment = 'CENTER'
+        value.label(text="值")
         layout.template_list(
             "VELO_UL_shapekey_agg", "",
             s, "shapekey_items",
@@ -240,7 +277,7 @@ class VELO_PT_shapekey_panel(bpy.types.Panel):
         )
         box = layout.box()
         box.scale_y = 0.8
-        box.label(text="x N = 在 N 个网格上出现; 滑块 = 同步设值", icon='INFO')
+        box.label(text="勾选未编号项后自动重命名; x N 悬浮可查看所在对象", icon='INFO')
 
 
 class VELO_PT_mesh_material_routing(bpy.types.Panel):
