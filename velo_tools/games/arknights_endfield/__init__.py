@@ -507,7 +507,7 @@ def _patch_velo_settings():
     )
     _vsettings.VTEF_Settings.__annotations__["generate_crossib_json"] = BoolProperty(
         name=_zh("生成 CrossIB.json"),
-        description=_zh("提取对象时随模型文件夹生成 CrossIB.json 与配套 ShaderOverride.ini（跨 IB 的 pass 判别 vs、透明部件标记、全局 hash→filter 映射）。导出跨 IB 时直接消费、免再扫描帧转储；关闭则不生成，导出时若缺这两份文件会提示指定帧转储文件夹自动补齐。"),
+        description=_zh("提取对象时随模型文件夹生成 CrossIB.json v2，只记录 Component 匹配与透明性证据。跨 IB 导出必须使用该文件，并生成规则式 CrossIBClassifier.ini；不再生成 ShaderOverride.ini 或累积多个场景的 VS Hash。"),
         default=True,
     )
     _vsettings.VTEF_Settings.__annotations__["import_as_component_collections"] = BoolProperty(

@@ -401,13 +401,12 @@ CrossIB 让左侧源对象或源集合借用目标 Component 的渲染管线。
 1. 切换到 **导出 Mod**。
 2. 打开 **Cross Index Buffer（跨 IB）**。
 3. 启用 **启用跨 IB（CrossIB）**。
-4. 如果对象源目录没有 `CrossIB.json`，点击 **生成 CrossIB.json（选帧转储）**。
-5. 如需补充场景证据，点击 **合并新场景 dump（累积）**。
-6. 添加物体映射或集合映射。
-7. 为每行选择目标 Component。
-8. 正常导出。
+4. 如果对象源目录没有有效的 `CrossIB.json v2`，点击 **生成 / 重新生成 CrossIB.json v2**，选择一份当前 Frame Dump。
+5. 添加物体映射或集合映射。
+6. 为每行选择目标 Component。
+7. 正常导出。
 
-存在 `CrossIB.json` 和 `ShaderOverride.ini` 时，导出会直接使用这些 sidecar。只有明确要放弃旧证据并从头计算时，才使用覆盖重建。
+`CrossIB.json v2` 只保存 Component 匹配与透明性证据。导出会在 `mod.ini` 旁生成角色独立的 `CrossIBClassifier.ini`，按 200/211/212/213/214/224 能力规则匹配 shader，不再生成 `ShaderOverride.ini`，也不再合并多个场景的 VS Hash。旧 v1 必须用一份 dump 显式重建。
 
 ### 5.7 EFMI 自定义 ShapeKey
 
@@ -1035,11 +1034,11 @@ WWMI 应确认导入和导出的骨架模式一致。若使用 Per-Component (fr
 - 旧 schema 或对象源变化后重新执行 LOD 提取。
 - 使用自定义 INI 模板时确认模板包含 LOD 逻辑。
 
-### 9.5 CrossIB 或跨场景缺少某个场景
+### 9.5 CrossIB.json 缺失或过期
 
-CrossIB 应从目标场景的新 Frame Dump 累积 sidecar。跨场景 WWMI 应把目标 IB 作为有效条目加入 **跨场景折叠合并**，选择正确角色，再重新合并、导入和导出。
+CrossIB 应在面板中选择一份当前 Frame Dump，生成或覆盖 `CrossIB.json v2`。若 dump 不含源对象的任何 Component IB，Velo 会拒绝并保持原 JSON 不动。
 
-如果来源证据或路由已经改变，旧 `CrossIB.json`、`ShaderOverride.ini` 或 `CrossSceneManifest.json` 不能代表新场景。只有 `CrossSceneRouting.json` 的跨场景根属于 schema v2，必须重新合并，不能通过恢复 `scene_ibs` 继续导出。
+不要为闪避、攻击、描边或残影逐场景累积 dump；这些 pass 由公共 ShaderRegex capability profile 覆盖。若未来 shader 结构真正超出 profile，应升级 Velo Tools 的公共规则，而不是给单个角色补 VS Hash。
 
 ### 9.6 插槽风格贴图导出失败
 
@@ -1163,7 +1162,8 @@ CrossIB 应从目标场景的新 Frame Dump 累积 sidecar。跨场景 WWMI 应�
 | INI | 3dmigoto Mod 的运行时配置文本。 |
 | DDS | 常用贴图文件格式。 |
 | Buffer | 保存位置、索引、权重、法线、UV、ShapeKey 等数据的二进制资源。 |
-| sidecar | 与对象源目录配套的 JSON/INI 旁路数据，例如 `CrossIB.json`。 |
+| sidecar | 与对象源目录配套的旁路证据文件，例如 `CrossIB.json v2`。 |
+| CrossIB capability ABI | classifier 与主 INI 共用的无 Hash EFMI shader 能力编号 200/211/212/213/214/224。 |
 | slot-style | 在目标 draw 范围内按 `ps-tN` 槽位证据重绑贴图。 |
 | hash-style | 按游戏资源 Hash 匹配并替换贴图。 |
 | assignment signature | 一个 slot 分支用于判断身份的完整正向槽位格式组合。 |

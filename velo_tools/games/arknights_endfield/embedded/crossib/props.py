@@ -35,8 +35,8 @@ class CrossIBMapping(bpy.types.PropertyGroup):
     """A single cross-IB mapping row.
 
     Source can be either a single mesh object or a whole collection (every mesh
-    inside acts as its own provider). Legacy vs fields are kept for old .blend
-    files, but export conditions are now inferred from the extracted source data.
+    inside acts as its own provider). Export conditions use the fixed capability
+    ABI and are not stored per mapping.
     """
 
     source_kind: bpy.props.EnumProperty(
@@ -66,13 +66,6 @@ class CrossIBMapping(bpy.types.PropertyGroup):
         max=15,
     )  # type: ignore
 
-    # Legacy fields. They remain loadable for old scenes but are no longer used
-    # by the CrossIB generator.
-    vs_200: bpy.props.BoolProperty(name="vs200", default=True)  # type: ignore
-    vs_201: bpy.props.BoolProperty(name="vs201", default=True)  # type: ignore
-    vs_204: bpy.props.BoolProperty(name="vs204", default=True)  # type: ignore
-
-
 class CrossIBSettings(bpy.types.PropertyGroup):
     enabled: bpy.props.BoolProperty(
         name="Use Cross Index Buffer",
@@ -81,11 +74,10 @@ class CrossIBSettings(bpy.types.PropertyGroup):
     )  # type: ignore
 
     frame_dump_folder: bpy.props.StringProperty(
-        name="帧 Dump 文件夹",
+        name="上次用于生成 JSON 的帧 Dump",
         description=(
-            "手动指定帧 Dump 文件夹\n\n"
-            "可选。留空时自动从模型源文件夹及其父级目录扫描原始帧转储文件；"
-            "填写后只扫描该目录。"
+            "记录上次用于生成 CrossIB.json v2 的帧 Dump 文件夹。"
+            "导出不会扫描该目录，也不会从其它场景累积 shader。"
         ),
         default="",
         subtype="DIR_PATH",

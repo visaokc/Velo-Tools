@@ -115,8 +115,8 @@ For WWMI cross-scene work, the merged source folder becomes the object source. I
 | `TextureUsage.json` | EFMI/WWMI extraction | Basic texture attribution and import-time material assignment |
 | `ShaderTextureUsage.json` | Velo WWMI extraction | Shader-pair, `ps-tN`, format, freshness, and form evidence for slot-style export |
 | `VertexGroupMap.json` | Velo EFMI extraction | Unified-to-component-local vertex-group translation for EFMI Merged mode |
-| `CrossIB.json` | Velo EFMI extraction or CrossIB sidecar tool | EFMI provider/consumer pass evidence |
-| `ShaderOverride.ini` | Velo EFMI CrossIB sidecar tool | Shader-to-filter overrides paired with `CrossIB.json` |
+| `CrossIB.json` | Velo EFMI extraction or CrossIB panel | EFMI Component-match and transparency evidence for the rule-based CrossIB classifier |
+| `CrossIBClassifier.ini` | Velo EFMI CrossIB export | Per-mod ShaderRegex capability classifier; contains no shader Hash assignments |
 | `CrossSceneManifest.json` | Velo WWMI cross-scene merge | Runtime IB ownership and component/VG/LOD/fold/morph routing not derivable from root Metadata/STU |
 
 Treat these files as generated contracts. Re-run the producer when captures or routing change instead of manually guessing missing identities.
@@ -264,7 +264,7 @@ Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 Important Velo extraction options:
 
 - **生成 VertexGroupMap.json** is required for later Merged import/export.
-- **生成 CrossIB.json** also writes `ShaderOverride.ini` for later CrossIB work.
+- **生成 CrossIB.json** writes the v2 Component-match and transparency evidence used by later CrossIB exports.
 - **组件过滤 (Component Filter)** accepts ranges such as `0-8` or `0,1,5-7`.
 
 Filtered EFMI output is renumbered continuously as `Component 0..N`. Do not assume the output component number is still the capture's original ordinal.
@@ -339,16 +339,14 @@ Workflow:
 1. Enter EFMI **导出 Mod (Export Mod)** with partial export off.
 2. Expand **Cross Index Buffer（跨 IB）**.
 3. Enable **启用跨 IB（CrossIB） (Enable CrossIB)**.
-4. Confirm `CrossIB.json` and `ShaderOverride.ini` exist in the object source.
+4. Confirm `CrossIB.json v2` exists in the object source.
 5. Add an object mapping or collection mapping.
 6. Choose the target component for every mapping.
 7. Export normally.
 
-If the sidecars are missing, use **生成 CrossIB.json（选帧转储） (Generate CrossIB.json from Frame Dump)**.
+If the evidence file is missing, invalid, or still uses schema v1, use **生成 / 重新生成 CrossIB.json v2** and select one current Frame Dump. This replaces the JSON; it does not merge shader evidence from multiple scenes.
 
-Use **合并新场景 dump（累积） (Merge New Scene Dump, Accumulate)** for new scenes. The default unions new shader evidence into the existing sidecars.
-
-Use **覆盖重建（不累积） (Overwrite and Rebuild)** only when you intentionally want to discard old evidence and recompute with the current classifier.
+Export writes `CrossIBClassifier.ini` beside `mod.ini`. The classifier uses the fixed 200/211/212/213/214/224 capability ABI and does not use VS Hash assignments. Normal VS Hash changes therefore do not require additional scene dumps.
 
 If a selected dump does not contain the target character, Velo refuses it and leaves the existing `CrossIB.json` unchanged.
 
@@ -874,11 +872,11 @@ Confirm **复制贴图 (Copy Textures)** is enabled and partial export is off.
 
 If export reports a same-Hash payload conflict, resolve the conflicting source files. Do not overwrite one payload arbitrarily.
 
-### CrossIB Misses a Scene or Pass
+### CrossIB.json Is Missing or Obsolete
 
-Feed a Frame Dump from the missing scene into **合并新场景 dump（累积） (Merge New Scene Dump, Accumulate)**.
+Select one current Frame Dump through **生成 / 重新生成 CrossIB.json v2**. Velo rejects a dump that contains none of the source object's Component IBs and leaves the previous JSON unchanged.
 
-If the dump does not contain the character, Velo leaves the previous sidecar unchanged. Capture again while the target is actually drawn.
+Do not accumulate separate dodge, attack, outline, or afterimage dumps. Those passes are covered by the common ShaderRegex capability classifier. If a future shader structure genuinely exceeds the common profile, update Velo Tools rather than adding per-character VS Hashes.
 
 ### LOD Matching Fails
 
@@ -943,6 +941,7 @@ They are required slot-transaction backup handles. Their values are assigned at 
 | **Fold** | WWMI scene route authored from the base geometry |
 | **Editable** | WWMI scene route with independent editable geometry |
 | **CrossIB** | EFMI provider geometry drawn through a target component pass |
+| **CrossIB capability ABI** | Hash-free EFMI shader roles 200/211/212/213/214/224 shared by the classifier and main INI |
 | **Cross-scene** | WWMI merge of several scene-specific IB routes |
 | **Self-contained aggregate root** | The only persistent cross-scene source: aggregate buffers, metadata/STU, top-level DDS, and schema-v3 manifest, with no child payload dependency |
 | **Canonical morph namespace** | The aggregate root's stable runtime ShapeKey ID space, including deterministically assigned IDs for proven source-only morphs |

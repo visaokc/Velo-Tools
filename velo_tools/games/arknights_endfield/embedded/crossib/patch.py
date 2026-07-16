@@ -6,10 +6,10 @@ We hook two methods on the base addon's `IniMaker`:
   1. `build_from_template` — after the base renders the ini text, we run a
      string-level post-processor that wraps each provider's draw block in the
      `if vs == ...` conditional, appends consumer borrow blocks, and appends
-     all cross-IB Resource declarations / CustomShaders / ShaderOverrides.
+     all CrossIB Resource declarations and CustomShaders.
 
-  2. `write` — after the base writes mod.ini to disk, we copy the four HLSL
-     shader files into the mod's `hlsl/` subfolder.
+  2. `write` — after the base writes mod.ini to disk, we copy the HLSL files,
+     emit CrossIBClassifier.ini, and remove obsolete CrossIB hash sections.
 
 Both patches are reversible — `remove_patches()` restores the originals.
 """
@@ -23,6 +23,12 @@ from pathlib import Path
 import bpy
 
 from . import generator
+from .classifier import (
+    CLASSIFIER_FILENAME,
+    namespace_from_ini,
+    namespace_from_metadata,
+    render_classifier,
+)
 
 
 # Originals captured at install time so we can restore on disable.
@@ -193,42 +199,16 @@ def _strip_injected_resources(ini_text):
     return "\n".join(out)
 
 
-def _find_marker(lines, markers, start=0):
-    for index in range(start, len(lines)):
-        if lines[index].strip() in markers:
-            return index
-    raise ValueError
-
-
-def split_out_shader_override_ini(ini_text):
-    """Pull the global `[ShaderOverrideCrossIB_*]` sections out of the appended
-    velo resource block into a standalone ini string, leaving the remaining
-    resources (CustomShaders/Resources) wrapped in RES markers inside mod.ini.
-
-    Returns (mod_ini_text, shader_override_ini_text). shader text is "" when
-    there are no shader-override sections (e.g. no cross-IB mappings)."""
-    lines = ini_text.split("\n")
-    try:
-        begin = _find_marker(lines, _CROSSIB_RES_BEGIN_MARKERS)
-        end = _find_marker(lines, _CROSSIB_RES_END_MARKERS, begin + 1)
-    except ValueError:
-        return ini_text, ""
-    res_sections = _split_sections("\n".join(lines[begin + 1:end]))
-    kept, shader = [], []
-    for header, body in res_sections:
+def strip_crossib_shader_sections(ini_text):
+    """Remove only Velo CrossIB hash sections from a possibly mixed INI."""
+    kept = []
+    removed = 0
+    for header, body in _split_sections(ini_text):
         if header is not None and _SHADER_OVERRIDE_HEADER_RE.match(header):
-            shader.append((header, body))
-        else:
-            kept.append((header, body))
-    mod_lines = (
-        lines[:begin]
-        + [_CROSSIB_RES_BEGIN]
-        + _join_sections(kept).split("\n")
-        + [_CROSSIB_RES_END]
-        + lines[end + 1:]
-    )
-    shader_text = _join_sections(shader).strip("\n")
-    return "\n".join(mod_lines), shader_text
+            removed += 1
+            continue
+        kept.append((header, body))
+    return _join_sections(kept), removed
 
 
 def _find_draw_region(body):
@@ -396,6 +376,8 @@ def _process_section_body(body, comp_id, providers_map, consumers_map):
         trailing_blanks.insert(0, rest.pop())
     new_body.extend(rest)
     new_body.append("post vs-cb1 = null")
+    new_body.append("post vs-cb2 = null")
+    new_body.append("post vs-cb3 = null")
     new_body.append("post vs-t0 = null")
     new_body.append("post cs-t2 = null")
     new_body.extend(trailing_blanks)
@@ -453,6 +435,8 @@ def _build_synthetic_consumer_section_body(comp_id, providers_map, consumers_map
         body.extend(consumers_map[comp_id].split("\n"))
 
     body.append("post vs-cb1 = null")
+    body.append("post vs-cb2 = null")
+    body.append("post vs-cb3 = null")
     body.append("post vs-t0 = null")
     body.append("post cs-t2 = null")
     body.append("")
@@ -631,24 +615,17 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
                 source_folder = getattr(self.cfg, "object_source_folder", None)
                 if source_folder:
                     source_folder = bpy.path.abspath(source_folder)
-                frame_dump_folder = getattr(settings, "frame_dump_folder", "")
-                if frame_dump_folder:
-                    frame_dump_folder = bpy.path.abspath(frame_dump_folder)
-                    print(f"[CrossIB] Using manual frame dump folder: {frame_dump_folder}")
-                else:
-                    frame_dump_folder = None
-                    print("[CrossIB] Using automatic frame dump discovery from source folder.")
-                # Consume baked CrossIB.json/ShaderOverride.ini if present; else
-                # generate them from the frame dump (old-folder fallback) so this
-                # and every later export is scan-free.
-                from .sidecar import ensure_crossib_sidecars, load_crossib_json
-                if load_crossib_json(source_folder) is None:
-                    if ensure_crossib_sidecars(source_folder, frame_dump_folder):
-                        print("[CrossIB] Generated CrossIB.json + ShaderOverride.ini from frame dump.")
-                    else:
-                        print("[CrossIB] No CrossIB.json sidecar and no frame dump set; "
-                              "falling back to a live frame-dump scan. Pick a frame dump "
-                              "folder (CrossIB panel) to bake sidecars for scan-free re-exports.")
+                from .sidecar import CrossIBSchemaError, load_crossib_json
+                evidence = load_crossib_json(source_folder)
+                if evidence is None:
+                    raise CrossIBSchemaError(
+                        "CrossIB.json v2 is required. Select one current FrameAnalysis "
+                        "dump in the CrossIB panel to generate it before export."
+                    )
+                print(
+                    "[CrossIB] Consuming CrossIB.json v2 evidence "
+                    f"({evidence['classifier_profile']})."
+                )
                 result = inject_cross_ib(
                     result, settings,
                     getattr(self, "extracted_object", None),
@@ -656,7 +633,7 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
                     getattr(self, "buffers", None),
                     getattr(self, "component_extra_ps_slots", None),
                     source_folder,
-                    frame_dump_folder,
+                    None,
                     self.cfg,
                     context,
                 )
@@ -664,18 +641,9 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
             except Exception:
                 print("[CrossIB] Injection failed:")
                 traceback.print_exc()
-            # Move the global ShaderOverride blocks into a standalone ini
-            # (written next to mod.ini by _patched_write). mod.ini keeps only the
-            # per-component logic + non-shader resources.
-            try:
-                result, self._crossib_shader_ini = split_out_shader_override_ini(result)
-            except Exception:
-                print("[CrossIB] ShaderOverride split failed:")
-                traceback.print_exc()
-                self._crossib_shader_ini = ""
+                raise
         else:
             print("[CrossIB] No mappings; leaving EFMI 0.4.3 base draw stack unchanged.")
-            self._crossib_shader_ini = ""
     elif settings is None:
         print("[CrossIB] WARNING: Scene.crossib_settings missing at export time.")
     elif not settings.enabled:
@@ -714,34 +682,38 @@ def _patched_write(self, ini_string=None, ini_path=None):
             shutil.copy(src, dst)
             print(f"[CrossIB] Copied {src.name} → {dst}")
 
-        # Standalone ShaderOverride.ini in the mod folder (3DMigoto auto-loads
-        # every .ini in the mod tree, so no include is needed). Prefer copying
-        # the extract-time ShaderOverride.ini verbatim (same name); else write the
-        # split-derived content (equivalent); else drop a stale file.
+        mod_ini_text = getattr(self, "ini_string", "") or ini_string or ""
+        namespace = namespace_from_ini(mod_ini_text)
+        if namespace is None:
+            from .sidecar import _resolve_source
+
+            source = getattr(self.cfg, "object_source_folder", "")
+            source = _resolve_source(bpy.path.abspath(source))
+            namespace = namespace_from_metadata(source)
+        classifier_path = Path(ini_path).parent / CLASSIFIER_FILENAME
+        classifier_path.write_text(render_classifier(namespace), encoding="utf-8")
+        print(f"[CrossIB] Wrote {classifier_path.name} (namespace={namespace}).")
+
+        # Older Velo exports may leave a hash-only ShaderOverride.ini in the
+        # output folder. Remove only CrossIB sections and preserve author-owned
+        # sections in a mixed file.
         shader_path = Path(ini_path).parent / _CROSSIB_SHADER_INI_NAME
-        baked = None
-        try:
-            from .sidecar import _resolve_source, SHADER_OVERRIDE_INI_NAME
-            src = getattr(self.cfg, "object_source_folder", "")
-            if src:
-                cand = _resolve_source(bpy.path.abspath(src)) / SHADER_OVERRIDE_INI_NAME
-                if cand.is_file():
-                    baked = cand
-        except Exception:
-            baked = None
-        shader_ini = getattr(self, "_crossib_shader_ini", "")
-        if baked is not None:
-            shutil.copy(baked, shader_path)
-            print(f"[CrossIB] Copied {baked.name} → {shader_path}")
-        elif shader_ini.strip():
-            text = shader_ini if shader_ini.endswith("\n") else shader_ini + "\n"
-            with open(shader_path, "w", encoding="utf-8") as f:
-                f.write(text)
-            print(f"[CrossIB] Wrote {shader_path.name} "
-                  f"({shader_ini.count('[ShaderOverrideCrossIB')} override block(s)).")
-        elif shader_path.exists():
-            shader_path.unlink()
-            print(f"[CrossIB] Removed stale {shader_path.name}.")
+        if shader_path.is_file():
+            old_text = shader_path.read_text(encoding="utf-8")
+            cleaned, removed = strip_crossib_shader_sections(old_text)
+            meaningful = [
+                line for line in cleaned.splitlines()
+                if line.strip() and not line.lstrip().startswith(";")
+            ]
+            if meaningful:
+                shader_path.write_text(cleaned.rstrip() + "\n", encoding="utf-8")
+                print(
+                    f"[CrossIB] Removed {removed} legacy CrossIB section(s) from "
+                    f"mixed {shader_path.name}."
+                )
+            else:
+                shader_path.unlink()
+                print(f"[CrossIB] Removed obsolete {shader_path.name}.")
     except Exception:
         print("[CrossIB] HLSL copy failed:")
         traceback.print_exc()

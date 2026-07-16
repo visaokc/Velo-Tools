@@ -8,14 +8,18 @@ Produces three pieces consumed by the export-time string post-processor:
   - consumers_map:  dict[comp_id] -> consumer post-block string (one or more
                                        auto-filtered borrow blocks, one per
                                        borrowed provider)
-  - resources:      str (Resource decls + CustomShaders + ShaderOverrides)
+  - resources:      str (Resource declarations + CustomShaders)
 """
 import re
-from pathlib import Path
-
 from .props import parse_component_id
-from .pass_registry import CrossIBPassRegistry, build_pass_registry
-from .transparency_classifier import classify_frame_analysis_transparency
+from .pass_registry import (
+    EFFECT_CB2,
+    EFFECT_CB3,
+    MATERIAL_CB2,
+    OUTLINE_CB2,
+    PREPASS_CB2,
+    CapabilityPassRegistry,
+)
 
 
 _COMPONENT_PREFIX_RE = re.compile(r"^\s*component[_ -]*(\d+)(?:\s+|[_ -]+)?", re.IGNORECASE)
@@ -168,19 +172,82 @@ def _append_lod_offset(lines, comp_id, component_res, component_res_lods, indent
     lines.append(f"{indent}endif")
 
 
-def _build_run_header(comp_id, filters, registry, component_res, component_res_lods, include_redirect, include_record=True):
+def _append_storage_offset(
+    lines,
+    comp_id,
+    component_res,
+    component_res_lods,
+    effect_res=None,
+    indent="    ",
+):
+    if effect_res is None:
+        _append_lod_offset(lines, comp_id, component_res, component_res_lods, indent)
+        return
+    lines.append(f"{indent}if vs == {EFFECT_CB2} || vs == {EFFECT_CB3}")
+    lines.append(f"{indent}    cs-t2 = {effect_res}")
+    lines.append(f"{indent}else")
+    _append_lod_offset(lines, comp_id, component_res, component_res_lods, indent + "    ")
+    lines.append(f"{indent}endif")
+
+
+def _append_extract_cb(lines, comp_id, indent="    "):
+    lines.append(f"{indent}if vs == {EFFECT_CB3}")
+    lines.append(f"{indent}    run = CustomShader_ExtractCB3_C{comp_id}")
+    lines.append(
+        f"{indent}elif vs == {PREPASS_CB2} || vs == {MATERIAL_CB2} || vs == {OUTLINE_CB2} || vs == {EFFECT_CB2}"
+    )
+    lines.append(f"{indent}    run = CustomShader_ExtractCB2_C{comp_id}")
+    lines.append(f"{indent}else")
+    lines.append(f"{indent}    run = CustomShader_ExtractCB1_C{comp_id}")
+    lines.append(f"{indent}endif")
+
+
+def _append_redirect_binding(lines, indent="    "):
+    lines.append(f"{indent}vs-t0 = ResourceFakeT0_SRV")
+    lines.append(f"{indent}if vs == {EFFECT_CB3}")
+    lines.append(f"{indent}    vs-cb3 = ResourceFakeCB1")
+    lines.append(
+        f"{indent}elif vs == {PREPASS_CB2} || vs == {MATERIAL_CB2} || vs == {OUTLINE_CB2} || vs == {EFFECT_CB2}"
+    )
+    lines.append(f"{indent}    vs-cb2 = ResourceFakeCB1")
+    lines.append(f"{indent}else")
+    lines.append(f"{indent}    vs-cb1 = ResourceFakeCB1")
+    lines.append(f"{indent}endif")
+
+
+def _build_run_header(
+    comp_id,
+    filters,
+    registry,
+    component_res,
+    component_res_lods,
+    effect_res,
+    include_redirect,
+    include_record=True,
+):
     lines = []
     lines.append(registry.condition(filters))
     if include_record:
-        lines.append(f"    run = CustomShader_ExtractCB1_C{comp_id}")
-        _append_lod_offset(lines, comp_id, component_res, component_res_lods)
+        _append_extract_cb(lines, comp_id)
+        _append_storage_offset(
+            lines,
+            comp_id,
+            component_res,
+            component_res_lods,
+            effect_res,
+        )
         lines.append(f"    run = CustomShader_RecordBones_C{comp_id}")
     elif include_redirect:
-        _append_lod_offset(lines, comp_id, component_res, component_res_lods)
+        _append_storage_offset(
+            lines,
+            comp_id,
+            component_res,
+            component_res_lods,
+            effect_res,
+        )
     if include_redirect:
         lines.append(f"    run = CustomShader_RedirectCB1_C{comp_id}")
-        lines.append("    vs-t0 = ResourceFakeT0_SRV")
-        lines.append("    vs-cb1 = ResourceFakeCB1")
+        _append_redirect_binding(lines)
         lines.append("    vb3 = vb0")
     return "\n".join(lines)
 
@@ -226,59 +293,8 @@ def _append_provider_vb2_binding(lines, provider_id, provider_component, buffers
 
 
 def _build_registry(source_folder=None, frame_dump_folder=None, consume_sidecar=True):
-    # consume_sidecar=False forces a fresh scan (used by sidecar GENERATION, which
-    # must never read back its own possibly-stale CrossIB.json).
-    if consume_sidecar:
-        from . import sidecar
-        data = sidecar.load_crossib_json(source_folder)
-        if data is not None:
-            print("[CrossIB] consuming baked CrossIB.json (no frame-dump scan).")
-            return sidecar.JsonBackedPassRegistry(data)
-
-    if not frame_dump_folder:
-        return build_pass_registry(source_folder)
-
-    registry = CrossIBPassRegistry()
-    source_path = Path(source_folder) if source_folder else None
-    dump_path = Path(frame_dump_folder)
-    if source_path is None or not source_path.is_dir() or not dump_path.is_dir():
-        return registry
-
-    source_path = registry._resolve_source_folder(source_path)
-    ib_to_component = registry._load_ib_map(source_path)
-    registry._load_texture_usage(source_path)
-    for record in registry._scan_frame_analysis(dump_path, ib_to_component):
-        registry._records_by_component.setdefault(record.component_id, []).append(record)
-        registry._exact_components.add(record.component_id)
-        registry._note_hash(record.vs_hash)
-    registry._finalize_unknown_filters()
-    return registry
-
-
-def render_shader_override_ini(registry):
-    """Render the global [ShaderOverrideCrossIB_*] blocks for a registry.
-
-    Shared by the in-mod resource emission (build_cross_ib) and the extract-time
-    standalone ShaderOverride.ini sidecar, so both always use the same canonical
-    hash->filter map.
-    """
-    lines = []
-    # Sort by filter_index (then hash) so the file groups 200s, 201s, ... 206s
-    # in order instead of defaults-then-appended-unknowns.
-    pairs = sorted(registry.shader_overrides(), key=lambda hf: (hf[1], hf[0]))
-    for idx, (hash_val, fi) in enumerate(pairs):
-        lines.append(f"[ShaderOverrideCrossIB_vs{idx}]")
-        lines.append(f"hash = {hash_val}")
-        lines.append(f"filter_index = {fi}")
-        lines.append("allow_duplicate_hash = overrule")
-        lines.append("")
-    return "\n".join(lines).rstrip("\n")
-
-
-def _log_standard_transparent_receivers(registry, target_ids):
-    for target_id in sorted(set(target_ids)):
-        if _target_is_standard_transparent(registry, target_id):
-            print(f"[CrossIB] standard transparent receiver by pass shape: C{target_id}")
+    del source_folder, frame_dump_folder, consume_sidecar
+    return CapabilityPassRegistry()
 
 
 def _classify_transparency(source_folder=None, frame_dump_folder=None):
@@ -286,22 +302,7 @@ def _classify_transparency(source_folder=None, frame_dump_folder=None):
     data = sidecar.load_crossib_json(source_folder)
     if data is not None:
         return sidecar.JsonBackedTransparency(data)
-
-    if not source_folder and not frame_dump_folder:
-        return None
-    try:
-        # character folder (Metadata/DDS/geometry) = object source; frame_root
-        # (log.txt + draw files) = frame dump — resolved independently so a
-        # non-co-located extract still classifies transparency.
-        result = classify_frame_analysis_transparency(
-            source_folder or frame_dump_folder, frame_root=frame_dump_folder
-        )
-    except Exception as exc:
-        print(f"[CrossIB] Actual transparency classification failed: {exc}")
-        return None
-    for line in result.report_lines:
-        print(f"[CrossIB] {line}")
-    return result
+    return None
 
 
 def _target_is_actual_transparent(transparency, target_id):
@@ -311,50 +312,15 @@ def _target_is_actual_transparent(transparency, target_id):
     )
 
 
-def _target_is_standard_transparent(registry, target_id):
-    target_record_filters = registry.record_filters(target_id)
-    target_self_filters = registry.provider_self_filters(target_id)
-    target_borrow_filters = registry.consumer_borrow_filters(target_id)
-
-    return (
-        target_record_filters
-        and set(target_self_filters).issubset(set(target_record_filters))
-        and target_borrow_filters == [202]
-    )
-
-
-def _provider_geometry_afterimage_filters(registry, provider_id, target_id):
-    """Hybrid provider cross-block filter (replaces the is_actual_transparent
-    binary special-case that collapsed every transparent target to [200]).
-
-    Geometry passes (record 200 / prepass 201) follow the TARGET's own pass set
-    — whether the borrowed mesh needs the opaque G-buffer prepass is the
-    target's material property: a pure-transparent target has no 201 (so it is
-    dropped naturally), a hair-like partial-transparent target with a real
-    prepass keeps it. Afterimage 204 follows the PROVIDER — the residual-image
-    is a whole-character pass over the provider's own geometry, so the borrowed
-    mesh ghosts iff the provider participates (keying 204 to the target would
-    drop it whenever the target's afterimage frame was not captured).
-    """
-    geom = [f for f in registry.provider_self_filters(target_id) if f in (200, 201)]
-    after = [f for f in registry.provider_self_filters(provider_id) if f == 204]
-    filters = sorted(set(geom) | set(after))
-    return filters or registry.record_filters(provider_id)
-
-
 def _provider_preparation_filters_for_mapping(registry, provider_id, target_id, transparency=None):
-    # standard_transparent (structural pass-shape heuristic, not DDS-confirmed)
-    # keeps its original record-only preparation; everything else
-    # (actual_transparent + opaque) uses the hybrid geometry/afterimage split.
-    if _target_is_standard_transparent(registry, target_id) and not _target_is_actual_transparent(transparency, target_id):
-        return registry.record_filters(provider_id)
-    return _provider_geometry_afterimage_filters(registry, provider_id, target_id)
+    del provider_id
+    return registry.provider_filters(_target_is_actual_transparent(transparency, target_id))
 
 
 def _provider_draw_filters_for_mapping(registry, provider_id, target_id, transparency=None):
-    if _target_is_standard_transparent(registry, target_id) and not _target_is_actual_transparent(transparency, target_id):
-        return registry.provider_material_filters(provider_id) or registry.record_filters(provider_id)
-    return _provider_geometry_afterimage_filters(registry, provider_id, target_id)
+    return _provider_preparation_filters_for_mapping(
+        registry, provider_id, target_id, transparency
+    )
 
 
 def _provider_filters_for_mapping(registry, provider_id, target_id, transparency=None):
@@ -378,16 +344,14 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
        world position with the provider's bone palette — fixes the v1.4 bug
        where every borrowed mesh ended up at the last provider's position.
 
-    3. vs filter is per-MAPPING (not merged): each mapping emits its own
-       provider-side `if vs == ...` block on the provider component, with its
-       OWN vs condition and its OWN draws. Multiple mappings on the same
-       provider yield multiple if blocks. Extract is idempotent (writes to
-       same DumpedCB1_C{N}) so repeated extract per-block is harmless.
+    3. Capability routing is per mapping. Transparent receivers omit the
+       prepass capability while normal receivers retain it. Effect capabilities
+       always use a provider-specific effect storage domain.
 
     Returns:
       providers_map[comp_id] = {
           "mapping_blocks": list[dict] each with:
-              "vs_cond": str (e.g. "if vs == 200 || vs == 201"),
+              "header": str (capability condition plus CB routing),
               "borrowed_objs": set[str] of obj names this block draws,
           "borrowed_objs": set[str] union of all borrowed_objs (used by
               patch.py to identify non-borrowed sub-meshes),
@@ -396,7 +360,7 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
       For a consumer-only component (in consumers but not providers):
       providers_map[comp_id] = {
           "mapping_blocks": [{
-              "vs_cond": "if vs == 200 || vs == 201",
+              "header": "if vs == 200 ...",
               "borrowed_objs": set(),  # no draws inside
           }],
           "borrowed_objs": set(),
@@ -447,7 +411,6 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
     # the consumer's own world transform).
     participating = sorted(providers | consumers)
     registry = _build_registry(source_folder, frame_dump_folder)
-    _log_standard_transparent_receivers(registry, consumers)
     transparency = _classify_transparency(source_folder, frame_dump_folder)
 
 
@@ -480,6 +443,7 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
 
     component_res = {}
     component_res_lods = {}
+    component_effect_res = {}
     max_lod_count = max(
         (len(getattr(_get_component(extracted_object, comp_id), "lods", ()) or ()) for comp_id in participating),
         default=0,
@@ -504,6 +468,24 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
             res.append(f"data = {float(lod_offset)}")
             res.append("")
 
+    effect_base = len(participating) * fake_t0_slot_stride
+    for effect_index, comp_id in enumerate(sorted(providers)):
+        effect_offset = effect_base + effect_index * 1000
+        name = f"ResourceID_CrossIB_C{comp_id}_EFFECT"
+        component_effect_res[comp_id] = name
+        res.append(f"[{name}]")
+        res.append("type = Buffer")
+        res.append("format = R32_FLOAT")
+        res.append(f"data = {float(effect_offset)}")
+        res.append("")
+
+    highest_offset = effect_base + max(0, len(providers) - 1) * 1000
+    if highest_offset + 100000 + 768 > 200000:
+        raise ValueError(
+            "CrossIB provider storage exceeds ResourceFakeT0 capacity; "
+            "reduce participating Components or LOD domains"
+        )
+
     # ── Per-component DumpedCB1 + Extract/Record/Redirect CustomShaders ──
     # CrossIB v1.5 (per dev guidance): every participating component (provider
     # OR consumer) gets its OWN DumpedCB1 buffer pair so that:
@@ -525,18 +507,19 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
         res.append("")
 
     for comp_id in participating:
-        res.append(f"[CustomShader_ExtractCB1_C{comp_id}]")
-        res.append("vs = hlsl/extract_cb1_vs.hlsl")
-        res.append("ps = hlsl/extract_cb1_ps.hlsl")
-        res.append(f"ps-u7 = ResourceDumpedCB1_C{comp_id}_UAV")
-        res.append("depth_enable = false")
-        res.append("blend = ADD SRC_ALPHA INV_SRC_ALPHA")
-        res.append("cull = none")
-        res.append("topology = point_list")
-        res.append("draw = 4096, 0")
-        res.append("ps-u7 = null")
-        res.append(f"ResourceDumpedCB1_C{comp_id}_SRV = copy ResourceDumpedCB1_C{comp_id}_UAV")
-        res.append("")
+        for cb_index in (1, 2, 3):
+            res.append(f"[CustomShader_ExtractCB{cb_index}_C{comp_id}]")
+            res.append(f"vs = hlsl/extract_cb{cb_index}_vs.hlsl")
+            res.append("ps = hlsl/extract_cb1_ps.hlsl")
+            res.append(f"ps-u7 = ResourceDumpedCB1_C{comp_id}_UAV")
+            res.append("depth_enable = false")
+            res.append("blend = ADD SRC_ALPHA INV_SRC_ALPHA")
+            res.append("cull = none")
+            res.append("topology = point_list")
+            res.append("draw = 4096, 0")
+            res.append("ps-u7 = null")
+            res.append(f"ResourceDumpedCB1_C{comp_id}_SRV = copy ResourceDumpedCB1_C{comp_id}_UAV")
+            res.append("")
         res.append(f"[CustomShader_RecordBones_C{comp_id}]")
         res.append("cs = hlsl/record_bones_cs.hlsl")
         res.append("cs-t0 = vs-t0")
@@ -570,17 +553,12 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
         mapping_blocks_out = []
 
         record_filters = registry.record_filters(comp_id)
-        self_filters = registry.provider_self_filters(comp_id) if is_provider else []
-        record_covered_by_self = bool(
-            is_provider
-            and record_filters
-            and set(record_filters).issubset(set(self_filters))
-        )
-        if not record_covered_by_self:
+        if not is_provider:
             mapping_blocks_out.append({
                 "header": _build_run_header(
                     comp_id, record_filters, registry,
                     component_res, component_res_lods,
+                    None,
                     include_redirect=False,
                 ),
                 "borrowed_objs": set(),
@@ -601,6 +579,7 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
                         "header": _build_run_header(
                             comp_id, preparation_filters, registry,
                             component_res, component_res_lods,
+                            component_effect_res[comp_id],
                             include_redirect=False,
                         ),
                         "borrowed_objs": set(),
@@ -609,6 +588,7 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
                     "header": _build_run_header(
                         comp_id, draw_filters, registry,
                         component_res, component_res_lods,
+                        component_effect_res[comp_id],
                         include_redirect=True,
                         include_record=(preparation_filters == draw_filters),
                     ),
@@ -637,9 +617,6 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
             + ", ".join(str(p) for p in provider_ids)
             + " (bones + mesh)"
         )
-        all_blocks.append("vs-t0 = ResourceFakeT0_SRV")
-        all_blocks.append("vs-cb1 = ResourceFakeCB1")
-
         for provider_id in provider_ids:
             provider_component = _get_component(extracted_object, provider_id)
             b = []
@@ -649,6 +626,7 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
             # CrossIB v1.5: read CONSUMER's own DumpedCB1 (preserves consumer
             # transform) and only flip CB1[5] → provider bones via cs-t2.
             b.append(f"    run = CustomShader_RedirectCB1_C{consumer_id}")
+            _append_redirect_binding(b)
             b.append(f"    ib  = ref Resource_Component{provider_id}_IB")
             b.append(f"    vb0 = ref Resource_Component{provider_id}_VB0")
             b.append(f"    vb1 = ref Resource_Component{provider_id}_VB1")
@@ -678,11 +656,6 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
             all_blocks.append("\n".join(b))
 
         consumers_map[consumer_id] = "\n".join(all_blocks)
-
-    shader_override_ini = render_shader_override_ini(registry)
-    if shader_override_ini:
-        res.append(shader_override_ini)
-        res.append("")
 
     resources_str = "\n".join(res)
 
