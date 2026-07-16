@@ -66,6 +66,9 @@ def _shapekey_columns(layout, context):
     right_split = fixed_right.split(factor=count_factor, align=True)
     count = right_split.row(align=True)
     value = right_split.row(align=True)
+    checkbox.ui_units_x = _SHAPEKEY_CHECKBOX_UNITS
+    count.ui_units_x = _SHAPEKEY_COUNT_UNITS
+    value.ui_units_x = _SHAPEKEY_VALUE_UNITS
     return checkbox, name, count, value
 
 
