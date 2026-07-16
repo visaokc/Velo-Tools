@@ -5,6 +5,7 @@ import re
 
 _NATURAL_PART_RE = re.compile(r"(\d+)")
 _DEFORM_NAME_RE = re.compile(r"^\s*deform\s*(\d+).*$", re.IGNORECASE)
+_DEFORM_PREFIX_RE = re.compile(r"^\s*deform\s*\d+\s*", re.IGNORECASE)
 
 
 def natural_key(value):
@@ -20,6 +21,34 @@ def deform_number(name):
     """Return the numeric Deform id, or None when the whole name is unnumbered."""
     match = _DEFORM_NAME_RE.fullmatch(name or "")
     return int(match.group(1)) if match else None
+
+
+def deform_number_is_locked(number, unlock_from=-1):
+    """Return whether a numbered row remains protected before a repair boundary."""
+    if number is None:
+        return False
+    return int(unlock_from) < 0 or int(number) < int(unlock_from)
+
+
+def deform_basename(name):
+    """Remove one existing Deform-number prefix before assigning a replacement."""
+    return _DEFORM_PREFIX_RE.sub("", name or "", count=1).strip()
+
+
+def remaining_deform_repair_boundary(names, unlock_from, unlock_end):
+    """Return the first still-missing id in a tracked repair range, or -1."""
+    unlock_from = int(unlock_from)
+    unlock_end = int(unlock_end)
+    if unlock_from < 0 or unlock_end < unlock_from:
+        return -1
+    occupied = {
+        number for name in names
+        if (number := deform_number(name)) is not None
+    }
+    for number in range(unlock_from, unlock_end + 1):
+        if number not in occupied:
+            return number
+    return -1
 
 
 def shapekey_sort_key(name):
@@ -79,15 +108,53 @@ def shapekey_count_label(count, minimum_digits=1):
     return "x" + "\u2007" * (digits - len(count_text)) + count_text
 
 
-def build_rename_plan(names, selected_names):
-    """Build collision-free final names for selected, unnumbered aggregate entries."""
+def build_rename_plan(names, selected_names, unlock_from=-1, order_hints=None):
+    """Build collision-free new names, optionally repairing an unlocked suffix."""
     ordered_names = sorted_shapekey_names(names)
+    selected = set(selected_names)
+    unlock_from = int(unlock_from)
+
+    if unlock_from >= 0:
+        order_hints = order_hints or {}
+
+        def repair_key(name):
+            number = deform_number(name)
+            hint = int(order_hints.get(name, -1))
+            if hint >= unlock_from:
+                return (0, hint, natural_key(name))
+            if number is not None and number >= unlock_from:
+                return (0, number, natural_key(name))
+            return (1, natural_key(name))
+
+        candidates = [
+            name for name in ordered_names
+            if name in selected
+            and not deform_number_is_locked(deform_number(name), unlock_from)
+        ]
+        candidates.sort(key=repair_key)
+        occupied_numbers = {
+            number for name in ordered_names
+            if (number := deform_number(name)) is not None
+            and name not in candidates
+        }
+        next_number = unlock_from
+        plan = []
+        for name in candidates:
+            while next_number in occupied_numbers:
+                next_number += 1
+            basename = deform_basename(name) if deform_number(name) is not None else name
+            final_name = f"Deform {next_number} {basename}".rstrip()
+            if final_name != name:
+                plan.append((name, final_name))
+            occupied_numbers.add(next_number)
+            next_number += 1
+        return plan
+
     occupied_numbers = {
         number for name in ordered_names
         if (number := deform_number(name)) is not None
     }
     next_number = max(occupied_numbers) + 1 if occupied_numbers else 1
-    selected = set(selected_names)
     plan = []
     for name in ordered_names:
         if name not in selected or deform_number(name) is not None:

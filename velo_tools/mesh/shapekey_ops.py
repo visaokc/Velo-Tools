@@ -14,7 +14,9 @@ from .shapekey_model import (
     aggregation_signature,
     build_rename_plan,
     deform_number,
+    deform_number_is_locked,
     natural_key,
+    remaining_deform_repair_boundary,
     remap_ui_state,
     sorted_shapekey_names,
     unique_temp_names,
@@ -53,11 +55,30 @@ def _signature(order, contributors):
     return aggregation_signature(order, contributors)
 
 
+def update_shapekey_number_locks(settings):
+    """Apply the active manual-repair boundary to every aggregate row."""
+    unlock_from = int(getattr(settings, "shapekey_rename_unlock_from", -1))
+    for item in settings.shapekey_items:
+        name = item.original_name or item.name
+        item.is_deform_numbered = deform_number_is_locked(
+            deform_number(name),
+            unlock_from,
+        )
+
+
 def _populate(settings, order, count, first_value, contributors, name_remap=None):
     name_remap = name_remap or {}
     selected_by_name = {
         (item.original_name or item.name): bool(item.selected)
         for item in settings.shapekey_items
+    }
+    order_hint_by_name = {
+        (item.original_name or item.name): int(item.deform_rename_order)
+        for item in settings.shapekey_items
+    }
+    order_hint_by_name = {
+        name_remap.get(name, name): hint
+        for name, hint in order_hint_by_name.items()
     }
     active_name = None
     if 0 <= settings.active_shapekey_index < len(settings.shapekey_items):
@@ -75,8 +96,13 @@ def _populate(settings, order, count, first_value, contributors, name_remap=None
             it.selected = selected.get(name, False)
             it.count = count[name]
             it.contributor_names = "\n".join(contributors[name])
-            it.is_deform_numbered = deform_number(name) is not None
+            number = deform_number(name)
+            it.deform_rename_order = order_hint_by_name.get(
+                name,
+                number if number is not None else -1,
+            )
             it.value = first_value.get(name, 0.0)
+        update_shapekey_number_locks(settings)
         if active_name in order:
             settings.active_shapekey_index = order.index(active_name)
         elif order:
@@ -190,8 +216,8 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
     bl_idname = "velo.rename_shapekeys_deform"
     bl_label = "自动重命名 (Deform N)"
     bl_description = (
-        "仅为已勾选且尚无 Deform 编号的形态键分配新编号; "
-        "已有编号和未勾选条目保持不变"
+        "为已勾选且可重命名的形态键分配编号; 手动移除中间编号后，"
+        "会从留下的空号开始修复已解锁后缀"
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -213,7 +239,17 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
             for item in s.shapekey_items
             if item.selected
         }
-        plan = build_rename_plan(order, selected_names)
+        unlock_from = int(s.shapekey_rename_unlock_from)
+        order_hints = {
+            item.original_name or item.name: int(item.deform_rename_order)
+            for item in s.shapekey_items
+        }
+        plan = build_rename_plan(
+            order,
+            selected_names,
+            unlock_from=unlock_from,
+            order_hints=order_hints,
+        )
         skipped = len(selected_names) - len(plan)
 
         if not plan:
@@ -251,6 +287,16 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
                 renamed += 1
 
         final_by_old = dict(plan)
+        if unlock_from >= 0:
+            repaired_order, _count, _first_value, _contributors = _scan_collection(coll)
+            next_boundary = remaining_deform_repair_boundary(
+                repaired_order,
+                unlock_from,
+                s.shapekey_rename_unlock_end,
+            )
+            s.shapekey_rename_unlock_from = next_boundary
+            if next_boundary < 0:
+                s.shapekey_rename_unlock_end = -1
         refresh_shapekey_list(context, force=True, name_remap=final_by_old)
 
         self.report(

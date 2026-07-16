@@ -749,6 +749,8 @@ def _is_real_mesh_simple(obj):
 
 def _on_target_collection_update(self, context):
     """Scan once immediately when the target collection is set/switched (no manual refresh needed)."""
+    self.shapekey_rename_unlock_from = -1
+    self.shapekey_rename_unlock_end = -1
     # Deferred import to avoid a cycle
     try:
         from .mesh import shapekey_ops as _sk
@@ -775,6 +777,28 @@ def _on_shapekey_agg_name_update(self, context):
     if coll is None:
         return
 
+    from .mesh.shapekey_model import deform_number
+
+    old_number = deform_number(old_name)
+    new_number = deform_number(new_name)
+    opened_repair_boundary = old_number is not None and new_number != old_number
+    if opened_repair_boundary:
+        existing_numbers = [
+            number
+            for item in s.shapekey_items
+            if (number := deform_number(item.original_name or item.name)) is not None
+        ]
+        self.deform_rename_order = old_number
+        current_boundary = int(s.shapekey_rename_unlock_from)
+        s.shapekey_rename_unlock_from = (
+            old_number
+            if current_boundary < 0
+            else min(current_boundary, old_number)
+        )
+        s.shapekey_rename_unlock_end = max(
+            existing_numbers + [old_number, int(s.shapekey_rename_unlock_end)]
+        )
+
     renamed = 0
     for obj in coll.all_objects:
         if not _is_real_mesh_simple(obj):
@@ -796,6 +820,11 @@ def _on_shapekey_agg_name_update(self, context):
             self.name = new_name
     finally:
         _suspend_shapekey_update = False
+
+    if opened_repair_boundary:
+        from .mesh import shapekey_ops as _sk
+
+        _sk.update_shapekey_number_locks(s)
 
 
 def _on_shapekey_agg_value_update(self, context):
@@ -834,9 +863,10 @@ class VELO_ShapeKeyAggItem(bpy.types.PropertyGroup):
     original_name: StringProperty()
     selected: BoolProperty(
         name="选择自动重命名",
-        description="仅勾选的未编号形态键会参与自动重命名",
+        description="仅勾选且当前已解锁的形态键会参与自动重命名",
         default=False,
     )
+    deform_rename_order: IntProperty(default=-1, options={'HIDDEN'})
     count: IntProperty(default=0, description="该名称在多少个网格上出现")
     contributor_names: StringProperty(
         name="贡献对象",
@@ -844,7 +874,7 @@ class VELO_ShapeKeyAggItem(bpy.types.PropertyGroup):
     )
     is_deform_numbered: BoolProperty(
         name="已有 Deform 编号",
-        description="已有 Deform 编号的形态键受保护，不参与自动重命名",
+        description="连续编号锁定前缀中的形态键受保护，不参与自动重命名",
         default=False,
     )
     value: FloatProperty(
@@ -1045,6 +1075,8 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
     )
     shapekey_items: CollectionProperty(type=VELO_ShapeKeyAggItem)
     active_shapekey_index: IntProperty(default=0)
+    shapekey_rename_unlock_from: IntProperty(default=-1, options={'HIDDEN'})
+    shapekey_rename_unlock_end: IntProperty(default=-1, options={'HIDDEN'})
 
     # Split by material: shape-key "near-zero displacement" cleanup threshold
     # Unit = object local coordinates (meters). Baking bones into shape keys often leaves residual displacement on the order of 1e-4 ~ 1e-3;
