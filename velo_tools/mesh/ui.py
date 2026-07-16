@@ -2,7 +2,7 @@
 
 import bpy
 
-from .shapekey_model import shapekey_column_units
+from .shapekey_model import shapekey_column_units, shapekey_count_label
 
 
 _SHAPEKEY_CHECKBOX_UNITS = 1.6
@@ -36,25 +36,33 @@ def _shapekey_column_factors(content_units):
     )
 
 
-def _snapshot_shapekey_columns(context):
+def _snapshot_shapekey_columns(context, items):
     """Capture one column layout for the complete UIList redraw."""
     region_key = context.region.as_pointer()
-    _SHAPEKEY_COLUMN_SNAPSHOTS[region_key] = _shapekey_column_factors(
-        _shapekey_available_units(context)
+    count_digits = max(
+        (len(str(int(item.count))) for item in items),
+        default=1,
+    )
+    _SHAPEKEY_COLUMN_SNAPSHOTS[region_key] = (
+        _shapekey_column_factors(_shapekey_available_units(context)),
+        count_digits,
     )
 
 
 def _shapekey_columns(layout, context):
     # UIList rows can redraw in separate batches during a region resize. Every
     # row must consume the panel's single snapshot instead of measuring again.
-    factors = _SHAPEKEY_COLUMN_SNAPSHOTS.get(context.region.as_pointer())
-    if factors is None:
+    snapshot = _SHAPEKEY_COLUMN_SNAPSHOTS.get(context.region.as_pointer())
+    if snapshot is None:
         factors = _shapekey_column_factors(
             _SHAPEKEY_CHECKBOX_UNITS
             + _SHAPEKEY_MINIMUM_NAME_UNITS
             + _SHAPEKEY_COUNT_UNITS
             + _SHAPEKEY_VALUE_UNITS
         )
+        count_digits = 1
+    else:
+        factors, count_digits = snapshot
     checkbox_factor, name_factor, count_factor = factors
     row = layout.row(align=True)
     checkbox_split = row.split(factor=checkbox_factor, align=True)
@@ -69,7 +77,7 @@ def _shapekey_columns(layout, context):
     checkbox.ui_units_x = _SHAPEKEY_CHECKBOX_UNITS
     count.ui_units_x = _SHAPEKEY_COUNT_UNITS
     value.ui_units_x = _SHAPEKEY_VALUE_UNITS
-    return checkbox, name, count, value
+    return checkbox, name, count, value, count_digits
 
 
 def _iter_virtual_items(_ops, route_settings, root, collection):
@@ -160,14 +168,14 @@ def _draw_collection_tree(layout, root, collection, route_settings, depth=0):
 
 class VELO_UL_shapekey_agg(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        checkbox, name, count, value = _shapekey_columns(layout, context)
+        checkbox, name, count, value, count_digits = _shapekey_columns(layout, context)
         checkbox.enabled = not item.is_deform_numbered
         checkbox.prop(item, "selected", text="")
         name.prop(item, "name", text="", emboss=True, icon='SHAPEKEY_DATA')
         count.alignment = 'CENTER'
         tooltip = count.operator(
             "velo.shapekey_contributors_tooltip",
-            text=f"x{item.count}",
+            text=shapekey_count_label(item.count, count_digits),
             emboss=False,
         )
         tooltip.count = item.count
@@ -314,7 +322,7 @@ class VELO_PT_shapekey_panel(bpy.types.Panel):
             return
 
         layout.label(text=f"共 {n} 种形态键 (自动同步; 改名会刷新到所有网格)")
-        _snapshot_shapekey_columns(context)
+        _snapshot_shapekey_columns(context, s.shapekey_items)
         layout.template_list(
             "VELO_UL_shapekey_agg", "",
             s, "shapekey_items",

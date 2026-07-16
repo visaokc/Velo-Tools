@@ -72,6 +72,13 @@ def shapekey_column_units(
     )
 
 
+def shapekey_count_label(count, minimum_digits=1):
+    """Pad a contributor count with digit-width spaces for stable button sizing."""
+    count_text = str(int(count))
+    digits = max(int(minimum_digits), len(count_text))
+    return "x" + "\u2007" * (digits - len(count_text)) + count_text
+
+
 def build_rename_plan(names, selected_names):
     """Build collision-free final names for selected, unnumbered aggregate entries."""
     ordered_names = sorted_shapekey_names(names)
