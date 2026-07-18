@@ -42,10 +42,8 @@ class CapabilityPassRegistry:
     def provider_filters(self, target_component_id=None, target_is_transparent=False):
         values = [POSE_CAPTURE]
         topology = self._topology(target_component_id)
-        has_prepass = (
-            bool(topology.get("prepass_cb2"))
-            if topology is not None
-            else not target_is_transparent
+        has_prepass = not target_is_transparent and (
+            bool(topology.get("prepass_cb2")) if topology is not None else True
         )
         if has_prepass:
             values.append(PREPASS_CB2)

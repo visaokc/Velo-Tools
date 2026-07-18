@@ -191,26 +191,44 @@ def _append_storage_offset(
     lines.append(f"{indent}endif")
 
 
-def _append_extract_cb(lines, comp_id, indent="    "):
+def _append_extract_cb(lines, comp_id, filters, indent="    "):
+    active = {int(value) for value in filters}
+    cb2_filters = [
+        value
+        for value in (PREPASS_CB2, MATERIAL_CB2, OUTLINE_CB2, EFFECT_CB2)
+        if value in active
+    ]
+    if active == {POSE_CAPTURE}:
+        lines.append(f"{indent}run = CustomShader_ExtractCB1_C{comp_id}")
+        return
     lines.append(f"{indent}if vs == {EFFECT_CB3}")
     lines.append(f"{indent}    run = CustomShader_ExtractCB3_C{comp_id}")
-    lines.append(
-        f"{indent}elif vs == {PREPASS_CB2} || vs == {MATERIAL_CB2} || vs == {OUTLINE_CB2} || vs == {EFFECT_CB2}"
-    )
-    lines.append(f"{indent}    run = CustomShader_ExtractCB2_C{comp_id}")
+    if cb2_filters:
+        condition = " || ".join(f"vs == {value}" for value in cb2_filters)
+        lines.append(f"{indent}elif {condition}")
+        lines.append(f"{indent}    run = CustomShader_ExtractCB2_C{comp_id}")
     lines.append(f"{indent}else")
     lines.append(f"{indent}    run = CustomShader_ExtractCB1_C{comp_id}")
     lines.append(f"{indent}endif")
 
 
-def _append_redirect_binding(lines, indent="    "):
+def _append_redirect_binding(lines, filters, indent="    "):
     lines.append(f"{indent}vs-t0 = ResourceFakeT0_SRV")
+    active = {int(value) for value in filters}
+    cb2_filters = [
+        value
+        for value in (PREPASS_CB2, MATERIAL_CB2, OUTLINE_CB2, EFFECT_CB2)
+        if value in active
+    ]
+    if active and active.issubset({PREPASS_CB2, MATERIAL_CB2, OUTLINE_CB2, EFFECT_CB2}):
+        lines.append(f"{indent}vs-cb2 = ResourceFakeCB1")
+        return
     lines.append(f"{indent}if vs == {EFFECT_CB3}")
     lines.append(f"{indent}    vs-cb3 = ResourceFakeCB1")
-    lines.append(
-        f"{indent}elif vs == {PREPASS_CB2} || vs == {MATERIAL_CB2} || vs == {OUTLINE_CB2} || vs == {EFFECT_CB2}"
-    )
-    lines.append(f"{indent}    vs-cb2 = ResourceFakeCB1")
+    if cb2_filters:
+        condition = " || ".join(f"vs == {value}" for value in cb2_filters)
+        lines.append(f"{indent}elif {condition}")
+        lines.append(f"{indent}    vs-cb2 = ResourceFakeCB1")
     lines.append(f"{indent}else")
     lines.append(f"{indent}    vs-cb1 = ResourceFakeCB1")
     lines.append(f"{indent}endif")
@@ -225,13 +243,11 @@ def _build_run_header(
     effect_res,
     include_redirect,
     include_record=True,
-    mark_provider_seen=False,
-    include_vb3=False,
 ):
     lines = []
     lines.append(registry.condition(filters))
     if include_record:
-        _append_extract_cb(lines, comp_id)
+        _append_extract_cb(lines, comp_id, filters)
         _append_storage_offset(
             lines,
             comp_id,
@@ -240,10 +256,6 @@ def _build_run_header(
             effect_res,
         )
         lines.append(f"    run = CustomShader_RecordBones_C{comp_id}")
-        if mark_provider_seen:
-            lines.append(f"    if vs == {POSE_CAPTURE}")
-            lines.append(f"        $crossib_provider_seen_c{comp_id} = 1")
-            lines.append("    endif")
     elif include_redirect:
         _append_storage_offset(
             lines,
@@ -254,8 +266,8 @@ def _build_run_header(
         )
     if include_redirect:
         lines.append(f"    run = CustomShader_RedirectCB1_C{comp_id}")
-        _append_redirect_binding(lines)
-    if include_redirect or include_vb3:
+        _append_redirect_binding(lines, filters)
+    if include_redirect:
         lines.append("    vb3 = vb0")
     return "\n".join(lines)
 
@@ -598,38 +610,38 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
             })
 
         if is_provider:
-            # One self-draw block per (mapping, this provider). The pass
-            # registry decides visible provider filters from the source data.
+            preparation_filters_union = set()
+            draw_blocks = []
+            # Redirect changes the offsets read by a later Extract/Record
+            # cycle. Prepare once, then retain each mapping's own draw gate.
             for mb in provider_mapping_blocks[comp_id]:
                 preparation_filters = _provider_preparation_filters_for_mapping(
                     registry, comp_id, mb["target_component"], transparency
                 )
+                preparation_filters_union.update(preparation_filters)
                 draw_filters = _provider_draw_filters_for_mapping(
                     registry, comp_id, mb["target_component"], transparency
                 )
-                if preparation_filters != draw_filters:
-                    mapping_blocks_out.append({
-                        "header": _build_run_header(
-                            comp_id, preparation_filters, registry,
-                            component_res, component_res_lods,
-                            component_effect_res[comp_id],
-                            include_redirect=False,
-                            mark_provider_seen=True,
-                        ),
-                        "borrowed_objs": set(),
-                    })
-                mapping_blocks_out.append({
+                draw_blocks.append({
                     "header": _build_run_header(
                         comp_id, draw_filters, registry,
                         component_res, component_res_lods,
                         component_effect_res[comp_id],
                         include_redirect=False,
-                        include_record=(preparation_filters == draw_filters),
-                        mark_provider_seen=(preparation_filters == draw_filters),
-                        include_vb3=True,
+                        include_record=False,
                     ),
                     "borrowed_objs": set(mb["borrowed_objs"]),
                 })
+            mapping_blocks_out.append({
+                "header": _build_run_header(
+                    comp_id, preparation_filters_union, registry,
+                    component_res, component_res_lods,
+                    component_effect_res[comp_id],
+                    include_redirect=True,
+                ),
+                "borrowed_objs": set(),
+            })
+            mapping_blocks_out.extend(draw_blocks)
 
         # Union of all sub-mesh names borrowed FROM this provider by any
         # consumer (used by patch.py to know which draws are non-borrowed).
@@ -654,28 +666,17 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
             + ", ".join(str(p) for p in provider_ids)
             + " (bones + mesh)"
         )
-        capability_condition = registry.condition(
-            registry.consumer_borrow_filters(consumer_id)
-        )[3:]
         for provider_id in provider_ids:
             provider_component = _get_component(extracted_object, provider_id)
             b = []
             b.append(f"; --- Borrow provider Component {provider_id} ---")
-            b.append(
-                f"if ({capability_condition}) && "
-                f"($crossib_provider_seen_c{provider_id} || "
-                f"$crossib_provider_seen_prev_c{provider_id})"
-            )
-            # Capture the consumer CB from this exact material/outline draw.
-            # A provider preparation pass may be absent or may contain a
-            # different CB payload, so reusing that earlier snapshot can feed
-            # stale transforms into the borrowed mesh.
-            b.append(f"    run = CustomShader_ExtractCB2_C{consumer_id}")
+            consumer_filters = registry.consumer_borrow_filters(consumer_id)
+            b.append(registry.condition(consumer_filters))
             _append_lod_offset(b, provider_id, component_res, component_res_lods)
             # CrossIB v1.5: read CONSUMER's own DumpedCB1 (preserves consumer
             # transform) and only flip CB1[5] → provider bones via cs-t2.
             b.append(f"    run = CustomShader_RedirectCB1_C{consumer_id}")
-            _append_redirect_binding(b)
+            _append_redirect_binding(b, consumer_filters)
             b.append(f"    ib  = ref Resource_Component{provider_id}_IB")
             b.append(f"    vb0 = ref Resource_Component{provider_id}_VB0")
             b.append(f"    vb1 = ref Resource_Component{provider_id}_VB1")
@@ -703,39 +704,6 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
                     )
             b.append("endif")
             all_blocks.append("\n".join(b))
-
-        own_borrowed = providers_map.get(consumer_id, {}).get("borrowed_objs", set())
-        fallback_objects = [
-            obj
-            for obj in merged_object.components[consumer_id].objects
-            if _name_matches_wanted(own_borrowed, obj.name)
-        ] if own_borrowed else []
-        if fallback_objects:
-            consumer_component = _get_component(extracted_object, consumer_id)
-            unavailable = " && ".join(
-                f"$crossib_provider_seen_c{provider_id} == 0 && "
-                f"$crossib_provider_seen_prev_c{provider_id} == 0"
-                for provider_id in provider_ids
-            )
-            fallback = [
-                "; Cross-IB fallback: provider unavailable",
-                f"if ({capability_condition}) && {unavailable}",
-                f"    ib  = ref Resource_Component{consumer_id}_IB",
-                f"    vb0 = ref Resource_Component{consumer_id}_VB0",
-                f"    vb1 = ref Resource_Component{consumer_id}_VB1",
-            ]
-            _append_provider_vb2_binding(
-                fallback, consumer_id, consumer_component, buffers
-            )
-            fallback.append("    vb3 = vb0")
-            for obj in fallback_objects:
-                fallback.append(f"    ; Draw native fallback {obj.name}")
-                fallback.append(
-                    f"    drawindexedinstanced = {obj.index_count}, INSTANCE_COUNT, "
-                    f"{obj.index_offset}, 0, FIRST_INSTANCE"
-                )
-            fallback.append("endif")
-            all_blocks.append("\n".join(fallback))
 
         consumers_map[consumer_id] = "\n".join(all_blocks)
 

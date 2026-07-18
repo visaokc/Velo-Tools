@@ -303,13 +303,12 @@ def _process_section_body(body, comp_id, providers_map, consumers_map):
 
     if in_providers:
         info = providers_map[comp_id]
-        # CrossIB v1.5 layout for provider/consumer-self CommandLists:
-        #   for each mapping_block (one per user-mapping that uses this
-        #   component as provider; OR a single self-extract block for a
-        #   consumer-only component):
-        #       <header>     ; opens `if vs == ...`, runs Extract/Record/Redirect
-        #       <draws>      ; this mapping's sub-meshes (4-space indented)
-        #       endif
+        # CrossIB provider/consumer-self CommandList layout:
+        #   <preparation header>  ; one union Extract/Record/Redirect transaction
+        #   endif
+        #   <draw header>         ; one per distinct mapping-specific pass gate
+        #       <draws>
+        #   endif
         #   ; --- Non-borrowed sub-meshes (drawn in every pass) ---
         #   <leftover draws unindented>
         #
@@ -330,13 +329,10 @@ def _process_section_body(body, comp_id, providers_map, consumers_map):
             if not placed:
                 outside.extend(entry["lines"])
 
-        # CrossIB v1.6: merge mapping_blocks that share the same header
-        # (i.e. identical vs filter + identical Extract/Record/Redirect setup
-        # — which for a given provider means identical vs_cond). Multiple
-        # user-mappings that pick the same vs filter on the same provider
-        # collapse into ONE `if vs == ...` block whose body lists all
-        # borrowed sub-meshes back-to-back. Order of first appearance is
-        # preserved so the ini stays diff-friendly.
+        # Merge draw blocks that share the same header. The preparation block
+        # has a distinct body and remains first, while mappings with the same
+        # draw gate collapse into one partition. Order of first appearance is
+        # preserved so the INI stays diff-friendly.
         merged = []  # list[(header, [draw_lines...])]
         header_index = {}
         for i, mb in enumerate(info["mapping_blocks"]):
@@ -354,7 +350,7 @@ def _process_section_body(body, comp_id, providers_map, consumers_map):
             )
         else:
             new_body.append(
-                "; Cross-IB: Provider \u2014 extract/record bones, draw borrowed mesh INSIDE this if (mappings sharing the same vs filter are merged)"
+                "; Cross-IB: Provider preparation once, then mapping-specific draw partitions"
             )
         for header, draws in merged:
             new_body.extend(header.split("\n"))
@@ -505,31 +501,9 @@ def inject_cross_ib(ini_text, settings, extracted_object, merged_object, buffers
         for comp_id, info in providers_map.items()
         if info.get("is_consumer_only") and comp_id not in existing_commandlists
     )
-    provider_ids = sorted(
-        comp_id
-        for comp_id, info in providers_map.items()
-        if info.get("is_provider")
-    )
-
     out_sections = []
     for header, body in sections:
         if header is not None:
-            if header.strip().lower() == "[constants]":
-                for comp_id in provider_ids:
-                    seen = f"global $crossib_provider_seen_c{comp_id} = 0"
-                    seen_prev = f"global $crossib_provider_seen_prev_c{comp_id} = 0"
-                    if seen not in body:
-                        body.extend((seen, seen_prev))
-            elif header.strip().lower() == "[present]":
-                for comp_id in provider_ids:
-                    update = (
-                        f"post $crossib_provider_seen_prev_c{comp_id} = "
-                        f"$crossib_provider_seen_c{comp_id}"
-                    )
-                    clear = f"post $crossib_provider_seen_c{comp_id} = 0"
-                    if update not in body:
-                        body.extend((update, clear))
-
             m = _HEADER_RE.match(header)
             if m:
                 comp_id = int(m.group(1))
