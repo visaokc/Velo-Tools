@@ -52,21 +52,24 @@ filter_index = 203
 [ShaderRegexCrossIBCapabilityOutlineCB2.Pattern]
 (?s)dcl_constantbuffer CB2\[4\d{3}\], dynamicIndexed\n.*?dcl_constantbuffer CB3\[1[4-6]\], immediateIndexed\n.*?dcl_output o7\.x\ndcl_temps \d+\n
 
-; 204: CB2 effect/self-render fallback after excluding prepass, material and outline.
+; 204: CB2 effect/self-render capability selected by two positive declaration families.
+; The compact family covers ordinary self-render/afterimage passes. The dual-dynamic
+; family covers multi-stage attack afterimages. No cross-body negative lookahead is used.
 [ShaderRegexCrossIBCapabilityEffectCB2]
 shader_model = vs_5_0
 filter_index = 204
 
 [ShaderRegexCrossIBCapabilityEffectCB2.Pattern]
-(?s)\A(?!.*dcl_constantbuffer CB3\[11\], immediateIndexed\n.*dcl_output o(?:6|7)\.x\ndcl_temps \d+\n)(?!.*dcl_constantbuffer CB3\[11\], immediateIndexed\n.*dcl_output o(?:9|10)\.[xyzw]+\ndcl_temps \d+\n)(?!.*dcl_constantbuffer CB3\[1[4-6]\], immediateIndexed\n.*dcl_output o7\.x\ndcl_temps \d+\n).*dcl_constantbuffer CB2\[4\d{3}\], dynamicIndexed\n
+(?:dcl_constantbuffer CB1\[(?:[1-9]|[12]\d|3\d)\], immediateIndexed\n(?:dcl_[^\n]*\n)*?dcl_constantbuffer CB2\[4\d{3}\], dynamicIndexed\n(?:dcl_[^\n]*\n)*?dcl_constantbuffer CB3\[(?:[1-9]|1\d)\], immediateIndexed\n(?:dcl_[^\n]*\n)*?dcl_resource_structured t0, 16\n(?:dcl_[^\n]*\n)*?dcl_input v2\.xyzw\n(?:dcl_[^\n]*\n)*?dcl_input v3\.xyzw\n|dcl_constantbuffer CB1\[(?:[1-9]|[12]\d|3\d)\], immediateIndexed\n(?:dcl_[^\n]*\n)*?dcl_constantbuffer CB2\[4\d{3}\], dynamicIndexed\n(?:dcl_[^\n]*\n)*?dcl_constantbuffer CB[34]\[4\d{3}\], dynamicIndexed\n(?:dcl_[^\n]*\n)*?dcl_input v2\.xyzw\n(?:dcl_[^\n]*\n)*?dcl_input v3\.xyzw\n)
 
-; 205: CB3 skinning capability. Exact CB sizes and output topology are unrestricted.
+; 205: CB3 effect/self-render capability. The stable five-CB character family retains
+; both extended and compact input/output topologies while rejecting unrelated CB3 layouts.
 [ShaderRegexCrossIBCapabilityEffectCB3]
 shader_model = vs_5_0
 filter_index = 205
 
 [ShaderRegexCrossIBCapabilityEffectCB3.Pattern]
-dcl_constantbuffer CB2\[\d+\], immediateIndexed\n(?:dcl_[^\n]*\n)*?dcl_constantbuffer CB3\[4\d{3}\], dynamicIndexed\n(?:dcl_[^\n]*\n)*?dcl_resource_structured t0, 16\n
+dcl_constantbuffer CB0\[2\], immediateIndexed\ndcl_constantbuffer CB1\[82\], immediateIndexed\ndcl_constantbuffer CB2\[104\], immediateIndexed\ndcl_constantbuffer CB3\[4\d{3}\], dynamicIndexed\ndcl_constantbuffer CB4\[\d+\], immediateIndexed\n(?:dcl_(?!constantbuffer)[^\n]*\n)*?dcl_resource_structured t0, 16\n
 """
 
 
