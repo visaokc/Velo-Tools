@@ -406,7 +406,7 @@ CrossIB 让左侧源对象或源集合借用目标 Component 的渲染管线。
 6. 为每行选择目标 Component。
 7. 正常导出。
 
-`CrossIB.json v2` 只保存 Component 匹配与透明性证据。只有启用 CrossIB 且至少存在一条 mapping 时，导出才会把角色独立的 classifier 直接追加到主 `mod.ini` 最末尾，并复制所需 HLSL；未启用或没有 mapping 时不会输出这些规则和资产。classifier 按社区既有 200/201/202/203/204/205 分组语义匹配 shader，但 producer 不再使用 VS Hash；不再生成 `CrossIBClassifier.ini` 或 `ShaderOverride.ini`，也不再合并多个场景的 VS Hash。旧 v1 必须用一份 dump 显式重建。
+`CrossIB.json v2` 只保存 Component 匹配与透明性证据。只有启用 CrossIB 且至少存在一条 mapping 时，导出才会把公共 ShaderRegex 规则写入独立的 `CrossIBClassifier.ini`，并复制所需 HLSL；主 `mod.ini` 只保留当前 mod 的 CrossIB 路由、资源和 draw 逻辑。每份 classifier 的规则相同，高级用户可以全局只保留一份启用的副本，并删除或禁用其余重复文件，以减少重复匹配开销。未启用或没有 mapping 时不会输出这些规则和资产。classifier 按社区既有 200/201/202/203/204/205 分组语义匹配 shader，但 producer 不再使用 VS Hash；不再生成 `ShaderOverride.ini`，也不再合并多个场景的 VS Hash。旧 v1 必须用一份 dump 显式重建。
 
 ### 5.7 EFMI 自定义 ShapeKey
 

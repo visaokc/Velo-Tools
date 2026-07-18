@@ -632,13 +632,6 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
                     self.cfg,
                     context,
                 )
-                namespace = namespace_from_ini(result)
-                if namespace is None:
-                    from .sidecar import _resolve_source
-
-                    namespace = namespace_from_metadata(_resolve_source(source_folder))
-                classifier = render_classifier(namespace).split("\n", 1)[1].lstrip()
-                result = result.rstrip() + "\n\n" + classifier.rstrip() + "\n"
                 print("[CrossIB] Injection done.")
             except Exception:
                 print("[CrossIB] Injection failed:")
@@ -681,18 +674,29 @@ def _patched_write(self, ini_string=None, ini_path=None):
             and len(settings.mappings) > 0
         )
         classifier_path = output_folder / CLASSIFIER_FILENAME
-        if classifier_path.is_file():
-            classifier_path.unlink()
-            print(f"[CrossIB] Removed obsolete {classifier_path.name}.")
 
         hlsl_dst = output_folder / "hlsl"
         if active:
+            main_ini_text = ini_string or getattr(self, "ini_string", None)
+            if not main_ini_text and Path(ini_path).is_file():
+                main_ini_text = Path(ini_path).read_text(encoding="utf-8")
+            namespace = namespace_from_ini(main_ini_text or "")
+            if namespace is None:
+                from .sidecar import _resolve_source
+
+                source_folder = bpy.path.abspath(str(self.cfg.object_source_folder))
+                namespace = namespace_from_metadata(_resolve_source(source_folder))
+            classifier_path.write_text(render_classifier(namespace), encoding="utf-8")
+            print(f"[CrossIB] Wrote {classifier_path.name}.")
             hlsl_dst.mkdir(parents=True, exist_ok=True)
             for src in _HLSL_DIR.glob("*.hlsl"):
                 dst = hlsl_dst / src.name
                 shutil.copy(src, dst)
                 print(f"[CrossIB] Copied {src.name} → {dst}")
         else:
+            if classifier_path.is_file():
+                classifier_path.unlink()
+                print(f"[CrossIB] Removed stale {classifier_path.name}.")
             for src in _HLSL_DIR.glob("*.hlsl"):
                 stale = hlsl_dst / src.name
                 if stale.is_file():

@@ -115,7 +115,7 @@ For WWMI cross-scene work, the merged source folder becomes the object source. I
 | `TextureUsage.json` | EFMI/WWMI extraction | Basic texture attribution and import-time material assignment |
 | `ShaderTextureUsage.json` | Velo WWMI extraction | Shader-pair, `ps-tN`, format, freshness, and form evidence for slot-style export |
 | `VertexGroupMap.json` | Velo EFMI extraction | Unified-to-component-local vertex-group translation for EFMI Merged mode |
-| `CrossIB.json` | Velo EFMI extraction or CrossIB panel | EFMI Component-match and transparency evidence for the Hash-free CrossIB classifier embedded conditionally in the main INI |
+| `CrossIB.json` | Velo EFMI extraction or CrossIB panel | EFMI Component-match and transparency evidence for the Hash-free CrossIB classifier emitted as `CrossIBClassifier.ini` |
 | `CrossSceneManifest.json` | Velo WWMI cross-scene merge | Runtime IB ownership and component/VG/LOD/fold/morph routing not derivable from root Metadata/STU |
 
 Treat these files as generated contracts. Re-run the producer when captures or routing change instead of manually guessing missing identities.
@@ -345,7 +345,7 @@ Workflow:
 
 If the evidence file is missing, invalid, or still uses schema v1, use **生成 / 重新生成 CrossIB.json v2** and select one current Frame Dump. This replaces the JSON; it does not merge shader evidence from multiple scenes.
 
-When CrossIB is enabled and at least one mapping exists, export appends the classifier directly to the end of the main `mod.ini`. It uses the community-compatible 200/201/202/203/204/205 capability ABI with the same role meanings as the legacy Hash groups, but it does not use VS Hash assignments. Export does not emit CrossIB rules or HLSL assets when the feature is disabled or has no mappings. Normal VS Hash changes therefore do not require additional scene dumps.
+When CrossIB is enabled and at least one mapping exists, export writes the common ShaderRegex rules to a separate `CrossIBClassifier.ini`; the main `mod.ini` retains only that mod's CrossIB routing, resources, and draw logic. The classifier uses the community-compatible 200/201/202/203/204/205 capability ABI with the same role meanings as the legacy Hash groups, but it does not use VS Hash assignments. Because every generated classifier has the same rules, advanced users may keep one enabled copy globally and remove or disable the duplicates to reduce repeated matching work. Export removes stale CrossIB rules and HLSL assets when the feature is disabled or has no mappings. Normal VS Hash changes therefore do not require additional scene dumps.
 
 If a selected dump does not contain the target character, Velo refuses it and leaves the existing `CrossIB.json` unchanged.
 
