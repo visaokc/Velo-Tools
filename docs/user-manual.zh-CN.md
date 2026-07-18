@@ -406,7 +406,7 @@ CrossIB 让左侧源对象或源集合借用目标 Component 的渲染管线。
 6. 为每行选择目标 Component。
 7. 正常导出。
 
-`CrossIB.json v2` 只保存 Component 匹配与透明性证据。导出会在 `mod.ini` 旁生成角色独立的 `CrossIBClassifier.ini`，按 200/211/212/213/214/224 能力规则匹配 shader，不再生成 `ShaderOverride.ini`，也不再合并多个场景的 VS Hash。旧 v1 必须用一份 dump 显式重建。
+`CrossIB.json v2` 只保存 Component 匹配与透明性证据。只有启用 CrossIB 且至少存在一条 mapping 时，导出才会把角色独立的 classifier 直接追加到主 `mod.ini` 最末尾，并复制所需 HLSL；未启用或没有 mapping 时不会输出这些规则和资产。classifier 按社区既有 200/201/202/203/204/205 分组语义匹配 shader，但 producer 不再使用 VS Hash；不再生成 `CrossIBClassifier.ini` 或 `ShaderOverride.ini`，也不再合并多个场景的 VS Hash。旧 v1 必须用一份 dump 显式重建。
 
 ### 5.7 EFMI 自定义 ShapeKey
 
@@ -1163,7 +1163,7 @@ CrossIB 应在面板中选择一份当前 Frame Dump，生成或覆盖 `CrossIB.
 | DDS | 常用贴图文件格式。 |
 | Buffer | 保存位置、索引、权重、法线、UV、ShapeKey 等数据的二进制资源。 |
 | sidecar | 与对象源目录配套的旁路证据文件，例如 `CrossIB.json v2`。 |
-| CrossIB capability ABI | classifier 与主 INI 共用的无 Hash EFMI shader 能力编号 200/211/212/213/214/224。 |
+| CrossIB capability ABI | classifier 与主 INI 共用的社区兼容 EFMI shader 能力编号 200/201/202/203/204/205；规则 producer 不依赖 Hash。 |
 | slot-style | 在目标 draw 范围内按 `ps-tN` 槽位证据重绑贴图。 |
 | hash-style | 按游戏资源 Hash 匹配并替换贴图。 |
 | assignment signature | 一个 slot 分支用于判断身份的完整正向槽位格式组合。 |

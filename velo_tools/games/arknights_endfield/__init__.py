@@ -565,6 +565,12 @@ def register():
         import traceback
         traceback.print_exc()
     try:
+        from . import form_identity as _form_identity
+        _form_identity.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    try:
         from ...core.export import hook as _hook
         _hook.install_export_hook()
     except Exception:
@@ -594,6 +600,11 @@ def unregister_embedded_late():
 
 
 def unregister():
+    try:
+        from . import form_identity as _form_identity
+        _form_identity.remove()
+    except Exception:
+        pass
     try:
         from ...core.export import material_partition as _material_partition
         from ._efmi_core.blender_export.blender_export import ObjectMergerEFMI

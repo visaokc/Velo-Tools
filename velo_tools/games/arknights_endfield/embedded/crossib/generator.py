@@ -17,6 +17,7 @@ from .pass_registry import (
     EFFECT_CB3,
     MATERIAL_CB2,
     OUTLINE_CB2,
+    POSE_CAPTURE,
     PREPASS_CB2,
     CapabilityPassRegistry,
 )
@@ -224,6 +225,8 @@ def _build_run_header(
     effect_res,
     include_redirect,
     include_record=True,
+    mark_provider_seen=False,
+    include_vb3=False,
 ):
     lines = []
     lines.append(registry.condition(filters))
@@ -237,6 +240,10 @@ def _build_run_header(
             effect_res,
         )
         lines.append(f"    run = CustomShader_RecordBones_C{comp_id}")
+        if mark_provider_seen:
+            lines.append(f"    if vs == {POSE_CAPTURE}")
+            lines.append(f"        $crossib_provider_seen_c{comp_id} = 1")
+            lines.append("    endif")
     elif include_redirect:
         _append_storage_offset(
             lines,
@@ -248,6 +255,7 @@ def _build_run_header(
     if include_redirect:
         lines.append(f"    run = CustomShader_RedirectCB1_C{comp_id}")
         _append_redirect_binding(lines)
+    if include_redirect or include_vb3:
         lines.append("    vb3 = vb0")
     return "\n".join(lines)
 
@@ -293,8 +301,16 @@ def _append_provider_vb2_binding(lines, provider_id, provider_component, buffers
 
 
 def _build_registry(source_folder=None, frame_dump_folder=None, consume_sidecar=True):
-    del source_folder, frame_dump_folder, consume_sidecar
-    return CapabilityPassRegistry()
+    del frame_dump_folder, consume_sidecar
+    from . import sidecar
+    data = sidecar.load_crossib_json(source_folder)
+    if data is None:
+        return CapabilityPassRegistry()
+    topology = {
+        int(component["id"]): component["pass_topology"]
+        for component in data.get("components") or []
+    }
+    return CapabilityPassRegistry(topology)
 
 
 def _classify_transparency(source_folder=None, frame_dump_folder=None):
@@ -313,8 +329,10 @@ def _target_is_actual_transparent(transparency, target_id):
 
 
 def _provider_preparation_filters_for_mapping(registry, provider_id, target_id, transparency=None):
-    del provider_id
-    return registry.provider_filters(_target_is_actual_transparent(transparency, target_id))
+    return registry.provider_filters(
+        target_id,
+        _target_is_actual_transparent(transparency, target_id),
+    )
 
 
 def _provider_draw_filters_for_mapping(registry, provider_id, target_id, transparency=None):
@@ -325,6 +343,20 @@ def _provider_draw_filters_for_mapping(registry, provider_id, target_id, transpa
 
 def _provider_filters_for_mapping(registry, provider_id, target_id, transparency=None):
     return _provider_preparation_filters_for_mapping(registry, provider_id, target_id, transparency)
+
+
+def _require_compatible_skinning(transparency, provider_id, target_id):
+    checker = getattr(transparency, "skinning_profiles_compatible", None)
+    if checker is None or checker(provider_id, target_id):
+        return
+    provider = transparency.skinning_profiles.get(int(provider_id))
+    target = transparency.skinning_profiles.get(int(target_id))
+    raise ValueError(
+        "CrossIB mapping has incompatible skinning layouts: "
+        f"provider C{provider_id} {provider!r} -> target C{target_id} {target!r}. "
+        "Choose a target with the same skinning profile; incompatible layouts cause "
+        "exploded or missing meshes."
+    )
 
 
 def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, source_folder=None, frame_dump_folder=None, cfg=None, context=None):
@@ -369,6 +401,7 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
       consumers_map[comp_id] = str (consumer borrow blocks)
       resources_str = str
     """
+    transparency = _classify_transparency(source_folder, frame_dump_folder)
     providers = set()                 # components used as bone source by some mapping
     consumers = set()                 # components targeted by some mapping
     consumer_to_providers = {}        # comp_id -> ordered list of provider comp_ids
@@ -385,6 +418,7 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
             src_comp_id = parse_component_id(src_name)
             if src_comp_id is None or src_comp_id == target_comp_id:
                 continue
+            _require_compatible_skinning(transparency, src_comp_id, target_comp_id)
             providers.add(src_comp_id)
             consumers.add(target_comp_id)
             bucket = consumer_to_providers.setdefault(target_comp_id, [])
@@ -411,7 +445,6 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
     # the consumer's own world transform).
     participating = sorted(providers | consumers)
     registry = _build_registry(source_folder, frame_dump_folder)
-    transparency = _classify_transparency(source_folder, frame_dump_folder)
 
 
     # ── Resource declarations ──────────────────────────────────
@@ -581,6 +614,7 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
                             component_res, component_res_lods,
                             component_effect_res[comp_id],
                             include_redirect=False,
+                            mark_provider_seen=True,
                         ),
                         "borrowed_objs": set(),
                     })
@@ -589,8 +623,10 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
                         comp_id, draw_filters, registry,
                         component_res, component_res_lods,
                         component_effect_res[comp_id],
-                        include_redirect=True,
+                        include_redirect=False,
                         include_record=(preparation_filters == draw_filters),
+                        mark_provider_seen=(preparation_filters == draw_filters),
+                        include_vb3=True,
                     ),
                     "borrowed_objs": set(mb["borrowed_objs"]),
                 })
@@ -606,6 +642,7 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
             "mapping_blocks": mapping_blocks_out,
             "borrowed_objs": borrowed,
             "is_consumer_only": (is_consumer and not is_provider),
+            "is_provider": is_provider,
         }
 
     # ── Consumer post-blocks (one auto-discovered visible block per borrowed provider) ───
@@ -617,11 +654,23 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
             + ", ".join(str(p) for p in provider_ids)
             + " (bones + mesh)"
         )
+        capability_condition = registry.condition(
+            registry.consumer_borrow_filters(consumer_id)
+        )[3:]
         for provider_id in provider_ids:
             provider_component = _get_component(extracted_object, provider_id)
             b = []
             b.append(f"; --- Borrow provider Component {provider_id} ---")
-            b.append(registry.condition(registry.consumer_borrow_filters(consumer_id)))
+            b.append(
+                f"if ({capability_condition}) && "
+                f"($crossib_provider_seen_c{provider_id} || "
+                f"$crossib_provider_seen_prev_c{provider_id})"
+            )
+            # Capture the consumer CB from this exact material/outline draw.
+            # A provider preparation pass may be absent or may contain a
+            # different CB payload, so reusing that earlier snapshot can feed
+            # stale transforms into the borrowed mesh.
+            b.append(f"    run = CustomShader_ExtractCB2_C{consumer_id}")
             _append_lod_offset(b, provider_id, component_res, component_res_lods)
             # CrossIB v1.5: read CONSUMER's own DumpedCB1 (preserves consumer
             # transform) and only flip CB1[5] → provider bones via cs-t2.
@@ -654,6 +703,39 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
                     )
             b.append("endif")
             all_blocks.append("\n".join(b))
+
+        own_borrowed = providers_map.get(consumer_id, {}).get("borrowed_objs", set())
+        fallback_objects = [
+            obj
+            for obj in merged_object.components[consumer_id].objects
+            if _name_matches_wanted(own_borrowed, obj.name)
+        ] if own_borrowed else []
+        if fallback_objects:
+            consumer_component = _get_component(extracted_object, consumer_id)
+            unavailable = " && ".join(
+                f"$crossib_provider_seen_c{provider_id} == 0 && "
+                f"$crossib_provider_seen_prev_c{provider_id} == 0"
+                for provider_id in provider_ids
+            )
+            fallback = [
+                "; Cross-IB fallback: provider unavailable",
+                f"if ({capability_condition}) && {unavailable}",
+                f"    ib  = ref Resource_Component{consumer_id}_IB",
+                f"    vb0 = ref Resource_Component{consumer_id}_VB0",
+                f"    vb1 = ref Resource_Component{consumer_id}_VB1",
+            ]
+            _append_provider_vb2_binding(
+                fallback, consumer_id, consumer_component, buffers
+            )
+            fallback.append("    vb3 = vb0")
+            for obj in fallback_objects:
+                fallback.append(f"    ; Draw native fallback {obj.name}")
+                fallback.append(
+                    f"    drawindexedinstanced = {obj.index_count}, INSTANCE_COUNT, "
+                    f"{obj.index_offset}, 0, FIRST_INSTANCE"
+                )
+            fallback.append("endif")
+            all_blocks.append("\n".join(fallback))
 
         consumers_map[consumer_id] = "\n".join(all_blocks)
 

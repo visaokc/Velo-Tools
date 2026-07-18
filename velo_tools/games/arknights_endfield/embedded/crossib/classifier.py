@@ -1,4 +1,4 @@
-"""Versioned ShaderRegex capability classifier for EFMI CrossIB."""
+"""Versioned ShaderRegex capability classifier for CrossIB."""
 from __future__ import annotations
 
 import json
@@ -7,64 +7,65 @@ from pathlib import Path
 
 
 CLASSIFIER_FILENAME = "CrossIBClassifier.ini"
-CLASSIFIER_PROFILE = "efmi-crossib-capability-v1"
-CAPABILITY_FILTERS = (200, 211, 212, 213, 214, 224)
+CLASSIFIER_PROFILE = "crossib-capability-v1"
+LEGACY_CLASSIFIER_PROFILES = frozenset({"efmi-crossib-capability-v1"})
+CAPABILITY_FILTERS = (200, 201, 202, 203, 204, 205)
 
 _NAMESPACE_RE = re.compile(r"^\s*namespace\s*=\s*([^;\r\n]+)", re.MULTILINE | re.IGNORECASE)
 _SAFE_NAMESPACE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 _TEMPLATE = r"""namespace = __NAMESPACE__
 
-; Adaptive EFMI CrossIB capability classifier.
+; Adaptive CrossIB capability classifier.
 ; Character isolation remains in mod.ini through the existing IB gates.
 ; Hashes, exact palette lengths, declaration ordering noise, and exact temp counts are not used.
 
 ; 200: pose capture with the GPU skinning palette in CB1.
-[ShaderRegexVeloEFMICrossIBCapabilityPoseCB1]
+[ShaderRegexCrossIBCapabilityPoseCB1]
 shader_model = vs_5_0
 filter_index = 200
 
-[ShaderRegexVeloEFMICrossIBCapabilityPoseCB1.Pattern]
+[ShaderRegexCrossIBCapabilityPoseCB1.Pattern]
 dcl_constantbuffer CB1\[4\d{3}\], dynamicIndexed\n(?:dcl_[^\n]*\n)*?dcl_resource_structured t0, 16\n
 
-; 211: prepass capability. The compact final output selects the prepass texture layout.
-[ShaderRegexVeloEFMICrossIBCapabilityPrepassCB2]
+; 201: prepass capability. The compact final output selects the prepass texture layout.
+[ShaderRegexCrossIBCapabilityPrepassCB2]
 shader_model = vs_5_0
-filter_index = 211
+filter_index = 201
 
-[ShaderRegexVeloEFMICrossIBCapabilityPrepassCB2.Pattern]
+[ShaderRegexCrossIBCapabilityPrepassCB2.Pattern]
 (?s)dcl_constantbuffer CB2\[4\d{3}\], dynamicIndexed\n.*?dcl_constantbuffer CB3\[11\], immediateIndexed\n.*?dcl_output o(?:6|7)\.x\ndcl_temps \d+\n
 
-; 212: material/colour capability. The extended final output enables borrowing.
-[ShaderRegexVeloEFMICrossIBCapabilityMaterialCB2]
+; 202: material/colour capability. The extended final output enables borrowing.
+[ShaderRegexCrossIBCapabilityMaterialCB2]
 shader_model = vs_5_0
-filter_index = 212
+filter_index = 202
 
-[ShaderRegexVeloEFMICrossIBCapabilityMaterialCB2.Pattern]
+[ShaderRegexCrossIBCapabilityMaterialCB2.Pattern]
 (?s)dcl_constantbuffer CB2\[4\d{3}\], dynamicIndexed\n.*?dcl_constantbuffer CB3\[11\], immediateIndexed\n.*?dcl_output o(?:9|10)\.[xyzw]+\ndcl_temps \d+\n
 
-; 213: outline capability.
-[ShaderRegexVeloEFMICrossIBCapabilityOutlineCB2]
+; 203: outline capability.
+[ShaderRegexCrossIBCapabilityOutlineCB2]
 shader_model = vs_5_0
-filter_index = 213
+filter_index = 203
 
-[ShaderRegexVeloEFMICrossIBCapabilityOutlineCB2.Pattern]
+[ShaderRegexCrossIBCapabilityOutlineCB2.Pattern]
 (?s)dcl_constantbuffer CB2\[4\d{3}\], dynamicIndexed\n.*?dcl_constantbuffer CB3\[1[4-6]\], immediateIndexed\n.*?dcl_output o7\.x\ndcl_temps \d+\n
 
-; 214: CB2 effect/self-render fallback after excluding prepass, material and outline.
-[ShaderRegexVeloEFMICrossIBCapabilityEffectCB2]
+; 204: CB2 effect/self-render fallback after excluding prepass, material and outline.
+[ShaderRegexCrossIBCapabilityEffectCB2]
 shader_model = vs_5_0
-filter_index = 214
+filter_index = 204
 
-[ShaderRegexVeloEFMICrossIBCapabilityEffectCB2.Pattern]
+[ShaderRegexCrossIBCapabilityEffectCB2.Pattern]
 (?s)\A(?!.*dcl_constantbuffer CB3\[11\], immediateIndexed\n.*dcl_output o(?:6|7)\.x\ndcl_temps \d+\n)(?!.*dcl_constantbuffer CB3\[11\], immediateIndexed\n.*dcl_output o(?:9|10)\.[xyzw]+\ndcl_temps \d+\n)(?!.*dcl_constantbuffer CB3\[1[4-6]\], immediateIndexed\n.*dcl_output o7\.x\ndcl_temps \d+\n).*dcl_constantbuffer CB2\[4\d{3}\], dynamicIndexed\n
 
-; 224: CB3 skinning capability. Exact CB sizes and output topology are unrestricted.
-[ShaderRegexVeloEFMICrossIBCapabilityEffectCB3]
+; 205: CB3 skinning capability. Exact CB sizes and output topology are unrestricted.
+[ShaderRegexCrossIBCapabilityEffectCB3]
 shader_model = vs_5_0
-filter_index = 224
+filter_index = 205
 
-[ShaderRegexVeloEFMICrossIBCapabilityEffectCB3.Pattern]
+[ShaderRegexCrossIBCapabilityEffectCB3.Pattern]
 dcl_constantbuffer CB2\[\d+\], immediateIndexed\n(?:dcl_[^\n]*\n)*?dcl_constantbuffer CB3\[4\d{3}\], dynamicIndexed\n(?:dcl_[^\n]*\n)*?dcl_resource_structured t0, 16\n
 """
 

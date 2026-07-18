@@ -15,21 +15,21 @@ from . import crossib, shapekey
 
 def register():
     try:
-        crossib.register()
+        shapekey.register()
     except Exception:
         traceback.print_exc()
     try:
-        shapekey.register()
+        crossib.register()
     except Exception:
         traceback.print_exc()
 
 
 def unregister():
     try:
-        shapekey.unregister()
+        crossib.unregister()
     except Exception:
         traceback.print_exc()
     try:
-        crossib.unregister()
+        shapekey.unregister()
     except Exception:
         traceback.print_exc()

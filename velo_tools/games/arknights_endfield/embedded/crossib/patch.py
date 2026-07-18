@@ -505,10 +505,31 @@ def inject_cross_ib(ini_text, settings, extracted_object, merged_object, buffers
         for comp_id, info in providers_map.items()
         if info.get("is_consumer_only") and comp_id not in existing_commandlists
     )
+    provider_ids = sorted(
+        comp_id
+        for comp_id, info in providers_map.items()
+        if info.get("is_provider")
+    )
 
     out_sections = []
     for header, body in sections:
         if header is not None:
+            if header.strip().lower() == "[constants]":
+                for comp_id in provider_ids:
+                    seen = f"global $crossib_provider_seen_c{comp_id} = 0"
+                    seen_prev = f"global $crossib_provider_seen_prev_c{comp_id} = 0"
+                    if seen not in body:
+                        body.extend((seen, seen_prev))
+            elif header.strip().lower() == "[present]":
+                for comp_id in provider_ids:
+                    update = (
+                        f"post $crossib_provider_seen_prev_c{comp_id} = "
+                        f"$crossib_provider_seen_c{comp_id}"
+                    )
+                    clear = f"post $crossib_provider_seen_c{comp_id} = 0"
+                    if update not in body:
+                        body.extend((update, clear))
+
             m = _HEADER_RE.match(header)
             if m:
                 comp_id = int(m.group(1))
@@ -637,6 +658,13 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
                     self.cfg,
                     context,
                 )
+                namespace = namespace_from_ini(result)
+                if namespace is None:
+                    from .sidecar import _resolve_source
+
+                    namespace = namespace_from_metadata(_resolve_source(source_folder))
+                classifier = render_classifier(namespace).split("\n", 1)[1].lstrip()
+                result = result.rstrip() + "\n\n" + classifier.rstrip() + "\n"
                 print("[CrossIB] Injection done.")
             except Exception:
                 print("[CrossIB] Injection failed:")
@@ -667,32 +695,35 @@ def _patched_write(self, ini_string=None, ini_path=None):
         return None
     out = orig(self, ini_string=ini_string, ini_path=ini_path)
 
-    settings = getattr(bpy.context.scene, "crossib_settings", None)
-    if settings is None or not settings.enabled or len(settings.mappings) == 0:
-        return out
-
     try:
         if ini_path is None:
             mod_folder = Path(os.path.expandvars(os.path.expanduser(str(self.cfg.mod_output_folder))))
             ini_path = mod_folder / "mod.ini"
-        hlsl_dst = Path(ini_path).parent / "hlsl"
-        hlsl_dst.mkdir(parents=True, exist_ok=True)
-        for src in _HLSL_DIR.glob("*.hlsl"):
-            dst = hlsl_dst / src.name
-            shutil.copy(src, dst)
-            print(f"[CrossIB] Copied {src.name} → {dst}")
+        output_folder = Path(ini_path).parent
+        settings = getattr(bpy.context.scene, "crossib_settings", None)
+        active = bool(
+            settings is not None
+            and settings.enabled
+            and len(settings.mappings) > 0
+        )
+        classifier_path = output_folder / CLASSIFIER_FILENAME
+        if classifier_path.is_file():
+            classifier_path.unlink()
+            print(f"[CrossIB] Removed obsolete {classifier_path.name}.")
 
-        mod_ini_text = getattr(self, "ini_string", "") or ini_string or ""
-        namespace = namespace_from_ini(mod_ini_text)
-        if namespace is None:
-            from .sidecar import _resolve_source
-
-            source = getattr(self.cfg, "object_source_folder", "")
-            source = _resolve_source(bpy.path.abspath(source))
-            namespace = namespace_from_metadata(source)
-        classifier_path = Path(ini_path).parent / CLASSIFIER_FILENAME
-        classifier_path.write_text(render_classifier(namespace), encoding="utf-8")
-        print(f"[CrossIB] Wrote {classifier_path.name} (namespace={namespace}).")
+        hlsl_dst = output_folder / "hlsl"
+        if active:
+            hlsl_dst.mkdir(parents=True, exist_ok=True)
+            for src in _HLSL_DIR.glob("*.hlsl"):
+                dst = hlsl_dst / src.name
+                shutil.copy(src, dst)
+                print(f"[CrossIB] Copied {src.name} → {dst}")
+        else:
+            for src in _HLSL_DIR.glob("*.hlsl"):
+                stale = hlsl_dst / src.name
+                if stale.is_file():
+                    stale.unlink()
+                    print(f"[CrossIB] Removed stale {stale.name}.")
 
         # Older Velo exports may leave a hash-only ShaderOverride.ini in the
         # output folder. Remove only CrossIB sections and preserve author-owned
@@ -715,7 +746,7 @@ def _patched_write(self, ini_string=None, ini_path=None):
                 shader_path.unlink()
                 print(f"[CrossIB] Removed obsolete {shader_path.name}.")
     except Exception:
-        print("[CrossIB] HLSL copy failed:")
+        print("[CrossIB] Asset synchronization failed:")
         traceback.print_exc()
 
     return out
