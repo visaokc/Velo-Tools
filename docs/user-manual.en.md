@@ -1,6 +1,6 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.5.0. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.5.1. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
@@ -115,7 +115,7 @@ For WWMI cross-scene work, the merged source folder becomes the object source. I
 | `TextureUsage.json` | EFMI/WWMI extraction | Basic texture attribution and import-time material assignment |
 | `ShaderTextureUsage.json` | Velo WWMI extraction | Shader-pair, `ps-tN`, format, freshness, and form evidence for slot-style export |
 | `VertexGroupMap.json` | Velo EFMI extraction | Unified-to-component-local vertex-group translation for EFMI Merged mode |
-| `CrossIB.json` | Velo EFMI extraction or CrossIB panel | EFMI Component-match and transparency evidence for the Hash-free CrossIB classifier emitted as `CrossIBClassifier.ini` |
+| `CrossIB.json` | Velo EFMI extraction or CrossIB panel | EFMI Component match, pass topology, transparency, and input-compatibility evidence consumed by CrossIB export |
 | `CrossSceneManifest.json` | Velo WWMI cross-scene merge | Runtime IB ownership and component/VG/LOD/fold/morph routing not derivable from root Metadata/STU |
 
 Treat these files as generated contracts. Re-run the producer when captures or routing change instead of manually guessing missing identities.
@@ -940,7 +940,7 @@ They are required slot-transaction backup handles. Their values are assigned at 
 | **Fold** | WWMI scene route authored from the base geometry |
 | **Editable** | WWMI scene route with independent editable geometry |
 | **CrossIB** | EFMI provider geometry drawn through a target component pass |
-| **CrossIB capability ABI** | Hash-free producer for the community-compatible EFMI shader roles 200/201/202/203/204/205 shared by the classifier and main INI |
+| **CrossIB capability ABI** | Hash-free community-compatible EFMI shader roles 200/201/202/203/204/205 produced by the shared classifier and consumed by each mod's routing |
 | **Cross-scene** | WWMI merge of several scene-specific IB routes |
 | **Self-contained aggregate root** | The only persistent cross-scene source: aggregate buffers, metadata/STU, top-level DDS, and schema-v3 manifest, with no child payload dependency |
 | **Canonical morph namespace** | The aggregate root's stable runtime ShapeKey ID space, including deterministically assigned IDs for proven source-only morphs |

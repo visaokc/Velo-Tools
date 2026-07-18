@@ -1,6 +1,6 @@
 # Velo Tools 中文使用手册
 
-> 适用版本：Velo Tools v1.5.0。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
+> 适用版本：Velo Tools v1.5.1。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
 
 Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI 工作流、鸣潮 WWMI 工作流放在同一个 **Velo Tools** 面板中。
 
@@ -406,7 +406,7 @@ CrossIB 让左侧源对象或源集合借用目标 Component 的渲染管线。
 6. 为每行选择目标 Component。
 7. 正常导出。
 
-`CrossIB.json v2` 只保存 Component 匹配与透明性证据。只有启用 CrossIB 且至少存在一条 mapping 时，导出才会把公共 ShaderRegex 规则写入独立的 `CrossIBClassifier.ini`，并复制所需 HLSL；主 `mod.ini` 只保留当前 mod 的 CrossIB 路由、资源和 draw 逻辑。每份 classifier 的规则相同，高级用户可以全局只保留一份启用的副本，并删除或禁用其余重复文件，以减少重复匹配开销。未启用或没有 mapping 时不会输出这些规则和资产。classifier 按社区既有 200/201/202/203/204/205 分组语义匹配 shader，但 producer 不再使用 VS Hash；不再生成 `ShaderOverride.ini`，也不再合并多个场景的 VS Hash。旧 v1 必须用一份 dump 显式重建。
+`CrossIB.json v2` 保存 Component 匹配、pass topology、透明性与 input compatibility 证据。只有启用 CrossIB 且至少存在一条 mapping 时，导出才会把公共 ShaderRegex 规则写入独立的 `CrossIBClassifier.ini`，并复制所需 HLSL；主 `mod.ini` 只保留当前 mod 的 CrossIB 路由、资源和 draw 逻辑。每份 classifier 的规则相同，高级用户可以全局只保留一份启用的副本，并删除或禁用其余重复文件，以减少重复匹配开销。未启用或没有 mapping 时不会输出这些规则和资产。classifier 按社区既有 200/201/202/203/204/205 分组语义匹配 shader，但 producer 不再使用 VS Hash；不再生成 `ShaderOverride.ini`，也不再合并多个场景的 VS Hash。旧 v1 必须用一份 dump 显式重建。
 
 ### 5.7 EFMI 自定义 ShapeKey
 
@@ -1163,7 +1163,7 @@ CrossIB 应在面板中选择一份当前 Frame Dump，生成或覆盖 `CrossIB.
 | DDS | 常用贴图文件格式。 |
 | Buffer | 保存位置、索引、权重、法线、UV、ShapeKey 等数据的二进制资源。 |
 | sidecar | 与对象源目录配套的旁路证据文件，例如 `CrossIB.json v2`。 |
-| CrossIB capability ABI | classifier 与主 INI 共用的社区兼容 EFMI shader 能力编号 200/201/202/203/204/205；规则 producer 不依赖 Hash。 |
+| CrossIB capability ABI | 由公共 classifier 产生、由各 mod 路由消费的社区兼容 EFMI shader 能力编号 200/201/202/203/204/205；规则 producer 不依赖 Hash。 |
 | slot-style | 在目标 draw 范围内按 `ps-tN` 槽位证据重绑贴图。 |
 | hash-style | 按游戏资源 Hash 匹配并替换贴图。 |
 | assignment signature | 一个 slot 分支用于判断身份的完整正向槽位格式组合。 |
