@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
@@ -322,6 +323,75 @@ def _local_name(local_id: int, ordinal: int) -> str:
     return f"Component {local_id}" if ordinal == 0 else f"Component {local_id}.{ordinal:03d}"
 
 
+def _redundant_named_group_indices(
+        group_names: Iterable[str],
+        vertex_memberships: Iterable[Iterable[int]],
+) -> set[int]:
+    """Find named groups whose weighted vertices all retain numeric coverage."""
+    names = tuple(str(name) for name in group_names)
+    numeric = {
+        index for index, name in enumerate(names)
+        if re.match(r"^\s*\d+", name)
+    }
+    named = set(range(len(names))) - numeric
+    if not numeric or not named:
+        return set()
+    named_only = set()
+    for membership in vertex_memberships:
+        used = set(membership)
+        if not used.intersection(numeric):
+            named_only.update(used.intersection(named))
+    return named - named_only
+
+
+def _drop_redundant_named_groups(obj: Any) -> list[str]:
+    groups = getattr(obj, "vertex_groups", None)
+    mesh = getattr(obj, "data", None)
+    vertices = getattr(mesh, "vertices", None)
+    if groups is None or vertices is None:
+        return []
+    group_list = list(groups)
+    redundant = _redundant_named_group_indices(
+        (group.name for group in group_list),
+        (
+            {
+                membership.group for membership in vertex.groups
+                if membership.weight > 0.0
+            }
+            for vertex in vertices
+        ),
+    )
+    removed = [group_list[index].name for index in sorted(redundant)]
+    for index in sorted(redundant, reverse=True):
+        groups.remove(group_list[index])
+    return removed
+
+
+def _preprocess_cross_scene_copy(context: Any, obj: Any, preexport_module=None) -> dict:
+    """Apply the active MMD mapping to one disposable cross-scene input copy."""
+    if preexport_module is None:
+        from .....core.export import preexport as preexport_module
+    scene = getattr(context, "scene", None)
+    settings = getattr(scene, "velo_endfield", None)
+    profile = getattr(settings, "mmd_profile", None) if settings is not None else None
+    report = preexport_module.apply_mmd_pre_export(obj, profile)
+    removed = _drop_redundant_named_groups(obj)
+    if removed:
+        report["dropped_redundant_named"] = removed
+    return report
+
+
+def _remap_source_object_error(message: str, labels: Mapping[str, str]) -> str:
+    """Replace disposable local object labels in an error with author-facing names."""
+    result = str(message)
+    for local_name in sorted(labels, key=len, reverse=True):
+        result = result.replace(
+            f"`{local_name}`",
+            f"`{labels[local_name]}`",
+        )
+    return result
+
+
 def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
                     collection: Any, metadata: Mapping[str, Any],
                     hole: bool, hole_frac: int) -> Tuple[list[Any], Dict[str, str]]:
@@ -347,6 +417,7 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
         name = _local_name(local_id, ordinal)
         obj = _copy_input_object(selected.object, collection, name)
         obj["_velo_export_source_name"] = selected.name
+        _preprocess_cross_scene_copy(context, obj)
         material_partition.cache_plan(obj, partition_plan)
         labels[obj.name] = selected.name
 
@@ -443,20 +514,26 @@ def _build_geometry_unit(context: Any, cfg: Any, plan: ExportUnitPlan,
             inputs, labels = _prepare_inputs(
                 context, cfg, plan, collection, metadata, hole, hole_frac)
         from ..._wwmi_core.blender_export.blender_export import ObjectMergerWWMI
-        merger = ObjectMergerWWMI(
-            extracted_object=extracted,
-            ignore_nested_collections=True,
-            ignore_hidden_collections=False,
-            ignore_hidden_objects=False,
-            ignore_muted_shape_keys=plan.manifest_entry.get(
-                "ignore_muted_shape_keys", False),
-            apply_modifiers=plan.manifest_entry.get("apply_modifiers", False),
-            context=context,
-            collection=collection,
-            skeleton_type=skeleton_type,
-            fill_missing_mesh_data=bool(cfg.fill_missing_mesh_data),
-            add_missing_vertex_groups=bool(cfg.add_missing_vertex_groups),
-        )
+        try:
+            merger = ObjectMergerWWMI(
+                extracted_object=extracted,
+                ignore_nested_collections=True,
+                ignore_hidden_collections=False,
+                ignore_hidden_objects=False,
+                ignore_muted_shape_keys=plan.manifest_entry.get(
+                    "ignore_muted_shape_keys", False),
+                apply_modifiers=plan.manifest_entry.get("apply_modifiers", False),
+                context=context,
+                collection=collection,
+                skeleton_type=skeleton_type,
+                fill_missing_mesh_data=bool(cfg.fill_missing_mesh_data),
+                add_missing_vertex_groups=bool(cfg.add_missing_vertex_groups),
+            )
+        except ValueError as exc:
+            remapped = _remap_source_object_error(str(exc), labels)
+            if remapped != str(exc):
+                raise ValueError(remapped) from exc
+            raise
         merged_object = merger.merged_object
         merged_mesh = merged_object.object.data
         for component in merged_object.components:
