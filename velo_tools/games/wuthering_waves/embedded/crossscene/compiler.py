@@ -2785,8 +2785,9 @@ def _add_shape_sections(ir: CrossSceneIR, unit: Any, cfg: Any,
         specs = domain_section_specs(
             plan,
             suffix=suffix,
-            mesh_vertex_count=int(unit.merged_object.vertex_count),
             mesh_vertex_variable=f"$mesh_vertex_count{suffix}",
+            position_filename=(
+                f"Meshes/{_mesh_filename(suffix, 'Position')}"),
         )
         for name, lines, role in specs:
             phase = IniPhase.BUFFERS if role == "buffer" else IniPhase.SHAPE_KEYS
