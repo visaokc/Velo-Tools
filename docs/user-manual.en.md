@@ -547,7 +547,7 @@ Mod State / Constants / Present
 
 **导出自定义 ShapeKey (Export Custom ShapeKeys)** is enabled by default for both ordinary single-IB and Cross-Scene export. Classification comes only from the object source `Metadata.json`: each batch owns 127 consecutive Deform IDs, the leading `shapekey_count` IDs are game-native, and range-external IDs with a nonzero position delta are external custom ShapeKeys. Blender name suffixes do not affect classification.
 
-- **Enabled:** native IDs remain on the WWMI native ShapeKey shaders. Custom records are removed from the native buffers and an independent shader adds them to the current native deformation result, or to the static Position buffer when no native result exists.
+- **Enabled:** native IDs remain on the game's native WWMI ShapeKey path. Custom records are removed from the native buffers and an independent shader adds them only to the static Position buffer; the game-native `vb6` binding remains untouched so native deformation is composed by the original game shader.
 - **Disabled:** custom records are still removed from the native buffers, but no custom variables, buffers, shaders, or INI logic are emitted.
 - **No effective custom delta:** no empty external resources or runtime logic are emitted, even when the option is enabled.
 

@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 HLSL_FILENAMES = (
     "ExternalShapeKeyStructured.hlsl",
+)
+OBSOLETE_HLSL_FILENAMES = (
     "ExternalShapeKeyFlat.hlsl",
 )
 _HLSL_DIR = Path(__file__).parent / "hlsl"
@@ -30,13 +32,13 @@ def control_constant_lines(
         channels: Mapping[int, int],
         domain_suffixes: Iterable[str],
 ) -> List[str]:
+    if not channels:
+        return []
     lines = []
-    if channels:
-        lines.append("global $external_shape_active = 0")
-        for shape_id, _channel in sorted(channels.items(), key=lambda item: item[1]):
-            lines.append(f"global persist $ShapeKey_{shape_id} = 0.0")
+    lines.append("global $external_shape_active = 0")
+    for shape_id, _channel in sorted(channels.items(), key=lambda item: item[1]):
+        lines.append(f"global persist $ShapeKey_{shape_id} = 0.0")
     for suffix in domain_suffixes:
-        lines.append(f"global {_state_name('native_ready', suffix)} = 0")
         lines.append(f"global {_state_name('applied', suffix)} = 0")
     return lines
 
@@ -45,18 +47,18 @@ def control_present_lines(
         channels: Mapping[int, int],
         domain_suffixes: Iterable[str],
 ) -> List[str]:
+    if not channels:
+        return []
     lines = []
-    if channels:
-        lines.append("post $external_shape_active = 0")
-        for shape_id, channel in sorted(channels.items(), key=lambda item: item[1]):
-            lines.extend([
-                f"post x{100 + channel} = $ShapeKey_{shape_id}",
-                f"if $ShapeKey_{shape_id} != 0",
-                "    post $external_shape_active = 1",
-                "endif",
-            ])
+    lines.append("post $external_shape_active = 0")
+    for shape_id, channel in sorted(channels.items(), key=lambda item: item[1]):
+        lines.extend([
+            f"post x{100 + channel} = $ShapeKey_{shape_id}",
+            f"if $ShapeKey_{shape_id} != 0",
+            "    post $external_shape_active = 1",
+            "endif",
+        ])
     for suffix in domain_suffixes:
-        lines.append(f"post {_state_name('native_ready', suffix)} = 0")
         lines.append(f"post {_state_name('applied', suffix)} = 0")
     return lines
 
@@ -70,89 +72,51 @@ def domain_section_specs(
 ) -> Tuple[Tuple[str, Tuple[str, ...], str], ...]:
     """Return (section name, lines, role) tuples for one resource domain."""
     specs = []
-    native_ready = _state_name("native_ready", suffix)
     applied = _state_name("applied", suffix)
     position = f"ResourcePositionBuffer{suffix}"
-    native_position = f"ResourceNativeShapeKeyedPosition{suffix}"
     external_position = f"ResourceExternalShapeKeyedPosition{suffix}"
 
-    if plan.has_native:
-        specs.extend([
-            (f"CommandListApplyNativeShapeKeys{suffix}", (
-                f"cs-t6 = {position}",
-                f"cs-u6 = ResourceNativeShapeKeyedPositionRW{suffix}",
-                "run = CustomShader\\WWMIv1\\ShapeKeyApplier",
-                f"{native_position} = copy ResourceNativeShapeKeyedPositionRW{suffix}",
-                f"{native_ready} = 1",
-                f"{applied} = 0",
-            ), "shape_command"),
-            (native_position, (), "buffer"),
-            (f"ResourceNativeShapeKeyedPositionRW{suffix}", (
-                "type = RWBuffer",
-                "format = R32_FLOAT",
-                "stride = 12",
-                f"array = {3 * mesh_vertex_count}",
-            ), "buffer"),
-        ])
+    if not plan.has_external:
+        return ()
 
-    if plan.has_external:
-        apply_lines = [
-            f"local $external_shape_saved_x0{suffix} = x0",
-            f"x0 = {mesh_vertex_variable}",
-            f"cs-t50 = ResourceExternalShapeKeyVertexOffsetBuffer{suffix}",
-            f"cs-t51 = ResourceExternalShapeKeyRecordChannelBuffer{suffix}",
-            f"cs-t52 = ResourceExternalShapeKeyRecordDeltaBuffer{suffix}",
-        ]
-        if plan.has_native:
-            apply_lines.extend([
-                f"if {native_ready} == 1",
-                f"    cs-t6 = {native_position}",
-                f"    cs-u6 = ResourceExternalShapeKeyedPositionRW{suffix}",
-                f"    run = CustomShaderExternalShapeKeyFlat{suffix}",
-                "else",
-                f"    cs-t6 = {position}",
-                f"    cs-u6 = ResourceExternalShapeKeyedPositionRW{suffix}",
-                f"    run = CustomShaderExternalShapeKeyStructured{suffix}",
-                "endif",
-            ])
-        else:
-            apply_lines.extend([
-                f"cs-t6 = {position}",
-                f"cs-u6 = ResourceExternalShapeKeyedPositionRW{suffix}",
-                f"run = CustomShaderExternalShapeKeyStructured{suffix}",
-            ])
-        apply_lines.extend([
-            f"{external_position} = copy ResourceExternalShapeKeyedPositionRW{suffix}",
-            f"{applied} = 1",
-            f"x0 = $external_shape_saved_x0{suffix}",
-        ])
-        shader_cleanup = (
-            f"dispatch = {mesh_vertex_variable}/64+1, 1, 1",
-            "cs-t6 = null",
-            "cs-t50 = null",
-            "cs-t51 = null",
-            "cs-t52 = null",
-            "cs-u6 = null",
-        )
-        specs.extend([
-            (f"CommandListApplyExternalShapeKeys{suffix}", tuple(apply_lines),
-             "shape_command"),
-            (f"CustomShaderExternalShapeKeyStructured{suffix}", (
-                "cs = hlsl/ExternalShapeKeyStructured.hlsl",
-                *shader_cleanup,
-            ), "shape_command"),
-            (f"CustomShaderExternalShapeKeyFlat{suffix}", (
-                "cs = hlsl/ExternalShapeKeyFlat.hlsl",
-                *shader_cleanup,
-            ), "shape_command"),
-            (external_position, (), "buffer"),
-            (f"ResourceExternalShapeKeyedPositionRW{suffix}", (
-                "type = RWBuffer",
-                "format = R32_FLOAT",
-                "stride = 12",
-                f"array = {3 * mesh_vertex_count}",
-            ), "buffer"),
-        ])
+    apply_lines = [
+        f"local $external_shape_saved_x0{suffix} = x0",
+        f"x0 = {mesh_vertex_variable}",
+        f"cs-t50 = ResourceExternalShapeKeyVertexOffsetBuffer{suffix}",
+        f"cs-t51 = ResourceExternalShapeKeyRecordChannelBuffer{suffix}",
+        f"cs-t52 = ResourceExternalShapeKeyRecordDeltaBuffer{suffix}",
+        f"cs-t6 = {position}",
+        f"cs-u6 = ResourceExternalShapeKeyedPositionRW{suffix}",
+        f"run = CustomShaderExternalShapeKeyStructured{suffix}",
+    ]
+    apply_lines.extend([
+        f"{external_position} = copy ResourceExternalShapeKeyedPositionRW{suffix}",
+        f"{applied} = 1",
+        f"x0 = $external_shape_saved_x0{suffix}",
+    ])
+    shader_cleanup = (
+        f"dispatch = {mesh_vertex_variable}/64+1, 1, 1",
+        "cs-t6 = null",
+        "cs-t50 = null",
+        "cs-t51 = null",
+        "cs-t52 = null",
+        "cs-u6 = null",
+    )
+    specs.extend([
+        (f"CommandListApplyExternalShapeKeys{suffix}", tuple(apply_lines),
+         "shape_command"),
+        (f"CustomShaderExternalShapeKeyStructured{suffix}", (
+            "cs = hlsl/ExternalShapeKeyStructured.hlsl",
+            *shader_cleanup,
+        ), "shape_command"),
+        (external_position, (), "buffer"),
+        (f"ResourceExternalShapeKeyedPositionRW{suffix}", (
+            "type = RWBuffer",
+            "format = R32_FLOAT",
+            "stride = 12",
+            f"array = {3 * mesh_vertex_count}",
+        ), "buffer"),
+    ])
 
     resolve = []
     if plan.has_external:
@@ -163,20 +127,7 @@ def domain_section_specs(
             "    endif",
             f"    vb0 = {external_position}",
         ])
-        if plan.has_native:
-            resolve.extend([
-                f"else if {native_ready} == 1",
-                f"    vb0 = {native_position}",
-            ])
         resolve.extend([
-            "else",
-            f"    vb0 = {position}",
-            "endif",
-        ])
-    elif plan.has_native:
-        resolve.extend([
-            f"if {native_ready} == 1",
-            f"    vb0 = {native_position}",
             "else",
             f"    vb0 = {position}",
             "endif",
@@ -215,26 +166,6 @@ def _replace_shared_position(text: str, suffix: str) -> str:
     if count != 1:
         raise ShapeKeyPlanError(
             f"[{name}] does not contain the expected vb0 position binding")
-    if not re.search(r"(?im)^\s*vb6\s*=", body):
-        body = body.rstrip() + "\nvb6 = null\n\n"
-    return text[:start] + body + text[end:]
-
-
-def _inject_native_callback(text: str, suffix: str) -> str:
-    name = f"TextureOverrideShapeKeyMultiplierCallback{suffix}"
-    start, end = _section_span(text, name)
-    body = text[start:end]
-    pattern = re.compile(
-        rf"(?im)^(\s*)run\s*=\s*CommandListMultiplyShapeKeys{re.escape(suffix)}\s*$")
-    body, count = pattern.subn(
-        rf"\1run = CommandListMultiplyShapeKeys{suffix}\n"
-        rf"\1run = CommandListApplyNativeShapeKeys{suffix}",
-        body,
-        count=1,
-    )
-    if count != 1:
-        raise ShapeKeyPlanError(
-            f"[{name}] does not contain the native ShapeKey multiplier call")
     return text[:start] + body + text[end:]
 
 
@@ -267,6 +198,8 @@ def inject_single_ib_ini(
 ) -> str:
     """Inject the independent pipeline into a rendered stock/LOD INI."""
     text = _CHECKSUM_RE.sub("", text).rstrip() + "\n"
+    if not plan.has_external:
+        return text
     _validate_channel_range(text, channels)
     suffix = ""
     constants = control_constant_lines(channels, (suffix,))
@@ -274,8 +207,6 @@ def inject_single_ib_ini(
     text = _append_section_lines(text, "Constants", constants)
     text = _append_section_lines(text, "Present", present)
     text = _replace_shared_position(text, suffix)
-    if plan.has_native:
-        text = _inject_native_callback(text, suffix)
 
     specs = domain_section_specs(
         plan,
@@ -309,8 +240,9 @@ def write_hlsl_assets(output_root: Path, active: bool) -> None:
         target.mkdir(parents=True, exist_ok=True)
         for filename in HLSL_FILENAMES:
             shutil.copyfile(_HLSL_DIR / filename, target / filename)
-        return
-    for filename in HLSL_FILENAMES:
+    for filename in (*HLSL_FILENAMES, *OBSOLETE_HLSL_FILENAMES):
+        if active and filename in HLSL_FILENAMES:
+            continue
         path = target / filename
         if path.is_file():
             path.unlink()

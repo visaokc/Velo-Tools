@@ -745,7 +745,7 @@ Mod State / Constants / Present
 
 高级导出选项中的 **导出自定义 ShapeKey** 默认开启，适用于普通单 IB 和跨场景导出。分类只看对象源 `Metadata.json`：每个 batch 连续管理 127 个 Deform ID，batch 内前 `shapekey_count` 个 ID 属于游戏原生 ShapeKey；范围外且实际包含非零位置 delta 的 ID 属于外置自定义 ShapeKey。Blender 名称后缀不参与分类。
 
-- 开启：原生 ID 继续走 WWMI 原生 ShapeKey shader；自定义 ID 从原生 Buffer 中剥离，通过独立 shader 叠加到当帧原生变形结果上。若该域没有原生结果，则从静态 Position 开始叠加。
+- 开启：原生 ID 继续走游戏原有的 WWMI ShapeKey 路径；自定义 ID 从原生 Buffer 中剥离，并由独立 shader 只叠加到静态 Position。导出不会解绑游戏原生 `vb6`，因此原生变形仍由游戏原生 shader 正常合成。
 - 关闭：自定义记录仍从原生 Buffer 中剥离，但不生成其变量、Buffer、shader 或 INI 逻辑，只保留原生 ShapeKey。
 - 没有有效自定义 delta：即使开关开启，也不会生成空资源或额外逻辑。
 

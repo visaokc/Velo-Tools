@@ -1968,8 +1968,6 @@ def _shared_override_lines(unit: Any, mode: str, *,
                 "    endif",
                 "endif",
             ])
-    if shape_pipeline and lod_level is None:
-        lines.append("vb6 = null")
     return lines
 
 
@@ -2244,8 +2242,7 @@ def _add_unit_draw_sections(
                 unit, mode,
                 shape_pipeline=bool(
                     getattr(unit, "velo_shape_key_plan", None)
-                    and (unit.velo_shape_key_plan.has_native
-                         or unit.velo_shape_key_plan.has_external))),
+                    and unit.velo_shape_key_plan.has_external)),
             phase=IniPhase.DRAW_STACKS, ib_order=order, role="shared")
         ir.add_section(
             f"CommandListCleanupSharedResources{suffix}",
@@ -2457,9 +2454,6 @@ def _add_fold_morph_sections(
         "        handling = skip",
         f"        run = CommandListMultiplyShapeKeys_{tag}{suffix}",
     ]
-    body_shape_plan = getattr(body, "velo_shape_key_plan", None)
-    if body_shape_plan is not None and body_shape_plan.has_native:
-        multiplier.append(f"        run = CommandListApplyNativeShapeKeys{suffix}")
     multiplier.extend(["    endif", "endif"])
     ir.add_section(
         f"TextureOverrideShapeKeyMultiplierCallback_{tag}{suffix}",
@@ -2768,9 +2762,6 @@ def _add_shape_sections(ir: CrossSceneIR, unit: Any, cfg: Any,
             "        handling = skip",
             f"        run = CommandListMultiplyShapeKeys{suffix}",
         ]
-        if plan is not None:
-            multiplier.append(
-                f"        run = CommandListApplyNativeShapeKeys{suffix}")
         multiplier.extend(["    endif", "endif"])
         ir.add_section(
             f"TextureOverrideShapeKeyMultiplierCallback{suffix}", multiplier,
@@ -3454,7 +3445,7 @@ def _add_shape_key_controls(
 ) -> None:
     active = [
         (unit, plan) for unit, plan in zip(units, plans)
-        if plan is not None and (plan.has_native or plan.has_external)
+        if plan is not None and plan.has_external
     ]
     if not active:
         return
