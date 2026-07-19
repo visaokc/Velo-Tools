@@ -2668,6 +2668,22 @@ def _add_fold_sections(
             section_routes[name.casefold()] = tag
 
 
+def _custom_shape_value_defaults(
+        exported_batches: Sequence[Any],
+        native_batches: Sequence[Any],
+) -> List[float]:
+    values = []
+    for batch_id, _batch in enumerate(exported_batches):
+        native_count = 0
+        if batch_id < len(native_batches):
+            native_count = int(_value(
+                native_batches[batch_id], "shapekey_count", 0))
+        native_count = max(0, min(native_count, 127))
+        values.extend([0.0] * native_count)
+        values.extend([1000000.0] * (128 - native_count))
+    return values
+
+
 def _add_shape_sections(ir: CrossSceneIR, unit: Any, cfg: Any,
                         mode: str) -> None:
     count = int(getattr(unit.merged_object.shapekeys, "vertex_count", 0))
@@ -2797,11 +2813,16 @@ def _add_shape_sections(ir: CrossSceneIR, unit: Any, cfg: Any,
             "format = R32G32B32A32_UINT",
             "array = 66",
         ], phase=IniPhase.BUFFERS, ib_order=order, role="buffer")
+    custom_defaults = _custom_shape_value_defaults(batches, native_batches)
     ir.add_section(
         f"ResourceCustomShapeKeyValuesRW{suffix}", [
             "type = RWBuffer",
             "format = R32G32B32A32_FLOAT",
             f"array = {32 * len(batches)}",
+            "data = " + " ".join(
+                "1000000" if value else "0"
+                for value in custom_defaults
+            ),
         ], phase=IniPhase.BUFFERS, ib_order=order, role="buffer")
 
 
