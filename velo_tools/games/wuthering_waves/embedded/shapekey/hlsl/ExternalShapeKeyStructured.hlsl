@@ -5,7 +5,8 @@ Texture1D<float4> IniParams : register(t120);
 Buffer<uint> VertexOffsets : register(t50);
 Buffer<uint> RecordChannels : register(t51);
 Buffer<float3> RecordDeltas : register(t52);
-RWStructuredBuffer<float3> Position : register(u6);
+Buffer<float3> BasePosition : register(t6);
+RWBuffer<float> OutputPosition : register(u6);
 
 [numthreads(64, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
@@ -15,7 +16,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         return;
     }
 
-    float3 position = Position[vertex_id];
+    float3 position = BasePosition.Load(vertex_id);
     uint first = VertexOffsets[vertex_id];
     uint end = VertexOffsets[vertex_id + 1];
     [loop]
@@ -25,5 +26,8 @@ void main(uint3 tid : SV_DispatchThreadID)
         position += RecordDeltas[record_id] * weight;
     }
 
-    Position[vertex_id] = position;
+    uint output_id = vertex_id * 3;
+    OutputPosition[output_id + 0] = position.x;
+    OutputPosition[output_id + 1] = position.y;
+    OutputPosition[output_id + 2] = position.z;
 }

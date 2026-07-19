@@ -85,16 +85,18 @@ def domain_section_specs(
         f"cs-t50 = ResourceExternalShapeKeyVertexOffsetBuffer{suffix}",
         f"cs-t51 = ResourceExternalShapeKeyRecordChannelBuffer{suffix}",
         f"cs-t52 = ResourceExternalShapeKeyRecordDeltaBuffer{suffix}",
-        f"cs-u6 = copy {position}",
-        f"{external_position} = ref cs-u6",
+        f"cs-t6 = {position}",
+        f"cs-u6 = ResourceExternalShapeKeyedPositionRW{suffix}",
         f"run = CustomShaderExternalShapeKeyStructured{suffix}",
     ]
     apply_lines.extend([
+        f"{external_position} = copy ResourceExternalShapeKeyedPositionRW{suffix}",
         f"{applied} = 1",
         f"x0 = $external_shape_saved_x0{suffix}",
     ])
     shader_cleanup = (
         f"dispatch = {mesh_vertex_variable}/64+1, 1, 1",
+        "cs-t6 = null",
         "cs-t50 = null",
         "cs-t51 = null",
         "cs-t52 = null",
@@ -108,6 +110,12 @@ def domain_section_specs(
             *shader_cleanup,
         ), "shape_command"),
         (external_position, (), "buffer"),
+        (f"ResourceExternalShapeKeyedPositionRW{suffix}", (
+            "type = RWBuffer",
+            "format = R32_FLOAT",
+            "stride = 12",
+            f"array = {3 * mesh_vertex_count}",
+        ), "buffer"),
     ])
 
     resolve = []
