@@ -225,6 +225,9 @@ def _patch_l10n_properties():
                 kwargs["name"] = _zh(name_text)
             if desc_text is not None:
                 kwargs["description"] = _zh(desc_text)
+            if (cls_name == "VTWW_Settings"
+                    and prop_name == "unrestricted_custom_shape_keys"):
+                kwargs["default"] = True
             enum_texts = _ui_l10n.WWMI_ENUM_TEXTS.get((cls_name, prop_name))
             if enum_texts and isinstance(kwargs.get("items"), (list, tuple)):
                 kwargs["items"] = _translated_enum_items(kwargs["items"], enum_texts)
@@ -400,6 +403,14 @@ def register():
     except Exception:
         import traceback
         traceback.print_exc()
+    # Independent custom ShapeKey export wraps the final stock/LOD buffer and
+    # INI lifecycle while leaving the vendored unrestricted path disabled.
+    try:
+        from .embedded.shapekey import hook as _shapehook
+        _shapehook.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
     # Extract LOD Data UI (panel + operator + Scene properties); registered before the cross-scene UI
     # so the LOD panel sits right under the WWMI section, above the cross-scene panel.
     try:
@@ -494,6 +505,11 @@ def unregister():
     try:
         from .embedded.lod import ui as _lodui
         _lodui.unregister()
+    except Exception:
+        pass
+    try:
+        from .embedded.shapekey import hook as _shapehook
+        _shapehook.remove()
     except Exception:
         pass
     try:

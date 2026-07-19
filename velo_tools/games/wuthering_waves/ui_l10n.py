@@ -58,8 +58,10 @@ WWMI_PROPERTY_TEXTS = {
         "TEXCOORD1.xy（空 UV）、TEXCOORD2.xy（复制 TEXCOORD.xy）和 TEXCOORD3.xy（正面投影）。",
     ),
     "unrestricted_custom_shape_keys": (
-        "不受限自定义 ShapeKey",
-        "允许给默认不带自定义 ShapeKey 的组件使用自定义 ShapeKey；会生成额外的 mod.ini 逻辑。",
+        "导出自定义 ShapeKey",
+        "默认启用。开启时，超出 Metadata 原生编号范围且包含有效位移的 ShapeKey "
+        "通过独立 shader 导出；关闭时仅导出游戏原生编号范围。没有有效自定义 ShapeKey "
+        "时不会生成额外资源。",
     ),
     "skeleton_scale": ("骨架缩放", "在游戏中缩放模型（默认 1.0）；Per-Component 骨架不支持。"),
     "partial_export": (

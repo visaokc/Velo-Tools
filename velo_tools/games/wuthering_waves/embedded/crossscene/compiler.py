@@ -246,6 +246,7 @@ class CompiledMod:
     section_routes: Dict[str, str] = field(default_factory=dict)
     report: Dict[str, Any] = field(default_factory=dict)
     ini_ir: Optional[CrossSceneIR] = None
+    external_shape_keys: bool = False
 
     def render_ini(self) -> str:
         return self.ini_text
@@ -1906,17 +1907,16 @@ def _buffer_key(unit: Any, wanted: str) -> Optional[str]:
 
 
 def _shared_override_lines(unit: Any, mode: str, *,
-                           unrestricted: bool = False,
+                           shape_pipeline: bool = False,
                            lod_level: Optional[int] = None,
                            blend_resource: Optional[str] = None) -> List[str]:
     suffix = str(unit.plan.suffix)
-    shape_count = int(getattr(unit.merged_object.shapekeys, "vertex_count", 0))
     lines = [
         f"ResourceBypassVB0{suffix} = ref vb0",
         f"ib = {_buffer_resource('Index', suffix)}",
     ]
-    if lod_level is None and unrestricted and shape_count > 0:
-        lines.append(f"vb0 = ResourceShapeKeyedPosition{suffix}")
+    if lod_level is None and shape_pipeline:
+        lines.append(f"run = CommandListResolveShapeKeys{suffix}")
     else:
         lines.append(f"vb0 = {_buffer_resource('Position', suffix)}")
     lines.extend([
@@ -1968,7 +1968,7 @@ def _shared_override_lines(unit: Any, mode: str, *,
                 "    endif",
                 "endif",
             ])
-    if unrestricted and shape_count > 0 and lod_level is None:
+    if shape_pipeline and lod_level is None:
         lines.append("vb6 = null")
     return lines
 
@@ -2242,8 +2242,10 @@ def _add_unit_draw_sections(
             f"CommandListOverrideSharedResources{suffix}",
             _shared_override_lines(
                 unit, mode,
-                unrestricted=bool(getattr(
-                    cfg, "unrestricted_custom_shape_keys", False))),
+                shape_pipeline=bool(
+                    getattr(unit, "velo_shape_key_plan", None)
+                    and (unit.velo_shape_key_plan.has_native
+                         or unit.velo_shape_key_plan.has_external))),
             phase=IniPhase.DRAW_STACKS, ib_order=order, role="shared")
         ir.add_section(
             f"CommandListCleanupSharedResources{suffix}",
@@ -2254,8 +2256,7 @@ def _add_unit_draw_sections(
                 f"CommandListOverrideSharedResourcesLOD{int(lod['level'])}{suffix}",
                 _shared_override_lines(
                     unit, mode,
-                    unrestricted=bool(getattr(
-                        cfg, "unrestricted_custom_shape_keys", False)),
+                    shape_pipeline=False,
                     lod_level=int(lod["level"])),
                 phase=IniPhase.DRAW_STACKS,
                 ib_order=order,
@@ -2456,8 +2457,9 @@ def _add_fold_morph_sections(
         "        handling = skip",
         f"        run = CommandListMultiplyShapeKeys_{tag}{suffix}",
     ]
-    if bool(getattr(cfg, "unrestricted_custom_shape_keys", False)):
-        multiplier.append(f"        run = CommandListApplyShapeKeys{suffix}")
+    body_shape_plan = getattr(body, "velo_shape_key_plan", None)
+    if body_shape_plan is not None and body_shape_plan.has_native:
+        multiplier.append(f"        run = CommandListApplyNativeShapeKeys{suffix}")
     multiplier.extend(["    endif", "endif"])
     ir.add_section(
         f"TextureOverrideShapeKeyMultiplierCallback_{tag}{suffix}",
@@ -2668,162 +2670,137 @@ def _add_fold_sections(
             section_routes[name.casefold()] = tag
 
 
-def _custom_shape_value_defaults(
-        exported_batches: Sequence[Any],
-        native_batches: Sequence[Any],
-) -> List[float]:
-    values = []
-    for batch_id, _batch in enumerate(exported_batches):
-        native_count = 0
-        if batch_id < len(native_batches):
-            native_count = int(_value(
-                native_batches[batch_id], "shapekey_count", 0))
-        native_count = max(0, min(native_count, 127))
-        values.extend([0.0] * native_count)
-        values.extend([1000000.0] * (128 - native_count))
-    return values
-
-
 def _add_shape_sections(ir: CrossSceneIR, unit: Any, cfg: Any,
                         mode: str) -> None:
     count = int(getattr(unit.merged_object.shapekeys, "vertex_count", 0))
-    if not _unit_has_geometry(unit) or count <= 0:
+    plan = getattr(unit, "velo_shape_key_plan", None)
+    has_native = bool(plan.has_native) if plan is not None else count > 0
+    has_external = bool(plan.has_external) if plan is not None else False
+    if not _unit_has_geometry(unit) or not (has_native or has_external):
         return
     suffix = str(unit.plan.suffix)
     order = _unit_order(unit)
     shapes = unit.extracted_object.shapekeys
     batches = tuple(getattr(unit.merged_object.shapekeys, "batches", ()) or ())
     native_batches = tuple(getattr(shapes, "batches", ()) or ())
-    ir.add_section(
-        f"TextureOverrideShapeKeyOffsets{suffix}", [
-            f"hash = {getattr(shapes, 'offsets_hash', '')}",
-            "match_priority = 0",
-            "override_byte_stride = 24",
-            f"override_vertex_count = $mesh_vertex_count{suffix}",
-        ], phase=IniPhase.SHAPE_KEYS, ib_order=order,
-        role="shape_override")
-    ir.add_section(
-        f"TextureOverrideShapeKeyScale{suffix}", [
-            f"hash = {getattr(shapes, 'scale_hash', '')}",
-            "match_priority = 0",
-            "override_byte_stride = 4",
-            f"override_vertex_count = $mesh_vertex_count{suffix}",
-        ], phase=IniPhase.SHAPE_KEYS, ib_order=order,
-        role="shape_override")
-    setup: List[str] = []
-    load: List[str] = []
-    for index, _batch in enumerate(batches):
-        native = native_batches[index]
+    if has_native:
+        ir.add_section(
+            f"TextureOverrideShapeKeyOffsets{suffix}", [
+                f"hash = {getattr(shapes, 'offsets_hash', '')}",
+                "match_priority = 0",
+                "override_byte_stride = 24",
+                f"override_vertex_count = $mesh_vertex_count{suffix}",
+            ], phase=IniPhase.SHAPE_KEYS, ib_order=order,
+            role="shape_override")
+        ir.add_section(
+            f"TextureOverrideShapeKeyScale{suffix}", [
+                f"hash = {getattr(shapes, 'scale_hash', '')}",
+                "match_priority = 0",
+                "override_byte_stride = 4",
+                f"override_vertex_count = $mesh_vertex_count{suffix}",
+            ], phase=IniPhase.SHAPE_KEYS, ib_order=order,
+            role="shape_override")
+        setup: List[str] = []
+        load: List[str] = []
+        for index, _batch in enumerate(batches):
+            native = native_batches[index]
+            setup.extend([
+                f"$\\WWMIv1\\shapekey_checksum_batch{index} = "
+                f"{int(getattr(native, 'checksum', 0))}",
+                f"$\\WWMIv1\\shapekey_vertex_offset_original_batch{index} = "
+                f"{int(getattr(native, 'vertex_offset', 0))}",
+                f"$\\WWMIv1\\shapekey_vertex_offset_custom_batch{index} = "
+                f"$shapekey_vertex_offset_batch{index}{suffix}",
+            ])
+            load.extend([
+                f"$\\WWMIv1\\shapekey_dispatch_size_y_original_batch{index} = "
+                f"{int(getattr(native, 'dispatch_y', 0))}",
+                f"$\\WWMIv1\\shapekey_vertex_count_batch{index} = "
+                f"$shapekey_vertex_count_batch{index}{suffix}",
+            ])
         setup.extend([
-            f"$\\WWMIv1\\shapekey_checksum_batch{index} = "
-            f"{int(getattr(native, 'checksum', 0))}",
-            f"$\\WWMIv1\\shapekey_vertex_offset_original_batch{index} = "
-            f"{int(getattr(native, 'vertex_offset', 0))}",
-            f"$\\WWMIv1\\shapekey_vertex_offset_custom_batch{index} = "
-            f"$shapekey_vertex_offset_batch{index}{suffix}",
+            f"cs-t33 = ResourceShapeKeyOffsetBuffer{suffix}",
+            f"cs-u5 = ResourceCustomShapeKeyValuesRW{suffix}",
+            f"cs-u6 = ResourceShapeKeyCBRW{suffix}",
+            "run = CustomShader\\WWMIv1\\ShapeKeyBatchOverrider",
         ])
         load.extend([
-            f"$\\WWMIv1\\shapekey_dispatch_size_y_original_batch{index} = "
-            f"{int(getattr(native, 'dispatch_y', 0))}",
-            f"$\\WWMIv1\\shapekey_vertex_count_batch{index} = "
-            f"$shapekey_vertex_count_batch{index}{suffix}",
+            f"cs-t0 = ResourceShapeKeyVertexIdBuffer{suffix}",
+            f"cs-t1 = ResourceShapeKeyVertexOffsetBuffer{suffix}",
+            f"cs-u6 = ResourceShapeKeyCBRW{suffix}",
+            "run = CommandList\\WWMIv1\\LoadShapeKeysBatch",
         ])
-    setup.extend([
-        f"cs-t33 = ResourceShapeKeyOffsetBuffer{suffix}",
-        f"cs-u5 = ResourceCustomShapeKeyValuesRW{suffix}",
-        f"cs-u6 = ResourceShapeKeyCBRW{suffix}",
-        "run = CustomShader\\WWMIv1\\ShapeKeyBatchOverrider",
-    ])
-    load.extend([
-        f"cs-t0 = ResourceShapeKeyVertexIdBuffer{suffix}",
-        f"cs-t1 = ResourceShapeKeyVertexOffsetBuffer{suffix}",
-        f"cs-u6 = ResourceShapeKeyCBRW{suffix}",
-        "run = CommandList\\WWMIv1\\LoadShapeKeysBatch",
-    ])
-    ir.add_section(
-        f"CommandListSetupShapeKeysBatch{suffix}", setup,
-        phase=IniPhase.SHAPE_KEYS, ib_order=order,
-        role="shape_command")
-    ir.add_section(
-        f"CommandListLoadShapeKeysBatch{suffix}", load,
-        phase=IniPhase.SHAPE_KEYS, ib_order=order,
-        role="shape_command")
-    skeleton_gate = (
-        f" && ResourceMergedSkeleton{suffix} !== null"
-        if mode == "MERGED" else "")
-    ir.add_section(
-        f"TextureOverrideShapeKeyLoaderCallback{suffix}", [
+        ir.add_section(
+            f"CommandListSetupShapeKeysBatch{suffix}", setup,
+            phase=IniPhase.SHAPE_KEYS, ib_order=order,
+            role="shape_command")
+        ir.add_section(
+            f"CommandListLoadShapeKeysBatch{suffix}", load,
+            phase=IniPhase.SHAPE_KEYS, ib_order=order,
+            role="shape_command")
+        skeleton_gate = (
+            f" && ResourceMergedSkeleton{suffix} !== null"
+            if mode == "MERGED" else "")
+        ir.add_section(
+            f"TextureOverrideShapeKeyLoaderCallback{suffix}", [
+                f"hash = {getattr(shapes, 'offsets_hash', '')}",
+                "match_priority = 0",
+                f"if $mod_enabled{suffix}",
+                f"    if cs == 3381.3333{skeleton_gate}",
+                "        handling = skip",
+                f"        run = CommandListSetupShapeKeysBatch{suffix}",
+                f"        run = CommandListLoadShapeKeysBatch{suffix}",
+                "    endif",
+                "endif",
+            ], phase=IniPhase.SHAPE_KEYS, ib_order=order,
+            role="shape_override")
+        ir.add_section(
+            f"CommandListMultiplyShapeKeys{suffix}", [
+                f"$\\WWMIv1\\custom_vertex_count = $mesh_vertex_count{suffix}",
+                "run = CustomShader\\WWMIv1\\ShapeKeyMultiplier",
+            ], phase=IniPhase.SHAPE_KEYS, ib_order=order,
+            role="shape_command")
+        multiplier = [
             f"hash = {getattr(shapes, 'offsets_hash', '')}",
             "match_priority = 0",
             f"if $mod_enabled{suffix}",
-            f"    if cs == 3381.3333{skeleton_gate}",
+            f"    if cs == 3381.4444{skeleton_gate}",
             "        handling = skip",
-            f"        run = CommandListSetupShapeKeysBatch{suffix}",
-            f"        run = CommandListLoadShapeKeysBatch{suffix}",
-            "    endif",
-            "endif",
-        ], phase=IniPhase.SHAPE_KEYS, ib_order=order,
-        role="shape_override")
-    ir.add_section(
-        f"CommandListMultiplyShapeKeys{suffix}", [
-            f"$\\WWMIv1\\custom_vertex_count = $mesh_vertex_count{suffix}",
-            "run = CustomShader\\WWMIv1\\ShapeKeyMultiplier",
-        ], phase=IniPhase.SHAPE_KEYS, ib_order=order,
-        role="shape_command")
-    unrestricted = bool(getattr(cfg, "unrestricted_custom_shape_keys", False))
-    if unrestricted:
+            f"        run = CommandListMultiplyShapeKeys{suffix}",
+        ]
+        if plan is not None:
+            multiplier.append(
+                f"        run = CommandListApplyNativeShapeKeys{suffix}")
+        multiplier.extend(["    endif", "endif"])
         ir.add_section(
-            f"CommandListApplyShapeKeys{suffix}", [
-                f"cs-t6 = ResourcePositionBuffer{suffix}",
-                f"cs-u6 = ResourcePositionRW{suffix}",
-                "run = CustomShader\\WWMIv1\\ShapeKeyApplier",
-                f"ResourceShapeKeyedPosition{suffix} = copy "
-                f"ResourcePositionRW{suffix}",
-            ], phase=IniPhase.SHAPE_KEYS, ib_order=order,
-            role="shape_command")
-    multiplier = [
-        f"hash = {getattr(shapes, 'offsets_hash', '')}",
-        "match_priority = 0",
-        f"if $mod_enabled{suffix}",
-        f"    if cs == 3381.4444{skeleton_gate}",
-        "        handling = skip",
-        f"        run = CommandListMultiplyShapeKeys{suffix}",
-    ]
-    if unrestricted:
-        multiplier.append(f"        run = CommandListApplyShapeKeys{suffix}")
-    multiplier.extend(["    endif", "endif"])
-    ir.add_section(
-        f"TextureOverrideShapeKeyMultiplierCallback{suffix}", multiplier,
-        phase=IniPhase.SHAPE_KEYS, ib_order=order,
-        role="shape_override")
-    if unrestricted:
+            f"TextureOverrideShapeKeyMultiplierCallback{suffix}", multiplier,
+            phase=IniPhase.SHAPE_KEYS, ib_order=order,
+            role="shape_override")
         ir.add_section(
-            f"ResourceShapeKeyedPosition{suffix}", (),
-            phase=IniPhase.BUFFERS, ib_order=order, role="buffer")
-        ir.add_section(
-            f"ResourcePositionRW{suffix}", [
+            f"ResourceShapeKeyCBRW{suffix}", [
                 "type = RWBuffer",
-                "format = R32_FLOAT",
-                "stride = 12",
-                f"array = {12 * count}",
+                "format = R32G32B32A32_UINT",
+                "array = 66",
             ], phase=IniPhase.BUFFERS, ib_order=order, role="buffer")
-    ir.add_section(
-        f"ResourceShapeKeyCBRW{suffix}", [
-            "type = RWBuffer",
-            "format = R32G32B32A32_UINT",
-            "array = 66",
-        ], phase=IniPhase.BUFFERS, ib_order=order, role="buffer")
-    custom_defaults = _custom_shape_value_defaults(batches, native_batches)
-    ir.add_section(
-        f"ResourceCustomShapeKeyValuesRW{suffix}", [
-            "type = RWBuffer",
-            "format = R32G32B32A32_FLOAT",
-            f"array = {32 * len(batches)}",
-            "data = " + " ".join(
-                "1000000" if value else "0"
-                for value in custom_defaults
-            ),
-        ], phase=IniPhase.BUFFERS, ib_order=order, role="buffer")
+        ir.add_section(
+            f"ResourceCustomShapeKeyValuesRW{suffix}", [
+                "type = RWBuffer",
+                "format = R32G32B32A32_FLOAT",
+                f"array = {32 * len(batches)}",
+            ], phase=IniPhase.BUFFERS, ib_order=order, role="buffer")
+
+    if plan is not None:
+        from ..shapekey.generator import domain_section_specs
+        specs = domain_section_specs(
+            plan,
+            suffix=suffix,
+            mesh_vertex_count=int(unit.merged_object.vertex_count),
+            mesh_vertex_variable=f"$mesh_vertex_count{suffix}",
+        )
+        for name, lines, role in specs:
+            phase = IniPhase.BUFFERS if role == "buffer" else IniPhase.SHAPE_KEYS
+            ir.add_section(
+                name, lines, phase=phase, ib_order=order, role=role)
 
 
 def _buffer_format(buffer: Any) -> Tuple[str, int]:
@@ -3446,6 +3423,61 @@ def _compile_cross_scene_legacy(units: Sequence[Any], manifest: Mapping[str, Any
     )
 
 
+def _prepare_shape_key_domains(
+        units: Sequence[Any], cfg: Any,
+) -> Tuple[Mapping[int, int], Tuple[Any, ...]]:
+    if not __package__:
+        return {}, tuple(None for _unit in units)
+    try:
+        from ..shapekey.runtime import prepare_units
+        return prepare_units(
+            units,
+            enabled=bool(getattr(
+                cfg, "unrestricted_custom_shape_keys", True)),
+        )
+    except Exception as exc:
+        try:
+            from ..shapekey.planner import ShapeKeyPlanError
+        except Exception:
+            ShapeKeyPlanError = ValueError
+        if isinstance(exc, ShapeKeyPlanError):
+            raise CrossSceneCompileError(
+                f"WWMI ShapeKey export failed: {exc}") from exc
+        raise
+
+
+def _add_shape_key_controls(
+        ir: CrossSceneIR,
+        units: Sequence[Any],
+        channels: Mapping[int, int],
+        plans: Sequence[Any],
+) -> None:
+    active = [
+        (unit, plan) for unit, plan in zip(units, plans)
+        if plan is not None and (plan.has_native or plan.has_external)
+    ]
+    if not active:
+        return
+    from ..shapekey.generator import (
+        control_constant_lines,
+        control_present_lines,
+        validate_channel_lines,
+    )
+    try:
+        validate_channel_lines(
+            (line for section in ir.sections for line in section.lines),
+            channels,
+        )
+    except ValueError as exc:
+        raise CrossSceneCompileError(
+            f"WWMI ShapeKey export failed: {exc}") from exc
+    suffixes = tuple(str(unit.plan.suffix) for unit, _plan in active)
+    ir.get("Constants").lines.extend(
+        control_constant_lines(channels, suffixes))
+    ir.get("Present").lines.extend(
+        control_present_lines(channels, suffixes))
+
+
 def compile_cross_scene(units: Sequence[Any], root: Any,
                         settings: CompilerSettings) -> CompiledMod:
     """Compile one final mod from typed units and a root-authoritative catalog."""
@@ -3463,6 +3495,12 @@ def compile_cross_scene(units: Sequence[Any], root: Any,
         raise CrossSceneCompileError(
             "compile_cross_scene requires a loaded CrossSceneRoot")
 
+    channels, shape_plans = _prepare_shape_key_domains(units, cfg)
+    if (bool(getattr(cfg, "partial_export", False))
+            and any(plan is not None and plan.parsed.custom_records
+                    for plan in shape_plans)):
+        raise CrossSceneCompileError(
+            "自定义 ShapeKey 数据发生变化时必须执行完整导出：请关闭 Partial Export 后重试。")
     buffers = _collect_unit_buffers(units)
     roles = ["body"] + [
         str(entry["ib_hash"])
@@ -3507,6 +3545,7 @@ def compile_cross_scene(units: Sequence[Any], root: Any,
     section_routes: Dict[str, str] = {}
     _add_state_sections(
         ir, units, root, cfg, mode, texture_plan, guards)
+    _add_shape_key_controls(ir, units, channels, shape_plans)
     _add_mod_info_sections(ir, units, cfg, logo_source)
     if mode == "MERGED":
         _add_merged_skeleton_sections(ir, units, cfg)
@@ -3553,6 +3592,29 @@ def compile_cross_scene(units: Sequence[Any], root: Any,
         },
         "tex_slot": sorted(texture_plan.assigned_components),
         "tex_blindzone": sorted(texture_plan.hash_fallback_components),
+        "external_shape_key_ids": sorted(channels),
+        "shape_key_domains": [
+            {
+                "identity": str(unit.plan.identity),
+                "resource_domain": str(unit.plan.resource_domain),
+                "native_batch_records": list(
+                    plan.parsed.native_batch_record_counts),
+                "native_deform_counts": [
+                    int(batch.shapekey_count)
+                    for batch in (
+                        getattr(unit.extracted_object.shapekeys, "batches", ())
+                        or ())
+                ],
+                "external_records": (
+                    int(plan.external.record_count)
+                    if plan.external is not None else 0),
+                "stripped_custom_records": (
+                    0 if plan.external is not None
+                    else len(plan.parsed.custom_records)),
+            }
+            for unit, plan in zip(units, shape_plans)
+            if plan is not None
+        ],
     })
     return CompiledMod(
         ini_text=text,
@@ -3562,6 +3624,8 @@ def compile_cross_scene(units: Sequence[Any], root: Any,
         section_routes=section_routes,
         report=report,
         ini_ir=ir,
+        external_shape_keys=any(
+            plan is not None and plan.has_external for plan in shape_plans),
     )
 
 
@@ -3595,6 +3659,9 @@ def write_compiled_mod(compiled: CompiledMod, output: Path | str,
         meshes.mkdir(parents=True, exist_ok=True)
     for filename, buffer in compiled.buffers.items():
         (meshes / filename).write_bytes(_buffer_bytes(buffer))
+    if not gates.partial_export and __package__:
+        from ..shapekey.generator import write_hlsl_assets
+        write_hlsl_assets(output, compiled.external_shape_keys)
 
     ini_written = False
     textures_written = False

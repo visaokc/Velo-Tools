@@ -741,7 +741,25 @@ Mod State / Constants / Present
 - 贴图证据、LOD 数据或形态证据更新。
 - 游戏更新后资源 identity 改变。
 
-### 7.4 插槽风格贴图与原生 Hash 风格
+### 7.4 WWMI 自定义 ShapeKey
+
+高级导出选项中的 **导出自定义 ShapeKey** 默认开启，适用于普通单 IB 和跨场景导出。分类只看对象源 `Metadata.json`：每个 batch 连续管理 127 个 Deform ID，batch 内前 `shapekey_count` 个 ID 属于游戏原生 ShapeKey；范围外且实际包含非零位置 delta 的 ID 属于外置自定义 ShapeKey。Blender 名称后缀不参与分类。
+
+- 开启：原生 ID 继续走 WWMI 原生 ShapeKey shader；自定义 ID 从原生 Buffer 中剥离，通过独立 shader 叠加到当帧原生变形结果上。若该域没有原生结果，则从静态 Position 开始叠加。
+- 关闭：自定义记录仍从原生 Buffer 中剥离，但不生成其变量、Buffer、shader 或 INI 逻辑，只保留原生 ShapeKey。
+- 没有有效自定义 delta：即使开关开启，也不会生成空资源或额外逻辑。
+
+每个实际导出的自定义 ID 会生成一个未钳制的持久变量：
+
+```ini
+global persist $ShapeKey_161 = 0.0
+```
+
+同一 ID 跨 Component 或 IB 共用同一个变量。可以设置负值或大于 `1.0` 的值；例如把 `$ShapeKey_164` 改为 `1.0` 后重新加载 INI，即可检查该形态。变量只按编号命名，不保留 Blender 后缀。
+
+`persist` 值可能被 `d3dx_user.ini` 中已经保存的值覆盖。修改 `mod.ini` 默认值后若没有生效，应同步更新或删除对应持久化值。包含自定义 ShapeKey 数据时必须执行完整导出；Partial Export 不会单独更新这一管线。
+
+### 7.5 插槽风格贴图与原生 Hash 风格
 
 Hash-style 与 slot-style 可以在同一个 Mod 中共存。它们不是互斥的全局模式，而是按 Component 选择的贴图路径。
 
@@ -784,7 +802,7 @@ slot-style 可以提高贴图流送场景下的重绑稳定性，但不能替代
 - 跨场景时，override 只在实际拥有该资源的 IB 检测状态下启用。
 - 旧 Dump 没有的新 Hash 仍需通过新 Dump 获得。
 
-### 7.5 形态贴图合并
+### 7.6 形态贴图合并
 
 多形态对象可以用 **形态贴图合并**把额外形态的贴图证据加入现有对象源目录，无需再次完整提取角色。
 
@@ -803,7 +821,7 @@ slot-style 可以提高贴图流送场景下的重绑稳定性，但不能替代
 
 重复使用同一形态标签会累积该形态的证据。只有真实共享同一 VB 的多形态 Component 才应进入同一个多形态 slot 域；独立可编辑或其它 VB 的 Component 应保持独立。
 
-### 7.6 形态锚点
+### 7.7 形态锚点
 
 形态锚点是可选元数据，用于辅助确认当前形态。
 
@@ -836,7 +854,7 @@ hash:形态标签
 
 如果恰好只有一个形态没有锚点，看门狗可以在一帧内没有其它锚点命中时用排除法推断。游戏更新后锚点可能过期，此时应刷新 Dump 并重新查找。
 
-### 7.7 原始网格工具
+### 7.8 原始网格工具
 
 **原始网格工具**用于普通角色 pose-chain 提取流程识别不到的非角色几何，例如特效层、场景网格或环境网格。
 
@@ -1159,6 +1177,9 @@ CrossIB 应在面板中选择一份当前 Frame Dump，生成或覆盖 `CrossIB.
 | Per-Component (from Merged) | 用 Merged 编辑，再导出为 Per-Component 运行结构。 |
 | LOD | Level of Detail，按观察距离使用的不同几何层级。 |
 | ShapeKey | Blender 形态键技术标识；当前 EFMI UI 也保留该技术名。 |
+| Deform ID | WWMI ShapeKey 的数字身份；每个 batch 连续管理 127 个 ID。 |
+| Native ShapeKey | 位于 Metadata 声明范围内、继续走 WWMI 原生 shader 的 Deform ID。 |
+| External Custom ShapeKey | 超出 Metadata 原生范围且含有效 delta、由独立 shader 叠加的 Deform ID。 |
 | INI | 3dmigoto Mod 的运行时配置文本。 |
 | DDS | 常用贴图文件格式。 |
 | Buffer | 保存位置、索引、权重、法线、UV、ShapeKey 等数据的二进制资源。 |
