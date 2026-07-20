@@ -10,7 +10,7 @@ from typing import Sequence
 
 
 _COMPONENT_RE = re.compile(r"component[_ -]*(\d+)", re.IGNORECASE)
-_PATCHES: dict[type, tuple[object, object, str]] = {}
+_PATCHES: dict[type, tuple[object, object, str, object]] = {}
 
 
 @dataclass(frozen=True)
@@ -41,12 +41,14 @@ def classify_materials(object_name: str, materials: Sequence[UsedMaterial]) -> P
     prefixed: dict[object, UsedMaterial] = {}
     for material in materials:
         detected = component_id_from_name(material.name)
-        if detected is not None and detected != component_id:
-            raise ValueError(_material_error(object_name, material, component_id, detected))
         if detected is not None:
             prefixed[material.key] = material
 
     if len(prefixed) < 2:
+        for material in prefixed.values():
+            detected = component_id_from_name(material.name)
+            if detected != component_id:
+                raise ValueError(_material_error(object_name, material, component_id, detected))
         return PartitionPlan(
             "OBJECT_NAME",
             component_id,
@@ -126,12 +128,20 @@ def _classify_with_location(object_name: str, obj, used: Sequence[UsedMaterial])
         raise ValueError(message) from None
 
 
-def cache_plan(obj, plan: PartitionPlan) -> None:
+def cache_plan(
+    obj,
+    plan: PartitionPlan,
+    component_routes: dict[int, int] | None = None,
+) -> None:
     obj["_velo_material_partition_mode"] = plan.mode
     obj["_velo_material_partition_component"] = -1 if plan.component_id is None else plan.component_id
     obj["_velo_material_partition_names"] = json.dumps(
         sorted(plan.expected_material_names), ensure_ascii=False
     )
+    if component_routes is not None:
+        obj["_velo_material_partition_routes"] = json.dumps(
+            {str(key): int(value) for key, value in component_routes.items()}
+        )
 
 
 def _cached_plan(obj) -> PartitionPlan | None:
@@ -145,6 +155,16 @@ def _cached_plan(obj) -> PartitionPlan | None:
         None if component_id < 0 else component_id,
         frozenset(str(name) for name in names),
     )
+
+
+def _cached_component_routes(obj) -> dict[int, int] | None:
+    raw = obj.get("_velo_material_partition_routes")
+    if raw is None:
+        return None
+    return {
+        int(key): int(value)
+        for key, value in json.loads(str(raw)).items()
+    }
 
 
 def _solidify_target_slot(source_slot: int, offset: int, slot_count: int) -> int:
@@ -257,13 +277,49 @@ def _material_name_for_fragment(obj) -> str:
     return used[0].name
 
 
-def _postprocess_merger(merger) -> None:
+def _fragment_component_index(
+    plan: PartitionPlan,
+    material_name: str,
+    *,
+    source_component_index: int,
+    component_count: int,
+    component_routes: dict[int, int] | None,
+) -> int:
+    detected = component_id_from_name(material_name)
+    if detected is None:
+        raise ValueError(
+            f"导出材质拆分失败：材质 `{material_name}` 没有 Component 前缀。"
+        )
+    if detected == plan.component_id:
+        return source_component_index
+    if component_routes is None:
+        target = detected
+    else:
+        target = component_routes.get(detected)
+        if target is None:
+            raise ValueError(
+                f"导出已拒绝：材质 `{material_name}` 指向 Component {detected}，"
+                "但该 Component 不属于当前导出单元。"
+            )
+    if target < 0 or target >= component_count:
+        raise ValueError(
+            f"导出已拒绝：材质 `{material_name}` 指向 Component {detected}，"
+            "但 Metadata 中不存在可接收它的 Component。"
+        )
+    return target
+
+
+def _postprocess_merger(merger, after_split=None) -> None:
     plans = getattr(merger, "_velo_material_partition_plans", {})
-    for component in merger.components:
-        rebuilt = []
+    rebuilt = [[] for _component in merger.components]
+    source_entries = []
+    for component_index, component in enumerate(merger.components):
         original_entries = list(plans.get(id(component), ()))
         cleanup_objects = [entry[0] for entry in original_entries]
         component.objects = cleanup_objects
+        source_entries.append((component_index, original_entries, cleanup_objects))
+
+    for component_index, original_entries, cleanup_objects in source_entries:
         for temp_object, plan in original_entries:
             realized = _used_materials(temp_object.object)
             realized_plan = _classify_with_location(
@@ -279,7 +335,7 @@ def _postprocess_merger(merger) -> None:
                     f"在应用修改器后产生无法归属的材质面：{detail}。"
                 )
             if plan.mode == "OBJECT_NAME":
-                rebuilt.append(temp_object)
+                rebuilt[component_index].append(temp_object)
                 continue
 
             fragments = _split_object_by_material(merger.context, temp_object.object)
@@ -291,13 +347,24 @@ def _postprocess_merger(merger) -> None:
             for fragment in fragments:
                 logical_name = _material_name_for_fragment(fragment)
                 exported_fragment = temp_type(name=logical_name, object=fragment)
-                rebuilt.append(exported_fragment)
+                target_index = _fragment_component_index(
+                    plan,
+                    logical_name,
+                    source_component_index=component_index,
+                    component_count=len(merger.components),
+                    component_routes=_cached_component_routes(temp_object.object),
+                )
+                rebuilt[target_index].append(exported_fragment)
+                if after_split is not None:
+                    after_split(merger, exported_fragment, target_index)
                 _clean_fragment_shape_keys(merger.context, fragment)
-        component.objects = rebuilt
-        rebuilt.sort(key=lambda item: item.name)
+
+    for component_index, component in enumerate(merger.components):
+        component.objects = rebuilt[component_index]
+        component.objects.sort(key=lambda item: item.name)
 
 
-def install(merger_cls: type, settings_attr: str) -> None:
+def install(merger_cls: type, settings_attr: str, after_split=None) -> None:
     """Install one reversible wrapper on a vendored ObjectMerger subclass."""
     if merger_cls in _PATCHES:
         return
@@ -329,11 +396,16 @@ def install(merger_cls: type, settings_attr: str) -> None:
     def finalize_temp_objects_geometry(self):
         original_finalize(self)
         if getattr(self, "_velo_material_partition_plans", None) is not None:
-            _postprocess_merger(self)
+            _postprocess_merger(self, after_split=after_split)
 
     merger_cls.import_objects_from_collection = import_objects_from_collection
     merger_cls.finalize_temp_objects_geometry = finalize_temp_objects_geometry
-    _PATCHES[merger_cls] = (original_import, original_finalize, settings_attr)
+    _PATCHES[merger_cls] = (
+        original_import,
+        original_finalize,
+        settings_attr,
+        after_split,
+    )
 
 
 def remove(merger_cls: type) -> None:

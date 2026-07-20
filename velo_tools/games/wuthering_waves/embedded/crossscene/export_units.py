@@ -392,6 +392,33 @@ def _remap_source_object_error(message: str, labels: Mapping[str, str]) -> str:
     return result
 
 
+def postprocess_partitioned_fragment(
+    merger: Any,
+    temp_object: Any,
+    target_component_index: int,
+) -> None:
+    """Finish deferred PFM normalization after material routing is known."""
+    obj = temp_object.object
+    if not bool(obj.get("_velo_defer_pfm_normalization", False)):
+        return
+    from .. import per_from_merged
+
+    component_meta = merger.extracted_object.components[target_component_index]
+    settings = getattr(merger.context.scene, "velo_endfield", None)
+    profile = getattr(settings, "mmd_profile", None) if settings else None
+    stray = per_from_merged._prepare_object_for_component_export(
+        obj,
+        getattr(component_meta, "vg_map", {}) or {},
+        profile,
+    )
+    if stray:
+        source_name = str(obj.get("_velo_export_source_name", temp_object.name))
+        raise RuntimeError(
+            "跨场景 Per-Component(from Merged)：物体 %s 拆分到 Component %d 后的顶点组 %s 权重越界。"
+            % (source_name, target_component_index, stray)
+        )
+
+
 def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
                     collection: Any, metadata: Mapping[str, Any],
                     hole: bool, hole_frac: int) -> Tuple[list[Any], Dict[str, str]]:
@@ -418,21 +445,46 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
         obj = _copy_input_object(selected.object, collection, name)
         obj["_velo_export_source_name"] = selected.name
         _preprocess_cross_scene_copy(context, obj)
-        material_partition.cache_plan(obj, partition_plan)
+        material_partition.cache_plan(obj, partition_plan, global_to_local)
         labels[obj.name] = selected.name
 
-        if plan.kind == "body" and cfg.mod_skeleton_type == "COMPONENT_FROM_MERGED":
-            from .. import per_from_merged
-            component_meta = (metadata.get("components") or [])[local_id]
-            settings = getattr(context.scene, "velo_endfield", None)
-            profile = getattr(settings, "mmd_profile", None) if settings else None
-            stray = per_from_merged._prepare_object_for_component_export(
-                obj, component_meta.get("vg_map") or {}, profile)
-            if stray:
+        material_components = {
+            material_partition.component_id_from_name(name)
+            for name in partition_plan.expected_material_names
+        }
+        material_components.discard(None)
+        cross_component_materials = any(
+            component_id != selected.component_id
+            for component_id in material_components
+        )
+        if cross_component_materials:
+            unavailable = sorted(material_components - set(global_to_local))
+            if unavailable:
                 raise RuntimeError(
-                    "跨场景 Per-Component(from Merged)：物体 %s 的顶点组 %s 权重越界。"
-                    % (selected.name, stray))
+                    "跨场景材质拆分：物体 %s 的材质指向不属于当前导出单元的 Component %s。"
+                    % (selected.name, unavailable)
+                )
+
+        if plan.kind == "body" and cfg.mod_skeleton_type == "COMPONENT_FROM_MERGED":
+            if cross_component_materials:
+                obj["_velo_defer_pfm_normalization"] = True
+            else:
+                from .. import per_from_merged
+                component_meta = (metadata.get("components") or [])[local_id]
+                settings = getattr(context.scene, "velo_endfield", None)
+                profile = getattr(settings, "mmd_profile", None) if settings else None
+                stray = per_from_merged._prepare_object_for_component_export(
+                    obj, component_meta.get("vg_map") or {}, profile)
+                if stray:
+                    raise RuntimeError(
+                        "跨场景 Per-Component(from Merged)：物体 %s 的顶点组 %s 权重越界。"
+                        % (selected.name, stray))
         elif plan.kind == "own_buffer":
+            if cross_component_materials:
+                raise RuntimeError(
+                    "跨场景材质拆分：own-buffer 物体 %s 不能跨 Component 路由。"
+                    % selected.name
+                )
             split = plan.manifest_entry.get("split_route") or {}
             _bake_shapekey_mix(obj)
             base_component = int(split["base_component"])
@@ -443,6 +495,11 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
             _prepare_own_buffer_vertex_groups(
                 obj, split, component_meta.get("vg_map") or {}, plan.ib_hash)
         elif plan.kind == "editable":
+            if cross_component_materials:
+                raise RuntimeError(
+                    "跨场景材质拆分：editable 物体 %s 不能跨 Component 路由。"
+                    % selected.name
+                )
             base_metadata = plan.manifest_entry.get("aggregate_metadata")
             if base_metadata is None:
                 raise RuntimeError("editable ExportUnit is missing aggregate metadata")

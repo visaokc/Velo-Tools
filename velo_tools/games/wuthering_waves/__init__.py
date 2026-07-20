@@ -351,7 +351,12 @@ def register():
     try:
         from ...core.export import material_partition as _material_partition
         from ._wwmi_core.blender_export.blender_export import ObjectMergerWWMI
-        _material_partition.install(ObjectMergerWWMI, "VTWW_settings")
+        from .embedded.crossscene.export_units import postprocess_partitioned_fragment
+        _material_partition.install(
+            ObjectMergerWWMI,
+            "VTWW_settings",
+            after_split=postprocess_partitioned_fragment,
+        )
     except Exception:
         import traceback
         traceback.print_exc()
