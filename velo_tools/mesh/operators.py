@@ -1643,7 +1643,7 @@ def _rename_to_sole_material(obj):
     return True
 
 
-def _split_meshes_by_material(context, sources, *, threshold, preserve_component_prefix=False):
+def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_component_prefix=False):
     _ensure_object_mode(context)
     before_objs = set(context.scene.objects)
     split_sources = 0
@@ -1728,6 +1728,17 @@ def _split_meshes_by_material(context, sources, *, threshold, preserve_component
         "split_sources": split_sources,
         "skipped_single": skipped_single,
     }
+
+
+def _split_meshes_by_material(context, sources, *, threshold, preserve_component_prefix=False):
+    """Keep rename-driven material sync out of the split transaction."""
+    with suspend_material_route_auto_refresh(context.scene):
+        return _split_meshes_by_material_impl(
+            context,
+            sources,
+            threshold=threshold,
+            preserve_component_prefix=preserve_component_prefix,
+        )
 
 
 class VELO_OT_route_refresh_materials(bpy.types.Operator):
