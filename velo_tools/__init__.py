@@ -5,6 +5,7 @@ bl_info = {
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar (N) > Velo Tools",
     "description": "Mod 制作辅助工具集（合并 Velo Tools Endfield V0.0.8）— 顶点组工具 / 网格工具 / 权重工具 / 游戏 MOD 工作流（终末地 EFMI / 鸣潮 WWMI）",
+    "doc_url": "https://github.com/visaokc/Velo-Tools",
     "category": "Object",
 }
 

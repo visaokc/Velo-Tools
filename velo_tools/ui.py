@@ -37,7 +37,11 @@ class VELO_PT_main(bpy.types.Panel):
         notify.draw_update_banner(self, context)
         s = context.scene.velo_tools
         col = layout.column(align=True)
-        col.label(text="Mod 制作辅助工具集", icon='TOOL_SETTINGS')
+        title_row = col.row(align=True)
+        title_row.label(text="Mod 制作辅助工具集", icon='TOOL_SETTINGS')
+        repository = title_row.operator("wm.url_open", text="GitHub", icon='URL')
+        package = sys.modules.get(__package__ or "velo_tools")
+        repository.url = getattr(package, "bl_info", {}).get("doc_url", "")
         col.label(text=_version_text(), icon='BLANK1')
         # Top function-area tab switch
         row = layout.row(align=True)
