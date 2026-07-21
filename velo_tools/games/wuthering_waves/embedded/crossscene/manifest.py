@@ -192,8 +192,11 @@ def _usage_component_ids(value: Any) -> Dict[str, set[int]]:
     def walk(item: Any, component_id: int | None = None) -> None:
         if isinstance(item, dict):
             texture_hash = str(item.get("hash") or "").lower()
+            # A verified inherited service seat is effective ownership even
+            # though the binding itself is intentionally recorded as stale.
             if (component_id is not None
-                    and item.get("fresh") is not False
+                    and (item.get("fresh") is not False
+                         or item.get("verified_inherited") is True)
                     and _HASH_RE.fullmatch(texture_hash)):
                 result.setdefault(texture_hash, set()).add(component_id)
             for key, child in item.items():
