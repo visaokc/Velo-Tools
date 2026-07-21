@@ -1127,8 +1127,16 @@ def _service_slot_drift_hashes_from_usage(usage: Mapping[str, Any],
     }
 
 
-def _slot_plan(context: Any, root: Any, cfg: Any, selection: Any,
-               manifest: Mapping[str, Any], textures: Sequence[Any]) -> Any:
+def _slot_plan(
+        context: Any,
+        root: Any,
+        cfg: Any,
+        selection: Any,
+        manifest: Mapping[str, Any],
+        textures: Sequence[Any],
+        *,
+        selected_component_ids: Optional[Iterable[int]] = None,
+) -> Any:
     if (not bool(getattr(cfg, "velo_slot_style_textures", False))
             or not textures or not selection.objects):
         return None
@@ -1160,7 +1168,10 @@ def _slot_plan(context: Any, root: Any, cfg: Any, selection: Any,
     }
     local_audit = generator.build_local_discriminator_audit_from_usage(
         usage, route_context=route_context)
-    selected = set(selection.selected_component_ids)
+    selected = set(
+        selection.selected_component_ids
+        if selected_component_ids is None else selected_component_ids
+    )
     if selection.slot_eligible_components is not None:
         selected.intersection_update(selection.slot_eligible_components)
     component_ranges = {
@@ -1465,6 +1476,16 @@ def _unit_draws(unit: Any, local_id: int) -> Tuple[Any, ...]:
     return tuple(getattr(components[local_id], "objects", ()) or ())
 
 
+def _drawn_component_ids(units: Sequence[Any]) -> frozenset[int]:
+    """Return global Components that own final encoded geometry draws."""
+    return frozenset(
+        int(global_id)
+        for unit in units
+        for local_id, global_id in unit.plan.component_map
+        if _unit_draws(unit, int(local_id))
+    )
+
+
 def _global_to_unit_components(
         units: Sequence[Any]) -> Dict[int, Tuple[Tuple[Any, int], ...]]:
     result: Dict[int, List[Tuple[Any, int]]] = {}
@@ -1550,6 +1571,7 @@ def _texture_plan(
         settings.selection,
         root.manifest,
         textures,
+        selected_component_ids=_drawn_component_ids(units),
     )
     if raw is None:
         return result
@@ -3364,7 +3386,14 @@ def _compile_cross_scene_legacy(units: Sequence[Any], manifest: Mapping[str, Any
     text = ir.render()
 
     plan = _slot_plan(
-        settings.context, root, cfg, settings.selection, manifest, ini_textures)
+        settings.context,
+        root,
+        cfg,
+        settings.selection,
+        manifest,
+        ini_textures,
+        selected_component_ids=_drawn_component_ids(units),
+    )
     if plan is not None:
         from ..slot_textures import transform
         _add_scoped_setter_aliases(plan, section_routes)
