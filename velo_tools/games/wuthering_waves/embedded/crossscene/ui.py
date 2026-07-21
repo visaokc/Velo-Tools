@@ -5,7 +5,7 @@ self-contained editable aggregate root plus ``CrossSceneManifest.json``. The use
 root, edits one mesh, and clicks the regular "Export Mod"; ``patch.py`` routes it through the
 schema-v3 direct compiler without child output folders.
 
-There are only two roles: ``Fold`` (fold into base) and ``Editable`` (independently editable, as a new component).
+There are three roles: ``Fold``, ``Editable``, and same-VB0 texture-form merge.
 Registration is handled by this module's register()/unregister() (new classes + Scene properties), not via _wwmi_core's auto_load.
 """
 import traceback
@@ -18,6 +18,8 @@ _ROLES = [
      '该 IB 折入基底：编辑基底即覆盖它（格式兼容则重定向到基底 buffer，骨数等不兼容则出独立 buffer，自动判定）'),
     ('editable', '独立可编辑',
      '独立可编辑：几何不属于基底（如另一形态），作为新 component 单独导入编辑、单独导出'),
+    ('form', '形态合并',
+     '形态合并：与一条折入基底项具有相同 vb0，只把该形态的 STU/贴图合入同一路由，不重复导入几何'),
 ]
 
 
@@ -25,12 +27,17 @@ class VTWW_XSceneIB(bpy.types.PropertyGroup):
     folder: bpy.props.StringProperty(name="IB 文件夹", subtype='DIR_PATH',
                                      description="某 IB 的提取文件夹（文件夹名即其 hash）")
     role: bpy.props.EnumProperty(name="角色", items=_ROLES, default='fold')
+    form_label: bpy.props.StringProperty(
+        name="形态标签",
+        description="形态合并分支标签；留空时自动使用 form2、form3……")
 
 
 class VTWW_UL_xscene_ibs(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_prop, index=0):
         row = layout.row(align=True)
         row.prop(item, "role", text="")
+        if item.role == 'form':
+            row.prop(item, "form_label", text="", icon='SHAPEKEY_DATA')
         row.prop(item, "folder", text="")
 
 
@@ -75,19 +82,27 @@ class VTWW_OT_xscene_merge(bpy.types.Operator):
         if not out:
             self.report({'ERROR'}, "请设置输出文件夹")
             return {'CANCELLED'}
-        specs, editable = [], []
+        specs, editable, forms = [], [], []
         for ib in s.vtww_xscene_ibs:
             f = bpy.path.abspath(ib.folder) if ib.folder else ""
             if not f or not Path(f).is_dir():
                 continue
-            rec = {"hash": Path(f).name, "folder": f, "role": ib.role}
-            (editable if ib.role == 'editable' else specs).append(rec)
+            rec = {"hash": Path(f).name, "folder": f, "role": ib.role,
+                   "form_label": ib.form_label}
+            if ib.role == 'editable':
+                editable.append(rec)
+            elif ib.role == 'form':
+                forms.append(rec)
+            else:
+                specs.append(rec)
         if not specs and not editable:
             self.report({'ERROR'}, "请至少添加一条有效的 IB")
             return {'CANCELLED'}
         try:
             from ... import xscene_merge
-            rep = xscene_merge.build_cross_scene_merge(base, specs, out, editable_ibs=editable or None)
+            rep = xscene_merge.build_cross_scene_merge(
+                base, specs, out, editable_ibs=editable or None,
+                form_ibs=forms or None)
         except Exception as exc:
             traceback.print_exc()
             self.report({'ERROR'}, "合并失败：%s（详见系统控制台）" % exc)
@@ -96,9 +111,9 @@ class VTWW_OT_xscene_merge(bpy.types.Operator):
         for w in rep.get("warnings", []):
             self.report({'WARNING'}, w)
         pruned = rep.get("root_textures_pruned") or []
-        msg = "合并完成 → %s | components=%d splits=%d fold=%d editable=%d" % (
+        msg = "合并完成 → %s | components=%d splits=%d fold=%d editable=%d forms=%d" % (
             out, rep.get("base_components", 0), len(rep.get("splits", [])),
-            len(specs), len(editable))
+            len(specs), len(editable), len(forms))
         if pruned:
             msg += " | pruned %d redundant root texture(s)" % len(pruned)
         self.report({'INFO'}, msg)

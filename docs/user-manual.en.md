@@ -490,16 +490,19 @@ Prepare one base extracted folder and one extracted folder for every additional 
 | --- | --- |
 | **折入基底 (Fold into Base)** | The base authoring geometry represents this route |
 | **独立可编辑 (Editable)** | The route owns separate geometry, form, or authoring identity |
+| **形态合并 (Merge Form)** | An extracted folder with the same `vb0 hash` contributes only its STU and texture-form evidence to one Fold route; it does not add duplicate geometry. An empty label becomes `form2`, `form3`, and so on. |
 
 `Fold` does not mean every route is forced into one physical buffer. Velo redirects compatible data and automatically keeps an own-buffer path when format or skeleton evidence requires it.
 
 `Editable` becomes independently editable geometry with its own component identity in the merged source.
 
+Use `Merge Form` only when the selected extract has the same `vb0 hash` and identical Component/LOD/VG Metadata as exactly one Fold row. Velo fails closed on a missing, ambiguous, or structurally different target instead of silently changing roles.
+
 #### Merge and Author
 
 1. Set the base extracted folder.
 2. Add each additional IB folder.
-3. Assign `Fold` or `Editable` to every row.
+3. Assign `Fold`, `Editable`, or `Merge Form` to every row. For two texture forms of one runtime IB, keep one row as `Fold` and mark the other same-`vb0` extract as `Merge Form`.
 4. Select a new merge output folder.
 5. Run **合并跨场景 (Merge Cross-Scene)**.
 6. Import the merged output folder with normal WWMI import.

@@ -668,7 +668,7 @@ def build_fold_correspondence(out_dir, base_comps, base_pos_c, base_pos_g, base_
     }
 
 
-def _validate_same_character(base, dungeon_specs, editable_ibs):
+def _validate_same_character(base, dungeon_specs, editable_ibs, form_ibs=None):
     """Foolproof: every merged IB must belong to the SAME character = share the base's skeleton constant
     buffer (cb4_hash) and carry vertex-group maps. Refuse to merge a foreign IB (different cb4), which would
     corrupt the unified skeleton. Each IB's own VG total is also bounded to the 512-bone merged-skeleton limit
@@ -684,7 +684,8 @@ def _validate_same_character(base, dungeon_specs, editable_ibs):
         raise RuntimeError("基底 Metadata.json 缺少 cb4_hash，无法校验跨场景合并的同源性。")
 
     checks = [("基底", str(base), base_meta)]
-    for spec in list(dungeon_specs) + list(editable_ibs or []):
+    for spec in (list(dungeon_specs) + list(editable_ibs or [])
+                 + list(form_ibs or [])):
         checks.append((spec.get("hash", "?"), spec["folder"], _meta(spec["folder"])))
 
     for tag, _folder, m in checks:
@@ -702,12 +703,53 @@ def _validate_same_character(base, dungeon_specs, editable_ibs):
                 "IB %s 的统一 VG 总数 %d 超过 WWMI merged skeleton 上限 512。" % (tag, ib_vg_total))
 
 
-def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs=None):
+def _bind_form_ibs(dungeon_specs, form_ibs):
+    """Bind each form-only extract to one same-VB0 fold source."""
+    targets = []
+    for spec in dungeon_specs:
+        metadata = _read_json_or_empty(spec["folder"], "Metadata.json")
+        targets.append((spec, metadata))
+    bound = []
+    for form in form_ibs or []:
+        metadata = _read_json_or_empty(form["folder"], "Metadata.json")
+        vb0_hash = _hash8_or_empty(metadata.get("vb0_hash"))
+        if not vb0_hash:
+            raise RuntimeError(
+                "形态合并项 %s 的 Metadata.json 缺少有效 vb0_hash。"
+                % form.get("hash", "?"))
+        matches = [
+            (spec, target_metadata)
+            for spec, target_metadata in targets
+            if _hash8_or_empty(target_metadata.get("vb0_hash")).lower()
+            == vb0_hash.lower()
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "形态合并项 %s（vb0=%s）必须且只能匹配一条“折入基底”项，当前匹配 %d 条。"
+                % (form.get("hash", "?"), vb0_hash, len(matches)))
+        target, target_metadata = matches[0]
+        if metadata.get("components") != target_metadata.get("components"):
+            raise RuntimeError(
+                "形态合并项 %s 与目标 %s 虽然 vb0 相同，但 Component/LOD/VG Metadata 不一致，"
+                "无法证明是同一几何路由。"
+                % (form.get("hash", "?"), target.get("hash", "?")))
+        item = dict(form)
+        item["target_hash"] = str(target["hash"])
+        item["vb0_hash"] = vb0_hash.lower()
+        item["form_label"] = str(form.get("form_label") or "").strip()
+        bound.append(item)
+    return bound
+
+
+def build_cross_scene_merge(base_folder, dungeon_specs, out_folder,
+                            editable_ibs=None, form_ibs=None):
     """Build a self-contained schema-v3 cross-scene aggregate root."""
     base = Path(base_folder)
     out = Path(out_folder)
     editable_ibs = list(editable_ibs or [])
-    _validate_same_character(base, dungeon_specs, editable_ibs)
+    form_ibs = list(form_ibs or [])
+    _validate_same_character(base, dungeon_specs, editable_ibs, form_ibs)
+    bound_forms = _bind_form_ibs(dungeon_specs, form_ibs)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
@@ -721,6 +763,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         }
         for spec in list(dungeon_specs) + editable_ibs
     }
+    form_merge_reports = []
 
     # 1) Copy all base components' vb/ib/fmt into the merge root (the wrapped one will later be overwritten by the split).
     for name in base_comps:
@@ -772,6 +815,8 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     for spec in dungeon_specs:
         d = Path(spec["folder"])
         _copy_textures(d, out)
+    for form in bound_forms:
+        _copy_textures(Path(form["folder"]), out)
 
     # 3.5) Append editable runtime IB components to the aggregate root.
     editable_ib_records = []
@@ -836,7 +881,8 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
     source_anchor_folders = (
         [base]
         + [Path(spec["folder"]) for spec in dungeon_specs]
-        + [Path(eib["folder"]) for eib in (editable_ibs or [])])
+        + [Path(eib["folder"]) for eib in (editable_ibs or [])]
+        + [Path(form["folder"]) for form in bound_forms])
     anchors_changed = _merge_form_anchors_into_root(root_stu, source_anchor_folders)
     if editable_stu_additions or editable_stu_sources or editable_form_modes or anchors_changed:
         root_stu.update(editable_stu_additions)  # Component 8/9.. keys, no collision with base 0..N-1
@@ -927,6 +973,43 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         if meta.get("foldable"):
             fold_data[spec["hash"]] = build_fold_correspondence(
                 out, base_comps, base_pos_c, base_pos_g, base_grid_g, _comp_of_g, spec)
+
+    # 3.7b) Treat explicitly selected same-VB0 extracts as texture forms of an
+    # existing fold route.  This mutates only the in-memory runtime STU; the
+    # normal fold-form canonicalizer below writes the final root STU.
+    for form in bound_forms:
+        fold = fold_data.get(form["target_hash"])
+        if not fold:
+            raise RuntimeError(
+                "形态合并目标 %s 不是可折叠路由；请改用“独立可编辑”。"
+                % form["target_hash"])
+        target = runtime_native[form["target_hash"]]
+        form_stu = _read_json_or_empty(
+            form["folder"], "ShaderTextureUsage.json")
+        local_components = {
+            int(name.rsplit(" ", 1)[-1])
+            for name, block in form_stu.items()
+            if re.fullmatch(r"Component\s+\d+", str(name))
+            and isinstance(block, dict)
+        }
+        routed_components = {
+            int(local) for local in (fold.get("comp_map") or {})
+        }
+        if local_components != routed_components:
+            raise RuntimeError(
+                "形态合并项 %s 的 STU Component %s 与目标折叠路由 %s 不一致。"
+                % (form["hash"], sorted(local_components),
+                   sorted(routed_components)))
+        summary = slot_form_merge.merge_extracted_form_usage(
+            target["stu"], form_stu,
+            {component: component for component in local_components},
+            form["target_hash"], form["form_label"],
+            Path(form["folder"]).parent.name)
+        summary.update({
+            "source_hash": form["hash"],
+            "target_hash": form["target_hash"],
+        })
+        form_merge_reports.append(summary)
 
     # 3.8) Resolve every fold ShapeKey into the aggregate canonical namespace.
     # Keys without a base equivalent are projected into the root now; export has
@@ -1035,6 +1118,7 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder, editable_ibs
         "out_folder": str(out), "base_components": len(base_comps),
         "splits": splits, "runtime_ibs": [s["hash"] for s in dungeon_specs],
         "editable_ibs": editable_ib_records, "warnings": warnings,
+        "form_ibs": form_merge_reports,
         "lod_entries_merged": lod_entries_merged,
         **texture_canonical,
         **texture_prune,

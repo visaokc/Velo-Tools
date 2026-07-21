@@ -19,6 +19,7 @@
 # so they must be captured while the dump files are still around.
 
 import json
+import re
 
 from collections import OrderedDict
 from pathlib import Path
@@ -407,6 +408,51 @@ def _upsert_extra_form(usage, components_usage, form_label, source,
 
     usage[constants.EXTRA_FORMS_KEY] = extra_forms
     return entry, replaced, variants_added
+
+
+def merge_extracted_form_usage(usage, form_usage, component_map, route_hash,
+                               form_label='', source=''):
+    """Merge one already-extracted same-VB0 STU as a routed form.
+
+    This is the extraction-folder equivalent of ``merge_form_dump``.  It is
+    used by the cross-scene producer when an IB row is explicitly marked as a
+    form, so the result follows the same ``extra_forms`` canonicalization path
+    as the established form-first workflow.
+    """
+    if not isinstance(usage, dict) or not isinstance(form_usage, dict):
+        raise FormMergeError('extracted form ShaderTextureUsage.json has an unexpected shape')
+    components_usage = OrderedDict()
+    for name, block in form_usage.items():
+        if (not re.fullmatch(r'Component\s+\d+', str(name))
+                or not isinstance(block, dict)):
+            continue
+        # Extracted component blocks also carry canonicalization metadata such
+        # as form_component_mode/form_variants.  A new form branch contains
+        # only this extract's native shader-pair maps, matching raw-dump merge.
+        components_usage[name] = OrderedDict(
+            (key, value) for key, value in block.items()
+            if str(key).startswith('vs='))
+    if not components_usage:
+        raise FormMergeError(
+            'extracted form ShaderTextureUsage.json contains no Component records')
+    remapped_usage = _remap_cross_scene_form_components(
+        components_usage, component_map, route_hash)
+    entry, replaced, variants_added = _upsert_extra_form(
+        usage, remapped_usage, form_label, source, 'extracted-vb0', route_hash)
+    multi_components = sorted(
+        int(name.rsplit(' ', 1)[-1]) for name in remapped_usage)
+    stu_metadata.sync_form_component_modes(
+        usage, multi_components=multi_components)
+    summary = {
+        'label': entry['label'],
+        'replaced': replaced,
+        'variants_added': variants_added,
+        'components': len(remapped_usage),
+    }
+    # Match the persisted form-first path before the aggregate producer reads
+    # this in-memory STU again.
+    stu_metadata.canonicalize_lean_usage(usage)
+    return summary
 
 
 _ANCHOR_METADATA_KEYS = (
