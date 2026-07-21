@@ -788,6 +788,7 @@ Hash-style 与 slot-style 可以在同一个 Mod 中共存。它们不是互斥�
 #### slot-style 的安全边界
 
 - 每个写入的 `ps-tN` 都必须出现在该分支完整、正向的 assignment signature 中。
+- 同一贴图在同一 Component、同一形态的多个可安全区分 shader branch 中使用不同 service slot 时，各 branch 分别按自身条件和槽位写入，并使用完整槽位备份/恢复，不因多槽本身退回 Hash fallback。
 - 多形态分支必须能由最终槽位证据区分。
 - 证据弱、冲突或不完整时停止导出，不生成猜测条件。
 - 同一槽位布局无法区分的 Component 应补充新 Dump，或取消该 Component 的 slot-style。

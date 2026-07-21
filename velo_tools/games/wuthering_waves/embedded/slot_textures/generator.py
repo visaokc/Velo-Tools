@@ -1914,6 +1914,43 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
         form_routes=form_routes, ambiguous_out=ambiguous_primary)
     if ambiguous_primary:
         raise SlotStyleDegrade('; '.join(ambiguous_primary))
+    service_drift_branches: Set[Tuple[int, int, str, str]] = set()
+    for form_id, (_label, form_data) in enumerate(audit_forms, start=1):
+        form_fresh = (freshness[form_id - 1]
+                      if freshness is not None and form_id - 1 < len(freshness)
+                      else None)
+        form_depth = (pass_depth[form_id - 1]
+                      if pass_depth is not None and form_id - 1 < len(pass_depth)
+                      else None) or {}
+        for comp_id, comp_pairs in form_data.items():
+            primary_ps = primary_passes.get((form_id, comp_id))
+            primary_pair = comp_pairs.get(primary_ps) if primary_ps else None
+            if not isinstance(primary_pair, dict):
+                continue
+            primary_role = _pass_role(primary_pair, texture_info)
+            primary_depth = bool(form_depth.get((comp_id, primary_ps), False))
+            writers_by_hash_slot: Dict[str, Dict[int, Set[str]]] = {}
+            for ps, pair_map in comp_pairs.items():
+                if (_pass_role(pair_map, texture_info) != primary_role
+                        or bool(form_depth.get((comp_id, ps), False)) != primary_depth):
+                    continue
+                fresh_slots = _fresh_signature_slots(
+                    comp_id, ps, pair_map, form_fresh)
+                for slot, tex_hash in pair_map.items():
+                    if (slot not in constants.SERVICE_SLOTS
+                            or slot not in fresh_slots
+                            or not isinstance(tex_hash, str)):
+                        continue
+                    canon = alias.get(tex_hash, tex_hash)
+                    writers_by_hash_slot.setdefault(canon, {}).setdefault(
+                        slot, set()).add(ps)
+            for tex_hash, writers_by_slot in writers_by_hash_slot.items():
+                if len(writers_by_slot) <= 1:
+                    continue
+                for writers in writers_by_slot.values():
+                    for ps in writers:
+                        service_drift_branches.add(
+                            (form_id, comp_id, ps, tex_hash))
     rows = []
     branch_samples: Dict[
         Tuple[int, Optional[str], Tuple[Tuple[int, str], ...],
@@ -1955,26 +1992,32 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     slot: tex_hash for slot, tex_hash in sorted(pair_map.items())
                     if isinstance(tex_hash, str)
                 }
-                assign_hashes = {
-                    slot: tex_hash for slot, tex_hash in observed_hashes.items()
-                    if (is_primary_pass and slot in override_slots
-                        and alias.get(tex_hash, tex_hash) in texture_info
-                        and (
-                            canonical_seats.get(
-                                (comp_id, route,
-                                 alias.get(tex_hash, tex_hash))) == slot
-                            or (
-                                slot in constants.SERVICE_SLOTS
-                                and sum(
-                                    1 for other_slot, other_hash in observed_hashes.items()
-                                    if (other_slot in constants.SERVICE_SLOTS
-                                        and other_slot in override_slots
-                                        and alias.get(other_hash, other_hash)
-                                        == alias.get(tex_hash, tex_hash))
-                                ) > 1
-                            )
-                        ))
-                }
+                assign_hashes = {}
+                for slot, tex_hash in observed_hashes.items():
+                    canon = alias.get(tex_hash, tex_hash)
+                    service_drift_branch = (
+                        (form_id, comp_id, ps, canon) in service_drift_branches)
+                    if ((not is_primary_pass and not service_drift_branch)
+                            or slot not in override_slots
+                            or canon not in texture_info):
+                        continue
+                    duplicate_service_seat = (
+                        slot in constants.SERVICE_SLOTS
+                        and sum(
+                            1 for other_slot, other_hash
+                            in observed_hashes.items()
+                            if (other_slot in constants.SERVICE_SLOTS
+                                and other_slot in override_slots
+                                and alias.get(other_hash, other_hash) == canon)
+                        ) > 1)
+                    if (canonical_seats.get((comp_id, route, canon)) == slot
+                            or duplicate_service_seat
+                            or service_drift_branch):
+                        assign_hashes[slot] = tex_hash
+                is_service_drift_branch = any(
+                    (form_id, comp_id, ps, alias.get(tex_hash, tex_hash))
+                    in service_drift_branches
+                    for tex_hash in assign_hashes.values())
                 depth_only = False
                 if pass_depth is not None and form_id - 1 < len(pass_depth):
                     depth_only = bool((pass_depth[form_id - 1] or {}).get(
@@ -1987,6 +2030,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     'pass_role': role,
                     'depth_only': depth_only,
                     'primary_pass': is_primary_pass,
+                    'service_drift_branch': is_service_drift_branch,
                     'condition_source': condition_source,
                     'signature': _serialized_signature(sig),
                     'positive_signature': _serialized_signature(sig),
@@ -1998,7 +2042,9 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     'observed_hashes': {str(slot): tex_hash
                                         for slot, tex_hash in observed_hashes.items()},
                     'fresh_slots': sorted(fresh_slots),
-                    'canonical_slots': sorted(assign_hashes) if is_primary_pass else [],
+                    'canonical_slots': (
+                        sorted(assign_hashes)
+                        if is_primary_pass or is_service_drift_branch else []),
                 }
                 if route is not None:
                     row['route'] = route
@@ -2006,7 +2052,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                 if remap_sources:
                     row['remap_sources'] = remap_sources
                 rows.append(row)
-                if assign_hashes and is_primary_pass:
+                if assign_hashes and (is_primary_pass or is_service_drift_branch):
                     for branch_assign_hashes in _duplicate_service_assignment_variants(
                             assign_hashes, alias):
                         branch_sig = _signature_for_duplicate_service_variant(
@@ -2041,6 +2087,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                 'pass_role': role,
                                 'depth_only': depth_only,
                                 'primary_pass': is_primary_pass,
+                                'service_drift_branch': is_service_drift_branch,
                                 'condition_source': condition_source,
                                 'forms': [label],
                                 'sources': [{'form': label, 'ps': ps}],
@@ -2050,6 +2097,9 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                             if route is not None:
                                 branch_samples[sample_key]['route'] = route
                         else:
+                            sample['service_drift_branch'] = bool(
+                                sample.get('service_drift_branch')
+                                or is_service_drift_branch)
                             if label not in sample['forms']:
                                 sample['forms'].append(label)
                             sample['sources'].append({'form': label, 'ps': ps})
@@ -2398,9 +2448,6 @@ def _local_branches_from_audit(audit: dict,
         Tuple[int, Optional[str], dict, Dict[int, str],
               Tuple[Tuple[int, str], ...], str]
     ] = []
-    observed_service_slot_sets_by_component_hash: Dict[
-        Tuple[int, str], Set[Tuple[int, ...]]] = {}
-
     def _route_from(entry: dict, source: str) -> Optional[str]:
         raw_route = entry.get('route')
         if raw_route is None:
@@ -2484,22 +2531,6 @@ def _local_branches_from_audit(audit: dict,
         ps = str(row.get('ps') or '')
         if row.get('primary_pass') and form_id is not None and ps:
             primary_row_keys.add((form_id, comp_id, ps))
-        observed_hashes = row.get('observed_hashes') or {}
-        if isinstance(observed_hashes, dict):
-            service_slots_by_hash: Dict[str, Set[int]] = {}
-            for raw_slot, tex_hash in observed_hashes.items():
-                if not isinstance(tex_hash, str):
-                    continue
-                try:
-                    slot = int(raw_slot)
-                except (TypeError, ValueError):
-                    continue
-                if not _volatile_condition_slot(slot):
-                    continue
-                service_slots_by_hash.setdefault(canon_fn(tex_hash), set()).add(slot)
-            for canon, slots in service_slots_by_hash.items():
-                observed_service_slot_sets_by_component_hash.setdefault(
-                    (comp_id, canon), set()).add(tuple(sorted(slots)))
         _assign, _assign_key = _effective_assignment(
             row.get('assign_hashes'), comp_id, source)
         if not row.get('primary_pass'):
@@ -2575,7 +2606,8 @@ def _local_branches_from_audit(audit: dict,
             if form_id is not None and ps:
                 branch_primary_keys.add((form_id, comp_id, ps))
         if (branch_primary_keys
-                and not branch_primary_keys.issubset(primary_row_keys)):
+                and not branch_primary_keys.issubset(primary_row_keys)
+                and not entry.get('service_drift_branch')):
             continue
         pending_branches.append(
             (comp_id, route, entry, assign, assign_key, source))
@@ -2603,23 +2635,35 @@ def _local_branches_from_audit(audit: dict,
         scope = (comp_id, record.get('route'))
         row_signatures.setdefault(scope, {}).setdefault(
             record.get('assign_key') or (), set()).add(record['signature'])
-    drift_component_hashes = {
-        component_hash
-        for component_hash, slot_sets
-        in observed_service_slot_sets_by_component_hash.items()
-        if len(slot_sets) > 1
-        and len({slot for slots in slot_sets for slot in slots}) > 1
-    }
     global_drift_hashes = set()
     for tex_hash in volatile_assignment_hashes or ():
         canon = canon_fn(tex_hash)
         if canon:
             global_drift_hashes.add(canon)
+    service_branch_facts: Dict[
+        Tuple[int, str], List[Tuple[int, bool]]] = {}
+    for comp_id, _route, entry, _assign, assign_key, _source in pending_branches:
+        signature = _signature_from_audit(
+            entry.get('positive_signature') or entry.get('signature'))
+        safe = _safe_condition_shape(signature, ())
+        for slot, tex_hash in assign_key:
+            if _volatile_condition_slot(slot):
+                service_branch_facts.setdefault(
+                    (comp_id, tex_hash), []).append((slot, safe))
+    drift_component_hashes = {
+        component_hash
+        for component_hash, facts in service_branch_facts.items()
+        if len({slot for slot, _safe in facts}) > 1
+    }
+    safe_drift_component_hashes = {
+        component_hash
+        for component_hash in drift_component_hashes
+        if all(safe for _slot, safe in service_branch_facts[component_hash])
+    }
     for component_id, tex_hash in volatile_assignment_component_hashes or ():
         canon = canon_fn(tex_hash)
         if canon:
             drift_component_hashes.add((int(component_id), canon))
-
     for (comp_id, route, evidence_assign_key, pass_role), items in sorted(
             grouped_pending.items(),
             key=lambda item: (
@@ -2646,7 +2690,9 @@ def _local_branches_from_audit(audit: dict,
             (slot, tex_hash) for slot, tex_hash in evidence_assign_key
             if not (_volatile_condition_slot(slot)
                     and (tex_hash in global_drift_hashes
-                         or (comp_id, tex_hash) in drift_component_hashes))
+                         or ((comp_id, tex_hash) in drift_component_hashes
+                             and (comp_id, tex_hash)
+                             not in safe_drift_component_hashes)))
         )
         if not assign_key:
             continue

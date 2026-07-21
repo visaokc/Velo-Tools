@@ -587,7 +587,7 @@ Requirements:
 - enough fresh slot-layout evidence to distinguish every emitted branch;
 - every referenced mod DDS present in the object source or output.
 
-Velo emits only branches with a complete positive assignment signature. Every assigned slot must also appear as fresh positive format-family evidence.
+Velo emits only branches with a complete positive assignment signature. Every assigned slot must also appear as usable positive format-family evidence. When one texture occupies different service slots in separate, safely distinguishable shader branches of the same Component and form, Velo emits one conditional assignment per observed branch and uses full slot backup/restore instead of collapsing the texture to Hash fallback.
 
 Ambiguous or incomplete evidence fails closed. Velo does not emit broad fallback probes merely to make export succeed.
 
