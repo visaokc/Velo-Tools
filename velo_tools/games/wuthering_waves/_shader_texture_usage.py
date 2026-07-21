@@ -11,7 +11,8 @@ yields usable binding-freshness evidence): top-level ``"version": 4``, per
 slot record ``"fresh": true/false`` (slot was explicitly PSSetShaderResources
 -bound under the draw's call id, vs. state inherited from an earlier draw),
 optional ``"verified_inherited": true`` for service slots when that inherited
-binding's writer and consumer freshly bind the same character cb4 identity,
+binding's writer and consumer are color passes, freshly bind the same
+character cb4 identity, and share a fresh material cb5/cb6 identity,
 and per (vs, ps) pair ``"depth_only": true/false`` (no color render target
 bound at any of the pair's draws). Consumers that predate v4 skip the extra
 keys structurally; without log evidence the writer emits a v3-identical file.

@@ -8,7 +8,8 @@ pairs / phantom same-signature conflicts). The log.txt, however, records the
 actual API stream: slots written by ``PSSetShaderResources`` under a draw's
 call-id prefix are FRESH for that draw. An inherited binding is also usable
 when its writer and consumer both freshly bind the extracted character's cb4
-identity; unrelated inherited state remains excluded.
+identity and one matching material CB in a color pass; unrelated inherited
+state remains excluded.
 
 This module is a pure-python, dependency-free single-pass parser producing:
   * per call id: the set of ps-t slots freshly written before the draw, with
@@ -267,10 +268,11 @@ def slot_is_verified_character_inherited(
         old_hash: Optional[str] = None) -> bool:
     """Prove a non-fresh service binding was inherited inside one character.
 
-    The current draw and the slot's last explicit writer must both freshly
-    bind the extracted object's cb4 identity at vs-cb3 or vs-cb4.  This keeps
-    intentional cross-Component service-resource reuse while rejecting a
-    texture merely left bound by an unrelated object.
+    The current draw and the slot's last explicit writer must both be color
+    passes, freshly bind the extracted object's cb4 identity at vs-cb3 or
+    vs-cb4, and share one freshly bound material identity at vs-cb5/vs-cb6.
+    This keeps intentional cross-Component service-resource reuse while
+    rejecting a texture merely left bound by another material pass.
     """
     cb_hash = str(character_cb_hash or '').strip().lower()
     if not cb_hash:
@@ -288,13 +290,23 @@ def slot_is_verified_character_inherited(
     writer = evidence.calls.get(writer_id)
     if writer is None or not writer.drawn:
         return False
+    if not call.has_color_rt or not writer.has_color_rt:
+        return False
 
     def binds_character(entry: CallEvidence) -> bool:
         return any(
             str(entry.fresh_vs_cb_slots.get(slot) or '').lower() == cb_hash
             for slot in (3, 4))
 
-    return binds_character(call) and binds_character(writer)
+    def shares_material(entry_a: CallEvidence, entry_b: CallEvidence) -> bool:
+        return any(
+            entry_a.fresh_vs_cb_slots.get(slot)
+            and entry_a.fresh_vs_cb_slots.get(slot)
+            == entry_b.fresh_vs_cb_slots.get(slot)
+            for slot in (5, 6))
+
+    return (binds_character(call) and binds_character(writer)
+            and shares_material(call, writer))
 
 
 def call_has_color_rt(evidence: LogEvidence, call_id) -> Optional[bool]:
