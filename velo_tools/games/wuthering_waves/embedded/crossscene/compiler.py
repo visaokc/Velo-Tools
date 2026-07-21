@@ -1247,7 +1247,6 @@ def _slot_plan(
             usage, stu_metadata.form_entries(usage)),
         texture_hash_allowlist={texture.hash for texture in textures},
     )
-    root_catalog_fallback = set()
     try:
         plan = generator.build_plan(
             forms, resources, texture_info, warnings,
@@ -1255,15 +1254,14 @@ def _slot_plan(
             **plan_args,
         )
     except generator.LocalDiscriminatorConflict as exc:
-        root_catalog_fallback.update(exc.components)
-        selected.difference_update(exc.components)
-        plan = generator.build_plan(
-            forms, resources, texture_info, warnings,
-            slot_eligible_components=selected,
-            **plan_args,
-        )
-    plan.root_catalog_hash_fallback_components = tuple(
-        sorted(root_catalog_fallback))
+        components = ", ".join(
+            f"Component {component_id}" for component_id in exc.components)
+        raise CrossSceneCompileError(
+            f"slot-enabled {components} cannot be represented by distinct "
+            "slot branches; explicitly uncheck the Component to use Hash "
+            "fallback"
+        ) from exc
+    plan.root_catalog_hash_fallback_components = ()
     issues = (list(getattr(plan, "unsafe_fallback", None) or [])
               + list(getattr(plan, "slot_unrepresented", None) or []))
     if issues:
@@ -1692,18 +1690,16 @@ def _texture_plan(
         ))
 
     owners = _root_texture_components(root)
-    slot_components = set()
-    for _suffix, unit_route, component_ids in targets:
-        for global_id in component_ids:
-            route_mapping = route_maps.get(global_id) or {}
-            source_name = (route_mapping.get(unit_route)
-                           if route_mapping else generic.get(global_id))
-            contract = contracts.get(source_name)
-            if (isinstance(contract, Mapping)
-                    and any(_branch_condition(branch)
-                            and branch.get("assignment_hashes")
-                            for branch in contract.get("branches") or ())):
-                slot_components.add(global_id)
+    eligible_raw = getattr(
+        settings.selection, "slot_eligible_components", None)
+    if eligible_raw is None:
+        slot_components = {
+            int(component_id)
+            for component_ids in owners.values()
+            for component_id in component_ids
+        }
+    else:
+        slot_components = {int(component_id) for component_id in eligible_raw}
     for texture_hash, component_ids in owners.items():
         if texture_hash not in by_hash:
             continue
