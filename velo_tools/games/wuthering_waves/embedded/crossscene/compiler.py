@@ -1439,11 +1439,28 @@ def _unit_lods(unit: Any, root: Any) -> Tuple[Mapping[str, Any], ...]:
     has_prepared_lods = hasattr(unit.extracted_object, "velo_lods")
     prepared = tuple(getattr(unit.extracted_object, "velo_lods", ()) or ())
     if has_prepared_lods:
-        return tuple({
-            "level": int(_value(lod, "level", 0)),
-            "vb0_hash": str(_value(lod, "vb0_hash", "")),
-            "components": tuple(_value(lod, "components", ()) or ()),
-        } for lod in prepared)
+        layout = _unit_layout(unit, root)
+        components = layout.get("components") or ()
+        result = []
+        for lod in prepared:
+            vb0_hash = str(_value(lod, "vb0_hash", ""))
+            rows = list(_value(lod, "components", ()) or ())
+            if len(rows) < len(components):
+                rows.extend([None] * (len(components) - len(rows)))
+            for local_id, component in enumerate(components):
+                if rows[local_id] is not None:
+                    continue
+                rows[local_id] = next((
+                    entry for entry in (component.get("lods") or ())
+                    if str(entry.get("vb0_hash") or entry.get("lod_object_name") or "")
+                    == vb0_hash
+                ), None)
+            result.append({
+                "level": int(_value(lod, "level", 0)),
+                "vb0_hash": vb0_hash,
+                "components": tuple(rows),
+            })
+        return tuple(result)
 
     layout = _unit_layout(unit, root)
     groups: Dict[str, Dict[int, Any]] = {}
