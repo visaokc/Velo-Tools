@@ -519,7 +519,7 @@ EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导�
 - **贴图过滤：跳过同槽同 Hash**
 - **贴图过滤：跳过 Dirty Slot**
 
-其中 **贴图过滤：跳过 Dirty Slot** 会保留 `log.txt` 中明确执行过 `PSSetShaderResources` 的 fresh 槽位；若槽位由前一 draw 继承，但写入 draw 与消费 draw 都有相同角色的 fresh `cb4` 证据，也会保留并在 STU 中标记为 `verified_inherited`。其它无法证明属于同一角色的残留状态仍会过滤。没有可用 log 证据时，Velo 保持 legacy STU，不猜测删除。
+其中 **贴图过滤：跳过 Dirty Slot** 会保留 `log.txt` 中明确执行过 `PSSetShaderResources` 的 fresh 槽位；service slot 若由前一 draw 继承，且写入 draw 与消费 draw 都有相同角色的 fresh `cb4` 证据，也会保留并在 STU 中标记为 `verified_inherited`。主材质槽即使仍绑定同角色资源，也不等于 shader 真正使用，因此继承状态仍按残留过滤。存在可用 log 证据时，提取阶段会同时按保留下来的 Component ownership 修正 DDS 文件名、`TextureUsage.json` 与 STU `filename`；没有可用 log 证据时保持 legacy 输出，不猜测删除。
 
 其它“跳过”类过滤会减少输出，也可能移除后来需要的贴图证据。准备使用插槽风格贴图或多形态合并时，优先保留完整证据。
 

@@ -10,11 +10,11 @@ Schema v4 (ADR 0007 rev 12, additive - emitted only when the dump's log.txt
 yields usable binding-freshness evidence): top-level ``"version": 4``, per
 slot record ``"fresh": true/false`` (slot was explicitly PSSetShaderResources
 -bound under the draw's call id, vs. state inherited from an earlier draw),
-optional ``"verified_inherited": true`` when that inherited binding's writer
-and consumer freshly bind the same character cb4 identity, and per (vs, ps)
-pair ``"depth_only": true/false`` (no color render target bound at any of the
-pair's draws). Consumers that predate v4 skip the extra keys structurally;
-without log evidence the writer emits a v3-identical file.
+optional ``"verified_inherited": true`` for service slots when that inherited
+binding's writer and consumer freshly bind the same character cb4 identity,
+and per (vs, ps) pair ``"depth_only": true/false`` (no color render target
+bound at any of the pair's draws). Consumers that predate v4 skip the extra
+keys structurally; without log evidence the writer emits a v3-identical file.
 
 ``format`` is the canonical DXGI format name (vocabulary of
 ``embedded/slot_textures/constants.DXGI_FORMAT_NAMES``) read from the dump
@@ -72,6 +72,7 @@ from ._wwmi_core.migoto_io.dump_parser.filename_parser import ShaderType
 from .embedded.slot_textures import dds_meta as _dds_meta
 from .embedded.slot_textures import log_freshness as _log_freshness
 from .embedded.slot_textures import stu_metadata as _stu_metadata
+from .embedded.slot_textures.constants import SERVICE_SLOTS
 
 _INSTALLED = False
 _ORIG_BUILD_COMPONENTS = None
@@ -224,7 +225,8 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                             desc.hash, desc.old_hash)
                         if skip_dirty_slot and fresh is False:
                             verified_inherited = (
-                                _log_freshness.slot_is_verified_character_inherited(
+                                desc.slot_id in SERVICE_SLOTS
+                                and _log_freshness.slot_is_verified_character_inherited(
                                     evidence, desc.call_id, desc.slot_id,
                                     desc.hash, character_cb_hash, desc.old_hash))
                             if not verified_inherited:
@@ -280,6 +282,101 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                       f'ShaderTextureUsage.json')
 
             _stu_metadata.sync_form_component_modes(shader_texture_usage)
+
+            if evidence is not None and skip_dirty_slot:
+                allowed_usage = {}
+                emitted_hash_components = {}
+                for component_key, component_block in shader_texture_usage.items():
+                    if (not str(component_key).startswith('Component ')
+                            or not isinstance(component_block, dict)):
+                        continue
+                    component_id = str(component_key).split()[-1]
+                    component_allowed = allowed_usage.setdefault(component_key, {})
+                    for vs_key, vs_block in component_block.items():
+                        if not str(vs_key).startswith('vs=') or not isinstance(vs_block, dict):
+                            continue
+                        for ps_key, ps_block in vs_block.items():
+                            if not str(ps_key).startswith('ps=') or not isinstance(ps_block, dict):
+                                continue
+                            for slot_key, record in ps_block.items():
+                                if (not str(slot_key).startswith('ps-t')
+                                        or not isinstance(record, dict)):
+                                    continue
+                                tex_hash = str(record.get('hash') or '')
+                                if not tex_hash:
+                                    continue
+                                component_allowed.setdefault(slot_key, set()).add(
+                                    (tex_hash, vs_key, ps_key))
+                                emitted_hash_components.setdefault(tex_hash, set()).add(
+                                    component_id)
+
+                usage_path = object_directory / 'TextureUsage.json'
+                try:
+                    with open(usage_path, encoding='utf-8') as f:
+                        texture_usage = json.load(f)
+                except (OSError, TypeError, ValueError):
+                    texture_usage = None
+                if isinstance(texture_usage, dict):
+                    for component_key, component_block in texture_usage.items():
+                        if not isinstance(component_block, dict):
+                            continue
+                        component_allowed = allowed_usage.get(component_key, {})
+                        for slot_key in list(component_block):
+                            entries = component_block.get(slot_key)
+                            if not isinstance(entries, list):
+                                continue
+                            allowed = component_allowed.get(slot_key, set())
+                            kept = []
+                            for entry in entries:
+                                parts = str(entry).split('-')
+                                if any(
+                                        parts and parts[0] == tex_hash
+                                        and vs_key in parts and ps_key in parts
+                                        for tex_hash, vs_key, ps_key in allowed):
+                                    kept.append(entry)
+                            if kept:
+                                component_block[slot_key] = kept
+                            else:
+                                del component_block[slot_key]
+                    with open(usage_path, 'w') as f:
+                        f.write(json.dumps(texture_usage, indent=4))
+
+                final_filenames = {}
+                for tex_hash, stock_components in hash_components.items():
+                    record = record_cache.get(tex_hash)
+                    if record is None:
+                        continue
+                    suffix = Path(record.get('filename') or '').suffix
+                    stock_ids = '-'.join(sorted(stock_components))
+                    stock_path = object_directory / (
+                        f'Components-{stock_ids} t={tex_hash}{suffix}')
+                    emitted_components = emitted_hash_components.get(tex_hash, set())
+                    if not emitted_components:
+                        if stock_path.is_file():
+                            stock_path.unlink()
+                        continue
+                    emitted_ids = '-'.join(sorted(emitted_components))
+                    final_filename = f'Components-{emitted_ids} t={tex_hash}{suffix}'
+                    final_filenames[tex_hash] = final_filename
+                    final_path = object_directory / final_filename
+                    if stock_path != final_path and stock_path.is_file():
+                        stock_path.replace(final_path)
+
+                for component_block in shader_texture_usage.values():
+                    if not isinstance(component_block, dict):
+                        continue
+                    for vs_block in component_block.values():
+                        if not isinstance(vs_block, dict):
+                            continue
+                        for ps_block in vs_block.values():
+                            if not isinstance(ps_block, dict):
+                                continue
+                            for record in ps_block.values():
+                                if not isinstance(record, dict):
+                                    continue
+                                final_filename = final_filenames.get(record.get('hash'))
+                                if final_filename:
+                                    record['filename'] = final_filename
 
             # Preserve the slot-texture layer's user-editable lean metadata
             # across re-extraction.

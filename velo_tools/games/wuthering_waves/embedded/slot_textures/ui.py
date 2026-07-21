@@ -49,7 +49,7 @@ def inject_settings():
         name="贴图过滤：跳过 Dirty Slot",
         description=(
             "保留 log.txt 中由 PSSetShaderResources 明确绑定的槽位，以及可由相同角色 "
-            "cb4 证明的跨 Component 继承槽位；过滤其它残留状态；"
+            "cb4 证明的跨 Component service slot 继承；主材质槽的继承状态仍按残留过滤；"
             "没有可用 log 证据时保持 legacy STU，不猜测删除。"
         ),
         default=True,
