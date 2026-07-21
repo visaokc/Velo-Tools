@@ -138,6 +138,44 @@ def merge_fold_form_component_modes(root_stu: dict,
             continue
         source = (runtime_sources or {}).get(str(ib_hash)) or {}
         stu = source.get("stu") or {}
+        route_label = f"route_{str(ib_hash).lower()}_base"
+        for local, merged in sorted(comp_map.items()):
+            comp_name = f"Component {local}"
+            comp_block = stu.get(comp_name)
+            root_key = f"Component {merged}"
+            block = (root_stu or {}).get(root_key)
+            if not isinstance(comp_block, dict) or not isinstance(block, dict):
+                continue
+            if block.get(slot_constants.FORM_COMPONENT_MODE_KEY) != "multi":
+                block[slot_constants.FORM_COMPONENT_MODE_KEY] = "multi"
+                changed = True
+            sources = block.setdefault(slot_constants.COMPONENT_SOURCES_KEY, [])
+            if isinstance(sources, str):
+                sources = [sources]
+                block[slot_constants.COMPONENT_SOURCES_KEY] = sources
+            source_note = (
+                f"merged {root_key} <- fold {ib_hash} local Component {local}")
+            if source_note not in sources:
+                sources.append(source_note)
+                changed = True
+            variants = block.setdefault(slot_constants.FORM_VARIANTS_KEY, {})
+            if not isinstance(variants, dict):
+                variants = {}
+                block[slot_constants.FORM_VARIANTS_KEY] = variants
+                changed = True
+            variant = deepcopy(comp_block)
+            for key in (
+                    slot_constants.FORM_COMPONENT_MODE_KEY,
+                    slot_constants.COMPONENT_SOURCES_KEY,
+                    slot_constants.FORM_VARIANTS_KEY):
+                variant.pop(key, None)
+            _remap_block_filenames(variant, comp_map)
+            variant["source"] = f"fold {ib_hash} base"
+            variant["matched_by"] = "fold-route"
+            variant["vb0_hash"] = str(ib_hash).lower()
+            if variants.get(route_label) != variant:
+                variants[route_label] = variant
+                changed = True
         for entry in stu_metadata.form_entries(stu):
             if not isinstance(entry, dict):
                 continue
