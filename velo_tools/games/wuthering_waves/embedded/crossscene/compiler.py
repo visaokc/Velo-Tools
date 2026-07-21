@@ -1573,6 +1573,69 @@ def _final_setter_name(component_id: int, suffix: str,
     return base + suffix
 
 
+def _assignment_only_hash_fallback_contract(
+        contract: Mapping[str, Any],
+        fallback_hashes: set[str],
+) -> Dict[str, Any]:
+    out = dict(contract)
+    raw_branches = list(contract.get("branches") or ())
+    branches: List[Dict[str, Any]] = []
+    changed_indices: set[int] = set()
+    original_signatures = [
+        tuple(branch.get("positive_signature") or ())
+        for branch in raw_branches
+    ]
+    for index, branch in enumerate(raw_branches):
+        item = dict(branch)
+        assignments = branch.get("assignment_hashes") or {}
+        assignment_only_slots = {
+            int(slot)
+            for slot, texture_hash in assignments.items()
+            if str(texture_hash).lower() in fallback_hashes
+        }
+        if assignment_only_slots:
+            changed_indices.add(index)
+            item["positive_signature"] = tuple(
+                term for term in branch.get("positive_signature") or ()
+                if int(term[0]) not in assignment_only_slots
+            )
+            item["assignment_only_slots"] = tuple(
+                sorted(assignment_only_slots))
+            if (not item["positive_signature"]
+                    and not item.get("negative_signature")
+                    and item.get("form_gate") is None):
+                raise CrossSceneCompileError(
+                    "mixed Hash/slot assignment has no independent branch "
+                    "condition after removing its self-guard")
+        branches.append(item)
+
+    for index, branch in enumerate(branches):
+        if index not in changed_indices:
+            continue
+        assignment = tuple(sorted(
+            (int(slot), str(texture_hash).lower())
+            for slot, texture_hash
+            in (branch.get("assignment_hashes") or {}).items()))
+        positive = tuple(branch.get("positive_signature") or ())
+        negative = tuple(branch.get("negative_signature") or ())
+        for other_index, other_signature in enumerate(original_signatures):
+            if index == other_index:
+                continue
+            other_assignment = tuple(sorted(
+                (int(slot), str(texture_hash).lower())
+                for slot, texture_hash
+                in (branches[other_index].get("assignment_hashes") or {}).items()))
+            if assignment == other_assignment:
+                continue
+            if (all(term in other_signature for term in positive)
+                    and not any(term in other_signature for term in negative)):
+                raise CrossSceneCompileError(
+                    "mixed Hash/slot assignment-only condition overlaps a "
+                    "different texture branch")
+    out["branches"] = branches
+    return out
+
+
 def _texture_plan(
         units: Sequence[Any],
         root: Any,
@@ -1627,6 +1690,32 @@ def _texture_plan(
             tuple(int(global_id)
                   for global_id in (entry.get("component_map") or {}).values()),
         ))
+
+    owners = _root_texture_components(root)
+    slot_components = set()
+    for _suffix, unit_route, component_ids in targets:
+        for global_id in component_ids:
+            route_mapping = route_maps.get(global_id) or {}
+            source_name = (route_mapping.get(unit_route)
+                           if route_mapping else generic.get(global_id))
+            contract = contracts.get(source_name)
+            if (isinstance(contract, Mapping)
+                    and any(_branch_condition(branch)
+                            and branch.get("assignment_hashes")
+                            for branch in contract.get("branches") or ())):
+                slot_components.add(global_id)
+    for texture_hash, component_ids in owners.items():
+        if texture_hash not in by_hash:
+            continue
+        fallback = set(component_ids) - slot_components
+        if fallback:
+            result.hash_fallback_components[texture_hash] = fallback
+    fallback_hashes = set(result.hash_fallback_components)
+    contracts = {
+        name: _assignment_only_hash_fallback_contract(
+            contract, fallback_hashes)
+        for name, contract in contracts.items()
+    }
 
     for suffix, unit_route, component_ids in targets:
         for global_id in component_ids:
@@ -1707,16 +1796,6 @@ def _texture_plan(
                         f"texture resource collision for {resource}")
                 result.resources[resource] = texture
 
-    owners = _root_texture_components(root)
-    slot_components = {
-        setter.component_id for setter in setters_by_name.values()
-    }
-    for texture_hash, component_ids in owners.items():
-        if texture_hash not in by_hash:
-            continue
-        fallback = set(component_ids) - slot_components
-        if fallback:
-            result.hash_fallback_components[texture_hash] = fallback
     result.format_sections = tuple(
         section for section in getattr(raw, "sections", ())
         if getattr(section, "kind", "") in {"anchor", "format_tag"}
