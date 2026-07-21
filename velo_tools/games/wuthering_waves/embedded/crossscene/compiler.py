@@ -1438,7 +1438,7 @@ def _component_lines(component: Any) -> Tuple[int, int]:
 def _unit_lods(unit: Any, root: Any) -> Tuple[Mapping[str, Any], ...]:
     has_prepared_lods = hasattr(unit.extracted_object, "velo_lods")
     prepared = tuple(getattr(unit.extracted_object, "velo_lods", ()) or ())
-    if has_prepared_lods:
+    if has_prepared_lods and (prepared or _unit_has_geometry(unit)):
         layout = _unit_layout(unit, root)
         components = layout.get("components") or ()
         result = []
