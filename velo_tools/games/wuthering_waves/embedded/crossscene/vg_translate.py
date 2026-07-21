@@ -9,6 +9,24 @@ it can be unit-tested without Blender; the orchestrator applies the plan to the 
 TMP_PREFIX = "__xsvg_tmp_"
 
 
+def format_vertex_group_labels(names, profile=None, source_names=None):
+    """Return author-facing MMD labels while preserving unified numeric IDs."""
+    mmd_by_unified = {}
+    if profile is not None:
+        for row in getattr(profile, "rows", ()):
+            mmd_name = str(getattr(row, "mmd_name", "") or "").strip()
+            unified_name = str(getattr(row, "unified_name", "") or "").strip()
+            if mmd_name and unified_name:
+                mmd_by_unified.setdefault(unified_name, mmd_name)
+    sources = {str(key): str(value) for key, value in (source_names or {}).items()}
+    labels = []
+    for value in names:
+        name = str(value)
+        mmd_name = sources.get(name) or mmd_by_unified.get(name)
+        labels.append(f"{mmd_name}（{name}）" if mmd_name and mmd_name != name else name)
+    return labels
+
+
 def build_inverse_vg_map(vg_map):
     inverse = {}
     for key, value in (vg_map or {}).items():

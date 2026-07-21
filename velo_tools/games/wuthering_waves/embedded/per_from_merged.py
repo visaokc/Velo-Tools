@@ -393,10 +393,16 @@ def _make_patched(orig_execute):
                 if cid is not None and vg_maps.get(cid):
                     stray = _prepare_object_for_component_export(cp, vg_maps[cid], mmd_profile)
                     if stray:
+                        from .crossscene import vg_translate
                         self.report({'ERROR'},
                                     "导出失败：物体 `%s` (Component %s) 的顶点组 %s 权重越界——它们对应的统一骨不在"
                                     "该部件的 vg_map 内（COMPONENT 运行期无法表达跨部件权重）。请把这些权重转回本部件"
-                                    "的骨，或刷零后再导出。" % (orig_name, cid, stray))
+                                    "的骨，或刷零后再导出。" % (
+                                        orig_name,
+                                        cid,
+                                        vg_translate.format_vertex_group_labels(
+                                            stray, mmd_profile),
+                                    ))
                         return {'CANCELLED'}
             cfg.component_collection = tmp_col
             cfg.mod_skeleton_type = 'COMPONENT'

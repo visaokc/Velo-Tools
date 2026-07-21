@@ -130,7 +130,7 @@ def _weighted_vertex_groups(obj: Any) -> list[Tuple[str, bool]]:
 
 
 def _translate_host_vertex_groups(obj: Any, split: Mapping[str, Any],
-                                  ib_hash: str) -> None:
+                                  ib_hash: str, profile: Any = None) -> None:
     from . import vg_translate
 
     check = split.get("host_vg_selfcheck") or {}
@@ -144,7 +144,8 @@ def _translate_host_vertex_groups(obj: Any, split: Mapping[str, Any],
             "own-buffer 部件 %s（IB %s）存在带权重的顶点组 %s 不在 host 骨表内——"
             "该饰品的权重必须刷在 host 既有骨上（本部件可用顶点组：%s）。"
             "请把越界权重转移到可用顶点组或刷零后再导出。"
-            % (split.get("split_object"), ib_hash, strays, usable))
+            % (split.get("split_object"), ib_hash,
+               vg_translate.format_vertex_group_labels(strays, profile), usable))
     by_name = {group.name: group for group in obj.vertex_groups}
     for old in drops:
         obj.vertex_groups.remove(by_name[old])
@@ -153,7 +154,7 @@ def _translate_host_vertex_groups(obj: Any, split: Mapping[str, Any],
 
 def _prepare_own_buffer_vertex_groups(obj: Any, split: Mapping[str, Any],
                                       component_vg_map: Mapping[str, int],
-                                      ib_hash: str) -> None:
+                                      ib_hash: str, profile: Any = None) -> None:
     from . import vg_translate
 
     check = split.get("host_vg_selfcheck") or {}
@@ -168,10 +169,11 @@ def _prepare_own_buffer_vertex_groups(obj: Any, split: Mapping[str, Any],
             "own-buffer 部件 %s（IB %s）的顶点组 %s 权重越界——它们既不属于 host 骨表，"
             "也无法通过该部件的 vg_map 翻译成本部件骨。请把这些权重转回本部件的骨，"
             "或刷零后再导出。"
-            % (split.get("split_object"), ib_hash, strays))
+            % (split.get("split_object"), ib_hash,
+               vg_translate.format_vertex_group_labels(strays, profile)))
     _rename_and_compact_vertex_groups(obj, renames)
     if not skip_host:
-        _translate_host_vertex_groups(obj, split, ib_hash)
+        _translate_host_vertex_groups(obj, split, ib_hash, profile)
 
 
 def _prepare_editable_vertex_groups(
@@ -181,6 +183,7 @@ def _prepare_editable_vertex_groups(
         merged_component: int,
         ib_hash: str,
         export_skeleton_type: str,
+        profile: Any = None,
 ) -> None:
     from . import vg_translate
 
@@ -195,7 +198,8 @@ def _prepare_editable_vertex_groups(
             "editable IB %s merged Component %s 的顶点组 %s 权重越界——它们既不属于 "
             "merged/root component palette，也无法翻译到 editable source palette。"
             "请把这些权重转回该 editable IB 的本部件骨，或刷零后再导出。"
-            % (ib_hash, merged_component, strays))
+            % (ib_hash, merged_component,
+               vg_translate.format_vertex_group_labels(strays, profile)))
     if str(export_skeleton_type).upper() == "COMPONENT":
         from ..per_from_merged import _apply_component_remap_preserving_vertex_order
         _apply_component_remap_preserving_vertex_order(
@@ -481,7 +485,10 @@ def _format_stray_weight_details(
     stray: Iterable[str],
     details: Mapping[str, Mapping[str, Any]],
     source_names: Mapping[str, str],
+    profile: Any = None,
 ) -> str:
+    from . import vg_translate
+
     rows = []
     for name in stray:
         row = details.get(str(name), {})
@@ -489,10 +496,10 @@ def _format_stray_weight_details(
         sample = ", ".join(str(value) for value in vertices[:12]) or "未知"
         if len(vertices) > 12:
             sample += f", ...（另有 {len(vertices) - 12} 个）"
-        source = source_names.get(str(name))
-        source_text = f"，来源组 `{source}`" if source else ""
+        label = vg_translate.format_vertex_group_labels(
+            [name], profile, source_names)[0]
         rows.append(
-            f"unified VG {name}{source_text}：{len(vertices)} 个顶点 "
+            f"unified VG {label}：{len(vertices)} 个顶点 "
             f"[{sample}]，最大权重 {float(row.get('max_weight', 0.0)):.8f}，"
             f"总权重 {float(row.get('total_weight', 0.0)):.8f}"
         )
@@ -528,7 +535,8 @@ def postprocess_partitioned_fragment(
             source_names = json.loads(str(obj.get("_velo_vg_source_names", "{}")))
         except (TypeError, ValueError, json.JSONDecodeError):
             source_names = {}
-        weight_text = _format_stray_weight_details(stray, details, source_names)
+        weight_text = _format_stray_weight_details(
+            stray, details, source_names, profile)
         return (
             f"物体 `{source_name}` / 材质 `{material_name}` → Component "
             f"{target_component_index}：{weight_text}。请在原对象中检查这些材质面和来源组；"
@@ -544,6 +552,8 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
     labels = {}
     skeleton_mode = ("COMPONENT" if cfg.mod_skeleton_type == "COMPONENT_FROM_MERGED"
                      else cfg.mod_skeleton_type)
+    settings = getattr(context.scene, "velo_endfield", None)
+    profile = getattr(settings, "mmd_profile", None) if settings else None
     per_local_count: Dict[int, int] = {}
     global_to_local = {global_id: local_id
                        for local_id, global_id in plan.component_map}
@@ -594,14 +604,14 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
             else:
                 from .. import per_from_merged
                 component_meta = (metadata.get("components") or [])[local_id]
-                settings = getattr(context.scene, "velo_endfield", None)
-                profile = getattr(settings, "mmd_profile", None) if settings else None
                 stray = per_from_merged._prepare_object_for_component_export(
                     obj, component_meta.get("vg_map") or {}, profile)
                 if stray:
+                    from . import vg_translate
                     raise RuntimeError(
                         "跨场景 Per-Component(from Merged)：物体 %s 的顶点组 %s 权重越界。"
-                        % (selected.name, stray))
+                        % (selected.name,
+                           vg_translate.format_vertex_group_labels(stray, profile)))
         elif plan.kind == "own_buffer":
             if cross_component_materials:
                 raise RuntimeError(
@@ -616,7 +626,8 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
                 base_metadata = metadata
             component_meta = (base_metadata.get("components") or [])[base_component]
             _prepare_own_buffer_vertex_groups(
-                obj, split, component_meta.get("vg_map") or {}, plan.ib_hash)
+                obj, split, component_meta.get("vg_map") or {}, plan.ib_hash,
+                profile)
         elif plan.kind == "editable":
             if cross_component_materials:
                 raise RuntimeError(
@@ -642,7 +653,7 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
                 obj,
                 merged_vg_map,
                 source_meta.get("vg_map") or {},
-                merged_component, plan.ib_hash, skeleton_mode)
+                merged_component, plan.ib_hash, skeleton_mode, profile)
 
         if hole:
             _punch_position_hole(obj, hole_frac)
