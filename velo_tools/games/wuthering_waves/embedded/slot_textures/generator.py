@@ -39,6 +39,13 @@ TextureInfo = Dict[str, dict]
 PassDepth = Dict[Tuple[int, str], bool]
 RouteContext = Dict[str, Set[int]]
 FormRoutes = Dict[Tuple[int, int], str]
+BindingFreshness = Dict[Tuple[int, str, int], object]
+VERIFIED_INHERITED = 'verified_inherited'
+_BINDING_RANK = {
+    False: 0,
+    VERIFIED_INHERITED: 1,
+    True: 2,
+}
 
 _PS_RE = re.compile(r'ps=([0-9a-f]{16})')
 _VS_KEY_RE = re.compile(r'^vs=[0-9a-f?]+$')
@@ -100,7 +107,7 @@ def _ingest_slot(pair_out: Dict[int, Optional[str]], slot: int,
 
 def normalize_usage(raw: dict, source: str, warnings: List[str],
                     texture_info: Optional[TextureInfo] = None,
-                    freshness: Optional[Dict[Tuple[int, str, int], bool]] = None,
+                    freshness: Optional[BindingFreshness] = None,
                     pass_depth: Optional[PassDepth] = None) -> FormData:
     """Convert one ShaderTextureUsage-shaped dict into FormData.
 
@@ -158,28 +165,34 @@ def normalize_usage(raw: dict, source: str, warnings: List[str],
                         rec_fresh = record.get('fresh')
                         if not isinstance(rec_fresh, bool):
                             rec_fresh = None
-                        rec_usable = (
-                            True if record.get('verified_inherited') is True
+                        rec_binding = (
+                            VERIFIED_INHERITED
+                            if (record.get('verified_inherited') is True
+                                and rec_fresh is not True)
                             else rec_fresh)
-                        if (freshness is not None and rec_usable is not None
+                        if (freshness is not None and rec_binding is not None
                                 and slot_id in pair_out
                                 and pair_out[slot_id] != tex_hash):
                             seat_key = (comp_id, ps_hash, slot_id)
                             seated = freshness.get(seat_key)
-                            if rec_usable and seated is False:
+                            rec_rank = _BINDING_RANK.get(rec_binding, -1)
+                            seated_rank = _BINDING_RANK.get(seated, -1)
+                            if rec_rank > seated_rank:
                                 pair_out[slot_id] = tex_hash
-                                freshness[seat_key] = True
-                            elif not rec_usable and seated is True:
+                                freshness[seat_key] = rec_binding
+                            elif rec_rank < seated_rank:
                                 pass
                             else:
                                 pair_out[slot_id] = None
                             continue
                         _ingest_slot(pair_out, slot_id, tex_hash)
-                        if (freshness is not None and rec_usable is not None
+                        if (freshness is not None and rec_binding is not None
                                 and pair_out.get(slot_id) == tex_hash):
                             seat_key = (comp_id, ps_hash, slot_id)
-                            freshness[seat_key] = (
-                                bool(freshness.get(seat_key)) or rec_usable)
+                            seated = freshness.get(seat_key)
+                            freshness[seat_key] = max(
+                                (seated, rec_binding),
+                                key=lambda value: _BINDING_RANK.get(value, -1))
                 continue
 
             ps_found = _PS_RE.search(pair_key)
@@ -224,7 +237,7 @@ def _filter_extra_form_components(components: object,
 
 
 def load_forms(object_source_folder: Path,
-               freshness_out: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+               freshness_out: Optional[List[BindingFreshness]] = None,
                pass_depth_out: Optional[List[PassDepth]] = None,
                ) -> Tuple[List[Tuple[str, FormData]], TextureInfo, List[str]]:
     """Load base + extra form maps from ShaderTextureUsage.json."""
@@ -252,7 +265,7 @@ def load_forms(object_source_folder: Path,
 
     multi_components = _multi_component_ids_from_usage(base_raw)
 
-    def _form_freshness() -> Optional[Dict[Tuple[int, str, int], bool]]:
+    def _form_freshness() -> Optional[BindingFreshness]:
         return {} if freshness_out is not None else None
 
     def _form_pass_depth() -> Optional[PassDepth]:
@@ -301,7 +314,7 @@ def load_forms(object_source_folder: Path,
 
 def load_forms_from_usage(
         base_raw: dict,
-        freshness_out: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+        freshness_out: Optional[List[BindingFreshness]] = None,
         pass_depth_out: Optional[List[PassDepth]] = None,
 ) -> Tuple[List[Tuple[str, FormData]], TextureInfo, List[str]]:
     """Load base and embedded form maps from an in-memory STU document."""
@@ -446,13 +459,13 @@ def build_local_discriminator_audit_from_usage(
         route_context: Optional[RouteContext] = None) -> dict:
     warnings: List[str] = []
     texture_info: TextureInfo = {}
-    freshness: List[Dict[Tuple[int, str, int], bool]] = []
+    freshness: List[BindingFreshness] = []
     pass_depth: List[PassDepth] = []
     source_meta: Dict[Tuple[str, int], List[str]] = {}
     multi_components = _multi_component_ids_from_usage(usage)
 
-    def _freshness() -> Dict[Tuple[int, str, int], bool]:
-        fresh: Dict[Tuple[int, str, int], bool] = {}
+    def _freshness() -> BindingFreshness:
+        fresh: BindingFreshness = {}
         freshness.append(fresh)
         return fresh
 
@@ -647,6 +660,7 @@ class _Branch:
     pass_role: str = 'material'
     condition_slots: Tuple[int, ...] = ()
     assignment_slots: Tuple[int, ...] = ()
+    inherited_slots: Tuple[int, ...] = ()
     ps: str = ''
     observed: Dict[int, str] = field(default_factory=dict)
 
@@ -662,6 +676,7 @@ class _LocalBranch:
     source: str
     assign_hashes: Dict[int, str] = field(default_factory=dict)
     route_id: Optional[str] = None
+    inherited_slots: Tuple[int, ...] = ()
 
 
 def _serialized_branch_contract(
@@ -722,6 +737,8 @@ def _local_restore_policy(comp_id: int,
     """Derive one persistent seat from final branches and collision evidence."""
     full_restore: Dict[str, object] = {'mode': 'full'}
     if not branches or not isinstance(audit, dict):
+        return full_restore
+    if any(branch.inherited_slots for branch in branches):
         return full_restore
     if audit.get('schema') != constants.LOCAL_FORM_DISCRIMINATOR_SCHEMA:
         return full_restore
@@ -1049,6 +1066,8 @@ def _branch_with_assign(branch: _Branch,
         pass_role=branch.pass_role,
         condition_slots=branch.condition_slots,
         assignment_slots=tuple(sorted(assign)),
+        inherited_slots=tuple(
+            slot for slot in branch.inherited_slots if slot in assign),
         ps=branch.ps,
         observed=dict(branch.observed),
     )
@@ -1344,7 +1363,7 @@ def _signature_for_duplicate_service_variant(
 
 def _primary_passes_by_form(forms: List[Tuple[str, FormData]],
                            texture_info: TextureInfo,
-                           freshness: Optional[List[Dict[Tuple[int, str, int], bool]]],
+                           freshness: Optional[List[BindingFreshness]],
                            pass_depth: Optional[List[PassDepth]],
                            alias: Dict[str, str],
                            form_routes: Optional[FormRoutes] = None,
@@ -1364,9 +1383,12 @@ def _primary_passes_by_form(forms: List[Tuple[str, FormData]],
             for ps, pair_map in comp_pairs.items():
                 fresh_slots = _fresh_signature_slots(
                     comp_id, ps, pair_map, form_fresh)
+                inherited_slots = _inherited_assignment_slots(
+                    comp_id, ps, pair_map, form_fresh)
                 role = _pass_role(pair_map, texture_info)
                 assignment_slots = _local_assignment_slots(
-                    pair_map, texture_info, role, fresh_slots)
+                    pair_map, texture_info, role, fresh_slots,
+                    inherited_slots)
                 assign_count = sum(
                     1 for slot in assignment_slots
                     if isinstance(pair_map.get(slot), str))
@@ -1374,7 +1396,8 @@ def _primary_passes_by_form(forms: List[Tuple[str, FormData]],
                     continue
                 signature = _signature_key(
                     pair_map, texture_info, _local_condition_slots(
-                        pair_map, role, fresh_slots), alias)
+                        pair_map, role, fresh_slots,
+                        has_freshness=form_fresh is not None), alias)
                 if not signature:
                     continue
                 non_depth = 0 if form_depth.get((comp_id, ps), False) else 1
@@ -1461,12 +1484,25 @@ def _primary_passes_by_form(forms: List[Tuple[str, FormData]],
 def _fresh_signature_slots(comp_id: int,
                            ps: str,
                            pair_map: Dict[int, Optional[str]],
-                           form_fresh: Optional[Dict[Tuple[int, str, int], bool]]) -> Set[int]:
+                           form_fresh: Optional[BindingFreshness]) -> Set[int]:
     if form_fresh is None:
         return set()
     return {
         slot for slot in _local_signature_slots(pair_map)
         if form_fresh.get((comp_id, ps, slot)) is True
+    }
+
+
+def _inherited_assignment_slots(
+        comp_id: int,
+        ps: str,
+        pair_map: Dict[int, Optional[str]],
+        form_fresh: Optional[BindingFreshness]) -> Set[int]:
+    if form_fresh is None:
+        return set()
+    return {
+        slot for slot in _local_signature_slots(pair_map)
+        if form_fresh.get((comp_id, ps, slot)) == VERIFIED_INHERITED
     }
 
 
@@ -1482,16 +1518,19 @@ def _pass_role(pair_map: Dict[int, Optional[str]],
 
 def _local_condition_slots(pair_map: Dict[int, Optional[str]],
                            role: str,
-                           fresh_slots: Set[int]) -> Set[int]:
-    return _local_signature_slots(pair_map)
+                           fresh_slots: Set[int],
+                           has_freshness: bool = True) -> Set[int]:
+    slots = _local_signature_slots(pair_map)
+    return slots & fresh_slots if has_freshness else slots
 
 
 def _local_assignment_slots(pair_map: Dict[int, Optional[str]],
                             texture_info: TextureInfo,
                             role: str,
-                            fresh_slots: Set[int]) -> Set[int]:
+                            fresh_slots: Set[int],
+                            inherited_slots: Optional[Set[int]] = None) -> Set[int]:
     slots = _canonical_override_slots(pair_map, texture_info)
-    return slots & fresh_slots
+    return slots & (fresh_slots | set(inherited_slots or ()))
 
 
 def _is_material_pair(pair_map: Dict[int, Optional[str]],
@@ -1524,7 +1563,7 @@ def _fi_str(value: float) -> str:
 
 def _hash_fingerprint(forms: List[Tuple[str, FormData]],
                       texture_info: TextureInfo,
-                      freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+                      freshness: Optional[List[BindingFreshness]] = None,
                       pass_depth: Optional[List[PassDepth]] = None) -> str:
     """Stable fingerprint for the STU facts the local discriminator consumes."""
     import hashlib
@@ -1766,10 +1805,13 @@ def _minimize_anchor_branches(branches: List[_Branch]) -> None:
                 if tuple(sorted(other.assign.items())) != assign_key
             ]
             assignment_slots = {slot for slot, _res in assign_key}
+            inherited_slots = set.intersection(*(
+                set(member.inherited_slots) for member in members))
+            required_slots = assignment_slots - inherited_slots
             positive, negative = _minimal_condition_signature(
-                own_signatures, other_signatures, assignment_slots,
+                own_signatures, other_signatures, required_slots,
                 blocked_negative_slots)
-            missing_slots = assignment_slots - {
+            missing_slots = required_slots - {
                 slot for slot, _key in positive}
             if missing_slots:
                 raise SlotStyleDegrade(
@@ -1784,7 +1826,7 @@ def _minimize_anchor_branches(branches: List[_Branch]) -> None:
 def _condition_source(comp_id: int,
                       ps: str,
                       slots: Set[int],
-                      form_fresh: Optional[Dict[Tuple[int, str, int], bool]]) -> str:
+                      form_fresh: Optional[BindingFreshness]) -> str:
     if not slots:
         return 'none'
     if form_fresh is None:
@@ -1888,7 +1930,7 @@ def _local_audit_forms(forms: List[Tuple[str, FormData]],
 
 def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                     texture_info: TextureInfo,
-                                    freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+                                    freshness: Optional[List[BindingFreshness]] = None,
                                     warnings: Optional[List[str]] = None,
                                     source_meta: Optional[Dict[Tuple[str, int], List[str]]] = None,
                                     pass_depth: Optional[List[PassDepth]] = None,
@@ -1977,11 +2019,15 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                 is_primary_pass = primary_passes.get((form_id, comp_id)) == ps
                 fresh_slots = _fresh_signature_slots(
                     comp_id, ps, pair_map, form_fresh)
+                inherited_slots = _inherited_assignment_slots(
+                    comp_id, ps, pair_map, form_fresh)
                 role = _pass_role(pair_map, texture_info)
                 condition_slots = _local_condition_slots(
-                    pair_map, role, fresh_slots)
+                    pair_map, role, fresh_slots,
+                    has_freshness=form_fresh is not None)
                 override_slots = _local_assignment_slots(
-                    pair_map, texture_info, role, fresh_slots)
+                    pair_map, texture_info, role, fresh_slots,
+                    inherited_slots)
                 sig = _signature_key(pair_map, texture_info,
                                      condition_slots, alias)
                 if not sig:
@@ -2042,6 +2088,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     'observed_hashes': {str(slot): tex_hash
                                         for slot, tex_hash in observed_hashes.items()},
                     'fresh_slots': sorted(fresh_slots),
+                    'inherited_slots': sorted(inherited_slots),
                     'canonical_slots': (
                         sorted(assign_hashes)
                         if is_primary_pass or is_service_drift_branch else []),
@@ -2081,6 +2128,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                 'negative_signature': [],
                                 'condition_slots': [slot for slot, _key in branch_sig],
                                 'assignment_slots': sorted(branch_assign_hashes),
+                                'inherited_slots': sorted(
+                                    set(branch_assign_hashes) & inherited_slots),
                                 'assign_hashes': {
                                     str(slot): tex_hash
                                     for slot, tex_hash in branch_assign_hashes.items()},
@@ -2194,7 +2243,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
 def validate_local_discriminator_audit(audit: object,
                                        forms: List[Tuple[str, FormData]],
                                        texture_info: TextureInfo,
-                                       freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+                                       freshness: Optional[List[BindingFreshness]] = None,
                                        pass_depth: Optional[List[PassDepth]] = None) -> dict:
     if not isinstance(audit, dict):
         raise SlotStyleDegrade(
@@ -2358,12 +2407,13 @@ def _route_split_components(
             positive = dict(branch.signature)
             negative = dict(branch.negative_signature)
             assigned_slots = set(branch.assign)
+            required_slots = assigned_slots - set(branch.inherited_slots)
             if (not positive or len(positive) != len(branch.signature)
                     or len(negative) != len(branch.negative_signature)
                     or set(positive) & set(negative)
                     or not assigned_slots
                     or assigned_slots != set(branch.assign_hashes)
-                    or not assigned_slots.issubset(positive)
+                    or not required_slots.issubset(positive)
                     or (len(positive) == 1 and not negative)):
                 valid = False
                 break
@@ -2696,9 +2746,21 @@ def _local_branches_from_audit(audit: dict,
         )
         if not assign_key:
             continue
+        inherited_sets = []
+        for item in items:
+            raw_inherited = item[2].get('inherited_slots')
+            if not isinstance(raw_inherited, list):
+                inherited_sets.append(set())
+                continue
+            try:
+                inherited_sets.append({int(slot) for slot in raw_inherited})
+            except (TypeError, ValueError):
+                inherited_sets.append(set())
+        inherited_slots = (
+            set.intersection(*inherited_sets) if inherited_sets else set())
         condition_options = _minimal_condition_signature_options(
             own_signatures, other_signatures,
-            {slot for slot, _tex_hash in assign_key},
+            {slot for slot, _tex_hash in assign_key} - inherited_slots,
             blocked_negative_slots,
             allow_negative=False)
         assignment_slots = {slot for slot, _tex_hash in assign_key}
@@ -2735,7 +2797,8 @@ def _local_branches_from_audit(audit: dict,
         assign_hash_by_slot = dict(assign_key)
         for signature, negative_signature in condition_options:
             condition_slots = {slot for slot, _key in signature}
-            missing_slots = assignment_slots - condition_slots
+            missing_slots = (
+                assignment_slots - inherited_slots - condition_slots)
             if missing_slots:
                 raise SlotStyleDegrade(
                     f'component {comp_id}: local slot condition does not cover '
@@ -2751,7 +2814,9 @@ def _local_branches_from_audit(audit: dict,
                 if (not _volatile_condition_slot(slot)
                     or slot in condition_slots
                     or (
-                        assign_hash_by_slot.get(slot) not in drift_hashes
+                        assign_hash_by_slot.get(slot) not in global_drift_hashes
+                        and (comp_id, assign_hash_by_slot.get(slot))
+                        not in drift_component_hashes
                         and assign_hash_by_slot.get(slot) not in condition_hashes
                     ))
             }
@@ -2794,6 +2859,8 @@ def _local_branches_from_audit(audit: dict,
                 source=source,
                 assign_hashes=dict(filtered_assign_key),
                 route_id=route,
+                inherited_slots=tuple(sorted(
+                    set(filtered_assign) & inherited_slots)),
             ))
     branch_records.extend(kept_branch_records)
     route_split_components = _route_split_components(
@@ -2836,7 +2903,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                       lod_ranges: Optional[Dict[int, Dict[int, Tuple[int, int]]]] = None,
                       multi_state_seats: Optional[Dict[Tuple[int, int], Set[str]]] = None,
                       live_seed: Optional[Set[str]] = None,
-                      freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+                      freshness: Optional[List[BindingFreshness]] = None,
                       pass_depth: Optional[List[PassDepth]] = None,
                       slot_eligible_components: Optional[Set[int]] = None,
                       local_discriminator_audit: Optional[dict] = None,
@@ -3481,7 +3548,7 @@ def _variant_aliases(texture_info: TextureInfo) -> Dict[str, str]:
 
 
 def _filtered_forms(forms: List[Tuple[str, FormData]],
-                    freshness: Optional[List[Dict[Tuple[int, str, int], bool]]],
+                    freshness: Optional[List[BindingFreshness]],
                     warnings: List[str]) -> Tuple[List[Tuple[str, FormData]], Set[str], int, int]:
     if freshness is None or not any(freshness):
         return forms, set(), 0, 0
@@ -3536,7 +3603,7 @@ def build_plan(forms: List[Tuple[str, FormData]],
                multi_state_seats: Optional[Dict[Tuple[int, int], Set[str]]] = None,
                live_seed: Optional[Set[str]] = None,
                trusted_hashes: Optional[Set[str]] = None,
-               freshness: Optional[List[Dict[Tuple[int, str, int], bool]]] = None,
+               freshness: Optional[List[BindingFreshness]] = None,
                pass_depth: Optional[List[PassDepth]] = None,
                slot_eligible_components: Optional[Set[int]] = None,
                local_form_discriminator: bool = False,
@@ -3674,12 +3741,21 @@ def build_plan(forms: List[Tuple[str, FormData]],
     suppressed_covered_branches = 0
 
     for form_id, (label, form_data) in enumerate(forms, start=1):
+        form_fresh = (freshness[form_id - 1]
+                      if freshness is not None and form_id - 1 < len(freshness)
+                      else None)
         for comp_id, comp_pairs in form_data.items():
             for ps, pair_map in comp_pairs.items():
                 pass_role = _pass_role(pair_map, texture_info)
                 eligible_slots = _eligible_slots(pair_map)
                 if not has_freshness_evidence:
                     eligible_slots -= set(constants.SERVICE_SLOTS)
+                fresh_slots = _fresh_signature_slots(
+                    comp_id, ps, pair_map, form_fresh)
+                inherited_slots = _inherited_assignment_slots(
+                    comp_id, ps, pair_map, form_fresh)
+                if has_freshness_evidence:
+                    eligible_slots &= fresh_slots | inherited_slots
                 assign_slots = eligible_slots
                 assigned: Dict[int, str] = {}
                 assigned_hashes: Dict[int, str] = {}
@@ -3708,7 +3784,9 @@ def build_plan(forms: List[Tuple[str, FormData]],
                             'component excluded from slot layer')
                     continue
 
-                sig_slots = eligible_slots
+                sig_slots = (
+                    eligible_slots & fresh_slots
+                    if has_freshness_evidence else eligible_slots)
                 signature: List[Tuple[int, float]] = []
                 for slot in sorted(sig_slots):
                     canon = _canon(pair_map.get(slot))
@@ -3730,6 +3808,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                     pass_role=pass_role,
                     condition_slots=tuple(slot for slot, _key in signature),
                     assignment_slots=tuple(sorted(assigned)),
+                    inherited_slots=tuple(sorted(
+                        set(assigned) & inherited_slots)),
                     ps=ps,
                     observed={
                         slot: canon for slot, canon in sorted(

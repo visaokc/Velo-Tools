@@ -40,7 +40,7 @@
 VAR_FORM = "$form_id"
 CMDLIST_SET_TEXTURES = "CommandListSetTexturesComponent{component_id}"
 LOCAL_FORM_DISCRIMINATOR_KEY = "local_form_discriminator"
-LOCAL_FORM_DISCRIMINATOR_SCHEMA = 4
+LOCAL_FORM_DISCRIMINATOR_SCHEMA = 5
 LOCAL_COMPONENT_SOURCES_KEY = "_velo_local_component_sources"
 COMPONENT_SOURCES_KEY = "component_sources"
 FORM_COMPONENT_MODE_KEY = "form_component_mode"
