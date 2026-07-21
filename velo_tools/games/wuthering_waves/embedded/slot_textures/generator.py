@@ -712,6 +712,8 @@ def _local_restore_policy(comp_id: int,
                           branches: List[_LocalBranch],
                           audit: object,
                           volatile_assignment_hashes: Optional[Set[str]] = None,
+                          volatile_assignment_component_hashes: Optional[
+                              Set[Tuple[int, str]]] = None,
                           canon_fn=None) -> Dict[str, object]:
     """Derive one persistent seat from final branches and collision evidence."""
     full_restore: Dict[str, object] = {'mode': 'full'}
@@ -882,6 +884,13 @@ def _local_restore_policy(comp_id: int,
                 return full_restore
             excluded_hashes.add(tex_hash)
     for value in volatile_assignment_hashes or ():
+        tex_hash = _canon_hash(value)
+        if tex_hash is None:
+            return full_restore
+        excluded_hashes.add(tex_hash)
+    for component_id, value in volatile_assignment_component_hashes or ():
+        if int(component_id) != comp_id:
+            continue
         tex_hash = _canon_hash(value)
         if tex_hash is None:
             return full_restore
@@ -2357,6 +2366,8 @@ def _local_branches_from_audit(audit: dict,
                                form_label_to_id: Optional[Dict[str, int]] = None,
                                slot_eligible_components: Optional[Set[int]] = None,
                                volatile_assignment_hashes: Optional[Set[str]] = None,
+                               volatile_assignment_component_hashes: Optional[
+                                   Set[Tuple[int, str]]] = None,
                                ) -> Tuple[
                                    Dict[int, List[_LocalBranch]], Set[str],
                                    int, Set[str], Set[int]
@@ -2383,7 +2394,8 @@ def _local_branches_from_audit(audit: dict,
         Tuple[int, Optional[str], dict, Dict[int, str],
               Tuple[Tuple[int, str], ...], str]
     ] = []
-    observed_service_slot_sets_by_hash: Dict[str, Set[Tuple[int, ...]]] = {}
+    observed_service_slot_sets_by_component_hash: Dict[
+        Tuple[int, str], Set[Tuple[int, ...]]] = {}
 
     def _route_from(entry: dict, source: str) -> Optional[str]:
         raw_route = entry.get('route')
@@ -2482,8 +2494,8 @@ def _local_branches_from_audit(audit: dict,
                     continue
                 service_slots_by_hash.setdefault(canon_fn(tex_hash), set()).add(slot)
             for canon, slots in service_slots_by_hash.items():
-                observed_service_slot_sets_by_hash.setdefault(canon, set()).add(
-                    tuple(sorted(slots)))
+                observed_service_slot_sets_by_component_hash.setdefault(
+                    (comp_id, canon), set()).add(tuple(sorted(slots)))
         _assign, _assign_key = _effective_assignment(
             row.get('assign_hashes'), comp_id, source)
         if not row.get('primary_pass'):
@@ -2587,15 +2599,22 @@ def _local_branches_from_audit(audit: dict,
         scope = (comp_id, record.get('route'))
         row_signatures.setdefault(scope, {}).setdefault(
             record.get('assign_key') or (), set()).add(record['signature'])
-    drift_hashes = {
-        tex_hash for tex_hash, slot_sets in observed_service_slot_sets_by_hash.items()
+    drift_component_hashes = {
+        component_hash
+        for component_hash, slot_sets
+        in observed_service_slot_sets_by_component_hash.items()
         if len(slot_sets) > 1
         and len({slot for slots in slot_sets for slot in slots}) > 1
     }
+    global_drift_hashes = set()
     for tex_hash in volatile_assignment_hashes or ():
         canon = canon_fn(tex_hash)
         if canon:
-            drift_hashes.add(canon)
+            global_drift_hashes.add(canon)
+    for component_id, tex_hash in volatile_assignment_component_hashes or ():
+        canon = canon_fn(tex_hash)
+        if canon:
+            drift_component_hashes.add((int(component_id), canon))
 
     for (comp_id, route, evidence_assign_key, pass_role), items in sorted(
             grouped_pending.items(),
@@ -2621,7 +2640,9 @@ def _local_branches_from_audit(audit: dict,
         }
         assign_key = tuple(
             (slot, tex_hash) for slot, tex_hash in evidence_assign_key
-            if not (_volatile_condition_slot(slot) and tex_hash in drift_hashes)
+            if not (_volatile_condition_slot(slot)
+                    and (tex_hash in global_drift_hashes
+                         or (comp_id, tex_hash) in drift_component_hashes))
         )
         if not assign_key:
             continue
@@ -2771,6 +2792,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                       local_discriminator_audit: Optional[dict] = None,
                       formid_auxiliary_anchors: Optional[List[Tuple[str, int]]] = None,
                       volatile_assignment_hashes: Optional[Set[str]] = None,
+                      volatile_assignment_component_hashes: Optional[
+                          Set[Tuple[int, str]]] = None,
                       texture_hash_allowlist: Optional[Set[str]] = None) -> SlotPlan:
     warnings: List[str] = list(load_warnings or [])
     anchor_resources, watchdog_form, gated_forms = _anchor_runtime_state(
@@ -2865,7 +2888,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
      suppressed_weak_hashes,
      route_split_components) = _local_branches_from_audit(
          local_discriminator_audit, mod_hashes, _canon, label_to_id,
-         slot_eligible_components, volatile_assignment_hashes)
+         slot_eligible_components, volatile_assignment_hashes,
+         volatile_assignment_component_hashes)
     if suppressed_weak_branches:
         warnings.append(
             f'suppressed {suppressed_weak_branches} weak local slot branch(es); '
@@ -3156,6 +3180,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                  for branch in emitted],
                 local_discriminator_audit,
                 volatile_assignment_hashes=volatile_assignment_hashes,
+                volatile_assignment_component_hashes=
+                volatile_assignment_component_hashes,
                 canon_fn=_canon,
             )
             for name in emitted_names.values():
@@ -3170,6 +3196,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                     emitted_by_name[generic_name],
                     local_discriminator_audit,
                     volatile_assignment_hashes=volatile_assignment_hashes,
+                    volatile_assignment_component_hashes=
+                    volatile_assignment_component_hashes,
                     canon_fn=_canon,
                 )
 
@@ -3465,6 +3493,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
                local_discriminator_audit: Optional[dict] = None,
                formid_auxiliary_anchors: Optional[List[Tuple[str, int]]] = None,
                volatile_assignment_hashes: Optional[Set[str]] = None,
+               volatile_assignment_component_hashes: Optional[
+                   Set[Tuple[int, str]]] = None,
                texture_hash_allowlist: Optional[Set[str]] = None) -> SlotPlan:
     """Build a concise XQFA-style slot plan.
 
@@ -3489,6 +3519,8 @@ def build_plan(forms: List[Tuple[str, FormData]],
             local_discriminator_audit=local_discriminator_audit,
             formid_auxiliary_anchors=formid_auxiliary_anchors,
             volatile_assignment_hashes=volatile_assignment_hashes,
+            volatile_assignment_component_hashes=
+            volatile_assignment_component_hashes,
             texture_hash_allowlist=texture_hash_allowlist)
     warnings: List[str] = list(load_warnings or [])
     multi_form = len(forms) > 1

@@ -1086,16 +1086,22 @@ def _append_fold_units(ir: CrossSceneIR, body: Any, manifest: Mapping[str, Any],
             section_routes[draw_name.casefold()] = tag
 
 
-def _service_slot_drift_hashes_from_usage(usage: Mapping[str, Any],
-                                          form_entries: Iterable[Any]) -> set[str]:
-    slots_by_hash: Dict[str, set[Tuple[int, ...]]] = {}
+def _service_slot_drift_component_hashes_from_usage(
+        usage: Mapping[str, Any],
+        form_entries: Iterable[Any],
+) -> set[Tuple[int, str]]:
+    slots_by_component_hash: Dict[Tuple[int, str], set[Tuple[int, ...]]] = {}
 
     def accumulate(components: Any) -> None:
         if not isinstance(components, Mapping):
             return
-        for comp_pairs in components.values():
+        for comp_name, comp_pairs in components.items():
             if not isinstance(comp_pairs, Mapping):
                 continue
+            match = re.fullmatch(r"Component\s+(\d+)", str(comp_name), re.I)
+            if match is None:
+                continue
+            component_id = int(match.group(1))
             for ps_map in comp_pairs.values():
                 if not isinstance(ps_map, Mapping):
                     continue
@@ -1113,15 +1119,16 @@ def _service_slot_drift_hashes_from_usage(usage: Mapping[str, Any],
                             row_slots.setdefault(
                                 str(tex_hash).lower(), set()).add(int(match.group(1)))
                     for tex_hash, slots in row_slots.items():
-                        slots_by_hash.setdefault(tex_hash, set()).add(
-                            tuple(sorted(slots)))
+                        slots_by_component_hash.setdefault(
+                            (component_id, tex_hash), set()).add(tuple(sorted(slots)))
 
     accumulate(usage)
     for entry in form_entries:
         if isinstance(entry, Mapping):
             accumulate(entry.get("components") or {})
     return {
-        tex_hash for tex_hash, slot_sets in slots_by_hash.items()
+        component_hash
+        for component_hash, slot_sets in slots_by_component_hash.items()
         if len(slot_sets) > 1
         and len({slot for slots in slot_sets for slot in slots}) > 1
     }
@@ -1235,7 +1242,8 @@ def _slot_plan(
         local_form_discriminator=True,
         local_discriminator_audit=local_audit,
         formid_auxiliary_anchors=anchors,
-        volatile_assignment_hashes=_service_slot_drift_hashes_from_usage(
+        volatile_assignment_component_hashes=
+        _service_slot_drift_component_hashes_from_usage(
             usage, stu_metadata.form_entries(usage)),
         texture_hash_allowlist={texture.hash for texture in textures},
     )
