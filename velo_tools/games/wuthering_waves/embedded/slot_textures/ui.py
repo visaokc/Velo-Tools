@@ -49,8 +49,8 @@ def inject_settings():
         name="贴图过滤：跳过 Dirty Slot",
         description=(
             "保留 log.txt 中由 PSSetShaderResources 明确绑定的槽位，以及写入/消费 draw 均为彩色 pass、"
-            "具有相同角色 cb4 与相同材质 cb5/cb6 证据的跨 Component service slot 继承；"
-            "depth-only 和主材质槽的继承状态仍按残留过滤；"
+            "属于不同 vb0、具有相同角色 cb4 与相同材质 cb5/cb6 证据的跨对象 service slot 继承；"
+            "同一 vb0 内的 Component 残留、depth-only 和主材质槽继承仍按残留过滤；"
             "没有可用 log 证据时保持 legacy STU，不猜测删除。"
         ),
         default=True,

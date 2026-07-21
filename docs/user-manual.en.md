@@ -404,7 +404,7 @@ Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
 Velo writes `ShaderTextureUsage.json` for slot-style texture work. When Dirty Slot filtering has usable log evidence, it also normalizes the extracted DDS Component filename and `TextureUsage.json` ownership to the surviving evidence.
 
-**贴图过滤：跳过 Dirty Slot (Skip Dirty Slots)** keeps slots with explicit `PSSetShaderResources` evidence from `log.txt`. Inherited service-slot bindings are also kept only when writer and consumer are both color passes, have fresh matching character `cb4` evidence, and share a fresh material identity at `cb5` or `cb6`. Depth-only inheritance and inherited main-material slots remain excluded because a bound residual resource does not prove that the shader consumed it. If no usable log evidence exists, Velo preserves legacy STU records instead of guessing deletions.
+**贴图过滤：跳过 Dirty Slot (Skip Dirty Slots)** keeps slots with explicit `PSSetShaderResources` evidence from `log.txt`. Inherited service-slot bindings are also kept only when writer and consumer are color passes from different `vb0` objects, have fresh matching character `cb4` evidence, and share a fresh material identity at `cb5` or `cb6`. Same-`vb0` Component persistence, depth-only inheritance, and inherited main-material slots remain excluded because a bound residual resource does not prove that the shader consumed it. If no usable log evidence exists, Velo preserves legacy STU records instead of guessing deletions.
 
 Filters such as small texture, `.jpg`, known cubemap, and same-slot same-Hash can remove useful assets. Change defaults only when you understand the capture.
 

@@ -8,8 +8,9 @@ pairs / phantom same-signature conflicts). The log.txt, however, records the
 actual API stream: slots written by ``PSSetShaderResources`` under a draw's
 call-id prefix are FRESH for that draw. An inherited binding is also usable
 when its writer and consumer both freshly bind the extracted character's cb4
-identity and one matching material CB in a color pass; unrelated inherited
-state remains excluded.
+identity and one matching material CB in a color pass, and the resource crosses
+between different vb0 objects. Same-vb0 persistence and unrelated inherited
+state remain excluded.
 
 This module is a pure-python, dependency-free single-pass parser producing:
   * per call id: the set of ps-t slots freshly written before the draw, with
@@ -47,6 +48,7 @@ _SUB_HASH_RE = re.compile(r'hash=([0-9a-f]+)')
 _VSCB_RE = re.compile(r'^VSSetConstantBuffers\(StartSlot:(\d+), NumBuffers:(\d+)')
 # Deferred-context execution makes prefix-scoped freshness unsound -> bail.
 _BAIL_RE = re.compile(r'^(?:ExecuteCommandList|FinishCommandList)\(')
+_VB0_DUMP_RE = re.compile(r'^(\d{6})-vb0=([0-9a-f]+)-')
 
 
 @dataclass
@@ -65,6 +67,10 @@ class CallEvidence:
     # Color-RT state snapshotted at the call's draw line (False = depth-only).
     has_color_rt: bool = False
     drawn: bool = False
+    # Object identity from the draw's dumped vb0 resource. Verified inherited
+    # ownership is limited to cross-object reuse; same-vb0 persistence is only
+    # residual state between Components unless the consumer binds it freshly.
+    vb0_hash: Optional[str] = None
 
 
 @dataclass
@@ -88,6 +94,7 @@ def parse_log_freshness(dump_path) -> Optional[LogEvidence]:
     """
     try:
         path = Path(dump_path)
+        dump_dir = path if path.is_dir() else path.parent
         if path.is_dir():
             path = path / 'log.txt'
         if not path.is_file():
@@ -203,6 +210,26 @@ def parse_log_freshness(dump_path) -> Optional[LogEvidence]:
 
     finalize_pending()
 
+    # The extracted descriptors are the authoritative per-draw vb0 identity.
+    # Conflicting identities for one call fail closed by clearing the value.
+    conflicted_calls = set()
+    try:
+        for descriptor_path in dump_dir.iterdir():
+            match = _VB0_DUMP_RE.match(descriptor_path.name)
+            if match is None:
+                continue
+            call_id, vb0_hash = match.groups()
+            entry = calls.get(call_id)
+            if entry is None or call_id in conflicted_calls:
+                continue
+            if entry.vb0_hash is None:
+                entry.vb0_hash = vb0_hash
+            elif entry.vb0_hash != vb0_hash:
+                entry.vb0_hash = None
+                conflicted_calls.add(call_id)
+    except OSError:
+        pass
+
     if evidence.ps_event_count == 0:
         return None  # unsupported log variant: no set events -> no evidence
     return evidence
@@ -269,10 +296,10 @@ def slot_is_verified_character_inherited(
     """Prove a non-fresh service binding was inherited inside one character.
 
     The current draw and the slot's last explicit writer must both be color
-    passes, freshly bind the extracted object's cb4 identity at vs-cb3 or
-    vs-cb4, and share one freshly bound material identity at vs-cb5/vs-cb6.
-    This keeps intentional cross-Component service-resource reuse while
-    rejecting a texture merely left bound by another material pass.
+    passes on different vb0 objects, freshly bind the extracted object's cb4
+    identity at vs-cb3 or vs-cb4, and share one freshly bound material identity
+    at vs-cb5/vs-cb6. This keeps intentional cross-object service-resource reuse
+    while rejecting a texture merely left bound between Components of one vb0.
     """
     cb_hash = str(character_cb_hash or '').strip().lower()
     if not cb_hash:
@@ -305,7 +332,11 @@ def slot_is_verified_character_inherited(
             == entry_b.fresh_vs_cb_slots.get(slot)
             for slot in (5, 6))
 
-    return (binds_character(call) and binds_character(writer)
+    cross_object = bool(
+        call.vb0_hash and writer.vb0_hash
+        and call.vb0_hash != writer.vb0_hash)
+    return (cross_object
+            and binds_character(call) and binds_character(writer)
             and shares_material(call, writer))
 
 
