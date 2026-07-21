@@ -519,7 +519,9 @@ EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导�
 - **贴图过滤：跳过同槽同 Hash**
 - **贴图过滤：跳过 Dirty Slot**
 
-“跳过”类过滤会减少输出，也可能移除后来需要的贴图证据。准备使用插槽风格贴图或多形态合并时，优先保留完整、fresh 的证据。
+其中 **贴图过滤：跳过 Dirty Slot** 会保留 `log.txt` 中明确执行过 `PSSetShaderResources` 的 fresh 槽位；若槽位由前一 draw 继承，但写入 draw 与消费 draw 都有相同角色的 fresh `cb4` 证据，也会保留并在 STU 中标记为 `verified_inherited`。其它无法证明属于同一角色的残留状态仍会过滤。没有可用 log 证据时，Velo 保持 legacy STU，不猜测删除。
+
+其它“跳过”类过滤会减少输出，也可能移除后来需要的贴图证据。准备使用插槽风格贴图或多形态合并时，优先保留完整证据。
 
 提取会生成 `ShaderTextureUsage.json`。该文件记录 Component、draw、shader pair、`ps-tN` 槽位、资源 Hash 和新鲜度证据，是插槽风格贴图和形态贴图合并的重要输入。
 

@@ -230,7 +230,11 @@ def _record_hash(rec) -> str | None:
 
 
 def _record_fresh(rec) -> bool:
-    return (not isinstance(rec, dict)) or rec.get("fresh") is not False
+    return (
+        (not isinstance(rec, dict))
+        or rec.get("fresh") is not False
+        or rec.get("verified_inherited") is True
+    )
 
 
 def _iter_pair_slots(obj):
@@ -249,9 +253,10 @@ def _iter_pair_slots(obj):
 def effective_usage_hashes(components: dict) -> tuple[set[str], set[str]]:
     """Return (effective, phantom_only) texture hashes from a component usage map.
 
-    A shader pair with at least one fresh/unknown-fresh seat is an effective consumer,
-    and keeps all replaced seats in that pair. A pair whose every recorded seat is
-    explicitly stale is a phantom inherited-state pair and does not keep root DDS.
+    A shader pair with at least one fresh, unknown-fresh, or verified inherited seat is
+    an effective consumer and keeps all replaced seats in that pair. A pair whose every
+    recorded seat is explicitly stale and unverified is a phantom inherited-state pair
+    and does not keep root DDS.
     """
     effective: set[str] = set()
     phantom: set[str] = set()

@@ -1,8 +1,8 @@
 # Slot-style texture layer generator (pure python, no bpy / no _wwmi_core
 # imports). The emitted INI mirrors the concise XQFA slot model: format-tagged
 # ps-t conditions inside the component draw scope, followed by direct texture
-# assignments. Dirty/stale slots are filtered out before branch construction
-# when ShaderTextureUsage.json carries v4 freshness evidence.
+# assignments. Unverified dirty/stale slots are filtered out before branch
+# construction when ShaderTextureUsage.json carries v4 freshness evidence.
 
 import json
 import re
@@ -158,24 +158,28 @@ def normalize_usage(raw: dict, source: str, warnings: List[str],
                         rec_fresh = record.get('fresh')
                         if not isinstance(rec_fresh, bool):
                             rec_fresh = None
-                        if (freshness is not None and rec_fresh is not None
+                        rec_usable = (
+                            True if record.get('verified_inherited') is True
+                            else rec_fresh)
+                        if (freshness is not None and rec_usable is not None
                                 and slot_id in pair_out
                                 and pair_out[slot_id] != tex_hash):
                             seat_key = (comp_id, ps_hash, slot_id)
                             seated = freshness.get(seat_key)
-                            if rec_fresh and seated is False:
+                            if rec_usable and seated is False:
                                 pair_out[slot_id] = tex_hash
                                 freshness[seat_key] = True
-                            elif not rec_fresh and seated is True:
+                            elif not rec_usable and seated is True:
                                 pass
                             else:
                                 pair_out[slot_id] = None
                             continue
                         _ingest_slot(pair_out, slot_id, tex_hash)
-                        if (freshness is not None and rec_fresh is not None
+                        if (freshness is not None and rec_usable is not None
                                 and pair_out.get(slot_id) == tex_hash):
                             seat_key = (comp_id, ps_hash, slot_id)
-                            freshness[seat_key] = bool(freshness.get(seat_key)) or rec_fresh
+                            freshness[seat_key] = (
+                                bool(freshness.get(seat_key)) or rec_usable)
                 continue
 
             ps_found = _PS_RE.search(pair_key)

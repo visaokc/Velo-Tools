@@ -5,13 +5,17 @@ analysed draw call, including state inherited from earlier draws. A texture
 that was never set for a draw still produces a dump file for it, and such
 "stale inheritance" records poison the slot-style evidence chain (phantom
 pairs / phantom same-signature conflicts). The log.txt, however, records the
-actual API stream: only slots written by ``PSSetShaderResources`` under a
-draw's call-id prefix are FRESH for that draw.
+actual API stream: slots written by ``PSSetShaderResources`` under a draw's
+call-id prefix are FRESH for that draw. An inherited binding is also usable
+when its writer and consumer both freshly bind the extracted character's cb4
+identity; unrelated inherited state remains excluded.
 
 This module is a pure-python, dependency-free single-pass parser producing:
   * per call id: the set of ps-t slots freshly written before the draw, with
     the hash that was written (``None`` = explicitly set to null, ``''`` =
     fresh but no hash printed);
+  * per call id: the running ps-t state and last writer at draw time, plus
+    fresh vs-cb bindings used to prove same-character inheritance;
   * per call id: whether any color render target was bound at draw time
     (running OM state machine; depth-only passes have none).
 
@@ -50,6 +54,13 @@ class CallEvidence:
     # slot id -> last hash freshly written under this call's prefix;
     # None = slot explicitly set to null; '' = fresh but hash unknown.
     fresh_ps_slots: Dict[int, Optional[str]] = field(default_factory=dict)
+    # VS cb slots explicitly written under this draw's call id.  cb3/cb4 are
+    # used to prove that an inherited service texture stayed inside the same
+    # character draw group instead of leaking from an unrelated object.
+    fresh_vs_cb_slots: Dict[int, Optional[str]] = field(default_factory=dict)
+    # Running PS state at draw time plus the call that last wrote each slot.
+    bound_ps_slots: Dict[int, Optional[str]] = field(default_factory=dict)
+    bound_ps_writers: Dict[int, str] = field(default_factory=dict)
     # Color-RT state snapshotted at the call's draw line (False = depth-only).
     has_color_rt: bool = False
     drawn: bool = False
@@ -90,8 +101,11 @@ def parse_log_freshness(dump_path) -> Optional[LogEvidence]:
 
     color_rt_count = 0      # running OM state, persists across call boundaries
     # Pending multi-line event waiting for its indented sub-lines:
-    # ('ps', call_id, start, count, seen_slots) or ('om', n_color_sublines)
+    # ('ps'/'vs', call_id, start, count, seen_slots) or
+    # ('om', n_color_sublines)
     pending = None
+    bound_ps_slots: Dict[int, Optional[str]] = {}
+    bound_ps_writers: Dict[int, str] = {}
 
     def call_entry(call_id: str) -> CallEvidence:
         entry = calls.get(call_id)
@@ -104,12 +118,17 @@ def parse_log_freshness(dump_path) -> Optional[LogEvidence]:
         nonlocal pending, color_rt_count
         if pending is None:
             return
-        if pending[0] == 'ps':
+        if pending[0] in {'ps', 'vs'}:
             _, call_id, start, count, seen = pending
-            slots = call_entry(call_id).fresh_ps_slots
+            slots = (call_entry(call_id).fresh_ps_slots if pending[0] == 'ps'
+                     else call_entry(call_id).fresh_vs_cb_slots)
             for slot in range(start, start + count):
                 if slot not in seen:
                     slots[slot] = None  # covered by the window, no view line = null bind
+            if pending[0] == 'ps':
+                for slot in range(start, start + count):
+                    bound_ps_slots[slot] = slots.get(slot)
+                    bound_ps_writers[slot] = call_id
         else:  # 'om'
             color_rt_count = pending[1]
         pending = None
@@ -129,6 +148,12 @@ def parse_log_freshness(dump_path) -> Optional[LogEvidence]:
                 entry = call_entry(call_id)
                 entry.has_color_rt = color_rt_count > 0
                 entry.drawn = True
+                entry.bound_ps_slots = dict(bound_ps_slots)
+                entry.bound_ps_writers = dict(bound_ps_writers)
+                continue
+            m = _VSCB_RE.match(payload)
+            if m is not None:
+                pending = ('vs', call_id, int(m.group(1)), int(m.group(2)), set())
                 continue
             m = _OMSET_RE.match(payload)
             if m is not None:
@@ -149,6 +174,8 @@ def parse_log_freshness(dump_path) -> Optional[LogEvidence]:
             if payload.startswith('ClearState('):
                 color_rt_count = 0
                 call_entry(call_id).fresh_ps_slots.clear()
+                bound_ps_slots.clear()
+                bound_ps_writers.clear()
                 continue
             if _BAIL_RE.match(payload) is not None:
                 return None
@@ -160,13 +187,15 @@ def parse_log_freshness(dump_path) -> Optional[LogEvidence]:
         m = _SUB_SLOT_RE.match(line)
         if m is None:
             continue  # 'D:' depth views, ': view=' clear lines, hex data, etc.
-        if pending[0] == 'ps':
+        if pending[0] in {'ps', 'vs'}:
             slot = int(m.group(1))
             _, call_id, start, count, seen = pending
             if start <= slot < start + count:
                 hash_m = _SUB_HASH_RE.search(line)
-                call_entry(call_id).fresh_ps_slots[slot] = (
-                    hash_m.group(1) if hash_m is not None else '')
+                slots = (call_entry(call_id).fresh_ps_slots
+                         if pending[0] == 'ps'
+                         else call_entry(call_id).fresh_vs_cb_slots)
+                slots[slot] = hash_m.group(1) if hash_m is not None else ''
                 seen.add(slot)
         else:  # 'om'
             pending = ('om', pending[1] + 1)
@@ -230,6 +259,42 @@ def slot_is_fresh(evidence: LogEvidence, call_id, slot_id: int,
     if value == '':
         return True
     return value == tex_hash or (old_hash is not None and value == old_hash)
+
+
+def slot_is_verified_character_inherited(
+        evidence: LogEvidence, call_id, slot_id: int,
+        tex_hash: Optional[str], character_cb_hash: Optional[str],
+        old_hash: Optional[str] = None) -> bool:
+    """Prove a non-fresh service binding was inherited inside one character.
+
+    The current draw and the slot's last explicit writer must both freshly
+    bind the extracted object's cb4 identity at vs-cb3 or vs-cb4.  This keeps
+    intentional cross-Component service-resource reuse while rejecting a
+    texture merely left bound by an unrelated object.
+    """
+    cb_hash = str(character_cb_hash or '').strip().lower()
+    if not cb_hash:
+        return False
+    call = evidence.calls.get(_norm_call_id(call_id))
+    if call is None or not call.drawn:
+        return False
+    value = call.bound_ps_slots.get(slot_id)
+    expected = {value for value in (tex_hash, old_hash) if value not in (None, '')}
+    if value not in expected:
+        return False
+    writer_id = call.bound_ps_writers.get(slot_id)
+    if not writer_id or writer_id == _norm_call_id(call_id):
+        return False
+    writer = evidence.calls.get(writer_id)
+    if writer is None or not writer.drawn:
+        return False
+
+    def binds_character(entry: CallEvidence) -> bool:
+        return any(
+            str(entry.fresh_vs_cb_slots.get(slot) or '').lower() == cb_hash
+            for slot in (3, 4))
+
+    return binds_character(call) and binds_character(writer)
 
 
 def call_has_color_rt(evidence: LogEvidence, call_id) -> Optional[bool]:

@@ -9,10 +9,12 @@ interchangeable between the two plugins):
 Schema v4 (ADR 0007 rev 12, additive - emitted only when the dump's log.txt
 yields usable binding-freshness evidence): top-level ``"version": 4``, per
 slot record ``"fresh": true/false`` (slot was explicitly PSSetShaderResources
--bound under the draw's call id, vs. stale state inherited from an earlier
-draw), per (vs, ps) pair ``"depth_only": true/false`` (no color render target
-bound at any of the pair's draws). Consumers that predate v4 skip the extra
-keys structurally; without log evidence the writer emits a v3-identical file.
+-bound under the draw's call id, vs. state inherited from an earlier draw),
+optional ``"verified_inherited": true`` when that inherited binding's writer
+and consumer freshly bind the same character cb4 identity, and per (vs, ps)
+pair ``"depth_only": true/false`` (no color render target bound at any of the
+pair's draws). Consumers that predate v4 skip the extra keys structurally;
+without log evidence the writer emits a v3-identical file.
 
 ``format`` is the canonical DXGI format name (vocabulary of
 ``embedded/slot_textures/constants.DXGI_FORMAT_NAMES``) read from the dump
@@ -176,6 +178,17 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
 
             shader_texture_usage = OrderedDict()
             skip_dirty_slot = _skip_dirty_slot_enabled()
+            try:
+                native_metadata = (
+                    json.loads(object_data.metadata)
+                    if isinstance(object_data.metadata, str)
+                    else object_data.metadata)
+            except (TypeError, ValueError):
+                native_metadata = {}
+            if not isinstance(native_metadata, dict):
+                native_metadata = {}
+            character_cb_hash = str(
+                native_metadata.get('cb4_hash') or '').strip().lower()
             if evidence is not None:
                 shader_texture_usage['version'] = 4
             elif per_object and skip_dirty_slot:
@@ -189,9 +202,10 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                 surviving = {t.get_slot_hash() for t in component.textures}
                 full = per_object[component_id] if (per_object and component_id < len(per_object)) else []
 
-                # (vs_key, ps_key) -> slot_key -> [record, fresh]. Freshness is
+                # (vs_key, ps_key) -> slot_key ->
+                # [record, fresh, verified_inherited]. Freshness is
                 # OR-aggregated across the pair's draws; on same-seat hash
-                # disagreements fresh beats stale (legacy: silent last-wins).
+                # disagreements fresh beats inherited (legacy: last-wins).
                 seats = {}
                 pair_depth_only = {}
                 for desc in full:
@@ -203,13 +217,19 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                     record = record_cache[desc.hash]
                     slot_key = desc.get_slot()
                     fresh = None
+                    verified_inherited = False
                     if evidence is not None:
                         fresh = _log_freshness.slot_is_fresh(
                             evidence, desc.call_id, desc.slot_id,
                             desc.hash, desc.old_hash)
                         if skip_dirty_slot and fresh is False:
-                            skipped_dirty_slots += 1
-                            continue
+                            verified_inherited = (
+                                _log_freshness.slot_is_verified_character_inherited(
+                                    evidence, desc.call_id, desc.slot_id,
+                                    desc.hash, character_cb_hash, desc.old_hash))
+                            if not verified_inherited:
+                                skipped_dirty_slots += 1
+                                continue
                         rt = _log_freshness.call_has_color_rt(evidence, desc.call_id)
                         depth = (rt is False)
                         prev = pair_depth_only.get((vs_key, ps_key))
@@ -218,13 +238,14 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                     slot_map = seats.setdefault((vs_key, ps_key), {})
                     entry = slot_map.get(slot_key)
                     if entry is None:
-                        slot_map[slot_key] = [record, fresh]
+                        slot_map[slot_key] = [record, fresh, verified_inherited]
                     elif fresh is None:
-                        slot_map[slot_key] = [record, None]  # legacy last-wins
+                        slot_map[slot_key] = [record, None, False]  # legacy last-wins
                     elif entry[0]['hash'] == record['hash']:
                         entry[1] = bool(entry[1]) or fresh
+                        entry[2] = bool(entry[2]) or verified_inherited
                     elif fresh or not entry[1]:
-                        slot_map[slot_key] = [record, fresh]  # fresh beats stale
+                        slot_map[slot_key] = [record, fresh, verified_inherited]
                     # else: seated record is fresh, newcomer is stale -> keep seat
 
                 # Deterministic ordering: sort vs / ps / slot keys for easy diffing.
@@ -235,7 +256,7 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                         slot_map = seats[(vs_key, ps_key)]
                         ps_out = OrderedDict()
                         for slot_key in sorted(slot_map):
-                            record, fresh = slot_map[slot_key]
+                            record, fresh, verified_inherited = slot_map[slot_key]
                             if fresh is None:
                                 ps_out[slot_key] = record
                             else:
@@ -243,6 +264,8 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                                 # per-seat flags must go on a copy.
                                 seat_record = OrderedDict(record)
                                 seat_record['fresh'] = bool(fresh)
+                                if verified_inherited:
+                                    seat_record['verified_inherited'] = True
                                 ps_out[slot_key] = seat_record
                         if evidence is not None:
                             ps_out['depth_only'] = bool(

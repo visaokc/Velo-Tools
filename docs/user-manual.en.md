@@ -404,7 +404,7 @@ Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
 Velo preserves the stock `TextureUsage.json` output and also writes `ShaderTextureUsage.json` for slot-style texture work.
 
-**贴图过滤：跳过 Dirty Slot (Skip Dirty Slots)** keeps slots with explicit `PSSetShaderResources` evidence from `log.txt`. If no usable log evidence exists, Velo preserves legacy STU records instead of guessing deletions.
+**贴图过滤：跳过 Dirty Slot (Skip Dirty Slots)** keeps slots with explicit `PSSetShaderResources` evidence from `log.txt` and inherited bindings whose writer and consumer are both proven to belong to the same character by fresh `cb4` evidence. Other residual bindings remain excluded. If no usable log evidence exists, Velo preserves legacy STU records instead of guessing deletions.
 
 Filters such as small texture, `.jpg`, known cubemap, and same-slot same-Hash can remove useful assets. Change defaults only when you understand the capture.
 

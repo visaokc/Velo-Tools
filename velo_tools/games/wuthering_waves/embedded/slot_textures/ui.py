@@ -48,7 +48,8 @@ def inject_settings():
     _wsettings.VTWW_Settings.__annotations__["skip_slot_residual_textures"] = bpy.props.BoolProperty(
         name="贴图过滤：跳过 Dirty Slot",
         description=(
-            "仅保留 log.txt 中由 PSSetShaderResources 明确绑定过的 ps-t 槽位；"
+            "保留 log.txt 中由 PSSetShaderResources 明确绑定的槽位，以及可由相同角色 "
+            "cb4 证明的跨 Component 继承槽位；过滤其它残留状态；"
             "没有可用 log 证据时保持 legacy STU，不猜测删除。"
         ),
         default=True,
