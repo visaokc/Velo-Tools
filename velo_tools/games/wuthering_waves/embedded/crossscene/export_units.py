@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -367,14 +368,44 @@ def _drop_redundant_named_groups(obj: Any) -> list[str]:
     return removed
 
 
-def _preprocess_cross_scene_copy(context: Any, obj: Any, preexport_module=None) -> dict:
+def _vertex_group_signatures(obj: Any) -> Dict[str, tuple]:
+    names = {group.index: group.name for group in getattr(obj, "vertex_groups", ())}
+    weights = {index: [] for index in names}
+    for vertex in getattr(getattr(obj, "data", None), "vertices", ()):
+        for assignment in vertex.groups:
+            if assignment.group in weights and assignment.weight > 1e-6:
+                weights[assignment.group].append(
+                    (int(vertex.index), float(assignment.weight))
+                )
+    return {names[index]: tuple(weights[index]) for index in names}
+
+
+def _preprocess_cross_scene_copy(
+    context: Any,
+    obj: Any,
+    preexport_module=None,
+    *,
+    track_vg_sources: bool = False,
+) -> dict:
     """Apply the active MMD mapping to one disposable cross-scene input copy."""
     if preexport_module is None:
         from .....core.export import preexport as preexport_module
     scene = getattr(context, "scene", None)
     settings = getattr(scene, "velo_endfield", None)
     profile = getattr(settings, "mmd_profile", None) if settings is not None else None
+    before_signatures = _vertex_group_signatures(obj) if track_vg_sources else {}
     report = preexport_module.apply_mmd_pre_export(obj, profile)
+    source_names = {}
+    if track_vg_sources:
+        candidates: Dict[tuple, list[str]] = {}
+        for name, signature in before_signatures.items():
+            candidates.setdefault(signature, []).append(name)
+        for name, signature in _vertex_group_signatures(obj).items():
+            original = candidates.get(signature, ())
+            if len(original) == 1 and original[0] != name:
+                source_names[name] = original[0]
+    if source_names and hasattr(obj, "__setitem__"):
+        obj["_velo_vg_source_names"] = json.dumps(source_names, ensure_ascii=False)
     removed = _drop_redundant_named_groups(obj)
     if removed:
         report["dropped_redundant_named"] = removed
@@ -392,31 +423,118 @@ def _remap_source_object_error(message: str, labels: Mapping[str, str]) -> str:
     return result
 
 
+def _mark_source_vertex_ids(obj: Any) -> None:
+    mesh = obj.data
+    attributes = getattr(mesh, "attributes", None)
+    if attributes is None:
+        return
+    base = "_velo_export_source_vertex_id"
+    name = base
+    suffix = 1
+    while attributes.get(name) is not None:
+        name = f"{base}_{suffix}"
+        suffix += 1
+    attribute = attributes.new(name=name, type='INT', domain='POINT')
+    attribute.data.foreach_set("value", list(range(len(mesh.vertices))))
+    obj["_velo_source_vertex_id_attribute"] = name
+
+
+def _source_vertex_id(obj: Any, vertex_index: int) -> int:
+    name = obj.get("_velo_source_vertex_id_attribute")
+    attributes = getattr(obj.data, "attributes", None)
+    attribute = attributes.get(str(name)) if attributes is not None and name else None
+    if attribute is None or vertex_index >= len(attribute.data):
+        return int(vertex_index)
+    return int(attribute.data[vertex_index].value)
+
+
+def _remove_source_vertex_ids(obj: Any) -> None:
+    name = obj.get("_velo_source_vertex_id_attribute")
+    attributes = getattr(obj.data, "attributes", None)
+    attribute = attributes.get(str(name)) if attributes is not None and name else None
+    if attribute is not None:
+        attributes.remove(attribute)
+
+
+def _stray_weight_details(obj: Any, vg_map: Mapping[Any, Any]) -> Dict[str, dict]:
+    valid = {int(value) for value in (vg_map or {}).values()}
+    names = {group.index: group.name for group in obj.vertex_groups}
+    details: Dict[str, dict] = {}
+    for vertex in obj.data.vertices:
+        for assignment in vertex.groups:
+            name = names.get(assignment.group)
+            if (name is None or assignment.weight <= 1e-6
+                    or not name.lstrip('-').isdigit() or int(name) in valid):
+                continue
+            row = details.setdefault(name, {
+                "vertices": [],
+                "max_weight": 0.0,
+                "total_weight": 0.0,
+            })
+            row["vertices"].append(_source_vertex_id(obj, vertex.index))
+            row["max_weight"] = max(row["max_weight"], float(assignment.weight))
+            row["total_weight"] += float(assignment.weight)
+    return details
+
+
+def _format_stray_weight_details(
+    stray: Iterable[str],
+    details: Mapping[str, Mapping[str, Any]],
+    source_names: Mapping[str, str],
+) -> str:
+    rows = []
+    for name in stray:
+        row = details.get(str(name), {})
+        vertices = list(row.get("vertices") or ())
+        sample = ", ".join(str(value) for value in vertices[:12]) or "未知"
+        if len(vertices) > 12:
+            sample += f", ...（另有 {len(vertices) - 12} 个）"
+        source = source_names.get(str(name))
+        source_text = f"，来源组 `{source}`" if source else ""
+        rows.append(
+            f"unified VG {name}{source_text}：{len(vertices)} 个顶点 "
+            f"[{sample}]，最大权重 {float(row.get('max_weight', 0.0)):.8f}，"
+            f"总权重 {float(row.get('total_weight', 0.0)):.8f}"
+        )
+    return "；".join(rows)
+
+
 def postprocess_partitioned_fragment(
     merger: Any,
     temp_object: Any,
     target_component_index: int,
-) -> None:
+) -> Optional[str]:
     """Finish deferred PFM normalization after material routing is known."""
     obj = temp_object.object
     if not bool(obj.get("_velo_defer_pfm_normalization", False)):
-        return
+        return None
     from .. import per_from_merged
 
     component_meta = merger.extracted_object.components[target_component_index]
+    vg_map = getattr(component_meta, "vg_map", {}) or {}
     settings = getattr(merger.context.scene, "velo_endfield", None)
     profile = getattr(settings, "mmd_profile", None) if settings else None
+    material_name = temp_object.name
+    source_name = str(obj.get("_velo_export_source_name", material_name))
+    details = _stray_weight_details(obj, vg_map)
     stray = per_from_merged._prepare_object_for_component_export(
         obj,
-        getattr(component_meta, "vg_map", {}) or {},
+        vg_map,
         profile,
     )
+    _remove_source_vertex_ids(obj)
     if stray:
-        source_name = str(obj.get("_velo_export_source_name", temp_object.name))
-        raise RuntimeError(
-            "跨场景 Per-Component(from Merged)：物体 %s 拆分到 Component %d 后的顶点组 %s 权重越界。"
-            % (source_name, target_component_index, stray)
+        try:
+            source_names = json.loads(str(obj.get("_velo_vg_source_names", "{}")))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            source_names = {}
+        weight_text = _format_stray_weight_details(stray, details, source_names)
+        return (
+            f"物体 `{source_name}` / 材质 `{material_name}` → Component "
+            f"{target_component_index}：{weight_text}。请在原对象中检查这些材质面和来源组；"
+            "导出器未修改源权重。"
         )
+    return None
 
 
 def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
@@ -439,15 +557,6 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
             selected.name,
             bool(plan.manifest_entry.get("apply_modifiers", False)),
         )
-        ordinal = per_local_count.get(local_id, 0)
-        per_local_count[local_id] = ordinal + 1
-        name = _local_name(local_id, ordinal)
-        obj = _copy_input_object(selected.object, collection, name)
-        obj["_velo_export_source_name"] = selected.name
-        _preprocess_cross_scene_copy(context, obj)
-        material_partition.cache_plan(obj, partition_plan, global_to_local)
-        labels[obj.name] = selected.name
-
         material_components = {
             material_partition.component_id_from_name(name)
             for name in partition_plan.expected_material_names
@@ -464,6 +573,20 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
                     "跨场景材质拆分：物体 %s 的材质指向不属于当前导出单元的 Component %s。"
                     % (selected.name, unavailable)
                 )
+        ordinal = per_local_count.get(local_id, 0)
+        per_local_count[local_id] = ordinal + 1
+        name = _local_name(local_id, ordinal)
+        obj = _copy_input_object(selected.object, collection, name)
+        obj["_velo_export_source_name"] = selected.name
+        if cross_component_materials:
+            _mark_source_vertex_ids(obj)
+        _preprocess_cross_scene_copy(
+            context,
+            obj,
+            track_vg_sources=cross_component_materials,
+        )
+        material_partition.cache_plan(obj, partition_plan, global_to_local)
+        labels[obj.name] = selected.name
 
         if plan.kind == "body" and cfg.mod_skeleton_type == "COMPONENT_FROM_MERGED":
             if cross_component_materials:

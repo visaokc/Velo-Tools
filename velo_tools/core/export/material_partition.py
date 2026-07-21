@@ -313,6 +313,7 @@ def _postprocess_merger(merger, after_split=None) -> None:
     plans = getattr(merger, "_velo_material_partition_plans", {})
     rebuilt = [[] for _component in merger.components]
     source_entries = []
+    postprocess_errors = []
     for component_index, component in enumerate(merger.components):
         original_entries = list(plans.get(id(component), ()))
         cleanup_objects = [entry[0] for entry in original_entries]
@@ -356,12 +357,23 @@ def _postprocess_merger(merger, after_split=None) -> None:
                 )
                 rebuilt[target_index].append(exported_fragment)
                 if after_split is not None:
-                    after_split(merger, exported_fragment, target_index)
+                    error = after_split(merger, exported_fragment, target_index)
+                    if error:
+                        postprocess_errors.append(str(error))
                 _clean_fragment_shape_keys(merger.context, fragment)
 
     for component_index, component in enumerate(merger.components):
         component.objects = rebuilt[component_index]
         component.objects.sort(key=lambda item: item.name)
+    if postprocess_errors:
+        details = "\n".join(
+            f"{index}. {message}"
+            for index, message in enumerate(postprocess_errors, 1)
+        )
+        raise ValueError(
+            f"检测到 {len(postprocess_errors)} 个材质片段存在越界权重；"
+            f"已一次性列出，未修改源权重：\n{details}"
+        )
 
 
 def install(merger_cls: type, settings_attr: str, after_split=None) -> None:

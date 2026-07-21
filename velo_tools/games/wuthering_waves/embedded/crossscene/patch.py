@@ -59,7 +59,7 @@ def _make_patched(orig_execute):
             try:
                 # Surface the actual reason (e.g. the own-buffer stray-weight guidance) instead
                 # of only pointing at the console.
-                self.report({'ERROR'}, "Cross-scene export failed: %s" % str(e)[:400])
+                self.report({'ERROR'}, "Cross-scene export failed: %s" % str(e))
             except Exception:
                 pass
             return {'CANCELLED'}
