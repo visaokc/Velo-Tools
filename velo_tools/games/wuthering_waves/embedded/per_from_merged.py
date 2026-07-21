@@ -301,6 +301,41 @@ def _find_vtww_export():
     return None
 
 
+def _gather_export_meshes(
+        context,
+        cfg,
+        base_collection,
+        *,
+        object_provider=None,
+        hidden_predicate=None,
+        export_object_provider=None,
+):
+    """Apply the shared WWMI export selection policy before PFM remapping."""
+    if object_provider is None or hidden_predicate is None:
+        from .._wwmi_core.migoto_io.blender_interface.collections import (
+            get_collection_objects,
+        )
+        from .._wwmi_core.migoto_io.blender_interface.objects import (
+            object_is_hidden,
+        )
+        object_provider = object_provider or get_collection_objects
+        hidden_predicate = hidden_predicate or object_is_hidden
+    if export_object_provider is None:
+        from .export_selection import get_export_collection_objects
+        export_object_provider = get_export_collection_objects
+
+    gathered = export_object_provider(
+        context,
+        base_collection,
+        recursive=not cfg.ignore_nested_collections,
+        skip_hidden_collections=cfg.ignore_hidden_collections,
+        object_provider=object_provider,
+        skip_hidden_objects=cfg.ignore_hidden_objects,
+        hidden_predicate=hidden_predicate,
+    )
+    return tuple(o for o in gathered if o.type == 'MESH')
+
+
 def _make_patched(orig_execute):
     def patched(self, context):
         cfg = getattr(context.scene, "VTWW_settings", None)
@@ -328,22 +363,9 @@ def _make_patched(orig_execute):
         velo_settings = getattr(context.scene, "velo_endfield", None)
         mmd_profile = getattr(velo_settings, "mmd_profile", None) if velo_settings is not None else None
         try:
-            # Honor the stock collection settings (Ignore Nested / Hidden Collections / Hidden
-            # Objects) exactly like a single-IB export, reusing the vendored core's gatherer so the
-            # semantics can't drift ("checked = really ignored"). The "create component sub-
-            # collections" import lowers ignore_nested_collections so the C{n} children are still
-            # traversed; a flat import keeps the default (recursive gather == .objects).
-            # Lazy import: keep this module importable without a full bpy (pure-function unit tests).
-            from .._wwmi_core.migoto_io.blender_interface.collections import get_collection_objects
-            from .._wwmi_core.migoto_io.blender_interface.objects import object_is_hidden
-            gathered = get_collection_objects(
-                base_col,
-                recursive=not cfg.ignore_nested_collections,
-                skip_hidden_collections=cfg.ignore_hidden_collections)
-            gathered_meshes = [o for o in gathered if o.type == 'MESH']
+            # All WWMI routes share one effective collection visibility policy.
+            base_meshes = _gather_export_meshes(context, cfg, base_col)
             all_source_mesh_names = [o.name for o in base_col.all_objects if o.type == 'MESH']
-            base_meshes = [o for o in gathered_meshes
-                           if not (cfg.ignore_hidden_objects and object_is_hidden(o))]
             excluded_names = plan_excluded_object_names(
                 all_source_mesh_names,
                 [o.name for o in base_meshes],

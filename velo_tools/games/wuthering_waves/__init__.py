@@ -348,6 +348,15 @@ def register():
     # Register scene properties ourselves (don't call the upstream top-level register(), so the trigger_mod_export timer isn't wired up).
     # The scene property name also uses the fork namespace, avoiding conflicts with standalone WWMI-Tools' Scene.wwmi_tools_settings.
     bpy.types.Scene.VTWW_settings = bpy.props.PointerProperty(type=_wsettings.VTWW_Settings)
+    # One collection visibility policy serves stock single-IB, Per-Component
+    # (from Merged), and Cross-Scene export. The stock route is connected by
+    # replacing only ObjectMerger's imported provider binding.
+    try:
+        from .embedded import export_selection as _export_selection
+        _export_selection.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
     try:
         from ...core.export import material_partition as _material_partition
         from ._wwmi_core.blender_export.blender_export import ObjectMergerWWMI
@@ -476,6 +485,11 @@ def unregister():
         from ...core.export import material_partition as _material_partition
         from ._wwmi_core.blender_export.blender_export import ObjectMergerWWMI
         _material_partition.remove(ObjectMergerWWMI)
+    except Exception:
+        pass
+    try:
+        from .embedded import export_selection as _export_selection
+        _export_selection.remove()
     except Exception:
         pass
     try:
