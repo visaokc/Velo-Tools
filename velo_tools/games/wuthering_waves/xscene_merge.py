@@ -750,9 +750,10 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder,
     form_ibs = list(form_ibs or [])
     _validate_same_character(base, dungeon_specs, editable_ibs, form_ibs)
     bound_forms = _bind_form_ibs(dungeon_specs, form_ibs)
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
+    if out.exists() and any(out.iterdir()):
+        raise RuntimeError(
+            f"Cross-Scene output folder is not empty; select a new folder: {out}")
+    out.mkdir(parents=True, exist_ok=True)
 
     info, base_comps, base_off = analyze(base, dungeon_specs)
     base_native_metadata = _read_json_or_empty(base, "Metadata.json")

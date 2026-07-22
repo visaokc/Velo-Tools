@@ -69,6 +69,19 @@ def _remap_block_filenames(obj, id_map: dict) -> None:
             _remap_block_filenames(item, id_map)
 
 
+def _mark_route_evidence_only(obj, owned_hashes: set[str]) -> None:
+    """Prevent a fold route from promoting scene-only textures to DDS ownership."""
+    if isinstance(obj, dict):
+        texture_hash = _record_hash(obj)
+        if texture_hash and texture_hash not in owned_hashes:
+            obj["observed_only"] = True
+        for value in obj.values():
+            _mark_route_evidence_only(value, owned_hashes)
+    elif isinstance(obj, list):
+        for item in obj:
+            _mark_route_evidence_only(item, owned_hashes)
+
+
 def remap_editable_stu(eib_stu: dict, id_map: dict) -> dict:
     """Return {merged 'Component N' key: block} from an editable IB's ShaderTextureUsage.json,
     remapping 'Component {local}' top-level keys to merged ids (via id_map) and rewriting any
@@ -129,6 +142,10 @@ def merge_fold_form_component_modes(root_stu: dict,
             for key in before_modes)
     else:
         changed = False
+    owned_hashes, _ = effective_usage_hashes(_component_map(root_stu))
+    for components in _extra_form_component_maps(root_stu):
+        form_hashes, _ = effective_usage_hashes(components)
+        owned_hashes.update(form_hashes)
     for ib_hash, fold in (fold_data or {}).items():
         comp_map = {
             int(local): int(base)
@@ -170,6 +187,7 @@ def merge_fold_form_component_modes(root_stu: dict,
                     slot_constants.FORM_VARIANTS_KEY):
                 variant.pop(key, None)
             _remap_block_filenames(variant, comp_map)
+            _mark_route_evidence_only(variant, owned_hashes)
             variant["source"] = f"fold {ib_hash} base"
             variant["matched_by"] = "fold-route"
             variant["vb0_hash"] = str(ib_hash).lower()
@@ -369,6 +387,9 @@ def _merge_usage_component_ids(out: dict[str, set[int]], components: dict, id_ma
             merged = id_map[local]
         for slots in _iter_pair_slots(comp_pairs):
             for record in slots.values():
+                if (isinstance(record, dict)
+                        and record.get("observed_only") is True):
+                    continue
                 if not _record_fresh(record):
                     continue
                 texture_hash = _record_hash(record)
