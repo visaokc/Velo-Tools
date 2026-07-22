@@ -6,7 +6,7 @@
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -2017,6 +2017,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
             scope = (comp_id, route)
             for ps, pair_map in comp_pairs.items():
                 is_primary_pass = primary_passes.get((form_id, comp_id)) == ps
+                primary_ps = primary_passes.get((form_id, comp_id))
+                primary_pair = comp_pairs.get(primary_ps, {})
                 fresh_slots = _fresh_signature_slots(
                     comp_id, ps, pair_map, form_fresh)
                 inherited_slots = _inherited_assignment_slots(
@@ -2032,6 +2034,32 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                      condition_slots, alias)
                 if not sig:
                     continue
+                depth_only = False
+                if pass_depth is not None and form_id - 1 < len(pass_depth):
+                    depth_only = bool((pass_depth[form_id - 1] or {}).get(
+                        (comp_id, ps), False))
+                primary_fresh_slots = _fresh_signature_slots(
+                    comp_id, primary_ps, primary_pair, form_fresh)
+                primary_inherited_slots = _inherited_assignment_slots(
+                    comp_id, primary_ps, primary_pair, form_fresh)
+                primary_override_slots = _local_assignment_slots(
+                    primary_pair, texture_info,
+                    _pass_role(primary_pair, texture_info),
+                    primary_fresh_slots, primary_inherited_slots)
+                partial_material_candidate = bool(
+                    not is_primary_pass
+                    and depth_only
+                    and role == 'material'
+                    and not inherited_slots
+                    and set(constants.MAIN_SLOTS).issubset(override_slots)
+                    and override_slots
+                    and override_slots < primary_override_slots
+                    and override_slots.issubset(fresh_slots)
+                    and all(
+                        isinstance(pair_map.get(slot), str)
+                        and alias.get(pair_map[slot], pair_map[slot])
+                        == alias.get(primary_pair.get(slot), primary_pair.get(slot))
+                        for slot in override_slots))
                 condition_source = _condition_source(
                     comp_id, ps, set(slot for slot, _key in sig), form_fresh)
                 observed_hashes = {
@@ -2043,7 +2071,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     canon = alias.get(tex_hash, tex_hash)
                     service_drift_branch = (
                         (form_id, comp_id, ps, canon) in service_drift_branches)
-                    if ((not is_primary_pass and not service_drift_branch)
+                    if ((not is_primary_pass and not service_drift_branch
+                         and not partial_material_candidate)
                             or slot not in override_slots
                             or canon not in texture_info):
                         continue
@@ -2064,10 +2093,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     (form_id, comp_id, ps, alias.get(tex_hash, tex_hash))
                     in service_drift_branches
                     for tex_hash in assign_hashes.values())
-                depth_only = False
-                if pass_depth is not None and form_id - 1 < len(pass_depth):
-                    depth_only = bool((pass_depth[form_id - 1] or {}).get(
-                        (comp_id, ps), False))
+                partial_material_branch = bool(
+                    partial_material_candidate and assign_hashes)
                 row = {
                     'form_id': form_id,
                     'form': label,
@@ -2077,6 +2104,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     'depth_only': depth_only,
                     'primary_pass': is_primary_pass,
                     'service_drift_branch': is_service_drift_branch,
+                    'partial_material_branch': partial_material_branch,
                     'condition_source': condition_source,
                     'signature': _serialized_signature(sig),
                     'positive_signature': _serialized_signature(sig),
@@ -2091,7 +2119,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     'inherited_slots': sorted(inherited_slots),
                     'canonical_slots': (
                         sorted(assign_hashes)
-                        if is_primary_pass or is_service_drift_branch else []),
+                        if (is_primary_pass or is_service_drift_branch
+                            or partial_material_branch) else []),
                 }
                 if route is not None:
                     row['route'] = route
@@ -2099,7 +2128,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                 if remap_sources:
                     row['remap_sources'] = remap_sources
                 rows.append(row)
-                if assign_hashes and (is_primary_pass or is_service_drift_branch):
+                if assign_hashes and (is_primary_pass or is_service_drift_branch
+                                      or partial_material_branch):
                     for branch_assign_hashes in _duplicate_service_assignment_variants(
                             assign_hashes, alias):
                         branch_sig = _signature_for_duplicate_service_variant(
@@ -2137,6 +2167,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                 'depth_only': depth_only,
                                 'primary_pass': is_primary_pass,
                                 'service_drift_branch': is_service_drift_branch,
+                                'partial_material_branch': partial_material_branch,
                                 'condition_source': condition_source,
                                 'forms': [label],
                                 'sources': [{'form': label, 'ps': ps}],
@@ -2149,6 +2180,9 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                             sample['service_drift_branch'] = bool(
                                 sample.get('service_drift_branch')
                                 or is_service_drift_branch)
+                            sample['partial_material_branch'] = bool(
+                                sample.get('partial_material_branch')
+                                or partial_material_branch)
                             if label not in sample['forms']:
                                 sample['forms'].append(label)
                             sample['sources'].append({'form': label, 'ps': ps})
@@ -2464,6 +2498,70 @@ def _route_split_components(
     return complete
 
 
+def _local_conditions_overlap(left: _LocalBranch,
+                              right: _LocalBranch) -> bool:
+    left_positive = dict(left.signature)
+    right_positive = dict(right.signature)
+    for slot in set(left_positive) & set(right_positive):
+        if left_positive[slot] != right_positive[slot]:
+            return False
+    left_negative = set(left.negative_signature)
+    right_negative = set(right.negative_signature)
+    if any(term in right_negative for term in left.signature):
+        return False
+    if any(term in left_negative for term in right.signature):
+        return False
+    return True
+
+
+def _add_safe_base_route_fallbacks(
+        component_branches: Dict[int, List[_LocalBranch]],
+        route_split_components: Set[int]) -> None:
+    """Expose unambiguous routed conditions to body/LOD base draws."""
+    for comp_id in route_split_components:
+        branches = component_branches.get(comp_id) or []
+        base_branches = [branch for branch in branches
+                         if branch.route_id == 'base']
+        candidates = [branch for branch in branches
+                      if branch.route_id not in (None, 'base')]
+        additions: List[_LocalBranch] = []
+        for candidate in candidates:
+            candidate_condition = (
+                candidate.signature, candidate.negative_signature)
+            candidate_assignment = tuple(sorted(candidate.assign_hashes.items()))
+            unsafe = False
+            for peer in branches:
+                if peer is candidate or not _local_conditions_overlap(
+                        candidate, peer):
+                    continue
+                peer_condition = (peer.signature, peer.negative_signature)
+                peer_assignment = tuple(sorted(peer.assign_hashes.items()))
+                if (candidate_condition == peer_condition
+                        and candidate_assignment != peer_assignment):
+                    unsafe = True
+                    break
+                for slot in set(candidate.assign_hashes) & set(peer.assign_hashes):
+                    if candidate.assign_hashes[slot] != peer.assign_hashes[slot]:
+                        unsafe = True
+                        break
+                if unsafe:
+                    break
+            if unsafe:
+                continue
+            if any(
+                    existing.signature == candidate.signature
+                    and existing.negative_signature == candidate.negative_signature
+                    and existing.assign_hashes == candidate.assign_hashes
+                    for existing in base_branches + additions):
+                continue
+            additions.append(replace(
+                candidate,
+                route_id='base',
+                source=f'{candidate.source} (base route fallback)',
+            ))
+        branches.extend(additions)
+
+
 def _local_branches_from_audit(audit: dict,
                                mod_hashes: Dict[str, str],
                                canon_fn,
@@ -2579,11 +2677,13 @@ def _local_branches_from_audit(audit: dict,
         except (TypeError, ValueError):
             form_id = None
         ps = str(row.get('ps') or '')
-        if row.get('primary_pass') and form_id is not None and ps:
+        accepted_row = bool(
+            row.get('primary_pass') or row.get('partial_material_branch'))
+        if accepted_row and form_id is not None and ps:
             primary_row_keys.add((form_id, comp_id, ps))
         _assign, _assign_key = _effective_assignment(
             row.get('assign_hashes'), comp_id, source)
-        if not row.get('primary_pass'):
+        if not accepted_row:
             continue
         row_assign_key = tuple(sorted(
             (int(slot), canon_fn(tex_hash))
@@ -2657,7 +2757,8 @@ def _local_branches_from_audit(audit: dict,
                 branch_primary_keys.add((form_id, comp_id, ps))
         if (branch_primary_keys
                 and not branch_primary_keys.issubset(primary_row_keys)
-                and not entry.get('service_drift_branch')):
+                and not entry.get('service_drift_branch')
+                and not entry.get('partial_material_branch')):
             continue
         pending_branches.append(
             (comp_id, route, entry, assign, assign_key, source))
@@ -2890,6 +2991,8 @@ def _local_branches_from_audit(audit: dict,
         branch_records, slot_eligible_components)
     if problems:
         raise LocalDiscriminatorConflict(problems)
+    _add_safe_base_route_fallbacks(
+        component_branches, route_split_components)
     return (component_branches, assigned_hashes,
             suppressed_weak_branches, suppressed_weak_hashes,
             route_split_components)

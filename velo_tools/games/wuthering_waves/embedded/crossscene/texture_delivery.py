@@ -110,15 +110,26 @@ def build_delivery_inventory(texture_root, mods) -> TextureDeliveryInventory:
     )
 
 
-def deliver_root_dds(inventory: TextureDeliveryInventory, textures_dir) -> dict:
-    """Copy missing root files while preserving every existing author-edited output."""
+def _required_name_set(inventory: TextureDeliveryInventory,
+                       required_names) -> set[str]:
+    if required_names is None:
+        return {item.name.casefold() for item in inventory.root_files}
+    return {str(name).casefold() for name in required_names}
+
+
+def deliver_root_dds(inventory: TextureDeliveryInventory, textures_dir,
+                     required_names=None) -> dict:
+    """Deliver only reachable DDS files and preserve edits to reachable outputs."""
 
     output = Path(textures_dir)
     output.mkdir(parents=True, exist_ok=True)
+    required = _required_name_set(inventory, required_names)
     copied = []
     reused = []
     preserved_modified = []
     for item in inventory.root_files:
+        if item.name.casefold() not in required:
+            continue
         destination = output / item.name
         if destination.exists():
             if not destination.is_file():
@@ -133,7 +144,7 @@ def deliver_root_dds(inventory: TextureDeliveryInventory, textures_dir) -> dict:
         shutil.copy2(item.path, destination)
         copied.append(item.name)
 
-    report = inspect_root_dds(inventory, output)
+    report = inspect_root_dds(inventory, output, required_names=required)
     report.update({
         "root_dds_copied": copied,
         "root_dds_reused": reused,
@@ -142,16 +153,21 @@ def deliver_root_dds(inventory: TextureDeliveryInventory, textures_dir) -> dict:
     return report
 
 
-def inspect_root_dds(inventory: TextureDeliveryInventory, textures_dir) -> dict:
+def inspect_root_dds(inventory: TextureDeliveryInventory, textures_dir,
+                     required_names=None) -> dict:
     """Report delivery state without mutating the output directory."""
 
     output = Path(textures_dir)
+    required = _required_name_set(inventory, required_names)
+    required_files = tuple(
+        item for item in inventory.root_files
+        if item.name.casefold() in required
+    )
     output_files = (
         [path for path in output.iterdir() if path.is_file()]
         if output.is_dir() else []
     )
-    root_names = {item.name.casefold() for item in inventory.root_files}
-    root_by_name = {item.name.casefold(): item for item in inventory.root_files}
+    root_by_name = {item.name.casefold(): item for item in required_files}
     reused = []
     preserved_modified = []
     for path in output_files:
@@ -163,11 +179,17 @@ def inspect_root_dds(inventory: TextureDeliveryInventory, textures_dir) -> dict:
         else:
             preserved_modified.append(item.name)
     missing = [
-        item.name for item in inventory.root_files
+        item.name for item in required_files
         if not (output / item.name).is_file()
     ]
+    output_orphans = sorted(
+        path.name for path in output_files
+        if path.suffix.casefold() == ".dds"
+        and path.name.casefold() not in required
+    )
     return {
-        "root_dds_files": len(inventory.root_files),
+        "root_dds_files": len(required_files),
+        "root_catalog_dds_files": len(inventory.root_files),
         "root_unique_hashes": len(inventory.root_unique_hashes),
         "root_duplicate_identical": list(inventory.root_duplicate_identical),
         "root_unhashed_files": list(inventory.root_unhashed_files),
@@ -181,8 +203,6 @@ def inspect_root_dds(inventory: TextureDeliveryInventory, textures_dir) -> dict:
         "textures_non_dds_files": sum(
             1 for path in output_files if path.suffix.casefold() != ".dds"
         ),
-        "tex_output_extras": sorted(
-            path.name for path in output_files
-            if path.suffix.casefold() == ".dds" and path.name.casefold() not in root_names
-        ),
+        "tex_output_extras": output_orphans,
+        "texture_output_orphans": output_orphans,
     }

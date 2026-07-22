@@ -1155,21 +1155,28 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     # textures are gated by the root allowlist (ADR 0013). The root file wins as the copy source.
     shipped = {hv for hv in tex
                if hv in slot_hashes or allowed is None or hv in allowed}
+    shipped_name_by_hash = {
+        hv: root_name_by_hash.get(hv) or tex_name.get(hv) or f't={hv}.dds'
+        for hv in shipped
+    }
+    required_texture_names = set(shipped_name_by_hash.values())
     if write_textures:
         for hv in tex:
             if hv not in shipped:
                 continue
             src = root_file_by_hash[hv] if (allowed is not None and hv in root_file_by_hash) else tex[hv]
-            shipped_name = root_name_by_hash.get(hv) or tex_name.get(hv) or f't={hv}.dds'
+            shipped_name = shipped_name_by_hash[hv]
             dst = os.path.join(textures_dir, shipped_name)
             if os.path.exists(dst):
                 continue
             shutil.copy(src, dst)
         delivery_report = _texture_delivery.deliver_root_dds(
-            delivery_inventory, textures_dir)
+            delivery_inventory, textures_dir,
+            required_names=required_texture_names)
     else:
         delivery_report = _texture_delivery.inspect_root_dds(
-            delivery_inventory, textures_dir)
+            delivery_inventory, textures_dir,
+            required_names=required_texture_names)
 
     gate = ' || '.join(f'$object_detected_ib{k}' for k in range(len(mods)))
     blindzone_shipped = sorted(hv for hv in blindzone if hv in shipped)
