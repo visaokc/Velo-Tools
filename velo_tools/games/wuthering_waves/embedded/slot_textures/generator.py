@@ -536,10 +536,6 @@ class SlotSection:
     kind: str
     component_id: Optional[int] = None
     level: Optional[int] = None
-    ps: str = ''
-    profile_id: Optional[int] = None
-    assign_hashes: Tuple[Tuple[int, str], ...] = ()
-    route_id: Optional[str] = None
 
 
 @dataclass
@@ -681,13 +677,6 @@ class _LocalBranch:
     assign_hashes: Dict[int, str] = field(default_factory=dict)
     route_id: Optional[str] = None
     inherited_slots: Tuple[int, ...] = ()
-    pass_role: str = 'material'
-    primary_pass: bool = False
-    profile_key: Tuple[str, ...] = ()
-    profile_id: Optional[int] = None
-    auxiliary_profile: bool = False
-    form_excludes: Tuple[int, ...] = ()
-    form_gate_active: bool = False
 
 
 def _serialized_branch_contract(
@@ -727,15 +716,6 @@ def _serialized_branch_contract(
             form_gate = None
         if form_gate is not None:
             entry['form_gate'] = int(form_gate)
-        form_excludes = tuple(getattr(branch, 'form_excludes', ()) or ())
-        if form_excludes:
-            entry['form_excludes'] = tuple(int(value) for value in form_excludes)
-        profile_id = getattr(branch, 'profile_id', None)
-        if profile_id is not None:
-            if bool(getattr(branch, 'auxiliary_profile', False)):
-                entry['profile_guard'] = int(profile_id)
-            if bool(getattr(branch, 'primary_pass', False)):
-                entry['profile_set'] = int(profile_id)
         serialized.append(entry)
     contract = {
         'component': comp_id,
@@ -1320,8 +1300,7 @@ def _component_hash_canonical_slots(forms: List[Tuple[str, FormData]],
 
 def _duplicate_service_assignment_variants(
         assign_hashes: Dict[int, str],
-        alias: Dict[str, str],
-        signature: Tuple[Tuple[int, float], ...] = ()) -> List[Dict[int, str]]:
+        alias: Dict[str, str]) -> List[Dict[int, str]]:
     by_hash: Dict[str, List[int]] = {}
     for slot, tex_hash in assign_hashes.items():
         if slot not in constants.SERVICE_SLOTS:
@@ -1332,15 +1311,6 @@ def _duplicate_service_assignment_variants(
         if len(slots) > 1
     ]
     if not duplicate_slots:
-        return [dict(assign_hashes)]
-
-    stable_terms = [
-        term for term in signature if term[0] not in constants.SERVICE_SLOTS
-    ]
-    if len(stable_terms) >= 3:
-        # One draw may freshly bind the same service resource to several seats.
-        # When its material layout independently identifies the draw, keep the
-        # write atomic so else-if order cannot decide which seat is repaired.
         return [dict(assign_hashes)]
 
     variants: List[Dict[int, str]] = [dict(assign_hashes)]
@@ -1356,7 +1326,16 @@ def _duplicate_service_assignment_variants(
                 item[slot] = assign_hashes[slot]
                 next_variants.append(item)
         variants = next_variants
-    return variants or [dict(assign_hashes)]
+
+    deduped: List[Dict[int, str]] = []
+    seen: Set[Tuple[Tuple[int, str], ...]] = set()
+    for variant in variants:
+        key = tuple(sorted(variant.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(variant)
+    return deduped or [dict(assign_hashes)]
 
 
 def _signature_for_duplicate_service_variant(
@@ -1977,25 +1956,6 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
         form_routes=form_routes, ambiguous_out=ambiguous_primary)
     if ambiguous_primary:
         raise SlotStyleDegrade('; '.join(ambiguous_primary))
-    primary_profiles: Dict[Tuple[int, int], Tuple[str, ...]] = {}
-    primary_profile_hashes: Dict[Tuple[int, int], Set[str]] = {}
-    for form_id, (_label, form_data) in enumerate(audit_forms, start=1):
-        for comp_id, comp_pairs in form_data.items():
-            primary_ps = primary_passes.get((form_id, comp_id))
-            primary_pair = comp_pairs.get(primary_ps) if primary_ps else None
-            if not isinstance(primary_pair, dict):
-                continue
-            hashes = {
-                alias.get(tex_hash, tex_hash)
-                for slot, tex_hash in primary_pair.items()
-                if (slot not in constants.SERVICE_SLOTS
-                    and isinstance(tex_hash, str)
-                    and alias.get(tex_hash, tex_hash) in texture_info)
-            }
-            if hashes:
-                profile = tuple(sorted(hashes))
-                primary_profiles[(form_id, comp_id)] = profile
-                primary_profile_hashes[(form_id, comp_id)] = hashes
     service_drift_branches: Set[Tuple[int, int, str, str]] = set()
     for form_id, (_label, form_data) in enumerate(audit_forms, start=1):
         form_fresh = (freshness[form_id - 1]
@@ -2100,16 +2060,6 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                         and alias.get(pair_map[slot], pair_map[slot])
                         == alias.get(primary_pair.get(slot), primary_pair.get(slot))
                         for slot in override_slots))
-                profile_key = primary_profiles.get((form_id, comp_id), ())
-                profile_hashes = primary_profile_hashes.get(
-                    (form_id, comp_id), set())
-                auxiliary_profile_candidate = bool(
-                    not is_primary_pass
-                    and not depth_only
-                    and role == 'auxiliary'
-                    and not inherited_slots
-                    and fresh_slots
-                    and profile_key)
                 condition_source = _condition_source(
                     comp_id, ps, set(slot for slot, _key in sig), form_fresh)
                 observed_hashes = {
@@ -2121,13 +2071,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     canon = alias.get(tex_hash, tex_hash)
                     service_drift_branch = (
                         (form_id, comp_id, ps, canon) in service_drift_branches)
-                    auxiliary_profile_assignment = bool(
-                        auxiliary_profile_candidate
-                        and slot in fresh_slots
-                        and canon in profile_hashes)
                     if ((not is_primary_pass and not service_drift_branch
-                         and not partial_material_candidate
-                         and not auxiliary_profile_assignment)
+                         and not partial_material_candidate)
                             or slot not in override_slots
                             or canon not in texture_info):
                         continue
@@ -2142,8 +2087,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                         ) > 1)
                     if (canonical_seats.get((comp_id, route, canon)) == slot
                             or duplicate_service_seat
-                            or service_drift_branch
-                            or auxiliary_profile_assignment):
+                            or service_drift_branch):
                         assign_hashes[slot] = tex_hash
                 is_service_drift_branch = any(
                     (form_id, comp_id, ps, alias.get(tex_hash, tex_hash))
@@ -2151,8 +2095,6 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     for tex_hash in assign_hashes.values())
                 partial_material_branch = bool(
                     partial_material_candidate and assign_hashes)
-                auxiliary_profile_branch = bool(
-                    auxiliary_profile_candidate and assign_hashes)
                 row = {
                     'form_id': form_id,
                     'form': label,
@@ -2163,8 +2105,6 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     'primary_pass': is_primary_pass,
                     'service_drift_branch': is_service_drift_branch,
                     'partial_material_branch': partial_material_branch,
-                    'auxiliary_profile_branch': auxiliary_profile_branch,
-                    'profile_key': list(profile_key),
                     'condition_source': condition_source,
                     'signature': _serialized_signature(sig),
                     'positive_signature': _serialized_signature(sig),
@@ -2189,10 +2129,9 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     row['remap_sources'] = remap_sources
                 rows.append(row)
                 if assign_hashes and (is_primary_pass or is_service_drift_branch
-                                      or partial_material_branch
-                                      or auxiliary_profile_branch):
+                                      or partial_material_branch):
                     for branch_assign_hashes in _duplicate_service_assignment_variants(
-                            assign_hashes, alias, sig):
+                            assign_hashes, alias):
                         branch_sig = _signature_for_duplicate_service_variant(
                             sig, assign_hashes, branch_assign_hashes, alias)
                         akey = tuple(sorted(
@@ -2229,8 +2168,6 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                 'primary_pass': is_primary_pass,
                                 'service_drift_branch': is_service_drift_branch,
                                 'partial_material_branch': partial_material_branch,
-                                'auxiliary_profile_branch': auxiliary_profile_branch,
-                                'profile_key': list(profile_key),
                                 'condition_source': condition_source,
                                 'forms': [label],
                                 'sources': [{'form': label, 'ps': ps}],
@@ -2246,9 +2183,6 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                             sample['partial_material_branch'] = bool(
                                 sample.get('partial_material_branch')
                                 or partial_material_branch)
-                            sample['auxiliary_profile_branch'] = bool(
-                                sample.get('auxiliary_profile_branch')
-                                or auxiliary_profile_branch)
                             if label not in sample['forms']:
                                 sample['forms'].append(label)
                             sample['sources'].append({'form': label, 'ps': ps})
@@ -2384,8 +2318,6 @@ def _local_conflict_messages(records: List[dict],
         if record.get('kind') == 'row':
             row_by_scope.setdefault(scope, []).append(record)
         elif record.get('kind') == 'branch':
-            if record.get('profile_guarded'):
-                continue
             branch_by_scope.setdefault(scope, []).append(record)
     problems = []
     for scope, branches in sorted(
@@ -2404,18 +2336,6 @@ def _local_conflict_messages(records: List[dict],
         for branch in branches:
             matched: Dict[Tuple[Tuple[int, str], ...], List[str]] = {}
             for record in evidence:
-                if (branch.get('form_gate') is not None
-                        and record.get('form_id') != branch.get('form_gate')):
-                    continue
-                if record.get('form_id') in (branch.get('form_excludes') or ()):
-                    continue
-                if (record.get('profile_guarded')
-                        and not branch.get('profile_guarded')):
-                    continue
-                if (branch.get('profile_guarded')
-                        and record.get('profile_key')
-                        != branch.get('profile_key')):
-                    continue
                 if _local_condition_matches(
                         branch['signature'],
                         branch.get('negative_signature') or (),
@@ -2514,8 +2434,6 @@ def _route_split_components(
         by_route: Dict[str, List[_LocalBranch]] = {}
         valid = True
         for branch in branches:
-            if branch.auxiliary_profile:
-                continue
             route = branch.route_id
             if route not in route_set:
                 valid = False
@@ -2523,16 +2441,7 @@ def _route_split_components(
             positive = dict(branch.signature)
             negative = dict(branch.negative_signature)
             assigned_slots = set(branch.assign)
-            duplicate_service_slots: Set[int] = set()
-            service_slots_by_hash: Dict[str, Set[int]] = {}
-            for slot, tex_hash in branch.assign_hashes.items():
-                if slot in constants.SERVICE_SLOTS:
-                    service_slots_by_hash.setdefault(tex_hash, set()).add(slot)
-            for slots in service_slots_by_hash.values():
-                if len(slots) > 1:
-                    duplicate_service_slots.update(slots)
-            required_slots = (assigned_slots - set(branch.inherited_slots)
-                              - duplicate_service_slots)
+            required_slots = assigned_slots - set(branch.inherited_slots)
             if (not positive or len(positive) != len(branch.signature)
                     or len(negative) != len(branch.negative_signature)
                     or set(positive) & set(negative)
@@ -2554,9 +2463,7 @@ def _route_split_components(
                 Tuple[Tuple[int, str], ...],
             ] = {}
             for branch in route_branches:
-                condition = (branch.signature, branch.negative_signature,
-                             branch.form_id if branch.form_gate_active else None,
-                             branch.form_excludes)
+                condition = (branch.signature, branch.negative_signature)
                 assignment = tuple(sorted(branch.assign_hashes.items()))
                 previous = condition_assignments.setdefault(
                     condition, assignment)
@@ -2577,9 +2484,7 @@ def _route_split_components(
         cross_route_collision = False
         for route, route_branches in by_route.items():
             for branch in route_branches:
-                condition = (branch.signature, branch.negative_signature,
-                             branch.form_id if branch.form_gate_active else None,
-                             branch.form_excludes)
+                condition = (branch.signature, branch.negative_signature)
                 assignment = tuple(sorted(branch.assign_hashes.items()))
                 previous = assignments_by_condition.setdefault(
                     condition, (route, assignment))
@@ -2665,7 +2570,6 @@ def _local_branches_from_audit(audit: dict,
                                volatile_assignment_hashes: Optional[Set[str]] = None,
                                volatile_assignment_component_hashes: Optional[
                                    Set[Tuple[int, str]]] = None,
-                               gated_forms: Optional[Set[int]] = None,
                                ) -> Tuple[
                                    Dict[int, List[_LocalBranch]], Set[str],
                                    int, Set[str], Set[int]
@@ -2774,8 +2678,7 @@ def _local_branches_from_audit(audit: dict,
             form_id = None
         ps = str(row.get('ps') or '')
         accepted_row = bool(
-            row.get('primary_pass') or row.get('partial_material_branch')
-            or row.get('auxiliary_profile_branch'))
+            row.get('primary_pass') or row.get('partial_material_branch'))
         if accepted_row and form_id is not None and ps:
             primary_row_keys.add((form_id, comp_id, ps))
         _assign, _assign_key = _effective_assignment(
@@ -2791,7 +2694,7 @@ def _local_branches_from_audit(audit: dict,
         ))
         row_assign_hashes = dict(row_assign_key)
         for variant in _duplicate_service_assignment_variants(
-                row_assign_hashes, {}, signature):
+                row_assign_hashes, {}):
             variant_signature = _signature_for_duplicate_service_variant(
                 signature, row_assign_hashes, variant, {})
             row_signature_records.append({
@@ -2799,9 +2702,6 @@ def _local_branches_from_audit(audit: dict,
                 'route': route,
                 'signature': variant_signature,
                 'assign_key': tuple(sorted(variant.items())),
-                'profile_guarded': bool(
-                    row.get('auxiliary_profile_branch')),
-                'form_id': form_id,
             })
             branch_records.append({
                 'kind': 'row',
@@ -2811,11 +2711,6 @@ def _local_branches_from_audit(audit: dict,
                 'negative_signature': (),
                 'assign_key': tuple(sorted(variant.items())),
                 'source': source,
-                'profile_key': tuple(str(value) for value in (
-                    row.get('profile_key') or [])),
-                'profile_guarded': bool(
-                    row.get('auxiliary_profile_branch')),
-                'form_id': form_id,
             })
 
     branches = audit.get('branches')
@@ -2863,8 +2758,7 @@ def _local_branches_from_audit(audit: dict,
         if (branch_primary_keys
                 and not branch_primary_keys.issubset(primary_row_keys)
                 and not entry.get('service_drift_branch')
-                and not entry.get('partial_material_branch')
-                and not entry.get('auxiliary_profile_branch')):
+                and not entry.get('partial_material_branch')):
             continue
         pending_branches.append(
             (comp_id, route, entry, assign, assign_key, source))
@@ -2873,25 +2767,21 @@ def _local_branches_from_audit(audit: dict,
                    if record.get('kind') == 'row']
     kept_branch_records: List[dict] = []
     grouped_pending: Dict[
-        Tuple[int, Optional[str], Tuple[Tuple[int, str], ...], str, str],
+        Tuple[int, Optional[str], Tuple[Tuple[int, str], ...], str],
         List[Tuple[int, Optional[str], dict, Dict[int, str],
                    Tuple[Tuple[int, str], ...], str]],
     ] = {}
     for item in pending_branches:
         comp_id, route, entry, _assign, assign_key, _source = item
         pass_role = str(entry.get('pass_role') or '')
-        branch_kind = ('auxiliary_profile'
-                       if entry.get('auxiliary_profile_branch') else 'primary')
         grouped_pending.setdefault(
-            (comp_id, route, assign_key, pass_role, branch_kind), []).append(item)
+            (comp_id, route, assign_key, pass_role), []).append(item)
 
     row_signatures: Dict[
         Tuple[int, Optional[str]],
         Dict[Tuple[Tuple[int, str], ...], Set[Tuple[Tuple[int, float], ...]]],
     ] = {}
     for record in row_signature_records:
-        if record.get('profile_guarded'):
-            continue
         comp_id = int(record.get('component'))
         scope = (comp_id, record.get('route'))
         row_signatures.setdefault(scope, {}).setdefault(
@@ -2925,7 +2815,7 @@ def _local_branches_from_audit(audit: dict,
         canon = canon_fn(tex_hash)
         if canon:
             drift_component_hashes.add((int(component_id), canon))
-    for (comp_id, route, evidence_assign_key, pass_role, _branch_kind), items in sorted(
+    for (comp_id, route, evidence_assign_key, pass_role), items in sorted(
             grouped_pending.items(),
             key=lambda item: (
                 item[0][0], item[0][1] or '', item[0][2], item[0][3])):
@@ -2969,23 +2859,9 @@ def _local_branches_from_audit(audit: dict,
                 inherited_sets.append(set())
         inherited_slots = (
             set.intersection(*inherited_sets) if inherited_sets else set())
-        duplicate_service_slots: Set[int] = set()
-        service_slots_by_hash: Dict[str, Set[int]] = {}
-        for slot, tex_hash in assign_key:
-            if slot in constants.SERVICE_SLOTS:
-                service_slots_by_hash.setdefault(tex_hash, set()).add(slot)
-        for slots in service_slots_by_hash.values():
-            if len(slots) > 1:
-                duplicate_service_slots.update(slots)
-        duplicate_condition_slots = {
-            min(slots) for slots in service_slots_by_hash.values()
-            if len(slots) > 1
-        }
         condition_options = _minimal_condition_signature_options(
             own_signatures, other_signatures,
-            ({slot for slot, _tex_hash in assign_key}
-             - inherited_slots - duplicate_service_slots
-             | duplicate_condition_slots),
+            {slot for slot, _tex_hash in assign_key} - inherited_slots,
             blocked_negative_slots,
             allow_negative=False)
         assignment_slots = {slot for slot, _tex_hash in assign_key}
@@ -3016,22 +2892,6 @@ def _local_branches_from_audit(audit: dict,
                     forms_seen.add(form_id)
         if len(forms_seen) == 1:
             branch_form_id = next(iter(forms_seen))
-        profile_keys = {
-            tuple(str(value) for value in (item[2].get('profile_key') or []))
-            for item in items
-            if isinstance(item[2].get('profile_key'), list)
-        }
-        profile_keys.discard(())
-        profile_key = next(iter(profile_keys)) if len(profile_keys) == 1 else ()
-        primary_pass = any(bool(item[2].get('primary_pass')) for item in items)
-        auxiliary_profile = any(bool(
-            item[2].get('auxiliary_profile_branch')) for item in items)
-        ps_values = {
-            str(src.get('ps'))
-            for item in items for src in (item[2].get('sources') or [])
-            if isinstance(src, dict) and src.get('ps')
-        }
-        branch_ps = next(iter(ps_values)) if len(ps_values) == 1 else ''
         component_excluded = (
             slot_eligible_components is not None
             and comp_id not in slot_eligible_components)
@@ -3039,8 +2899,7 @@ def _local_branches_from_audit(audit: dict,
         for signature, negative_signature in condition_options:
             condition_slots = {slot for slot, _key in signature}
             missing_slots = (
-                assignment_slots - inherited_slots - duplicate_service_slots
-                - condition_slots)
+                assignment_slots - inherited_slots - condition_slots)
             if missing_slots:
                 raise SlotStyleDegrade(
                     f'component {comp_id}: local slot condition does not cover '
@@ -3054,7 +2913,6 @@ def _local_branches_from_audit(audit: dict,
             filtered_assign = {
                 slot: resource for slot, resource in sorted(assign.items())
                 if (not _volatile_condition_slot(slot)
-                    or slot in duplicate_service_slots
                     or slot in condition_slots
                     or (
                         assign_hash_by_slot.get(slot) not in global_drift_hashes
@@ -3069,8 +2927,7 @@ def _local_branches_from_audit(audit: dict,
                 (slot, tex_hash) for slot, tex_hash in assign_key
                 if slot in filtered_assign)
             weak_blocked = False
-            if (not component_excluded and not auxiliary_profile
-                    and _local_branch_is_weak(
+            if (not component_excluded and _local_branch_is_weak(
                     signature, negative_signature, filtered_assign, pass_role)):
                 weak_blocked = any(
                     other != evidence_assign_key and any(
@@ -3090,14 +2947,6 @@ def _local_branches_from_audit(audit: dict,
                 'negative_signature': negative_signature,
                 'assign_key': filtered_assign_key,
                 'source': source,
-                'profile_key': profile_key,
-                'profile_guarded': auxiliary_profile and bool(profile_key),
-                'form_gate': (branch_form_id
-                              if branch_form_id in (gated_forms or set())
-                              else None),
-                'form_excludes': (tuple(sorted(gated_forms or set()))
-                                  if branch_form_id not in (gated_forms or set())
-                                  else ()),
             })
             for _slot, tex_hash in filtered_assign_key:
                 assigned_hashes.add(tex_hash)
@@ -3107,20 +2956,12 @@ def _local_branches_from_audit(audit: dict,
                 assign=filtered_assign,
                 form_id=branch_form_id,
                 label='local',
-                ps=branch_ps,
+                ps='',
                 source=source,
                 assign_hashes=dict(filtered_assign_key),
                 route_id=route,
                 inherited_slots=tuple(sorted(
                     set(filtered_assign) & inherited_slots)),
-                pass_role=pass_role or 'material',
-                primary_pass=primary_pass,
-                profile_key=profile_key,
-                auxiliary_profile=auxiliary_profile,
-                form_excludes=(tuple(sorted(gated_forms or set()))
-                               if branch_form_id not in (gated_forms or set())
-                               else ()),
-                form_gate_active=branch_form_id in (gated_forms or set()),
             ))
     branch_records.extend(kept_branch_records)
     route_split_components = _route_split_components(
@@ -3268,7 +3109,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
      route_split_components) = _local_branches_from_audit(
          local_discriminator_audit, mod_hashes, _canon, label_to_id,
          slot_eligible_components, volatile_assignment_hashes,
-         volatile_assignment_component_hashes, gated_forms)
+         volatile_assignment_component_hashes)
     if suppressed_weak_branches:
         warnings.append(
             f'suppressed {suppressed_weak_branches} weak local slot branch(es); '
@@ -3361,9 +3202,6 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                 branch.signature,
                 branch.negative_signature,
                 tuple(sorted(branch.assign.items())),
-                branch.pass_role,
-                branch.primary_pass,
-                branch.profile_key,
             )
             previous = seen.get(key)
             if previous is not None:
@@ -3376,32 +3214,6 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             merged.append(branch)
         merged_component_branches[comp_id] = merged
     component_branches = merged_component_branches
-
-    profile_globals: Dict[int, str] = {}
-    for comp_id, branches in component_branches.items():
-        auxiliary_profiles = {
-            branch.profile_key for branch in branches
-            if branch.auxiliary_profile and branch.profile_key
-        }
-        if not auxiliary_profiles:
-            continue
-        primary_profiles_for_component = {
-            branch.profile_key for branch in branches
-            if branch.primary_pass and branch.profile_key
-        }
-        missing_profiles = auxiliary_profiles - primary_profiles_for_component
-        if missing_profiles:
-            raise SlotStyleDegrade(
-                f'component {comp_id}: auxiliary slot profile has no '
-                'matching primary material branch')
-        profile_ids = {
-            profile: index
-            for index, profile in enumerate(
-                sorted(primary_profiles_for_component), start=1)
-        }
-        profile_globals[comp_id] = f'$slot_profile_c{comp_id}'
-        for branch in branches:
-            branch.profile_id = profile_ids.get(branch.profile_key)
 
     resource_to_hash = {
         res: h for h, res in textures if _allowed_texture(h)
@@ -3510,13 +3322,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
 
     def _condition(terms: List[str], branch: _LocalBranch) -> str:
         parts = list(terms)
-        if branch.form_gate_active:
+        if branch.form_id in gated_forms:
             parts.append(f'{constants.VAR_FORM} == {branch.form_id}')
-        for form_id in branch.form_excludes:
-            parts.append(f'{constants.VAR_FORM} != {form_id}')
-        if branch.auxiliary_profile and branch.profile_id is not None:
-            parts.append(
-                f'{profile_globals[comp_id]} == {branch.profile_id}')
         return ' && '.join(parts)
 
     def _append_assignments(chunk: List[str], assign: Dict[int, str], indent: str):
@@ -3527,8 +3334,6 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     for comp_id in sorted(component_branches):
         by_route: Dict[Optional[str], List[_LocalBranch]] = {}
         for branch in component_branches[comp_id]:
-            if branch.auxiliary_profile:
-                continue
             by_route.setdefault(branch.route_id, []).append(branch)
         routed = any(route is not None for route in by_route)
         if routed and (None in by_route or 'base' not in by_route):
@@ -3550,9 +3355,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             chunk: List[str] = ['', f'[{name}]', 'if $object_detected == 1']
             ordered = sorted(
                 by_route[route],
-                key=lambda b: (not b.auxiliary_profile,
-                                -len(b.assign), -len(b.signature),
-                                b.form_id or 0, b.signature,
+                key=lambda b: (-len(b.assign), -len(b.signature),
+                               b.form_id or 0, b.signature,
                                tuple(sorted(b.assign.items()))))
             first = True
             emitted: List[_LocalBranch] = []
@@ -3564,10 +3368,6 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                     f'    {"if" if first else "else if"} '
                     + _condition(terms, branch))
                 _append_assignments(chunk, branch.assign, '        ')
-                if branch.primary_pass and branch.profile_id is not None:
-                    chunk.append(
-                        f'        {profile_globals[comp_id]} = '
-                        f'{branch.profile_id}')
                 emitted.append(branch)
                 first = False
             if first:
@@ -3620,40 +3420,6 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                     volatile_assignment_component_hashes,
                     canon_fn=_canon,
                 )
-
-    auxiliary_seen: Set[Tuple[int, str, int, Tuple[Tuple[int, str], ...]]] = set()
-    for comp_id, branches in sorted(component_branches.items()):
-        for branch in branches:
-            if (not branch.auxiliary_profile or not branch.ps
-                    or branch.profile_id is None):
-                continue
-            identity = (
-                comp_id, branch.ps, branch.profile_id,
-                tuple(sorted(branch.assign.items())))
-            if identity in auxiliary_seen:
-                continue
-            auxiliary_seen.add(identity)
-            name = f'ShaderOverrideSlotProfileC{comp_id}_{branch.ps}'
-            lines = [
-                f'hash = {branch.ps}',
-                (f'if $object_detected == 1 && '
-                 f'{profile_globals[comp_id]} == {branch.profile_id}'),
-            ]
-            for slot, resource in sorted(branch.assign.items()):
-                lines.append(f'    ps-t{slot} = ref {resource}')
-                used_slots.add(slot)
-            lines.append('endif')
-            body_chunks.append('\n'.join(['', f'[{name}]', *lines]))
-            typed_sections.append(SlotSection(
-                name=name,
-                lines=tuple(lines),
-                kind='auxiliary_shader',
-                component_id=comp_id,
-                ps=branch.ps,
-                profile_id=branch.profile_id,
-                assign_hashes=tuple(sorted(branch.assign_hashes.items())),
-                route_id=branch.route_id,
-            ))
 
     covered_resource_indices: Set[int] = set()
     blind_zone: List[Tuple[str, str]] = []
@@ -3823,8 +3589,6 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
             f'    {constants.VAR_FORM} = {watchdog_form}',
             'endif',
         ]
-    extra_globals.extend(
-        profile_globals[comp_id] for comp_id in sorted(profile_globals))
     formid_active = bool(anchor_resources) or watchdog_form is not None
 
     return SlotPlan(
