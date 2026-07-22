@@ -195,6 +195,7 @@ def _usage_component_ids(value: Any) -> Dict[str, set[int]]:
             # A verified inherited service seat is effective ownership even
             # though the binding itself is intentionally recorded as stale.
             if (component_id is not None
+                    and item.get("observed_only") is not True
                     and (item.get("fresh") is not False
                          or item.get("verified_inherited") is True)
                     and _HASH_RE.fullmatch(texture_hash)):

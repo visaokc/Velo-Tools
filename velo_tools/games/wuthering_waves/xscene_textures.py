@@ -302,7 +302,11 @@ def effective_usage_hashes(components: dict) -> tuple[set[str], set[str]]:
         if not isinstance(comp_pairs, dict):
             continue
         for slots in _iter_pair_slots(comp_pairs):
-            hashes = [_record_hash(rec) for rec in slots.values()]
+            hashes = [
+                _record_hash(rec) for rec in slots.values()
+                if not (isinstance(rec, dict)
+                        and rec.get("observed_only") is True)
+            ]
             hashes = [h for h in hashes if h]
             if not hashes:
                 continue

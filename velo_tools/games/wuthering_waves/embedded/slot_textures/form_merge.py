@@ -170,11 +170,11 @@ def _build_components_usage(mesh_object, surviving_sets, evidence=None):
         seat_fresh = {}
         pair_depth_only = {}
         for descriptor in component_data.draw_data.textures:
-            if keep is not None and descriptor.get_slot_hash() not in keep:
-                continue
+            survives = keep is None or descriptor.get_slot_hash() in keep
             slot = descriptor.get_slot()
             vs_key, ps_key = _shader_keys(descriptor)
             fresh = None
+            observed_only = False
             if evidence is not None:
                 fresh = log_freshness.slot_is_fresh(
                     evidence, descriptor.call_id, descriptor.slot_id,
@@ -184,6 +184,12 @@ def _build_components_usage(mesh_object, surviving_sets, evidence=None):
                 prev = pair_depth_only.get((vs_key, ps_key))
                 pair_depth_only[(vs_key, ps_key)] = (
                     depth if prev is None else (prev and depth))
+                if not survives or fresh is False:
+                    if rt is not True:
+                        continue
+                    observed_only = True
+            elif not survives:
+                continue
             pair = pairs.setdefault(vs_key, {}).setdefault(ps_key, {})
             seat = (vs_key, ps_key, slot)
             if slot in pair and pair[slot].get('hash') != descriptor.hash:
@@ -209,8 +215,13 @@ def _build_components_usage(mesh_object, surviving_sets, evidence=None):
             pair[slot] = record_cache[descriptor.hash]
             if fresh is not None:
                 seat_fresh[seat] = fresh
-            entry = sources.setdefault(descriptor.hash, (descriptor.path, set()))
-            entry[1].add(str(component_id))
+            if not observed_only:
+                entry = sources.setdefault(
+                    descriptor.hash, (descriptor.path, set()))
+                entry[1].add(str(component_id))
+            if observed_only:
+                pair[slot] = OrderedDict(pair[slot])
+                pair[slot]['observed_only'] = True
         component_out = OrderedDict()
         for vs_key in sorted(pairs):
             vs_out = OrderedDict()

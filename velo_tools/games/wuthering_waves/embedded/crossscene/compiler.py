@@ -1557,9 +1557,12 @@ def _branch_condition(branch: Mapping[str, Any]) -> str:
         f"ps-t{int(slot)} != {value}"
         for slot, value in branch.get("negative_signature") or ()
     )
-    if branch.get("form_gate") is not None:
-        terms.append(f"$velo_form_id == {int(branch['form_gate'])}")
     return " && ".join(terms)
+
+
+def _signature_condition(signature: Sequence[Sequence[Any]]) -> str:
+    return " && ".join(
+        f"ps-t{int(slot)} == {value}" for slot, value in signature)
 
 
 def _final_setter_name(component_id: int, suffix: str,
@@ -1669,6 +1672,38 @@ def _texture_plan(
     policies = getattr(raw, "restore_contract", None) or {}
     setters_by_name: Dict[str, TextureSetter] = {}
 
+    def _component_contract(component_id: int) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+        route_mapping = route_maps.get(component_id) or {}
+        source_names = sorted(set(route_mapping.values()))
+        generic_name = generic.get(component_id)
+        if generic_name is not None:
+            source_names.append(generic_name)
+        source_names = sorted(set(source_names))
+        if not source_names:
+            return "", {}, {"mode": "full"}
+        branches = []
+        seen = set()
+        source_policies = []
+        for source_name in source_names:
+            contract = contracts.get(source_name)
+            if not isinstance(contract, Mapping):
+                raise CrossSceneCompileError(
+                    f"slot plan is missing typed contract for {source_name}")
+            source_policies.append(dict(policies.get(source_name) or {"mode": "full"}))
+            for branch in contract.get("branches") or ():
+                key = repr(sorted(dict(branch).items()))
+                if key in seen:
+                    continue
+                seen.add(key)
+                branches.append(dict(branch))
+        policy = source_policies[0]
+        if any(item != policy for item in source_policies[1:]):
+            policy = {"mode": "full"}
+        return ",".join(source_names), {
+            "component": component_id,
+            "branches": branches,
+        }, policy
+
     targets: List[Tuple[str, str, Tuple[int, ...]]] = []
     for unit in units:
         targets.append((
@@ -1715,46 +1750,72 @@ def _texture_plan(
 
     for suffix, unit_route, component_ids in targets:
         for global_id in component_ids:
-            route_mapping = route_maps.get(global_id) or {}
-            route_specific = bool(route_mapping)
-            source_name = (route_mapping.get(unit_route)
-                           if route_specific else generic.get(global_id))
-            if source_name is None:
+            source_name, contract, policy = _component_contract(global_id)
+            if not source_name:
                 continue
-            contract = contracts.get(source_name)
-            if not isinstance(contract, Mapping):
-                raise CrossSceneCompileError(
-                    f"slot plan is missing typed contract for {source_name}")
+            contract = _assignment_only_hash_fallback_contract(
+                contract, fallback_hashes)
             final_name = _final_setter_name(
-                global_id, suffix, unit_route, route_specific)
+                global_id, suffix, unit_route, False)
             lines = [f"if $object_detected{suffix} == 1"]
             resources: Dict[str, str] = {}
             emitted = 0
-            for branch in contract.get("branches") or ():
-                condition = _branch_condition(branch)
-                assignments = branch.get("assignment_hashes") or {}
-                if not condition or not assignments:
+            grouped: Dict[int, List[Mapping[str, Any]]] = {}
+            for index, branch in enumerate(contract.get("branches") or ()):
+                form_id = branch.get("form_id")
+                group_id = int(form_id) if form_id is not None else -(index + 1)
+                grouped.setdefault(group_id, []).append(branch)
+            for group_id in sorted(grouped, key=lambda value: (value < 0, value)):
+                group = grouped[group_id]
+                outer_conditions = []
+                for branch in group:
+                    signature = (branch.get("outer_signature")
+                                 or branch.get("positive_signature") or ())
+                    condition = _signature_condition(signature)
+                    if condition and condition not in outer_conditions:
+                        outer_conditions.append(condition)
+                if not outer_conditions:
                     continue
-                lines.append(
-                    f"    {'if' if emitted == 0 else 'else if'} {condition}")
-                for slot_raw, texture_hash_raw in sorted(
-                        assignments.items(), key=lambda item: int(item[0])):
-                    texture_hash = str(texture_hash_raw).lower()
-                    if texture_hash not in by_hash:
-                        raise CrossSceneCompileError(
-                            f"slot contract references DDS {texture_hash} "
-                            "outside the root catalog")
-                    resource = f"ResourceTexture_{texture_hash}"
-                    resources[resource] = texture_hash
-                    lines.append(
-                        f"        ps-t{int(slot_raw)} = ref {resource}")
-                    result.assigned_components.setdefault(
-                        texture_hash, set()).add(global_id)
-                emitted += 1
+                outer = " || ".join(
+                    f"({condition})" for condition in outer_conditions)
+                lines.append(f"    if {outer}")
+                group_emitted = 0
+                emitted_branches = set()
+                for branch in group:
+                    condition = _branch_condition(branch)
+                    assignments = branch.get("assignment_hashes") or {}
+                    if not condition or not assignments:
+                        continue
+                    branch_key = (
+                        condition,
+                        tuple(sorted(
+                            (int(slot), str(texture_hash).lower())
+                            for slot, texture_hash in assignments.items())),
+                    )
+                    if branch_key in emitted_branches:
+                        continue
+                    emitted_branches.add(branch_key)
+                    lines.append(f"        if {condition}")
+                    for slot_raw, texture_hash_raw in sorted(
+                            assignments.items(), key=lambda item: int(item[0])):
+                        texture_hash = str(texture_hash_raw).lower()
+                        if texture_hash not in by_hash:
+                            raise CrossSceneCompileError(
+                                f"slot contract references DDS {texture_hash} "
+                                "outside the root catalog")
+                        resource = f"ResourceTexture_{texture_hash}"
+                        resources[resource] = texture_hash
+                        lines.append(
+                            f"            ps-t{int(slot_raw)} = ref {resource}")
+                        result.assigned_components.setdefault(
+                            texture_hash, set()).add(global_id)
+                    lines.append("        endif")
+                    group_emitted += 1
+                lines.append("    endif")
+                emitted += group_emitted
             if emitted == 0:
                 continue
-            lines.extend(["    endif", "endif"])
-            policy = policies.get(source_name) or {"mode": "full"}
+            lines.append("endif")
             candidate = TextureSetter(
                 name=final_name,
                 component_id=global_id,
@@ -1793,7 +1854,7 @@ def _texture_plan(
 
     result.format_sections = tuple(
         section for section in getattr(raw, "sections", ())
-        if getattr(section, "kind", "") in {"anchor", "format_tag"}
+        if getattr(section, "kind", "") == "format_tag"
     )
     return result
 
