@@ -626,7 +626,7 @@ def _audit_readable_slot_resource_names(text):
                 block):
             errors.append(
                 "%s references numeric slot resource %s; use "
-                "ResourceTexture_C{component}_{hash}_ibN naming"
+                "ResourceTexture_{hash} naming"
                 % (header, resource))
         setter = re.fullmatch(
             r'CommandListSetTexturesComponent(\d+)'

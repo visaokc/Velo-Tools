@@ -1744,8 +1744,7 @@ def _texture_plan(
                         raise CrossSceneCompileError(
                             f"slot contract references DDS {texture_hash} "
                             "outside the root catalog")
-                    resource = (
-                        f"ResourceTexture_C{global_id}_{texture_hash}{suffix}")
+                    resource = f"ResourceTexture_{texture_hash}"
                     resources[resource] = texture_hash
                     lines.append(
                         f"        ps-t{int(slot_raw)} = ref {resource}")
