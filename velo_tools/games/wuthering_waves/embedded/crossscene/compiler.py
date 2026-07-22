@@ -1221,7 +1221,8 @@ def _slot_plan(
             )
     anchors = []
     slot_cfg = getattr(getattr(context, "scene", None), "vtww_slot_settings", None)
-    formid_aux = bool(slot_cfg and getattr(slot_cfg, "formid_auxiliary_gate", False))
+    formid_aux = bool(
+        slot_cfg and getattr(slot_cfg, "formid_auxiliary_gate", False))
     if formid_aux:
         anchors = hook._parse_form_anchors(context, forms, warnings)
         if not anchors:
@@ -1542,13 +1543,16 @@ class TexturePlan:
     branch_contract: Dict[str, Mapping[str, Any]] = field(default_factory=dict)
     route_lists: Dict[str, Dict[str, str]] = field(default_factory=dict)
     format_sections: Tuple[Any, ...] = ()
+    auxiliary_sections: Tuple[Any, ...] = ()
+    profile_globals: set[str] = field(default_factory=set)
 
     def setter(self, suffix: str, component_id: int,
                route: str) -> Optional[TextureSetter]:
         return self.setters.get((suffix, int(component_id), route.lower()))
 
 
-def _branch_condition(branch: Mapping[str, Any]) -> str:
+def _branch_condition(branch: Mapping[str, Any], component_id: int,
+                      suffix: str) -> str:
     terms = [
         f"ps-t{int(slot)} == {value}"
         for slot, value in branch.get("positive_signature") or ()
@@ -1559,6 +1563,13 @@ def _branch_condition(branch: Mapping[str, Any]) -> str:
     )
     if branch.get("form_gate") is not None:
         terms.append(f"$velo_form_id == {int(branch['form_gate'])}")
+    terms.extend(
+        f"$velo_form_id != {int(form_id)}"
+        for form_id in branch.get("form_excludes") or ())
+    if branch.get("profile_guard") is not None:
+        terms.append(
+            f"$slot_profile_c{component_id}{suffix} == "
+            f"{int(branch['profile_guard'])}")
     return " && ".join(terms)
 
 
@@ -1601,7 +1612,9 @@ def _assignment_only_hash_fallback_contract(
                 sorted(assignment_only_slots))
             if (not item["positive_signature"]
                     and not item.get("negative_signature")
-                    and item.get("form_gate") is None):
+                    and item.get("form_gate") is None
+                    and not item.get("form_excludes")
+                    and item.get("profile_guard") is None):
                 raise CrossSceneCompileError(
                     "mixed Hash/slot assignment has no independent branch "
                     "condition after removing its self-guard")
@@ -1624,6 +1637,20 @@ def _assignment_only_hash_fallback_contract(
                 for slot, texture_hash
                 in (branches[other_index].get("assignment_hashes") or {}).items()))
             if assignment == other_assignment:
+                continue
+            if (branch.get("profile_guard") is not None
+                    and branch.get("profile_guard")
+                    != branches[other_index].get("profile_guard")):
+                continue
+            branch_gate = branch.get("form_gate")
+            other_gate = branches[other_index].get("form_gate")
+            branch_excludes = set(branch.get("form_excludes") or ())
+            other_excludes = set(
+                branches[other_index].get("form_excludes") or ())
+            if ((branch_gate is not None and branch_gate in other_excludes)
+                    or (other_gate is not None and other_gate in branch_excludes)
+                    or (branch_gate is not None and other_gate is not None
+                        and branch_gate != other_gate)):
                 continue
             if (all(term in other_signature for term in positive)
                     and not any(term in other_signature for term in negative)):
@@ -1668,6 +1695,9 @@ def _texture_plan(
     contracts = getattr(raw, "branch_contract", None) or {}
     policies = getattr(raw, "restore_contract", None) or {}
     setters_by_name: Dict[str, TextureSetter] = {}
+    auxiliary_sections: List[Dict[str, Any]] = []
+    auxiliary_by_name: Dict[str, Dict[str, Any]] = {}
+    auxiliary_seen: set[Tuple[Any, ...]] = set()
 
     targets: List[Tuple[str, str, Tuple[int, ...]]] = []
     for unit in units:
@@ -1731,7 +1761,7 @@ def _texture_plan(
             resources: Dict[str, str] = {}
             emitted = 0
             for branch in contract.get("branches") or ():
-                condition = _branch_condition(branch)
+                condition = _branch_condition(branch, global_id, suffix)
                 assignments = branch.get("assignment_hashes") or {}
                 if not condition or not assignments:
                     continue
@@ -1751,6 +1781,15 @@ def _texture_plan(
                         f"        ps-t{int(slot_raw)} = ref {resource}")
                     result.assigned_components.setdefault(
                         texture_hash, set()).add(global_id)
+                if branch.get("profile_set") is not None:
+                    profile_global = f"$slot_profile_c{global_id}{suffix}"
+                    result.profile_globals.add(profile_global)
+                    lines.append(
+                        f"        {profile_global} = "
+                        f"{int(branch['profile_set'])}")
+                if branch.get("profile_guard") is not None:
+                    result.profile_globals.add(
+                        f"$slot_profile_c{global_id}{suffix}")
                 emitted += 1
             if emitted == 0:
                 continue
@@ -1792,10 +1831,72 @@ def _texture_plan(
                         f"texture resource collision for {resource}")
                 result.resources[resource] = texture
 
+    raw_auxiliary = [
+        section for section in getattr(raw, "sections", ())
+        if getattr(section, "kind", "") == "auxiliary_shader"
+    ]
+    for suffix, unit_route, component_ids in targets:
+        for section in raw_auxiliary:
+            component_id = int(section.component_id)
+            if component_id not in component_ids:
+                continue
+            route_id = getattr(section, "route_id", None)
+            if route_id is not None and str(route_id).lower() != unit_route:
+                continue
+            profile_id = int(section.profile_id)
+            assign_hashes = tuple(
+                (int(slot), str(texture_hash).lower())
+                for slot, texture_hash in section.assign_hashes)
+            identity = (suffix, component_id, str(section.ps), profile_id,
+                        assign_hashes)
+            if identity in auxiliary_seen:
+                continue
+            auxiliary_seen.add(identity)
+            tag = re.sub(r"[^A-Za-z0-9_]", "_", suffix) or "Base"
+            name = (f"ShaderOverrideSlotProfileC{component_id}_{section.ps}"
+                    f"_{tag}")
+            profile_global = f"$slot_profile_c{component_id}{suffix}"
+            condition = (f"$object_detected{suffix} == 1 && "
+                         f"{profile_global} == {profile_id}")
+            existing_section = auxiliary_by_name.get(name.casefold())
+            if existing_section is None:
+                lines = [f"hash = {section.ps}", f"if {condition}"]
+            else:
+                lines = existing_section["lines"]
+                if lines and lines[-1] == "endif":
+                    lines.pop()
+                lines.append(f"else if {condition}")
+            for slot, texture_hash in assign_hashes:
+                texture = by_hash.get(texture_hash)
+                if texture is None:
+                    raise CrossSceneCompileError(
+                        f"auxiliary slot contract references DDS {texture_hash} "
+                        "outside the root catalog")
+                resource = (
+                    f"ResourceTexture_C{component_id}_{texture_hash}{suffix}")
+                lines.append(f"    ps-t{slot} = ref {resource}")
+                result.resources[resource] = texture
+                result.assigned_components.setdefault(
+                    texture_hash, set()).add(component_id)
+            lines.append("endif")
+            result.profile_globals.add(profile_global)
+            if existing_section is None:
+                payload = {
+                    "name": name,
+                    "lines": lines,
+                    "component_id": component_id,
+                    "ib_order": 0,
+                }
+                auxiliary_by_name[name.casefold()] = payload
+                auxiliary_sections.append(payload)
+
     result.format_sections = tuple(
         section for section in getattr(raw, "sections", ())
         if getattr(section, "kind", "") in {"anchor", "format_tag"}
     )
+    result.auxiliary_sections = tuple(
+        {**section, "lines": tuple(section["lines"])}
+        for section in auxiliary_sections)
     return result
 
 
@@ -1895,7 +1996,11 @@ def _add_state_sections(ir: CrossSceneIR, units: Sequence[Any], root: Any,
         constants.append(
             f"global $velo_form_id = {int(getattr(raw, 'default_form_id', 1))}")
         for name in getattr(raw, "extra_globals", ()) or ():
+            if str(name).startswith("$slot_profile_c"):
+                continue
             constants.append(f"global {name} = 0")
+    for name in sorted(texture_plan.profile_globals):
+        constants.append(f"global {name} = 0")
     ir.add_section(
         "Constants", constants, phase=IniPhase.MOD_STATE,
         role="constants")
@@ -3185,6 +3290,14 @@ def _add_format_sections(ir: CrossSceneIR, root: Any,
             sources.setdefault(int(section.component_id), []).append(section)
     for anchor in anchors:
         add_format(str(anchor.name), anchor.lines)
+    for section in plan.auxiliary_sections:
+        ir.add_section(
+            str(section["name"]), list(section["lines"]),
+            phase=IniPhase.DRAW_STACKS,
+            ib_order=int(section.get("ib_order", 0)),
+            global_component=int(section["component_id"]),
+            role="texture_auxiliary",
+        )
     for unit in units:
         suffix = str(unit.plan.suffix)
         order = _unit_order(unit)
