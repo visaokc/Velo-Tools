@@ -43,3 +43,29 @@ MarkupSafe
   Author  : Pallets
   License : BSD-3-Clause
   Location: velo_tools/games/*/_*_core/libs/markupsafe/
+
+SciPy
+  Authors : SciPy Developers
+  License : BSD-3-Clause; bundled third-party notices remain in scipy dist-info
+  Upstream: https://pypi.org/project/scipy/
+  Version : 1.15.3 (CPython 3.11, Windows x86-64 release payload)
+  Location: velo_tools/weights/_native_deps/Python311/site-packages/
+
+libigl Python Bindings
+  Authors : libigl contributors
+  License : MPL-2.0; the upstream wheel also retains its GPL license text
+  Upstream: https://pypi.org/project/libigl/
+  Version : 2.5.1 (CPython 3.11, Windows x86-64 release payload)
+  Location: velo_tools/weights/_native_deps/Python311/site-packages/
+
+robust-laplacian
+  Authors : Nicholas Sharp, Keenan Crane, and contributors
+  License : MIT
+  Upstream: https://pypi.org/project/robust-laplacian/
+  Version : 1.0.0 (CPython 3.11, Windows x86-64 release payload)
+  Location: velo_tools/weights/_native_deps/Python311/site-packages/
+
+The three Weight Tools packages above are injected into release archives from
+their pinned upstream wheels by pack.ps1. Their dist-info metadata and license
+files are preserved. No Robust Weight Transfer add-on code, UI, operators, or
+sample assets are included.

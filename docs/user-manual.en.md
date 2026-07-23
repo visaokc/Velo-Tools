@@ -220,6 +220,10 @@ Open **权重工具 (Weight Tools)**.
 - **Robust** performs surface matching followed by inpaint. It is the default Velo path.
 - **面插值传递 (Surface Interpolation Transfer)** uses Blender Data Transfer with `POLYINTERP_NEAREST`.
 
+Official Windows builds include the CPython 3.11 native packages required by Robust. You do not need to install the standalone Robust Weight Transfer add-on. Velo packages only `scipy`, `libigl`, and `robust-laplacian`, not that add-on's code, UI, operators, or sample assets.
+
+If the standalone add-on is already enabled and has loaded a complete compatible dependency set, Velo reuses those modules without adding its private dependency directory to `sys.path`. Otherwise Velo loads its own private copies temporarily, so the two add-ons can coexist.
+
 Robust uses a whole-island positive-evidence gate. A disconnected target island with no positive source evidence remains zero instead of receiving invented inpaint weights.
 
 Use **高级 (Advanced)** only when geometry requires different distance, normal-angle, normal-flip, inpaint, evaluated-mesh, or dilation settings.

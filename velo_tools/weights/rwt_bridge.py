@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import math
-import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -11,50 +11,54 @@ _sp = None
 _igl = None
 _robust_laplacian = None
 _load_error = ""
-_paths_prepared = False
 
 
-def _candidate_roots():
-    env_path = os.environ.get("VELO_RWT_PATH", "").strip()
-    if env_path:
-        yield Path(env_path)
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        yield parent / "robust_weight_transfer"
-
-
-def _add_path(path):
-    text = str(path)
-    if path.exists() and text not in sys.path:
-        sys.path.insert(0, text)
-
-
-def _prepare_dependency_paths():
-    global _paths_prepared
-    if _paths_prepared:
-        return
-    _paths_prepared = True
+def _bundled_site_packages():
     py_tag = f"Python{sys.version_info.major}{sys.version_info.minor}"
-    for root in _candidate_roots():
-        if not root.exists():
-            continue
-        _add_path(root)
-        _add_path(root / "wheels")
-        _add_path(root / "deps" / py_tag / "site-packages")
-        _add_path(root / "deps" / py_tag)
-        _add_path(root / "deps")
+    return Path(__file__).resolve().parent / "_native_deps" / py_tag / "site-packages"
+
+
+@contextmanager
+def _temporary_sys_path(path):
+    text = str(path)
+    inserted = text not in sys.path
+    if inserted:
+        sys.path.insert(0, text)
+    try:
+        yield
+    finally:
+        if inserted:
+            try:
+                sys.path.remove(text)
+            except ValueError:
+                pass
+
+
+def _import_dependency_modules():
+    import numpy as np
+    import scipy as sp
+    import igl
+    import robust_laplacian
+    return np, sp, igl, robust_laplacian
+
+
+def _load_dependency_modules():
+    try:
+        return _import_dependency_modules()
+    except Exception:
+        bundle_path = _bundled_site_packages()
+        if not bundle_path.is_dir():
+            raise
+    with _temporary_sys_path(bundle_path):
+        return _import_dependency_modules()
 
 
 def ensure_available():
     global _np, _sp, _igl, _robust_laplacian, _load_error
     if _np is not None and _sp is not None and _igl is not None and _robust_laplacian is not None:
         return True, ""
-    _prepare_dependency_paths()
     try:
-        import numpy as np
-        import scipy as sp
-        import igl
-        import robust_laplacian
+        np, sp, igl, robust_laplacian = _load_dependency_modules()
     except Exception as exc:
         _load_error = str(exc)
         return False, _load_error

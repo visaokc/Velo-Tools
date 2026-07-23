@@ -276,6 +276,10 @@ Hash-style 导出使用的是提取证据中的资源 identity，来源包括 Fr
 | **Robust** | Velo 主路径，使用表面匹配和 inpaint 处理覆盖。 |
 | **面插值传递** | 使用接近 Blender Data Transfer 的表面插值。 |
 
+Windows 正式包已经自带 Robust 所需的 CPython 3.11 原生依赖，不需要另外安装独立的 Robust Weight Transfer 插件。Velo 只打包 `scipy`、`libigl` 和 `robust-laplacian`，不会包含该插件的代码、UI、operator 或示例资源。
+
+如果独立插件已经启用并完整加载了兼容依赖，Velo 会直接复用现有模块，不会把自己的私有依赖目录加入 `sys.path`；否则只临时从 Velo 私有目录加载依赖。因此两个插件可以共存。
+
 #### 供体和规格化
 
 供体用于在写入目标权重时重新分配容量。
