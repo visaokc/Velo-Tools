@@ -9,7 +9,6 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum
-from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -1566,71 +1565,57 @@ def _signature_condition(signature: Sequence[Sequence[Any]]) -> str:
         f"ps-t{int(slot)} == {value}" for slot, value in signature)
 
 
-def _minimal_form_layout_condition(
-        signature: Sequence[Sequence[Any]],
-        foreign_signatures: Sequence[Sequence[Sequence[Any]]],
-) -> Tuple[Tuple[int, Any], ...]:
-    own = tuple((int(slot), value) for slot, value in signature)
-    foreign = [
-        {int(slot): value for slot, value in other}
-        for other in foreign_signatures
-    ]
-    if not foreign:
-        return own
-    coverage = {
-        term: {
-            index for index, other in enumerate(foreign)
-            if term[0] in other and other[term[0]] != term[1]
-        }
-        for term in own
-    }
-    required = set(range(len(foreign)))
-    candidates = tuple(term for term in own if coverage[term])
-    for size in range(1, len(candidates) + 1):
-        for selected in combinations(candidates, size):
-            if set().union(*(coverage[term] for term in selected)) == required:
-                return selected
-    return ()
-
-
-def _form_outer_conditions(
+def _coarse_form_conditions(
         grouped: Mapping[int, Sequence[Mapping[str, Any]]],
-) -> Dict[int, Tuple[str, ...]]:
-    signatures_by_form: Dict[int, Tuple[Tuple[Tuple[int, Any], ...], ...]] = {}
+) -> Dict[int, str]:
+    common_by_form: Dict[int, Dict[int, Any]] = {}
     for form_id, branches in grouped.items():
         if form_id < 0 or not branches:
             continue
-        signatures = []
-        for branch in branches:
-            signature = tuple(
-                (int(slot), value) for slot, value in (
-                    branch.get("outer_signature")
-                    or branch.get("positive_signature") or ()))
-            if signature and signature not in signatures:
-                signatures.append(signature)
-        if signatures:
-            signatures_by_form[form_id] = tuple(signatures)
+        discriminator_branches = [
+            branch for branch in branches
+            if not branch.get("color_pass_branch")
+        ] or list(branches)
+        common = {
+            int(slot): value
+            for slot, value in (
+                discriminator_branches[0].get("outer_signature")
+                or discriminator_branches[0].get("positive_signature") or ())
+        }
+        for branch in discriminator_branches[1:]:
+            signature = {
+                int(slot): value
+                for slot, value in (branch.get("outer_signature")
+                                    or branch.get("positive_signature") or ())
+            }
+            common = {
+                slot: value for slot, value in common.items()
+                if signature.get(slot) == value
+            }
+        common_by_form[form_id] = common
 
-    if len(signatures_by_form) < 2:
+    if len(common_by_form) < 2:
         return {}
-    conditions: Dict[int, Tuple[str, ...]] = {}
-    for form_id, signatures in signatures_by_form.items():
-        foreign = tuple(
-            signature
-            for other_id, other_signatures in signatures_by_form.items()
-            if other_id != form_id
-            for signature in other_signatures)
-        form_conditions = []
-        for signature in signatures:
-            minimal = _minimal_form_layout_condition(signature, foreign)
-            if not minimal:
-                raise CrossSceneCompileError(
-                    f"texture form {form_id} has a pass layout that cannot be "
-                    "distinguished by fuzzy ps-t format evidence")
-            condition = _signature_condition(minimal)
-            if condition not in form_conditions:
-                form_conditions.append(condition)
-        conditions[form_id] = tuple(form_conditions)
+    conditions: Dict[int, str] = {}
+    for form_id, common in common_by_form.items():
+        differing = [
+            (slot, value)
+            for slot, value in sorted(common.items())
+            if any(
+                slot in other_common and other_common[slot] != value
+                for other_id, other_common in common_by_form.items()
+                if other_id != form_id)
+        ]
+        if not differing:
+            return {}
+        for other_id, other_common in common_by_form.items():
+            if other_id == form_id:
+                continue
+            if not any(
+                    slot in other_common and other_common[slot] != value
+                    for slot, value in differing):
+                return {}
+        conditions[form_id] = _signature_condition(differing)
     return conditions
 
 
@@ -1834,12 +1819,10 @@ def _texture_plan(
                 form_id = branch.get("form_id")
                 group_id = int(form_id) if form_id is not None else -(index + 1)
                 grouped.setdefault(group_id, []).append(branch)
-            form_conditions = _form_outer_conditions(grouped)
+            coarse_conditions = _coarse_form_conditions(grouped)
             for group_id in sorted(grouped, key=lambda value: (value < 0, value)):
                 group = grouped[group_id]
-                alternatives = form_conditions.get(group_id, ())
-                outer = " || ".join(
-                    f"({condition})" for condition in alternatives)
+                outer = coarse_conditions.get(group_id, "")
                 if not outer:
                     outer_conditions = []
                     for branch in group:

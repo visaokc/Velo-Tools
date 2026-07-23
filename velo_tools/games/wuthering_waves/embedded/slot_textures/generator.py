@@ -1968,68 +1968,27 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
         form_routes=form_routes, ambiguous_out=ambiguous_primary)
     if ambiguous_primary:
         raise SlotStyleDegrade('; '.join(ambiguous_primary))
-    def _logical_form_id(label: str, fallback: int) -> int:
-        normalized = str(label).strip().lower()
-        if normalized.startswith('route_') and normalized.endswith('_base'):
-            return 1
-        matched = re.fullmatch(r'form(\d+)', normalized)
-        return int(matched.group(1)) if matched else fallback
-
-    def _route_base_label(label: str) -> bool:
-        normalized = str(label).strip().lower()
-        return normalized.startswith('route_') and normalized.endswith('_base')
-
-    canonical_color_assignments: Dict[
-        Tuple[int, int, Tuple[Tuple[int, float], ...]],
-        Set[Tuple[Tuple[int, str], ...]],
-    ] = {}
+    primary_hashes_by_logical_form: Dict[Tuple[int, int], Set[str]] = {}
     for form_id, (label, form_data) in enumerate(audit_forms, start=1):
-        if _route_base_label(label):
-            continue
-        logical_form_id = _logical_form_id(label, form_id)
-        form_fresh = (freshness[form_id - 1]
-                      if freshness is not None and form_id - 1 < len(freshness)
-                      else None)
-        form_depth = (pass_depth[form_id - 1]
-                      if pass_depth is not None and form_id - 1 < len(pass_depth)
-                      else None) or {}
+        logical_form_id = form_id
+        normalized_label = str(label).strip().lower()
+        if (normalized_label.startswith('route_')
+                and normalized_label.endswith('_base')):
+            logical_form_id = 1
+        else:
+            matched_form = re.fullmatch(r'form(\d+)', normalized_label)
+            if matched_form:
+                logical_form_id = int(matched_form.group(1))
         for comp_id, comp_pairs in form_data.items():
-            for ps, pair_map in comp_pairs.items():
-                fresh_slots = _fresh_signature_slots(
-                    comp_id, ps, pair_map, form_fresh)
-                inherited_slots = _inherited_assignment_slots(
-                    comp_id, ps, pair_map, form_fresh)
-                role = _pass_role(pair_map, texture_info)
-                override_slots = _local_assignment_slots(
-                    pair_map, texture_info, role, fresh_slots,
-                    inherited_slots)
-                observed_only_slots = {
-                    slot for slot in pair_map
-                    if (form_fresh is not None
-                        and form_fresh.get((comp_id, ps, slot)) is False)
-                }
-                if (bool(form_depth.get((comp_id, ps), False))
-                        or not observed_only_slots):
-                    continue
-                outer_sig = _signature_key(
-                    pair_map, texture_info,
-                    _local_signature_slots(pair_map), alias)
-                outer_by_slot = dict(outer_sig)
-                assignments = tuple(sorted(
-                    (slot, tex_hash)
-                    for slot, tex_hash in pair_map.items()
-                    if (slot in override_slots
-                        and isinstance(tex_hash, str)
-                        and alias.get(tex_hash, tex_hash) in texture_info)
-                ))
-                layout = tuple(
-                    (slot, outer_by_slot[slot])
-                    for slot, _tex_hash in assignments
-                    if slot in outer_by_slot)
-                if assignments and len(layout) == len(assignments):
-                    canonical_color_assignments.setdefault(
-                        (logical_form_id, comp_id, layout), set()).add(
-                            assignments)
+            primary_ps = primary_passes.get((form_id, comp_id))
+            primary_pair = comp_pairs.get(primary_ps) if primary_ps else None
+            if not isinstance(primary_pair, dict):
+                continue
+            primary_hashes_by_logical_form.setdefault(
+                (logical_form_id, comp_id), set()).update(
+                    alias.get(tex_hash, tex_hash)
+                    for tex_hash in primary_pair.values()
+                    if isinstance(tex_hash, str))
     service_drift_branches: Set[Tuple[int, int, str, str]] = set()
     for form_id, (_label, form_data) in enumerate(audit_forms, start=1):
         form_fresh = (freshness[form_id - 1]
@@ -2083,7 +2042,15 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
     ] = {}
 
     for form_id, (label, form_data) in enumerate(audit_forms, start=1):
-        logical_form_id = _logical_form_id(label, form_id)
+        logical_form_id = form_id
+        normalized_label = str(label).strip().lower()
+        if (normalized_label.startswith('route_')
+                and normalized_label.endswith('_base')):
+            logical_form_id = 1
+        else:
+            matched_form = re.fullmatch(r'form(\d+)', normalized_label)
+            if matched_form:
+                logical_form_id = int(matched_form.group(1))
         form_fresh = (freshness[form_id - 1]
                       if freshness is not None and form_id - 1 < len(freshness)
                       else None)
@@ -2184,16 +2151,21 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     partial_material_candidate and assign_hashes)
                 color_pass_branch = bool(color_pass_candidate and assign_hashes)
                 branch_form_id = logical_form_id
-                if color_pass_branch and _route_base_label(label):
-                    outer_by_slot = dict(outer_sig)
-                    layout = tuple(
-                        (slot, outer_by_slot[slot])
-                        for slot in sorted(assign_hashes)
-                        if slot in outer_by_slot)
-                    candidates = canonical_color_assignments.get(
-                        (logical_form_id, comp_id, layout), set())
-                    if len(candidates) == 1:
-                        assign_hashes = dict(next(iter(candidates)))
+                if color_pass_branch:
+                    assigned_canonical_hashes = {
+                        alias.get(tex_hash, tex_hash)
+                        for tex_hash in assign_hashes.values()
+                    }
+                    owning_forms = {
+                        candidate_form_id
+                        for (candidate_form_id, candidate_comp_id), primary_hashes
+                        in primary_hashes_by_logical_form.items()
+                        if (candidate_comp_id == comp_id
+                            and assigned_canonical_hashes
+                            and assigned_canonical_hashes.issubset(primary_hashes))
+                    }
+                    if len(owning_forms) == 1:
+                        branch_form_id = next(iter(owning_forms))
                 row = {
                     'form_id': form_id,
                     'form': label,
