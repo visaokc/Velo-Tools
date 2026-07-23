@@ -29,6 +29,9 @@ _OBJECT_GATE_LINE_RE = re.compile(
     r"^(\s*)if\s+\$object_detected(?:_ib\d+)?(?:\s*==\s*1)?\s*$",
     re.I,
 )
+# Pair the material-layout seats with both adjacent service seats so an
+# auxiliary pass never degrades to one residual-slot discriminator.
+_AUXILIARY_LAYOUT_SLOTS = frozenset((2, 3, 5, 6))
 
 
 class CrossSceneCompileError(RuntimeError):
@@ -1619,6 +1622,36 @@ def _coarse_form_conditions(
     return conditions
 
 
+def _auxiliary_form_conditions(
+        grouped: Mapping[int, Sequence[Mapping[str, Any]]],
+) -> Dict[int, Tuple[str, ...]]:
+    conditions: Dict[int, Tuple[str, ...]] = {}
+    for form_id, branches in grouped.items():
+        if form_id < 0:
+            continue
+        form_conditions = []
+        for branch in branches:
+            assignments = branch.get("assignment_hashes") or {}
+            if (not branch.get("color_pass_branch")
+                    or len(assignments) != 1):
+                continue
+            assignment_slots = {int(slot) for slot in assignments}
+            signature = tuple(
+                (int(slot), value)
+                for slot, value in (branch.get("outer_signature") or ())
+                if (int(slot) not in assignment_slots
+                    and int(slot) in _AUXILIARY_LAYOUT_SLOTS)
+            )
+            if len(signature) < 2:
+                continue
+            condition = _signature_condition(signature)
+            if condition not in form_conditions:
+                form_conditions.append(condition)
+        if form_conditions:
+            conditions[form_id] = tuple(form_conditions)
+    return conditions
+
+
 def _final_setter_name(component_id: int, suffix: str,
                        route: str, route_specific: bool) -> str:
     base = f"CommandListSetTexturesComponent{component_id}"
@@ -1820,9 +1853,19 @@ def _texture_plan(
                 group_id = int(form_id) if form_id is not None else -(index + 1)
                 grouped.setdefault(group_id, []).append(branch)
             coarse_conditions = _coarse_form_conditions(grouped)
+            auxiliary_conditions = _auxiliary_form_conditions(grouped)
             for group_id in sorted(grouped, key=lambda value: (value < 0, value)):
                 group = grouped[group_id]
-                outer = coarse_conditions.get(group_id, "")
+                alternatives = []
+                coarse = coarse_conditions.get(group_id, "")
+                if coarse:
+                    alternatives.append(coarse)
+                alternatives.extend(auxiliary_conditions.get(group_id, ()))
+                outer = (
+                    alternatives[0] if len(alternatives) == 1
+                    else " || ".join(
+                        f"({condition})" for condition in alternatives)
+                )
                 if not outer:
                     outer_conditions = []
                     for branch in group:
