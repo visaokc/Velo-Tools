@@ -678,6 +678,7 @@ class _LocalBranch:
     route_id: Optional[str] = None
     inherited_slots: Tuple[int, ...] = ()
     outer_signature: Tuple[Tuple[int, float], ...] = ()
+    color_pass_branch: bool = False
 
 
 def _serialized_branch_contract(
@@ -719,6 +720,8 @@ def _serialized_branch_contract(
             form_id = getattr(branch, 'form_gate', None)
         if form_id is not None:
             entry['form_id'] = int(form_id)
+        if getattr(branch, 'color_pass_branch', False):
+            entry['color_pass_branch'] = True
         form_gate = form_id
         if (emitted_form_gates is not None
                 and form_gate not in emitted_form_gates):
@@ -1965,6 +1968,27 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
         form_routes=form_routes, ambiguous_out=ambiguous_primary)
     if ambiguous_primary:
         raise SlotStyleDegrade('; '.join(ambiguous_primary))
+    primary_hashes_by_logical_form: Dict[Tuple[int, int], Set[str]] = {}
+    for form_id, (label, form_data) in enumerate(audit_forms, start=1):
+        logical_form_id = form_id
+        normalized_label = str(label).strip().lower()
+        if (normalized_label.startswith('route_')
+                and normalized_label.endswith('_base')):
+            logical_form_id = 1
+        else:
+            matched_form = re.fullmatch(r'form(\d+)', normalized_label)
+            if matched_form:
+                logical_form_id = int(matched_form.group(1))
+        for comp_id, comp_pairs in form_data.items():
+            primary_ps = primary_passes.get((form_id, comp_id))
+            primary_pair = comp_pairs.get(primary_ps) if primary_ps else None
+            if not isinstance(primary_pair, dict):
+                continue
+            primary_hashes_by_logical_form.setdefault(
+                (logical_form_id, comp_id), set()).update(
+                    alias.get(tex_hash, tex_hash)
+                    for tex_hash in primary_pair.values()
+                    if isinstance(tex_hash, str))
     service_drift_branches: Set[Tuple[int, int, str, str]] = set()
     for form_id, (_label, form_data) in enumerate(audit_forms, start=1):
         form_fresh = (freshness[form_id - 1]
@@ -2126,6 +2150,22 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                 partial_material_branch = bool(
                     partial_material_candidate and assign_hashes)
                 color_pass_branch = bool(color_pass_candidate and assign_hashes)
+                branch_form_id = logical_form_id
+                if color_pass_branch:
+                    assigned_canonical_hashes = {
+                        alias.get(tex_hash, tex_hash)
+                        for tex_hash in assign_hashes.values()
+                    }
+                    owning_forms = {
+                        candidate_form_id
+                        for (candidate_form_id, candidate_comp_id), primary_hashes
+                        in primary_hashes_by_logical_form.items()
+                        if (candidate_comp_id == comp_id
+                            and assigned_canonical_hashes
+                            and assigned_canonical_hashes.issubset(primary_hashes))
+                    }
+                    if len(owning_forms) == 1:
+                        branch_form_id = next(iter(owning_forms))
                 row = {
                     'form_id': form_id,
                     'form': label,
@@ -2189,13 +2229,13 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                             'remap_sources': remap_sources,
                         })
                         sample_key = (
-                            comp_id, route, logical_form_id, akey,
+                            comp_id, route, branch_form_id, akey,
                             branch_sig, outer_sig)
                         sample = branch_samples.get(sample_key)
                         if sample is None:
                             branch_samples[sample_key] = {
                                 'component': comp_id,
-                                'form_id': logical_form_id,
+                                'form_id': branch_form_id,
                                 'signature': _serialized_signature(branch_sig),
                                 'positive_signature': _serialized_signature(branch_sig),
                                 'effective_signature': _serialized_signature(
@@ -3050,6 +3090,7 @@ def _local_branches_from_audit(audit: dict,
                 inherited_slots=tuple(sorted(
                     set(filtered_assign) & inherited_slots)),
                 outer_signature=outer_signature,
+                color_pass_branch=color_pass_branch,
             ))
     branch_records.extend(kept_branch_records)
     route_split_components = _route_split_components(
@@ -3278,6 +3319,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         seen: Dict[
             Tuple[
                 Optional[str],
+                Optional[int],
+                Tuple[Tuple[int, float], ...],
                 Tuple[Tuple[int, float], ...],
                 Tuple[Tuple[int, float], ...],
                 Tuple[Tuple[int, str], ...],
@@ -3287,6 +3330,8 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
         for branch in branches:
             key = (
                 branch.route_id,
+                branch.form_id,
+                branch.outer_signature,
                 branch.signature,
                 branch.negative_signature,
                 tuple(sorted(branch.assign.items())),

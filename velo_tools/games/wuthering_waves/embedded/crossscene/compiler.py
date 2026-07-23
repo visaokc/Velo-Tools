@@ -1565,6 +1565,60 @@ def _signature_condition(signature: Sequence[Sequence[Any]]) -> str:
         f"ps-t{int(slot)} == {value}" for slot, value in signature)
 
 
+def _coarse_form_conditions(
+        grouped: Mapping[int, Sequence[Mapping[str, Any]]],
+) -> Dict[int, str]:
+    common_by_form: Dict[int, Dict[int, Any]] = {}
+    for form_id, branches in grouped.items():
+        if form_id < 0 or not branches:
+            continue
+        discriminator_branches = [
+            branch for branch in branches
+            if not branch.get("color_pass_branch")
+        ] or list(branches)
+        common = {
+            int(slot): value
+            for slot, value in (
+                discriminator_branches[0].get("outer_signature")
+                or discriminator_branches[0].get("positive_signature") or ())
+        }
+        for branch in discriminator_branches[1:]:
+            signature = {
+                int(slot): value
+                for slot, value in (branch.get("outer_signature")
+                                    or branch.get("positive_signature") or ())
+            }
+            common = {
+                slot: value for slot, value in common.items()
+                if signature.get(slot) == value
+            }
+        common_by_form[form_id] = common
+
+    if len(common_by_form) < 2:
+        return {}
+    conditions: Dict[int, str] = {}
+    for form_id, common in common_by_form.items():
+        differing = [
+            (slot, value)
+            for slot, value in sorted(common.items())
+            if any(
+                slot in other_common and other_common[slot] != value
+                for other_id, other_common in common_by_form.items()
+                if other_id != form_id)
+        ]
+        if not differing:
+            return {}
+        for other_id, other_common in common_by_form.items():
+            if other_id == form_id:
+                continue
+            if not any(
+                    slot in other_common and other_common[slot] != value
+                    for slot, value in differing):
+                return {}
+        conditions[form_id] = _signature_condition(differing)
+    return conditions
+
+
 def _final_setter_name(component_id: int, suffix: str,
                        route: str, route_specific: bool) -> str:
     base = f"CommandListSetTexturesComponent{component_id}"
@@ -1765,19 +1819,22 @@ def _texture_plan(
                 form_id = branch.get("form_id")
                 group_id = int(form_id) if form_id is not None else -(index + 1)
                 grouped.setdefault(group_id, []).append(branch)
+            coarse_conditions = _coarse_form_conditions(grouped)
             for group_id in sorted(grouped, key=lambda value: (value < 0, value)):
                 group = grouped[group_id]
-                outer_conditions = []
-                for branch in group:
-                    signature = (branch.get("outer_signature")
-                                 or branch.get("positive_signature") or ())
-                    condition = _signature_condition(signature)
-                    if condition and condition not in outer_conditions:
-                        outer_conditions.append(condition)
-                if not outer_conditions:
-                    continue
-                outer = " || ".join(
-                    f"({condition})" for condition in outer_conditions)
+                outer = coarse_conditions.get(group_id, "")
+                if not outer:
+                    outer_conditions = []
+                    for branch in group:
+                        signature = (branch.get("outer_signature")
+                                     or branch.get("positive_signature") or ())
+                        condition = _signature_condition(signature)
+                        if condition and condition not in outer_conditions:
+                            outer_conditions.append(condition)
+                    if not outer_conditions:
+                        continue
+                    outer = " || ".join(
+                        f"({condition})" for condition in outer_conditions)
                 lines.append(f"    if {outer}")
                 group_emitted = 0
                 emitted_branches = set()
