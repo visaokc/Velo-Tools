@@ -29,10 +29,27 @@ from ..slot_textures.dds_meta import read_dds_meta
 
 MANIFEST_FILENAME = "TextureIdentityManifest.json"
 SOURCE_EVIDENCE_DIRECTORY = "TextureIdentitySources"
-SCHEMA_ID = "urn:texture-identity-manifest:schema:v3"
-SCHEMA_VERSION = 3
+SCHEMA_ID = "urn:texture-identity-manifest:schema:v4"
+SCHEMA_VERSION = 4
 PROTOTYPE_ABI_VERSION = 3
+SOURCE_PROFILES = ("Showcase1", "Dungeon1", "Dungeon2")
 _DDS_HASH = re.compile(r"\bt=([0-9a-fA-F]{8})\b")
+_LOD_SOURCE = re.compile(r"(^|[^a-z0-9])lods?($|[^a-z0-9])", re.IGNORECASE)
+
+
+def classify_source_profile(path: str | Path) -> str | None:
+    """Return an allowed top-level dump profile, excluding every LOD source."""
+    text = " ".join(Path(path).parts)
+    if _LOD_SOURCE.search(text):
+        return None
+    for profile in SOURCE_PROFILES:
+        if re.search(
+            rf"(^|[^a-z0-9]){re.escape(profile)}($|[^a-z0-9])",
+            text,
+            re.IGNORECASE,
+        ):
+            return profile
+    return None
 
 
 def _component_id(component_key: str) -> int | None:
@@ -142,8 +159,13 @@ def build_manifest(
     object_directory: str | Path,
     object_hash: str,
     *,
+    source_profile: str,
     capture: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if source_profile not in SOURCE_PROFILES:
+        raise FingerprintError(
+            "Texture identity analysis requires Showcase1, Dungeon1, or Dungeon2 top-level dump evidence"
+        )
     object_directory = Path(object_directory)
     stu_path = object_directory / "ShaderTextureUsage.json"
     metadata_path = object_directory / "Metadata.json"
@@ -174,10 +196,11 @@ def build_manifest(
                 for record in fingerprints.values()
                 if record.get("status") == "payload-ready"
             ]
-            if ready_fingerprints:
-                fingerprint_status = "payload-ready-runtime-blocked"
-            else:
-                fingerprint_status = "blocked-no-exact-square-mip"
+            fingerprint_status = (
+                "payload-ready-runtime-blocked"
+                if ready_fingerprints
+                else "source-retained-blocked-decoder"
+            )
         except FingerprintError as exc:
             fingerprints = {}
             fingerprint_status = "source-retained-blocked-decoder"
@@ -235,11 +258,6 @@ def build_manifest(
         for identity in identities
         if identity["fingerprint_status"] == "source-retained-blocked-decoder"
     ]
-    blocked_exact_mips = [
-        identity["identity"]
-        for identity in identities
-        if identity["fingerprint_status"] == "blocked-no-exact-square-mip"
-    ]
     payload_ready = [
         identity["identity"]
         for identity in identities
@@ -256,10 +274,10 @@ def build_manifest(
             "canonical_view_policy": CANONICAL_VIEW_POLICY,
             "srgb_behavior": "preserve-dds-encoded-rgba8-through-compatible-non-srgb-srv",
             "mip_selection_policy": MIP_SELECTION_POLICY,
-            "non_square_policy": "unavailable-no-resample",
-            "missing_target_mip_policy": "unavailable-no-resample",
-            "small_texture_policy": "unavailable-no-resample",
-            "incomplete_chain_policy": "use-only-physically-complete-exact-square-mips",
+            "normalization_formula": "pixel=min(size-1,((2*id+1)*size)/(2*N))",
+            "non_square_policy": "normalize-each-axis-independently",
+            "small_texture_policy": "deterministic-cell-center-repetition",
+            "incomplete_chain_policy": "use-decoded-dump-top-level-image-only",
             "candidate_resolutions": list(RESOLUTIONS),
             "payload": PAYLOAD_ENCODING,
             "distance": "normalized-encoded-rgba8-mean-absolute-error",
@@ -270,12 +288,16 @@ def build_manifest(
                 "nearest_inter_distance - effective_tolerance >= minimum_margin"
             ),
             "reference_strategy": "per-identity-minimax-medoid-over-all-variants",
-            "legacy_cache_policy": "reject-non-v3-or-non-encoded-rgba8",
+            "legacy_cache_policy": "reject-incompatible-algorithm-domain-or-sampling-policy",
         },
         "source": {
             "metadata_ref": metadata_path.name if metadata_path.is_file() else None,
             "shader_texture_usage_ref": stu_path.name if stu_path.is_file() else None,
             "resource_origin": "original-game-dump",
+            "profile": source_profile,
+            "allowed_profiles": list(SOURCE_PROFILES),
+            "lod_dump_policy": "excluded",
+            "image_source": "dump-top-level-dds-image",
         },
         "runtime_contract": {
             "prototype_abi_version": PROTOTYPE_ABI_VERSION,
@@ -313,7 +335,6 @@ def build_manifest(
             "candidate_context_abi_status": "evidence-only-unmapped",
             "abi_status": "blocked",
             "abi_blockers": [
-                "srv-visible-absolute-mip-witness-unavailable",
                 "runtime-v3-game-parity-not-validated",
                 "candidate-context-draw_context-mapping-not-implemented",
                 *(
@@ -321,17 +342,11 @@ def build_manifest(
                     if blocked_decoders
                     else []
                 ),
-                *(
-                    ["exact-square-mip-unavailable"]
-                    if blocked_exact_mips
-                    else []
-                ),
             ],
             "identity_counts": {
                 "total": len(identities),
                 "payload_ready_runtime_blocked": len(payload_ready),
                 "blocked_decoder": len(blocked_decoders),
-                "blocked_no_exact_square_mip": len(blocked_exact_mips),
                 "runtime_compatible": 0,
             },
             "blocked_identity_count": len(identities),
@@ -344,10 +359,16 @@ def write_manifest(
     object_directory: str | Path,
     object_hash: str,
     *,
+    source_profile: str,
     capture: Mapping[str, Any] | None = None,
 ) -> Path:
     object_directory = Path(object_directory)
-    manifest = build_manifest(object_directory, object_hash, capture=capture)
+    manifest = build_manifest(
+        object_directory,
+        object_hash,
+        source_profile=source_profile,
+        capture=capture,
+    )
     path = object_directory / MANIFEST_FILENAME
     path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return path

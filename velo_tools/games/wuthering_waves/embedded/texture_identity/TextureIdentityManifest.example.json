@@ -1,18 +1,18 @@
 {
-  "$schema": "urn:texture-identity-manifest:schema:v3",
+  "$schema": "urn:texture-identity-manifest:schema:v4",
   "schema": "texture-identity-manifest",
-  "schema_version": 3,
+  "schema_version": 4,
   "algorithm": {
     "name": "canonical-pixel-fingerprint",
     "version": 3,
     "canonical_color_domain": "encoded-rgba8",
     "canonical_view_policy": "compatible-non-srgb-srv",
     "srgb_behavior": "preserve-dds-encoded-rgba8-through-compatible-non-srgb-srv",
-    "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
-    "non_square_policy": "unavailable-no-resample",
-    "missing_target_mip_policy": "unavailable-no-resample",
-    "small_texture_policy": "unavailable-no-resample",
-    "incomplete_chain_policy": "use-only-physically-complete-exact-square-mips",
+    "mip_selection_policy": "visible-most-detailed-normalized-cell-center-v3",
+    "normalization_formula": "pixel=min(size-1,((2*id+1)*size)/(2*N))",
+    "non_square_policy": "normalize-each-axis-independently",
+    "small_texture_policy": "deterministic-cell-center-repetition",
+    "incomplete_chain_policy": "use-decoded-dump-top-level-image-only",
     "candidate_resolutions": [
       16,
       32,
@@ -27,12 +27,20 @@
     "effective_tolerance": "max(tolerance_floor, maximum_intra_distance)",
     "selection_rule": "nearest_inter_distance - effective_tolerance >= minimum_margin",
     "reference_strategy": "per-identity-minimax-medoid-over-all-variants",
-    "legacy_cache_policy": "reject-non-v3-or-non-encoded-rgba8"
+    "legacy_cache_policy": "reject-incompatible-algorithm-domain-or-sampling-policy"
   },
   "source": {
     "metadata_ref": "Metadata.json",
     "shader_texture_usage_ref": "ShaderTextureUsage.json",
-    "resource_origin": "original-game-dump"
+    "resource_origin": "original-game-dump",
+    "profile": "Showcase1",
+    "allowed_profiles": [
+      "Showcase1",
+      "Dungeon1",
+      "Dungeon2"
+    ],
+    "lod_dump_policy": "excluded",
+    "image_source": "dump-top-level-dds-image"
   },
   "runtime_contract": {
     "prototype_abi_version": 3,
@@ -80,7 +88,6 @@
     "candidate_context_abi_status": "evidence-only-unmapped",
     "abi_status": "blocked",
     "abi_blockers": [
-      "srv-visible-absolute-mip-witness-unavailable",
       "runtime-v3-game-parity-not-validated",
       "candidate-context-draw_context-mapping-not-implemented"
     ],
@@ -88,7 +95,6 @@
       "total": 1,
       "payload_ready_runtime_blocked": 1,
       "blocked_decoder": 0,
-      "blocked_no_exact_square_mip": 0,
       "runtime_compatible": 0
     },
     "blocked_identity_count": 1
@@ -104,70 +110,70 @@
           "context_ref": "texture:1234abcd|dump-base",
           "stable_resource_ref": "Components-0 t=1234abcd.dds",
           "fingerprint_source_ref": "Components-0 t=1234abcd.dds",
-          "source_sha256": "a490c84ae80d74bae697899726fa2b799e3125b6c977399426d19d12001417a9",
+          "source_sha256": "8067a6fad4a8bb98dfff6fb8bdd21cd88f37f9c8842e4af4dba2d0ae8a6886cd",
           "width": 32,
-          "height": 32,
+          "height": 16,
           "mips": 2,
           "format": "B8G8R8A8_UNORM",
           "format_family": "b8g8r8a8",
           "source_is_srgb": false,
           "fingerprints": {
             "16": {
+              "status": "payload-ready",
+              "payload": "v3:r16:rgba8-zlib:eNoNy0FqGCAAALDazjrnrIiIiIj_f-WWQ44JH-nfF5FEplBpdAaTxeZweYTgE0lkCpVGZzBZbA6XR_j0iSQyhUqjM5gsNofLI3z5RBKZQqXRGUwWm8PlEX75RBKZQqXRGUwWm8PlEaJPJJEpVBqdwWSxOVwe4dsnksgUKo3OYLLYHC6PkHwiiUyh0ugMJovN4fIIv30iiUyh0ugMJovN4fII2SeSyBQqjc5gstgcLo_wxyeSyBQqjc5gstgcLo9QfCKJTKHS6Awmi83h8gh_fSKJTKHS6Awmi83h8gjVJ5LIFCqNzmCy2Bwuj_DjE0lkCpVGZzBZbA6XR2g-kUSmUGl0BpPF5nB5_AdTjB2Q",
               "algorithm_version": 3,
               "canonical_color_domain": "encoded-rgba8",
               "canonical_view_policy": "compatible-non-srgb-srv",
               "canonical_resolution": 16,
               "canonical_format": "B8G8R8A8_UNORM",
+              "absolute_mip": 0,
+              "source_mip_role": "dump-top-level-image",
+              "runtime_source_mip_role": "srv-visible-most-detailed",
+              "source_mip_width": 32,
+              "source_mip_height": 16,
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
+              "mip_selection_policy": "visible-most-detailed-normalized-cell-center-v3",
               "source_is_srgb": false,
-              "status": "payload-ready",
-              "payload": "v3:r16:rgba8-zlib:eNoNy0eCEEQAADBRcJUi3xin9_n_yyCHHBP--Pj1P5FEplBpdAaTxeZweYRPPpFEplBpdAaTxeZweYQ_fSKJTKHS6Awmi83h8gh_-UQSmUKl0RlMFpvD5RE--0QSmUKl0RlMFpvD5RG--EQSmUKl0RlMFpvD5RH-9okkMoVKozOYLDaHyyN8-EQSmUKl0RlMFpvD5RH-8YkkMoVKozOYLDaHyyP86xNJZAqVRmcwWWwOl0f46hNJZAqVRmcwWWwOl0f45hNJZAqVRmcwWWwOl0f47hNJZAqVRmcwWWwOl0f44RNJZAqVRmcwWWwOl0f4zyeSyBQqjc5gstgcLo_w0yeSyBQqjc5gstgcLo_f6z09EA==",
-              "absolute_mip": 1,
-              "source_mip_width": 16,
-              "source_mip_height": 16,
-              "srv_visibility_status": "unproven",
               "payload_abi_compatible": true,
               "runtime_compatible": false,
               "runtime_compatibility_blockers": [
-                "srv-visible-absolute-mip-witness-unavailable",
                 "runtime-v3-game-parity-not-validated"
               ],
               "offline_cache_identity": {
-                "resource_version": "a490c84ae80d74bae697899726fa2b799e3125b6c977399426d19d12001417a9",
+                "resource_version": "8067a6fad4a8bb98dfff6fb8bdd21cd88f37f9c8842e4af4dba2d0ae8a6886cd",
                 "algorithm_version": 3,
                 "resolution": 16,
                 "canonical_format": "B8G8R8A8_UNORM",
-                "absolute_mip": 1
+                "absolute_mip": 0
               }
             },
             "32": {
+              "status": "payload-ready",
+              "payload": "v3:r32:rgba8-zlib:eNrNzbVh2AAAALDEzMz4_5WtvogHzfr5Sf_9EhASEZOQkpFTUFJR09DS0TMwMjGzsLKxc3BycfPw8vPX_6-fgJCImISUjJyCkoqahpaOnoGRiZmFlY2dg5OLm4f39wN_4CcgJCImISUjp6CkoqahpaNnYGRiZmFlY-fg5OLm4Q0-8Id-AkIiYhJSMnIKSipqGlo6egZGJmYWVjZ2Dk4ubh7e8AN_5CcgJCImISUjp6CkoqahpaNnYGRiZmFlY-fg5OLm4Y0-8Md-AkIiYhJSMnIKSipqGlo6egZGJmYWVjZ2Dk4ubh7e-AN_4icgJCImISUjp6CkoqahpaNnYGRiZmFlY-fg5OLm4U0-8Kd-AkIiYhJSMnIKSipqGlo6egZGJmYWVjZ2Dk4ubh7e9AN_5icgJCImISUjp6CkoqahpaNnYGRiZmFlY-fg5OLm4c0-8Od-AkIiYhJSMnIKSipqGlo6egZGJmYWVjZ2Dk4ubh7e_AN_4ScgJCImISUjp6CkoqahpaNnYGRiZmFlY-fg5OLm4S0-8Jd-AkIiYhJSMnIKSipqGlo6egZGJmYWVjZ2Dk4ubh7e8gN_5ScgJCImISUjp6CkoqahpaNnYGRiZmFlY-fg5OLm4a0-8Nd-AkIiYhJSMnIKSipqGlo6egZGJmYWVjZ2Dk4ubh7e-gN_4ycgJCImISUjp6CkoqahpaNnYGRiZmFlY-fg5OLm4W0-8Ld-AkIiYhJSMnIKSipqGlo6egZGJmYWVjZ2Dk4ubh7e9u___2r8dD0=",
               "algorithm_version": 3,
               "canonical_color_domain": "encoded-rgba8",
               "canonical_view_policy": "compatible-non-srgb-srv",
               "canonical_resolution": 32,
               "canonical_format": "B8G8R8A8_UNORM",
+              "absolute_mip": 0,
+              "source_mip_role": "dump-top-level-image",
+              "runtime_source_mip_role": "srv-visible-most-detailed",
+              "source_mip_width": 32,
+              "source_mip_height": 16,
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
+              "mip_selection_policy": "visible-most-detailed-normalized-cell-center-v3",
               "source_is_srgb": false,
-              "status": "payload-ready",
-              "payload": "v3:r32:rgba8-zlib:eNrt1rmB2DgABEEs8QPEI-Wfq65yoHHOGmVO2xNC_ffDQySRKVQancHkZbE5XMKHRvix5SGSyBQqjc5g8rLYHO7Pt0Z4bHmIJDKFSqMzmLwsNof7fGuEaMtDJJEpVBqdweRlsTnc-K0Rki0PkUSmUGl0BpOXxeZw07dGyLY8RBKZQqXRGUxeFpvDzd8aodjyEElkCpVGZzB5WWwOt3xrhGrLQySRKVQancHkZbE53PqtEZotD5FEplBpdAaTl8XmcNu3Rui2PEQSmUKl0RlMXhabw-3fGmHY8hBJZAqVRmcweVlsDnd8a4Rpy0MkkSlUGp3B5GWxOdz5rRFeWx4iiUyh0ugMJi-LzeG-3xph2fIQSWQKlUZnMHlZbA53fWuEbctDJJEpVBqdweRlsTnc_a0Rji0PkUSmUGl0BpOXxeZwz7dGuLY8RBKZQqXRGUxeFpvDvd8a4Y8tD5FEplBpdAaTl8XmcP98a4S_tjxEEplCpdEZTF4Wm8P9-60Rfv_X7__6_V-__-v3f_3-r__hf_0HhYFVfQ==",
-              "absolute_mip": 0,
-              "source_mip_width": 32,
-              "source_mip_height": 32,
-              "srv_visibility_status": "unproven",
               "payload_abi_compatible": true,
               "runtime_compatible": false,
               "runtime_compatibility_blockers": [
-                "srv-visible-absolute-mip-witness-unavailable",
                 "runtime-v3-game-parity-not-validated"
               ],
               "offline_cache_identity": {
-                "resource_version": "a490c84ae80d74bae697899726fa2b799e3125b6c977399426d19d12001417a9",
+                "resource_version": "8067a6fad4a8bb98dfff6fb8bdd21cd88f37f9c8842e4af4dba2d0ae8a6886cd",
                 "algorithm_version": 3,
                 "resolution": 32,
                 "canonical_format": "B8G8R8A8_UNORM",
@@ -175,52 +181,97 @@
               }
             },
             "64": {
+              "status": "payload-ready",
+              "payload": "v3:r64:rgba8-zlib:eNrtz8ex6ggAALDnnBPgnPqv8u_OoC7wQQXo7y_79_e_gJCImISUjJyCkoqahpaOnoEXbz6MTMwsrGzsHJxc3Pw9_-f_y__gKyAkIiYhJSOnoKSipqGlo2fgxZsPIxMzCysbOwcnFzfP__n_9D_8CgiJiElIycgpKKmoaWjp6Bl48ebDyMTMwsrGzsHJxc3zf_4__Y--AkIiYhJSMnIKSipqGlo6egZevPkwMjGzsLKxc3BycfP8n_9P_-OvgJCImISUjJyCkoqahpaOnoEXbz6MTMwsrGzsHJxc3Dz_5__T_-QrICQiJiElI6egpKKmoaWjZ-DFmw8jEzMLKxs7BycXN8__-f_0P_0KCImISUjJyCkoqahpaOnoGXjx5sPIxMzCysbOwcnFzfN__j_9z74CQiJiElIycgpKKmoaWjp6Bl68-TAyMbOwsrFzcHJx8_yf_0__86-AkIiYhJSMnIKSipqGlo6egRdvPoxMzCysbOwcnFzcPP_n_9P_4isgJCImISUjp6CkoqahpaNn4MWbDyMTMwsrGzsHJxc3z__5__S__AoIiYhJSMnIKSipqGlo6egZePHmw8jEzMLKxs7BycXN83_-P_2vvgJCImISUjJyCkoqahpaOnoGXrz5MDIxs7CysXNwcnHz_J__T__rr4CQiJiElIycgpKKmoaWjp6BF28-jEzMLKxs7BycXNw8_-f_0__mKyAkIiYhJSOnoKSipqGlo2fgxZsPIxMzCysbOwcnFzfP__n_9L_9CgiJiElIycgpKKmoaWjp6Bl48ebDyMTMwsrGzsHJxc3zf_4__e--AkIiYhJSMnIKSipqGlo6egZevPkwMjGzsLKxc3BycfP8n_8v__8DLPfRAA==",
               "algorithm_version": 3,
               "canonical_color_domain": "encoded-rgba8",
               "canonical_view_policy": "compatible-non-srgb-srv",
               "canonical_resolution": 64,
               "canonical_format": "B8G8R8A8_UNORM",
+              "absolute_mip": 0,
+              "source_mip_role": "dump-top-level-image",
+              "runtime_source_mip_role": "srv-visible-most-detailed",
+              "source_mip_width": 32,
+              "source_mip_height": 16,
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
+              "mip_selection_policy": "visible-most-detailed-normalized-cell-center-v3",
               "source_is_srgb": false,
-              "status": "unavailable",
-              "unavailable_reason": "no-exact-square-mip",
-              "payload_abi_compatible": false,
-              "runtime_compatible": false
+              "payload_abi_compatible": true,
+              "runtime_compatible": false,
+              "runtime_compatibility_blockers": [
+                "runtime-v3-game-parity-not-validated"
+              ],
+              "offline_cache_identity": {
+                "resource_version": "8067a6fad4a8bb98dfff6fb8bdd21cd88f37f9c8842e4af4dba2d0ae8a6886cd",
+                "algorithm_version": 3,
+                "resolution": 64,
+                "canonical_format": "B8G8R8A8_UNORM",
+                "absolute_mip": 0
+              }
             },
             "128": {
+              "status": "payload-ready",
+              "payload": "v3:r128:rgba8-zlib:eNrt0cWBIwkABLBxM7eZIf8o975npeB6KAL9_bX__v5ngwIlKtRo0KJDjwEjJsxYsGKLHfY44IgTzrjgihvueOCJF9744C__-c9__vOf__znP__5z3_-8_8b_5tvGxQoUaFGgxYdegwYMWHGghVb7LDHAUeccMYFV9xwxwNPvPDGB_nPf_7zn__85z__-c9__vOf_x_5L75tUKBEhRoNWnToMWDEhBkLVmyxwx4HHHHCGRdcccMdDzzxwhsf5D__-c9__vOf__znP__5z3_-f-S__LZBgRIVajRo0aHHgBETZixYscUOexxwxAlnXHDFDXc88MQLb3yQ__znP__5z3_-85___Oc___n_kf_q2wYFSlSo0aBFhx4DRkyYsWDFFjvsccARJ5xxwRU33PHAEy-88UH-85___Oc___nPf_7zn__85_9H_utvGxQoUaFGgxYdegwYMWHGghVb7LDHAUeccMYFV9xwxwNPvPDGB_nPf_7zn__85z__-c9__vOf_x_5b75tUKBEhRoNWnToMWDEhBkLVmyxwx4HHHHCGRdcccMdDzzxwhsf5D__-c9__vOf__znP__5z3_-f-S__bZBgRIVajRo0aHHgBETZixYscUOexxwxAlnXHDFDXc88MQLb3yQ__znP__5z3_-85___Oc___n_kf_u2wYFSlSo0aBFhx4DRkyYsWDFFjvsccARJ5xxwRU33PHAEy-88UH-85___Oc___nPf_7zn__85_9H_vtvGxQoUaFGgxYdegwYMWHGghVb7LDHAUeccMYFV9xwxwNPvPDGB_nPf_7zn__85z__-c9__vOf_x_5H75tUKBEhRoNWnToMWDEhBkLVmyxwx4HHHHCGRdcccMdDzzxwhsf5D__-c9__vOf__znP__5z3_-f-R__LZBgRIVajRo0aHHgBETZixYscUOexxwxAlnXHDFDXc88MQLb3yQ__znP__5z3_-85___Oc___n_kf_p2wYFSlSo0aBFhx4DRkyYsWDFFjvsccARJ5xxwRU33PHAEy-88UH-85___Oc___nPf_7zn__85_9H_udvGxQoUaFGgxYdegwYMWHGghVb7LDHAUeccMYFV9xwxwNPvPDGB_nPf_7zn__85z__-c9__vOf_x_5X75tUKBEhRoNWnToMWDEhBkLVmyxwx4HHHHCGRdcccMdDzzxwhsf5D__-c9__vOf__znP__5z3_-f-R__bZBgRIVajRo0aHHgBETZixYscUOexxwxAlnXHDFDXc88MQLb3yQ__znP__5z3_-85___Oc___n_jf__AEzpRCo=",
               "algorithm_version": 3,
               "canonical_color_domain": "encoded-rgba8",
               "canonical_view_policy": "compatible-non-srgb-srv",
               "canonical_resolution": 128,
               "canonical_format": "B8G8R8A8_UNORM",
+              "absolute_mip": 0,
+              "source_mip_role": "dump-top-level-image",
+              "runtime_source_mip_role": "srv-visible-most-detailed",
+              "source_mip_width": 32,
+              "source_mip_height": 16,
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
+              "mip_selection_policy": "visible-most-detailed-normalized-cell-center-v3",
               "source_is_srgb": false,
-              "status": "unavailable",
-              "unavailable_reason": "no-exact-square-mip",
-              "payload_abi_compatible": false,
-              "runtime_compatible": false
+              "payload_abi_compatible": true,
+              "runtime_compatible": false,
+              "runtime_compatibility_blockers": [
+                "runtime-v3-game-parity-not-validated"
+              ],
+              "offline_cache_identity": {
+                "resource_version": "8067a6fad4a8bb98dfff6fb8bdd21cd88f37f9c8842e4af4dba2d0ae8a6886cd",
+                "algorithm_version": 3,
+                "resolution": 128,
+                "canonical_format": "B8G8R8A8_UNORM",
+                "absolute_mip": 0
+              }
             },
             "256": {
+              "status": "payload-ready",
+              "payload": "v3:r256:rgba8-zlib:eNrt07dhKggAQLFPzjmDbfaf8m4DXkuhQiPo37_Zf_8-GIRhGIVxmIRpmIV5WIRlWIV12IRt2IV9OIRjOIVzuIRruIV7eIRneIWf8Bv-wjv8899___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff_-_5__gs0EYhlEYh0mYhlmYh0VYhlVYh03Yhl3Yh0M4hlM4h0u4hlu4h0d4hlf4Cb_hL7yD__7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__--_9F_4efDcIwjMI4TMI0zMI8LMIyrMI6bMI27MI-HMIxnMI5XMI13MI9PMIzvMJP-A1_4R38999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___fff_y_6P_psEIZhFMZhEqZhFuZhEZZhFdZhE7ZhF_bhEI7hFM7hEq7hFu7hEZ7hFX7Cb_gL7-C___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__-f9H_8WeDMAyjMA6TMA2zMA-LsAyrsA6bsA27sA-HcAyncA6XcA23cA-P8Ayv8BN-w194B__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ff_i_5PPhuEYRiFcZiEaZiFeViEZViFddiEbdiFfTiEYziFc7iEa7iFe3iEZ3iFn_Ab_sI7-O-___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv_9f9H_62SAMwyiMwyRMwyzMwyIswyqswyZswy7swyEcwymcwyVcwy3cwyM8wyv8hN_wF97Bf__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___f-i_7PPBmEYRmEcJmEaZmEeFmEZVmEdNmEbdmEfDuEYTuEcLuEabuEeHuEZXuEn_Ia_8A7----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvv_xf9n382CMMwCuMwCdMwC_OwCMuwCuuwCduwC_twCMdwCudwCddwC_fwCM_wCj_hN_yFd_Dff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333__v-j_4rNBGIZRGIdJmIZZmIdFWIZVWIdN2IZd2IdDOIZTOIdLuIZbuIdHeIZX-Am_4S-8g__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vv_Rf-Xnw3CMIzCOEzCNMzCPCzCMqzCOmzCNuzCPhzCMZzCOVzCNdzCPTzCM7zCT_gNf-Ed_Pfff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___333_8v-r_6bBCGYRTGYRKmYRbmYRGWYRXWYRO2YRf24RCO4RTO4RKu4Rbu4RGe4RV-wm_4C-_gv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___n_R__VngzAMozAOkzANszAPi7AMq7AOm7ANu7APh3AMp3AOl3ANt3APj_AMr_ATfsNfeAf__ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___33_4v-bz4bhGEYhXGYhGmYhXlYhGVYhXXYhG3YhX04hGM4hXO4hGu4hXt4hGd4hZ_wG_7CO_jvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777__X_R_-9kgDMMojMMkTMMszMMiLMMqrMMmbMMu7MMhHMMpnMMlXMMt3MMjPMMr_ITf8BfewX___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3333___ffff__9999___3_ov-7zwZhGEZhHCZhGmZhHhZhGVZhHTZhG3ZhHw7hGE7hHC7hGm7hHh7hGV7hJ_yGv_AO_vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___7777___vvvv__----___777__3_P8fFBUQtA==",
               "algorithm_version": 3,
               "canonical_color_domain": "encoded-rgba8",
               "canonical_view_policy": "compatible-non-srgb-srv",
               "canonical_resolution": 256,
               "canonical_format": "B8G8R8A8_UNORM",
+              "absolute_mip": 0,
+              "source_mip_role": "dump-top-level-image",
+              "runtime_source_mip_role": "srv-visible-most-detailed",
+              "source_mip_width": 32,
+              "source_mip_height": 16,
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
+              "mip_selection_policy": "visible-most-detailed-normalized-cell-center-v3",
               "source_is_srgb": false,
-              "status": "unavailable",
-              "unavailable_reason": "no-exact-square-mip",
-              "payload_abi_compatible": false,
-              "runtime_compatible": false
+              "payload_abi_compatible": true,
+              "runtime_compatible": false,
+              "runtime_compatibility_blockers": [
+                "runtime-v3-game-parity-not-validated"
+              ],
+              "offline_cache_identity": {
+                "resource_version": "8067a6fad4a8bb98dfff6fb8bdd21cd88f37f9c8842e4af4dba2d0ae8a6886cd",
+                "algorithm_version": 3,
+                "resolution": 256,
+                "canonical_format": "B8G8R8A8_UNORM",
+                "absolute_mip": 0
+              }
             }
           }
         }

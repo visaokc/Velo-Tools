@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:texture-identity-manifest:schema:v3",
+  "$id": "urn:texture-identity-manifest:schema:v4",
   "title": "Texture identity manifest",
   "type": "object",
   "required": [
@@ -14,13 +14,13 @@
   ],
   "properties": {
     "$schema": {
-      "const": "urn:texture-identity-manifest:schema:v3"
+      "const": "urn:texture-identity-manifest:schema:v4"
     },
     "schema": {
       "const": "texture-identity-manifest"
     },
     "schema_version": {
-      "const": 3
+      "const": 4
     },
     "algorithm": {
       "type": "object",
@@ -51,7 +51,7 @@
           "const": "compatible-non-srgb-srv"
         },
         "mip_selection_policy": {
-          "const": "visible-exact-square-absolute-mip-v3"
+          "const": "visible-most-detailed-normalized-cell-center-v3"
         },
         "candidate_resolutions": {
           "const": [
@@ -81,7 +81,40 @@
       "additionalProperties": true
     },
     "source": {
-      "type": "object"
+      "type": "object",
+      "required": [
+        "resource_origin",
+        "profile",
+        "allowed_profiles",
+        "lod_dump_policy",
+        "image_source"
+      ],
+      "properties": {
+        "resource_origin": {
+          "const": "original-game-dump"
+        },
+        "profile": {
+          "enum": [
+            "Showcase1",
+            "Dungeon1",
+            "Dungeon2"
+          ]
+        },
+        "allowed_profiles": {
+          "const": [
+            "Showcase1",
+            "Dungeon1",
+            "Dungeon2"
+          ]
+        },
+        "lod_dump_policy": {
+          "const": "excluded"
+        },
+        "image_source": {
+          "const": "dump-top-level-dds-image"
+        }
+      },
+      "additionalProperties": true
     },
     "runtime_contract": {
       "type": "object",
@@ -166,7 +199,6 @@
             "total",
             "payload_ready_runtime_blocked",
             "blocked_decoder",
-            "blocked_no_exact_square_mip",
             "runtime_compatible"
           ],
           "properties": {
@@ -179,10 +211,6 @@
               "minimum": 0
             },
             "blocked_decoder": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "blocked_no_exact_square_mip": {
               "type": "integer",
               "minimum": 0
             },
@@ -223,7 +251,6 @@
         "fingerprint_status": {
           "enum": [
             "payload-ready-runtime-blocked",
-            "blocked-no-exact-square-mip",
             "source-retained-blocked-decoder"
           ]
         },
@@ -323,27 +350,9 @@
     },
     "fingerprint_record": {
       "type": "object",
-      "required": [
-        "status",
-        "algorithm_version",
-        "canonical_color_domain",
-        "canonical_view_policy",
-        "canonical_resolution",
-        "canonical_format",
-        "declared_mips",
-        "available_complete_mips",
-        "mip_chain_complete",
-        "mip_selection_policy",
-        "source_is_srgb",
-        "payload_abi_compatible",
-        "runtime_compatible"
-      ],
       "properties": {
         "status": {
-          "enum": [
-            "payload-ready",
-            "unavailable"
-          ]
+          "const": "payload-ready"
         },
         "algorithm_version": {
           "const": 3
@@ -382,14 +391,14 @@
           "type": "integer",
           "minimum": 1
         },
-        "srv_visibility_status": {
-          "const": "unproven"
+        "source_mip_role": {
+          "const": "dump-top-level-image"
         },
-        "unavailable_reason": {
-          "const": "no-exact-square-mip"
+        "runtime_source_mip_role": {
+          "const": "srv-visible-most-detailed"
         },
         "payload_abi_compatible": {
-          "type": "boolean"
+          "const": true
         },
         "runtime_compatible": {
           "const": false
@@ -411,42 +420,28 @@
           ]
         }
       },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "status": {
-                "const": "payload-ready"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "payload",
-              "absolute_mip",
-              "source_mip_width",
-              "source_mip_height",
-              "srv_visibility_status",
-              "runtime_compatibility_blockers",
-              "offline_cache_identity"
-            ],
-            "properties": {
-              "payload_abi_compatible": {
-                "const": true
-              }
-            }
-          },
-          "else": {
-            "required": [
-              "unavailable_reason"
-            ],
-            "properties": {
-              "payload_abi_compatible": {
-                "const": false
-              }
-            }
-          }
-        }
+      "required": [
+        "status",
+        "algorithm_version",
+        "canonical_color_domain",
+        "canonical_view_policy",
+        "canonical_resolution",
+        "canonical_format",
+        "declared_mips",
+        "available_complete_mips",
+        "mip_chain_complete",
+        "mip_selection_policy",
+        "source_is_srgb",
+        "payload_abi_compatible",
+        "runtime_compatible",
+        "payload",
+        "absolute_mip",
+        "source_mip_width",
+        "source_mip_height",
+        "source_mip_role",
+        "runtime_source_mip_role",
+        "runtime_compatibility_blockers",
+        "offline_cache_identity"
       ],
       "additionalProperties": true
     },

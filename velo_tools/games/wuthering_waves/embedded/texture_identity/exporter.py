@@ -140,7 +140,6 @@ def select_rules(
             )
             contexts, context_complete = _candidate_contexts(identity)
             blockers = [
-                "srv-visible-absolute-mip-witness-unavailable",
                 "runtime-v3-game-parity-not-validated",
             ]
             if collision_policy == "require_draw_context":
@@ -196,7 +195,6 @@ def render_preview(
 ) -> str:
     runtime_contract = (manifest or {}).get("runtime_contract") or {}
     blockers = runtime_contract.get("abi_blockers") or [
-        "srv-visible-absolute-mip-witness-unavailable",
         "runtime-v3-game-parity-not-validated",
     ]
     lines = [

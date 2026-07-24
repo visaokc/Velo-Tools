@@ -19,7 +19,7 @@ ALGORITHM_VERSION = 3
 PAYLOAD_ENCODING = "v3:rN:rgba8-zlib:<base64url>"
 CANONICAL_COLOR_DOMAIN = "encoded-rgba8"
 CANONICAL_VIEW_POLICY = "compatible-non-srgb-srv"
-MIP_SELECTION_POLICY = "visible-exact-square-absolute-mip-v3"
+MIP_SELECTION_POLICY = "visible-most-detailed-normalized-cell-center-v3"
 RESOLUTIONS = (16, 32, 64, 128, 256)
 DEFAULT_TOLERANCE_FLOOR = 2.0 / 255.0
 DEFAULT_MINIMUM_MARGIN = 4.0 / 255.0
@@ -200,13 +200,30 @@ def decode_dds(path: str | Path) -> DecodedDds:
     )
 
 
-def select_exact_mip(decoded: DecodedDds, resolution: int) -> DecodedMip | None:
+def sample_grid(mip: DecodedMip, resolution: int) -> bytes:
+    """Match the runtime v3 integer cell-center Load coordinates."""
     if resolution not in RESOLUTIONS:
         raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
-    for mip in decoded.mips:
-        if mip.width == resolution and mip.height == resolution:
-            return mip
-    return None
+    if mip.width <= 0 or mip.height <= 0:
+        raise FingerprintError("DDS mip dimensions must be positive")
+    sampled = bytearray(resolution * resolution * 4)
+    output_offset = 0
+    for y in range(resolution):
+        source_y = min(
+            mip.height - 1,
+            ((2 * y + 1) * mip.height) // (2 * resolution),
+        )
+        for x in range(resolution):
+            source_x = min(
+                mip.width - 1,
+                ((2 * x + 1) * mip.width) // (2 * resolution),
+            )
+            source_offset = (source_y * mip.width + source_x) * 4
+            sampled[output_offset : output_offset + 4] = mip.rgba[
+                source_offset : source_offset + 4
+            ]
+            output_offset += 4
+    return bytes(sampled)
 
 
 def encode_fingerprint(rgba8: bytes, resolution: int) -> str:
@@ -251,43 +268,34 @@ def fingerprint_dds(
 ) -> dict[str, dict]:
     decoded = decode_dds(path)
     results = {}
+    source_mip = decoded.mips[0]
     for resolution in resolutions:
         if resolution not in RESOLUTIONS:
             raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
-        mip = select_exact_mip(decoded, resolution)
-        common = {
+        results[str(resolution)] = {
+            "status": "payload-ready",
+            "payload": encode_fingerprint(
+                sample_grid(source_mip, resolution),
+                resolution,
+            ),
             "algorithm_version": ALGORITHM_VERSION,
             "canonical_color_domain": CANONICAL_COLOR_DOMAIN,
             "canonical_view_policy": CANONICAL_VIEW_POLICY,
             "canonical_resolution": resolution,
             "canonical_format": decoded.canonical_format,
+            "absolute_mip": source_mip.level,
+            "source_mip_role": "dump-top-level-image",
+            "runtime_source_mip_role": "srv-visible-most-detailed",
+            "source_mip_width": source_mip.width,
+            "source_mip_height": source_mip.height,
             "declared_mips": decoded.declared_mips,
             "available_complete_mips": len(decoded.mips),
             "mip_chain_complete": decoded.mip_chain_complete,
             "mip_selection_policy": MIP_SELECTION_POLICY,
             "source_is_srgb": decoded.source_is_srgb,
-        }
-        if mip is None:
-            results[str(resolution)] = {
-                **common,
-                "status": "unavailable",
-                "unavailable_reason": "no-exact-square-mip",
-                "payload_abi_compatible": False,
-                "runtime_compatible": False,
-            }
-            continue
-        results[str(resolution)] = {
-            **common,
-            "status": "payload-ready",
-            "payload": encode_fingerprint(mip.rgba, resolution),
-            "absolute_mip": mip.level,
-            "source_mip_width": mip.width,
-            "source_mip_height": mip.height,
-            "srv_visibility_status": "unproven",
             "payload_abi_compatible": True,
             "runtime_compatible": False,
             "runtime_compatibility_blockers": [
-                "srv-visible-absolute-mip-witness-unavailable",
                 "runtime-v3-game-parity-not-validated",
             ],
             "offline_cache_identity": {
@@ -295,7 +303,7 @@ def fingerprint_dds(
                 "algorithm_version": ALGORITHM_VERSION,
                 "resolution": resolution,
                 "canonical_format": decoded.canonical_format,
-                "absolute_mip": mip.level,
+                "absolute_mip": source_mip.level,
             },
         }
     return results
