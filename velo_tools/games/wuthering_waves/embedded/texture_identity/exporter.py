@@ -9,74 +9,161 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .fingerprint import (
+    ALGORITHM_VERSION,
     DEFAULT_MINIMUM_MARGIN,
-    DEFAULT_TOLERANCE,
+    DEFAULT_TOLERANCE_FLOOR,
     FingerprintError,
     select_common_resolution,
 )
-from .manifest import MANIFEST_FILENAME
+from .manifest import (
+    MANIFEST_FILENAME,
+    PROTOTYPE_ABI_VERSION,
+    SCHEMA_VERSION,
+)
 
 
 PREVIEW_FILENAME = "TextureIdentityRules.prototype.ini.disabled"
+LEGAL_COLLISION_POLICIES = {"unique", "merge", "require_draw_context"}
 
 
 def _resource_name(identity: Mapping[str, Any]) -> str:
-    legacy_hash = re.sub(r"[^0-9a-zA-Z_]", "_", str(identity.get("legacy_resource_hash") or "unknown"))
+    legacy_hash = re.sub(
+        r"[^0-9a-zA-Z_]",
+        "_",
+        str(identity.get("legacy_resource_hash") or "unknown"),
+    )
     return f"ResourceTextureIdentity_{legacy_hash}"
+
+
+def _format_family(identity: Mapping[str, Any]) -> str:
+    families = {
+        str(variant.get("format_family") or "")
+        for variant in identity.get("variants") or []
+    }
+    if len(families) != 1 or not next(iter(families), ""):
+        raise FingerprintError("Every identity variant must share one non-empty format family")
+    return next(iter(families))
+
+
+def _candidate_contexts(identity: Mapping[str, Any]) -> tuple[list[Mapping[str, Any]], bool]:
+    contexts = {
+        str(context.get("context_id") or ""): context
+        for context in identity.get("candidate_contexts") or []
+        if isinstance(context, Mapping)
+    }
+    selected = []
+    complete = True
+    for variant in identity.get("variants") or []:
+        context = contexts.get(str(variant.get("context_ref") or ""))
+        if context is None:
+            complete = False
+            continue
+        selected.append(context)
+        draws = context.get("draws") or []
+        if (
+            not context.get("vb0_hashes")
+            or not context.get("ib_hashes")
+            or not context.get("components")
+            or not context.get("bindings")
+            or not draws
+            or any(
+                not draw.get("vb0_hash")
+                or not draw.get("ib_hash")
+                or draw.get("component") is None
+                for draw in draws
+            )
+        ):
+            complete = False
+    return selected, complete
+
+
+def _validate_manifest(manifest: Mapping[str, Any]) -> None:
+    if int(manifest.get("schema_version", -1)) != SCHEMA_VERSION:
+        raise FingerprintError("Texture identity manifest schema version mismatch")
+    algorithm = manifest.get("algorithm") or {}
+    if int(algorithm.get("version", -1)) != ALGORITHM_VERSION:
+        raise FingerprintError("Texture identity algorithm version mismatch")
+    runtime_contract = manifest.get("runtime_contract") or {}
+    if runtime_contract.get("abi_status") != "blocked":
+        raise FingerprintError("Prototype exporter requires abi_status=blocked")
 
 
 def select_rules(
     manifest: Mapping[str, Any],
     replacements: Mapping[str, str] | None = None,
     *,
-    tolerance: float = DEFAULT_TOLERANCE,
+    tolerance_floor: float = DEFAULT_TOLERANCE_FLOOR,
     minimum_margin: float = DEFAULT_MINIMUM_MARGIN,
 ) -> list[dict[str, Any]]:
-    identities = list(manifest.get("identities") or [])
+    _validate_manifest(manifest)
+    identities = [
+        identity
+        for identity in manifest.get("identities") or []
+        if identity.get("fingerprint_status") == "available"
+    ]
     groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for identity in identities:
-        variants = identity.get("variants") or []
-        family = str((variants[0] if variants else {}).get("format_family") or "unknown")
-        groups[family].append(identity)
+        groups[_format_family(identity)].append(identity)
 
     replacements = dict(replacements or {})
     rules = []
     for family in sorted(groups):
         group = groups[family]
-        try:
-            selection = select_common_resolution(
-                group,
-                tolerance=tolerance,
-                minimum_margin=minimum_margin,
-            )
-        except FingerprintError:
-            continue
+        selection = select_common_resolution(
+            group,
+            tolerance_floor=tolerance_floor,
+            minimum_margin=minimum_margin,
+        )
         selected_replacements = {
             replacements.get(str(identity.get("identity")), _resource_name(identity))
             for identity in group
         }
-        collision_policy = "none"
+        collision_policy = "unique"
         if selection.pixel_ambiguous:
-            collision_policy = "merge" if len(selected_replacements) == 1 else "require_draw_context"
-        group_id = f"{family.lower()}-r{selection.resolution}"
+            collision_policy = (
+                "merge"
+                if len(selected_replacements) == 1
+                else "require_draw_context"
+            )
+        if collision_policy not in LEGAL_COLLISION_POLICIES:
+            raise FingerprintError(f"Illegal collision policy: {collision_policy}")
+
+        group_id = f"cg-v{PROTOTYPE_ABI_VERSION}:{family}:r{selection.resolution}"
         for identity in group:
             identity_id = str(identity.get("identity"))
             variants = identity.get("variants") or []
             replacement_filename = str(
                 (variants[0] if variants else {}).get("stable_resource_ref") or ""
             )
+            contexts, context_complete = _candidate_contexts(identity)
+            blockers = [
+                "runtime-abi-fields-not-accepted",
+                "runtime-canonical-color-domain-not-accepted",
+                "runtime-load-validation-not-complete",
+            ]
+            if collision_policy == "require_draw_context" and not context_complete:
+                blockers.append("candidate-context-mapping-incomplete")
             rules.append(
                 {
+                    "prototype_abi_version": PROTOTYPE_ABI_VERSION,
+                    "algorithm_version": ALGORITHM_VERSION,
+                    "abi_status": "blocked",
+                    "abi_blockers": blockers,
                     "identity": identity_id,
+                    "reference_variant": selection.reference_variants[identity_id],
+                    "match_format_family": family,
                     "collision_group": group_id,
                     "match_resolution": selection.resolution,
                     "match_fingerprint": selection.fingerprints[identity_id],
                     "fingerprint_tolerance": selection.tolerance,
+                    "tolerance_floor": selection.tolerance_floor,
                     "minimum_match_margin": selection.minimum_margin,
                     "nearest_inter_distance": selection.nearest_inter_distance,
                     "maximum_intra_distance": selection.maximum_intra_distance,
                     "pixel_ambiguous": selection.pixel_ambiguous,
                     "collision_policy": collision_policy,
+                    "candidate_contexts": contexts,
+                    "candidate_context_complete": context_complete,
                     "replacement": replacements.get(identity_id, _resource_name(identity)),
                     "replacement_filename": replacement_filename,
                 }
@@ -84,10 +171,23 @@ def select_rules(
     return rules
 
 
-def render_preview(rules: list[Mapping[str, Any]]) -> str:
+def render_preview(
+    rules: list[Mapping[str, Any]],
+    manifest: Mapping[str, Any] | None = None,
+) -> str:
+    runtime_contract = (manifest or {}).get("runtime_contract") or {}
+    blockers = runtime_contract.get("abi_blockers") or [
+        "runtime-abi-fields-not-accepted",
+        "runtime-canonical-color-domain-not-accepted",
+        "runtime-load-validation-not-complete",
+    ]
     lines = [
-        "; PROTOTYPE ONLY - current WWMI runtime does not implement this ABI.",
+        "; PROTOTYPE ONLY - current WWMI runtime has not accepted or validated this ABI.",
         "; This file is deliberately disabled and is not loaded by the mod.",
+        "; abi_status = blocked",
+        f"; prototype_abi_version = {PROTOTYPE_ABI_VERSION}",
+        f"; algorithm_version = {ALGORITHM_VERSION}",
+        f"; abi_blockers = {','.join(map(str, blockers))}",
         "; Owner scope comes from the active Draw VB/IB gate; no scope fields are duplicated here.",
         "",
     ]
@@ -95,15 +195,29 @@ def render_preview(rules: list[Mapping[str, Any]]) -> str:
         lines.extend(
             [
                 f"[TextureRoleOverride_{index:03d}]",
+                f"prototype_abi_version = {rule['prototype_abi_version']}",
+                f"algorithm_version = {rule['algorithm_version']}",
+                f"abi_status = {rule['abi_status']}",
+                f"match_format_family = {rule['match_format_family']}",
+                f"collision_group = {rule['collision_group']}",
                 f"match_resolution = {rule['match_resolution']}",
                 f"match_fingerprint = {rule['match_fingerprint']}",
                 f"fingerprint_tolerance = {rule['fingerprint_tolerance']:.8f}",
                 f"minimum_match_margin = {rule['minimum_match_margin']:.8f}",
+                f"reference_variant = {rule['reference_variant']}",
                 f"collision_policy = {rule['collision_policy']}",
                 f"replacement = {rule['replacement']}",
-                "",
             ]
         )
+        for context in rule.get("candidate_contexts") or []:
+            lines.append(
+                "candidate_context = "
+                + json.dumps(context, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            )
+        for blocker in rule.get("abi_blockers") or []:
+            lines.append(f"; abi_blocker = {blocker}")
+        lines.append("")
+
     declared = set()
     for rule in rules:
         resource = str(rule["replacement"])
@@ -128,9 +242,7 @@ def consume_manifest(source_folder: str | Path, output_folder: str | Path) -> Pa
         return None
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     rules = select_rules(manifest)
-    if not rules:
-        return None
     output_path = Path(output_folder) / PREVIEW_FILENAME
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(render_preview(rules), encoding="utf-8")
+    output_path.write_text(render_preview(rules, manifest), encoding="utf-8")
     return output_path

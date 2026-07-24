@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:texture-identity-manifest:schema:v1",
+  "$id": "urn:texture-identity-manifest:schema:v2",
   "title": "Texture Identity Manifest",
   "type": "object",
   "required": [
@@ -16,23 +16,44 @@
       "const": "texture-identity-manifest"
     },
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "algorithm": {
       "type": "object",
       "required": [
         "name",
         "version",
+        "canonical_color_domain",
+        "srgb_behavior",
+        "mip_selection_policy",
+        "non_square_policy",
+        "missing_target_mip_policy",
+        "small_texture_policy",
+        "incomplete_chain_policy",
         "candidate_resolutions",
         "payload",
-        "distance"
+        "distance",
+        "tolerance_floor",
+        "minimum_margin",
+        "effective_tolerance",
+        "selection_rule",
+        "reference_strategy"
       ],
       "properties": {
         "name": {
           "const": "canonical-pixel-fingerprint"
         },
         "version": {
-          "const": 3
+          "const": 4
+        },
+        "canonical_color_domain": {
+          "const": "srv-load-linear-rgba8-v1"
+        },
+        "mip_selection_policy": {
+          "const": "closest-major-axis-real-mip-v1"
+        },
+        "non_square_policy": {
+          "const": "independent-axis-nearest-center-to-square-v1"
         },
         "candidate_resolutions": {
           "const": [
@@ -61,14 +82,21 @@
     "runtime_contract": {
       "type": "object",
       "required": [
+        "prototype_abi_version",
         "owner_scope_source",
         "scan_bound_srvs_only",
         "cache_key",
         "analysis_phase",
         "rule_scope_fields_emitted",
-        "abi_status"
+        "collision_policies",
+        "abi_status",
+        "abi_blockers",
+        "blocked_identity_count"
       ],
       "properties": {
+        "prototype_abi_version": {
+          "const": 2
+        },
         "owner_scope_source": {
           "const": "active-draw-vb-ib-gate"
         },
@@ -78,7 +106,8 @@
         "cache_key": {
           "const": [
             "resource",
-            "resolution"
+            "resolution",
+            "algorithm_version"
           ]
         },
         "analysis_phase": {
@@ -87,8 +116,26 @@
         "rule_scope_fields_emitted": {
           "const": false
         },
+        "collision_policies": {
+          "const": [
+            "unique",
+            "merge",
+            "require_draw_context"
+          ]
+        },
         "abi_status": {
-          "const": "prototype-not-supported-by-current-runtime"
+          "const": "blocked"
+        },
+        "abi_blockers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "blocked_identity_count": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "additionalProperties": false
@@ -96,59 +143,218 @@
     "identities": {
       "type": "array",
       "items": {
-        "type": "object",
-        "required": [
-          "identity",
-          "legacy_resource_hash",
-          "fingerprint_status",
-          "variants",
-          "witnesses"
-        ],
-        "properties": {
-          "identity": {
-            "type": "string"
-          },
-          "legacy_resource_hash": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{8}$"
-          },
-          "fingerprint_status": {
+        "$ref": "#/$defs/identity"
+      }
+    }
+  },
+  "$defs": {
+    "fingerprintRecord": {
+      "type": "object",
+      "required": [
+        "payload",
+        "algorithm_version",
+        "canonical_color_domain",
+        "canonical_resolution",
+        "source_mip_level",
+        "source_mip_width",
+        "source_mip_height",
+        "declared_mips",
+        "available_complete_mips",
+        "mip_chain_complete",
+        "mip_selection_policy",
+        "mip_selection_reason",
+        "resample_policy",
+        "source_is_srgb"
+      ],
+      "properties": {
+        "algorithm_version": {
+          "const": 4
+        },
+        "canonical_color_domain": {
+          "const": "srv-load-linear-rgba8-v1"
+        },
+        "canonical_resolution": {
+          "enum": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "mip_selection_policy": {
+          "const": "closest-major-axis-real-mip-v1"
+        },
+        "resample_policy": {
+          "const": "independent-axis-nearest-center-to-square-v1"
+        }
+      },
+      "additionalProperties": false
+    },
+    "variant": {
+      "type": "object",
+      "required": [
+        "variant",
+        "context_ref",
+        "stable_resource_ref",
+        "fingerprint_source_ref",
+        "source_sha256",
+        "width",
+        "height",
+        "mips",
+        "format",
+        "format_family",
+        "source_is_srgb",
+        "fingerprints"
+      ],
+      "properties": {
+        "variant": {
+          "type": "string",
+          "minLength": 1
+        },
+        "context_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "format_family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fingerprints": {
+          "type": "object",
+          "propertyNames": {
             "enum": [
-              "available",
-              "source-retained-for-recompute"
+              "16",
+              "32",
+              "64",
+              "128",
+              "256"
             ]
           },
-          "variants": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "type": "object",
-              "required": [
-                "variant",
-                "stable_resource_ref",
-                "fingerprint_source_ref",
-                "source_sha256",
-                "width",
-                "height",
-                "mips",
-                "format",
-                "format_family",
-                "fingerprints"
-              ]
-            }
-          },
-          "witnesses": {
+          "additionalProperties": {
+            "$ref": "#/$defs/fingerprintRecord"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "candidateContext": {
+      "type": "object",
+      "required": [
+        "context_id",
+        "identity",
+        "variant",
+        "vb0_hashes",
+        "ib_hashes",
+        "components",
+        "draws",
+        "bindings"
+      ],
+      "properties": {
+        "context_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "variant": {
+          "type": "string",
+          "minLength": 1
+        },
+        "vb0_hashes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ib_hashes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "draws": {
+          "type": "array",
+          "items": {
             "type": "object",
             "required": [
-              "components",
-              "draw_bindings",
-              "anchors",
-              "co_bound_resource_hashes"
+              "component",
+              "call_id",
+              "vb0_hash",
+              "ib_hash"
             ]
           }
         },
-        "additionalProperties": true
-      }
+        "bindings": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "identity",
+        "legacy_resource_hash",
+        "fingerprint_status",
+        "variants",
+        "candidate_contexts",
+        "witnesses"
+      ],
+      "properties": {
+        "identity": {
+          "type": "string"
+        },
+        "legacy_resource_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}$"
+        },
+        "fingerprint_status": {
+          "enum": [
+            "available",
+            "source-retained-blocked-decoder"
+          ]
+        },
+        "variants": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/variant"
+          }
+        },
+        "candidate_contexts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/candidateContext"
+          }
+        },
+        "witnesses": {
+          "type": "object",
+          "required": [
+            "components",
+            "draw_bindings",
+            "anchors",
+            "co_bound_resource_hashes"
+          ]
+        }
+      },
+      "additionalProperties": true
     }
   },
   "additionalProperties": false

@@ -1,10 +1,17 @@
 {
-  "$schema": "urn:texture-identity-manifest:schema:v1",
+  "$schema": "urn:texture-identity-manifest:schema:v2",
   "schema": "texture-identity-manifest",
-  "schema_version": 1,
+  "schema_version": 2,
   "algorithm": {
     "name": "canonical-pixel-fingerprint",
-    "version": 3,
+    "version": 4,
+    "canonical_color_domain": "srv-load-linear-rgba8-v1",
+    "srgb_behavior": "apply-standard-srgb-to-linear-before-rgba8-quantization",
+    "mip_selection_policy": "closest-major-axis-real-mip-v1",
+    "non_square_policy": "independent-axis-nearest-center-to-square-v1",
+    "missing_target_mip_policy": "select-closest-real-major-axis-mip-prefer-higher-resolution",
+    "small_texture_policy": "select-mip0-and-deterministically-upsample",
+    "incomplete_chain_policy": "use-only-complete-physical-mips-and-record-incomplete-chain",
     "candidate_resolutions": [
       16,
       32,
@@ -12,11 +19,13 @@
       128,
       256
     ],
-    "payload": "v3:rN:rgba8-zlib:<base64url>",
-    "distance": "normalized-rgba8-mean-absolute-error",
+    "payload": "v4:rN:linear-rgba8-zlib:<base64url>",
+    "distance": "normalized-linear-rgba8-mean-absolute-error",
     "tolerance_floor": 0.00784313725490196,
     "minimum_margin": 0.01568627450980392,
-    "selection_rule": "nearest_inter_distance - (maximum_intra_distance + tolerance) >= minimum_margin"
+    "effective_tolerance": "max(tolerance_floor, maximum_intra_distance)",
+    "selection_rule": "nearest_inter_distance - effective_tolerance >= minimum_margin",
+    "reference_strategy": "per-identity-minimax-medoid-over-all-variants"
   },
   "source": {
     "metadata_ref": "Metadata.json",
@@ -24,15 +33,28 @@
     "resource_origin": "original-game-dump"
   },
   "runtime_contract": {
+    "prototype_abi_version": 2,
     "owner_scope_source": "active-draw-vb-ib-gate",
     "scan_bound_srvs_only": true,
     "cache_key": [
       "resource",
-      "resolution"
+      "resolution",
+      "algorithm_version"
     ],
     "analysis_phase": "present",
     "rule_scope_fields_emitted": false,
-    "abi_status": "prototype-not-supported-by-current-runtime"
+    "collision_policies": [
+      "unique",
+      "merge",
+      "require_draw_context"
+    ],
+    "abi_status": "blocked",
+    "abi_blockers": [
+      "runtime-abi-fields-not-accepted",
+      "runtime-canonical-color-domain-not-accepted",
+      "runtime-load-validation-not-complete"
+    ],
+    "blocked_identity_count": 0
   },
   "identities": [
     {
@@ -42,21 +64,132 @@
       "variants": [
         {
           "variant": "dump-base",
+          "context_ref": "texture:1234abcd|dump-base",
           "stable_resource_ref": "Components-0 t=1234abcd.dds",
           "fingerprint_source_ref": "Components-0 t=1234abcd.dds",
-          "source_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-          "width": 1024,
-          "height": 1024,
-          "mips": 1,
+          "source_sha256": "d13799b38aa3469ee37a9dbf6ca7435c2c768ef709ae5af3dd869f762d4f585d",
+          "width": 32,
+          "height": 16,
+          "mips": 2,
           "format": "B8G8R8A8_UNORM",
-          "format_family": "B8G8R8A8",
+          "format_family": "color-rgba8",
+          "source_is_srgb": false,
           "fingerprints": {
-            "16": "v3:r16:rgba8-zlib:<base64url>",
-            "32": "v3:r32:rgba8-zlib:<base64url>",
-            "64": "v3:r64:rgba8-zlib:<base64url>",
-            "128": "v3:r128:rgba8-zlib:<base64url>",
-            "256": "v3:r256:rgba8-zlib:<base64url>"
+            "16": {
+              "payload": "v4:r16:linear-rgba8-zlib:eNpzaDjw32EUj-JRPCIxAE_ifx8=",
+              "algorithm_version": 4,
+              "canonical_color_domain": "srv-load-linear-rgba8-v1",
+              "canonical_resolution": 16,
+              "source_mip_level": 1,
+              "source_mip_width": 16,
+              "source_mip_height": 8,
+              "declared_mips": 2,
+              "available_complete_mips": 2,
+              "mip_chain_complete": true,
+              "mip_selection_policy": "closest-major-axis-real-mip-v1",
+              "mip_selection_reason": "exact-major-axis",
+              "resample_policy": "independent-axis-nearest-center-to-square-v1",
+              "source_is_srgb": false
+            },
+            "32": {
+              "payload": "v4:r32:linear-rgba8-zlib:eNrtwwENAAAIA6Bqj2Y0m90eDjYy26iqqqqvH8Jc_Ig=",
+              "algorithm_version": 4,
+              "canonical_color_domain": "srv-load-linear-rgba8-v1",
+              "canonical_resolution": 32,
+              "source_mip_level": 0,
+              "source_mip_width": 32,
+              "source_mip_height": 16,
+              "declared_mips": 2,
+              "available_complete_mips": 2,
+              "mip_chain_complete": true,
+              "mip_selection_policy": "closest-major-axis-real-mip-v1",
+              "mip_selection_reason": "exact-major-axis",
+              "resample_policy": "independent-axis-nearest-center-to-square-v1",
+              "source_is_srgb": false
+            },
+            "64": {
+              "payload": "v4:r64:linear-rgba8-zlib:eNrtwzENAAAIAzBrk4Y0nA0ZPG3SzDaqqqqqqqqqqqqqqqqqqqrq6wM2ZfJK",
+              "algorithm_version": 4,
+              "canonical_color_domain": "srv-load-linear-rgba8-v1",
+              "canonical_resolution": 64,
+              "source_mip_level": 0,
+              "source_mip_width": 32,
+              "source_mip_height": 16,
+              "declared_mips": 2,
+              "available_complete_mips": 2,
+              "mip_chain_complete": true,
+              "mip_selection_policy": "closest-major-axis-real-mip-v1",
+              "mip_selection_reason": "base-smaller-than-target-upsample",
+              "resample_policy": "independent-axis-nearest-center-to-square-v1",
+              "source_is_srgb": false
+            },
+            "128": {
+              "payload": "v4:r128:linear-rgba8-zlib:eNrtwwENAAAIA6Bqj2Y0m90gwkZmG1VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVd8_pkHJUg==",
+              "algorithm_version": 4,
+              "canonical_color_domain": "srv-load-linear-rgba8-v1",
+              "canonical_resolution": 128,
+              "source_mip_level": 0,
+              "source_mip_width": 32,
+              "source_mip_height": 16,
+              "declared_mips": 2,
+              "available_complete_mips": 2,
+              "mip_chain_complete": true,
+              "mip_selection_policy": "closest-major-axis-real-mip-v1",
+              "mip_selection_reason": "base-smaller-than-target-upsample",
+              "resample_policy": "independent-axis-nearest-center-to-square-v1",
+              "source_is_srgb": false
+            },
+            "256": {
+              "payload": "v4:r256:linear-rgba8-zlib:eNrtwzENAAAIAzBrk4Y0nI0XEW3SzDaqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqu8BY8Ulcg==",
+              "algorithm_version": 4,
+              "canonical_color_domain": "srv-load-linear-rgba8-v1",
+              "canonical_resolution": 256,
+              "source_mip_level": 0,
+              "source_mip_width": 32,
+              "source_mip_height": 16,
+              "declared_mips": 2,
+              "available_complete_mips": 2,
+              "mip_chain_complete": true,
+              "mip_selection_policy": "closest-major-axis-real-mip-v1",
+              "mip_selection_reason": "base-smaller-than-target-upsample",
+              "resample_policy": "independent-axis-nearest-center-to-square-v1",
+              "source_is_srgb": false
+            }
           }
+        }
+      ],
+      "candidate_contexts": [
+        {
+          "context_id": "texture:1234abcd|dump-base",
+          "identity": "texture:1234abcd",
+          "variant": "dump-base",
+          "vb0_hashes": [
+            "89abcdef"
+          ],
+          "ib_hashes": [
+            "fedcba98"
+          ],
+          "components": [
+            0
+          ],
+          "draws": [
+            {
+              "component": 0,
+              "call_id": 123,
+              "vb0_hash": "89abcdef",
+              "ib_hash": "fedcba98"
+            }
+          ],
+          "bindings": [
+            {
+              "component": 0,
+              "shader_stage": "ps",
+              "observed_slot": "ps-t3",
+              "vertex_shader": "vs=1111111111111111",
+              "pixel_shader": "ps=2222222222222222",
+              "fresh": true
+            }
+          ]
         }
       ],
       "witnesses": {
@@ -84,13 +217,12 @@
             {
               "component": 0,
               "call_id": 123,
+              "vb0_hash": "89abcdef",
               "ib_hash": "fedcba98"
             }
           ]
         },
-        "co_bound_resource_hashes": [
-          "5678efab"
-        ]
+        "co_bound_resource_hashes": []
       }
     }
   ]
