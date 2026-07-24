@@ -466,7 +466,7 @@ def register():
         import traceback
         traceback.print_exc()
     # Texture identity prototype wraps the completed STU extraction path and
-    # emits only a disabled exporter preview until the runtime ABI exists.
+    # emits only a disabled exporter preview until v3 mip/color parity is validated.
     try:
         from .embedded import texture_identity as _texture_identity
         _texture_identity.install()

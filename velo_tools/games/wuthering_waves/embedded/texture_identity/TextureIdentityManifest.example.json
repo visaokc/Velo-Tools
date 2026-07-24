@@ -1,17 +1,18 @@
 {
-  "$schema": "urn:texture-identity-manifest:schema:v2",
+  "$schema": "urn:texture-identity-manifest:schema:v3",
   "schema": "texture-identity-manifest",
-  "schema_version": 2,
+  "schema_version": 3,
   "algorithm": {
     "name": "canonical-pixel-fingerprint",
-    "version": 4,
-    "canonical_color_domain": "srv-load-linear-rgba8-v1",
-    "srgb_behavior": "apply-standard-srgb-to-linear-before-rgba8-quantization",
-    "mip_selection_policy": "closest-major-axis-real-mip-v1",
-    "non_square_policy": "independent-axis-nearest-center-to-square-v1",
-    "missing_target_mip_policy": "select-closest-real-major-axis-mip-prefer-higher-resolution",
-    "small_texture_policy": "select-mip0-and-deterministically-upsample",
-    "incomplete_chain_policy": "use-only-complete-physical-mips-and-record-incomplete-chain",
+    "version": 3,
+    "canonical_color_domain": "encoded-rgba8",
+    "canonical_view_policy": "compatible-non-srgb-srv",
+    "srgb_behavior": "preserve-dds-encoded-rgba8-through-compatible-non-srgb-srv",
+    "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
+    "non_square_policy": "unavailable-no-resample",
+    "missing_target_mip_policy": "unavailable-no-resample",
+    "small_texture_policy": "unavailable-no-resample",
+    "incomplete_chain_policy": "use-only-physically-complete-exact-square-mips",
     "candidate_resolutions": [
       16,
       32,
@@ -19,13 +20,14 @@
       128,
       256
     ],
-    "payload": "v4:rN:linear-rgba8-zlib:<base64url>",
-    "distance": "normalized-linear-rgba8-mean-absolute-error",
+    "payload": "v3:rN:rgba8-zlib:<base64url>",
+    "distance": "normalized-encoded-rgba8-mean-absolute-error",
     "tolerance_floor": 0.00784313725490196,
     "minimum_margin": 0.01568627450980392,
     "effective_tolerance": "max(tolerance_floor, maximum_intra_distance)",
     "selection_rule": "nearest_inter_distance - effective_tolerance >= minimum_margin",
-    "reference_strategy": "per-identity-minimax-medoid-over-all-variants"
+    "reference_strategy": "per-identity-minimax-medoid-over-all-variants",
+    "legacy_cache_policy": "reject-non-v3-or-non-encoded-rgba8"
   },
   "source": {
     "metadata_ref": "Metadata.json",
@@ -33,127 +35,192 @@
     "resource_origin": "original-game-dump"
   },
   "runtime_contract": {
-    "prototype_abi_version": 2,
+    "prototype_abi_version": 3,
+    "runtime_fingerprint_algorithm_version": 3,
+    "abi_reference": "texture-role-v3",
+    "abi_field_status": "aligned",
     "owner_scope_source": "active-draw-vb-ib-gate",
     "scan_bound_srvs_only": true,
     "cache_key": [
       "resource",
+      "resource_version",
+      "algorithm_version",
       "resolution",
-      "algorithm_version"
+      "canonical_format",
+      "absolute_mip"
     ],
     "analysis_phase": "present",
     "rule_scope_fields_emitted": false,
+    "match_resolutions": [
+      16,
+      32,
+      64,
+      128,
+      256
+    ],
+    "match_format_families": [
+      "r8g8b8a8",
+      "b8g8r8a8",
+      "b8g8r8x8",
+      "bc1",
+      "bc2",
+      "bc3",
+      "bc4",
+      "bc5",
+      "bc6h",
+      "bc7",
+      "dxgi-<numeric-enum>"
+    ],
+    "collision_group_default": "default-r{resolution}-{descriptor_family}",
     "collision_policies": [
-      "unique",
+      "reject",
       "merge",
       "require_draw_context"
     ],
+    "candidate_context_abi_status": "evidence-only-unmapped",
     "abi_status": "blocked",
     "abi_blockers": [
-      "runtime-abi-fields-not-accepted",
-      "runtime-canonical-color-domain-not-accepted",
-      "runtime-load-validation-not-complete"
+      "srv-visible-absolute-mip-witness-unavailable",
+      "runtime-v3-game-parity-not-validated",
+      "candidate-context-draw_context-mapping-not-implemented"
     ],
-    "blocked_identity_count": 0
+    "identity_counts": {
+      "total": 1,
+      "payload_ready_runtime_blocked": 1,
+      "blocked_decoder": 0,
+      "blocked_no_exact_square_mip": 0,
+      "runtime_compatible": 0
+    },
+    "blocked_identity_count": 1
   },
   "identities": [
     {
       "identity": "texture:1234abcd",
       "legacy_resource_hash": "1234abcd",
-      "fingerprint_status": "available",
+      "fingerprint_status": "payload-ready-runtime-blocked",
       "variants": [
         {
           "variant": "dump-base",
           "context_ref": "texture:1234abcd|dump-base",
           "stable_resource_ref": "Components-0 t=1234abcd.dds",
           "fingerprint_source_ref": "Components-0 t=1234abcd.dds",
-          "source_sha256": "d13799b38aa3469ee37a9dbf6ca7435c2c768ef709ae5af3dd869f762d4f585d",
+          "source_sha256": "a490c84ae80d74bae697899726fa2b799e3125b6c977399426d19d12001417a9",
           "width": 32,
-          "height": 16,
+          "height": 32,
           "mips": 2,
           "format": "B8G8R8A8_UNORM",
-          "format_family": "color-rgba8",
+          "format_family": "b8g8r8a8",
           "source_is_srgb": false,
           "fingerprints": {
             "16": {
-              "payload": "v4:r16:linear-rgba8-zlib:eNpzaDjw32EUj-JRPCIxAE_ifx8=",
-              "algorithm_version": 4,
-              "canonical_color_domain": "srv-load-linear-rgba8-v1",
+              "algorithm_version": 3,
+              "canonical_color_domain": "encoded-rgba8",
+              "canonical_view_policy": "compatible-non-srgb-srv",
               "canonical_resolution": 16,
-              "source_mip_level": 1,
-              "source_mip_width": 16,
-              "source_mip_height": 8,
+              "canonical_format": "B8G8R8A8_UNORM",
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "closest-major-axis-real-mip-v1",
-              "mip_selection_reason": "exact-major-axis",
-              "resample_policy": "independent-axis-nearest-center-to-square-v1",
-              "source_is_srgb": false
+              "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
+              "source_is_srgb": false,
+              "status": "payload-ready",
+              "payload": "v3:r16:rgba8-zlib:eNoNy0eCEEQAADBRcJUi3xin9_n_yyCHHBP--Pj1P5FEplBpdAaTxeZweYRPPpFEplBpdAaTxeZweYQ_fSKJTKHS6Awmi83h8gh_-UQSmUKl0RlMFpvD5RE--0QSmUKl0RlMFpvD5RG--EQSmUKl0RlMFpvD5RH-9okkMoVKozOYLDaHyyN8-EQSmUKl0RlMFpvD5RH-8YkkMoVKozOYLDaHyyP86xNJZAqVRmcwWWwOl0f46hNJZAqVRmcwWWwOl0f45hNJZAqVRmcwWWwOl0f47hNJZAqVRmcwWWwOl0f44RNJZAqVRmcwWWwOl0f4zyeSyBQqjc5gstgcLo_w0yeSyBQqjc5gstgcLo_f6z09EA==",
+              "absolute_mip": 1,
+              "source_mip_width": 16,
+              "source_mip_height": 16,
+              "srv_visibility_status": "unproven",
+              "payload_abi_compatible": true,
+              "runtime_compatible": false,
+              "runtime_compatibility_blockers": [
+                "srv-visible-absolute-mip-witness-unavailable",
+                "runtime-v3-game-parity-not-validated"
+              ],
+              "offline_cache_identity": {
+                "resource_version": "a490c84ae80d74bae697899726fa2b799e3125b6c977399426d19d12001417a9",
+                "algorithm_version": 3,
+                "resolution": 16,
+                "canonical_format": "B8G8R8A8_UNORM",
+                "absolute_mip": 1
+              }
             },
             "32": {
-              "payload": "v4:r32:linear-rgba8-zlib:eNrtwwENAAAIA6Bqj2Y0m90eDjYy26iqqqqvH8Jc_Ig=",
-              "algorithm_version": 4,
-              "canonical_color_domain": "srv-load-linear-rgba8-v1",
+              "algorithm_version": 3,
+              "canonical_color_domain": "encoded-rgba8",
+              "canonical_view_policy": "compatible-non-srgb-srv",
               "canonical_resolution": 32,
-              "source_mip_level": 0,
-              "source_mip_width": 32,
-              "source_mip_height": 16,
+              "canonical_format": "B8G8R8A8_UNORM",
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "closest-major-axis-real-mip-v1",
-              "mip_selection_reason": "exact-major-axis",
-              "resample_policy": "independent-axis-nearest-center-to-square-v1",
-              "source_is_srgb": false
+              "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
+              "source_is_srgb": false,
+              "status": "payload-ready",
+              "payload": "v3:r32:rgba8-zlib:eNrt1rmB2DgABEEs8QPEI-Wfq65yoHHOGmVO2xNC_ffDQySRKVQancHkZbE5XMKHRvix5SGSyBQqjc5g8rLYHO7Pt0Z4bHmIJDKFSqMzmLwsNof7fGuEaMtDJJEpVBqdweRlsTnc-K0Rki0PkUSmUGl0BpOXxeZw07dGyLY8RBKZQqXRGUxeFpvDzd8aodjyEElkCpVGZzB5WWwOt3xrhGrLQySRKVQancHkZbE53PqtEZotD5FEplBpdAaTl8XmcNu3Rui2PEQSmUKl0RlMXhabw-3fGmHY8hBJZAqVRmcweVlsDnd8a4Rpy0MkkSlUGp3B5GWxOdz5rRFeWx4iiUyh0ugMJi-LzeG-3xph2fIQSWQKlUZnMHlZbA53fWuEbctDJJEpVBqdweRlsTnc_a0Rji0PkUSmUGl0BpOXxeZwz7dGuLY8RBKZQqXRGUxeFpvDvd8a4Y8tD5FEplBpdAaTl8XmcP98a4S_tjxEEplCpdEZTF4Wm8P9-60Rfv_X7__6_V-__-v3f_3-r__hf_0HhYFVfQ==",
+              "absolute_mip": 0,
+              "source_mip_width": 32,
+              "source_mip_height": 32,
+              "srv_visibility_status": "unproven",
+              "payload_abi_compatible": true,
+              "runtime_compatible": false,
+              "runtime_compatibility_blockers": [
+                "srv-visible-absolute-mip-witness-unavailable",
+                "runtime-v3-game-parity-not-validated"
+              ],
+              "offline_cache_identity": {
+                "resource_version": "a490c84ae80d74bae697899726fa2b799e3125b6c977399426d19d12001417a9",
+                "algorithm_version": 3,
+                "resolution": 32,
+                "canonical_format": "B8G8R8A8_UNORM",
+                "absolute_mip": 0
+              }
             },
             "64": {
-              "payload": "v4:r64:linear-rgba8-zlib:eNrtwzENAAAIAzBrk4Y0nA0ZPG3SzDaqqqqqqqqqqqqqqqqqqqrq6wM2ZfJK",
-              "algorithm_version": 4,
-              "canonical_color_domain": "srv-load-linear-rgba8-v1",
+              "algorithm_version": 3,
+              "canonical_color_domain": "encoded-rgba8",
+              "canonical_view_policy": "compatible-non-srgb-srv",
               "canonical_resolution": 64,
-              "source_mip_level": 0,
-              "source_mip_width": 32,
-              "source_mip_height": 16,
+              "canonical_format": "B8G8R8A8_UNORM",
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "closest-major-axis-real-mip-v1",
-              "mip_selection_reason": "base-smaller-than-target-upsample",
-              "resample_policy": "independent-axis-nearest-center-to-square-v1",
-              "source_is_srgb": false
+              "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
+              "source_is_srgb": false,
+              "status": "unavailable",
+              "unavailable_reason": "no-exact-square-mip",
+              "payload_abi_compatible": false,
+              "runtime_compatible": false
             },
             "128": {
-              "payload": "v4:r128:linear-rgba8-zlib:eNrtwwENAAAIA6Bqj2Y0m90gwkZmG1VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVd8_pkHJUg==",
-              "algorithm_version": 4,
-              "canonical_color_domain": "srv-load-linear-rgba8-v1",
+              "algorithm_version": 3,
+              "canonical_color_domain": "encoded-rgba8",
+              "canonical_view_policy": "compatible-non-srgb-srv",
               "canonical_resolution": 128,
-              "source_mip_level": 0,
-              "source_mip_width": 32,
-              "source_mip_height": 16,
+              "canonical_format": "B8G8R8A8_UNORM",
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "closest-major-axis-real-mip-v1",
-              "mip_selection_reason": "base-smaller-than-target-upsample",
-              "resample_policy": "independent-axis-nearest-center-to-square-v1",
-              "source_is_srgb": false
+              "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
+              "source_is_srgb": false,
+              "status": "unavailable",
+              "unavailable_reason": "no-exact-square-mip",
+              "payload_abi_compatible": false,
+              "runtime_compatible": false
             },
             "256": {
-              "payload": "v4:r256:linear-rgba8-zlib:eNrtwzENAAAIAzBrk4Y0nI0XEW3SzDaqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqu8BY8Ulcg==",
-              "algorithm_version": 4,
-              "canonical_color_domain": "srv-load-linear-rgba8-v1",
+              "algorithm_version": 3,
+              "canonical_color_domain": "encoded-rgba8",
+              "canonical_view_policy": "compatible-non-srgb-srv",
               "canonical_resolution": 256,
-              "source_mip_level": 0,
-              "source_mip_width": 32,
-              "source_mip_height": 16,
+              "canonical_format": "B8G8R8A8_UNORM",
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "closest-major-axis-real-mip-v1",
-              "mip_selection_reason": "base-smaller-than-target-upsample",
-              "resample_policy": "independent-axis-nearest-center-to-square-v1",
-              "source_is_srgb": false
+              "mip_selection_policy": "visible-exact-square-absolute-mip-v3",
+              "source_is_srgb": false,
+              "status": "unavailable",
+              "unavailable_reason": "no-exact-square-mip",
+              "payload_abi_compatible": false,
+              "runtime_compatible": false
             }
           }
         }
@@ -175,7 +242,7 @@
           "draws": [
             {
               "component": 0,
-              "call_id": 123,
+              "call_id": 42,
               "vb0_hash": "89abcdef",
               "ib_hash": "fedcba98"
             }
@@ -185,8 +252,8 @@
               "component": 0,
               "shader_stage": "ps",
               "observed_slot": "ps-t3",
-              "vertex_shader": "vs=1111111111111111",
-              "pixel_shader": "ps=2222222222222222",
+              "vertex_shader": "vs=11111111",
+              "pixel_shader": "ps=22222222",
               "fresh": true
             }
           ]
@@ -201,8 +268,8 @@
             "component": 0,
             "shader_stage": "ps",
             "observed_slot": "ps-t3",
-            "vertex_shader": "vs=1111111111111111",
-            "pixel_shader": "ps=2222222222222222",
+            "vertex_shader": "vs=11111111",
+            "pixel_shader": "ps=22222222",
             "fresh": true
           }
         ],
@@ -216,7 +283,7 @@
           "draws": [
             {
               "component": 0,
-              "call_id": 123,
+              "call_id": 42,
               "vb0_hash": "89abcdef",
               "ib_hash": "fedcba98"
             }

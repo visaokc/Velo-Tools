@@ -23,7 +23,7 @@ from .manifest import (
 
 
 PREVIEW_FILENAME = "TextureIdentityRules.prototype.ini.disabled"
-LEGAL_COLLISION_POLICIES = {"unique", "merge", "require_draw_context"}
+LEGAL_COLLISION_POLICIES = {"reject", "merge", "require_draw_context"}
 
 
 def _resource_name(identity: Mapping[str, Any]) -> str:
@@ -99,7 +99,7 @@ def select_rules(
     identities = [
         identity
         for identity in manifest.get("identities") or []
-        if identity.get("fingerprint_status") == "available"
+        if identity.get("variants")
     ]
     groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for identity in identities:
@@ -109,16 +109,19 @@ def select_rules(
     rules = []
     for family in sorted(groups):
         group = groups[family]
-        selection = select_common_resolution(
-            group,
-            tolerance_floor=tolerance_floor,
-            minimum_margin=minimum_margin,
-        )
+        try:
+            selection = select_common_resolution(
+                group,
+                tolerance_floor=tolerance_floor,
+                minimum_margin=minimum_margin,
+            )
+        except FingerprintError:
+            continue
         selected_replacements = {
             replacements.get(str(identity.get("identity")), _resource_name(identity))
             for identity in group
         }
-        collision_policy = "unique"
+        collision_policy = "reject"
         if selection.pixel_ambiguous:
             collision_policy = (
                 "merge"
@@ -128,7 +131,7 @@ def select_rules(
         if collision_policy not in LEGAL_COLLISION_POLICIES:
             raise FingerprintError(f"Illegal collision policy: {collision_policy}")
 
-        group_id = f"cg-v{PROTOTYPE_ABI_VERSION}:{family}:r{selection.resolution}"
+        group_id = f"default-r{selection.resolution}-{family}"
         for identity in group:
             identity_id = str(identity.get("identity"))
             variants = identity.get("variants") or []
@@ -137,18 +140,29 @@ def select_rules(
             )
             contexts, context_complete = _candidate_contexts(identity)
             blockers = [
-                "runtime-abi-fields-not-accepted",
-                "runtime-canonical-color-domain-not-accepted",
-                "runtime-load-validation-not-complete",
+                "srv-visible-absolute-mip-witness-unavailable",
+                "runtime-v3-game-parity-not-validated",
             ]
-            if collision_policy == "require_draw_context" and not context_complete:
-                blockers.append("candidate-context-mapping-incomplete")
+            if collision_policy == "require_draw_context":
+                blockers.append("candidate-context-draw_context-mapping-not-implemented")
+                if not context_complete:
+                    blockers.append("candidate-context-evidence-incomplete")
+            selected_record = next(
+                (
+                    (variant.get("fingerprints") or {}).get(str(selection.resolution))
+                    for variant in variants
+                    if variant.get("variant") == selection.reference_variants[identity_id]
+                ),
+                {},
+            ) or {}
             rules.append(
                 {
                     "prototype_abi_version": PROTOTYPE_ABI_VERSION,
                     "algorithm_version": ALGORITHM_VERSION,
                     "abi_status": "blocked",
+                    "abi_field_status": "aligned",
                     "abi_blockers": blockers,
+                    "runtime_compatible": False,
                     "identity": identity_id,
                     "reference_variant": selection.reference_variants[identity_id],
                     "match_format_family": family,
@@ -161,9 +175,14 @@ def select_rules(
                     "nearest_inter_distance": selection.nearest_inter_distance,
                     "maximum_intra_distance": selection.maximum_intra_distance,
                     "pixel_ambiguous": selection.pixel_ambiguous,
+                    "unavailable_resolutions": list(selection.unavailable_resolutions),
                     "collision_policy": collision_policy,
                     "candidate_contexts": contexts,
                     "candidate_context_complete": context_complete,
+                    "candidate_context_abi_status": "evidence-only-unmapped",
+                    "absolute_mip": selected_record.get("absolute_mip"),
+                    "canonical_format": selected_record.get("canonical_format"),
+                    "offline_cache_identity": selected_record.get("offline_cache_identity"),
                     "replacement": replacements.get(identity_id, _resource_name(identity)),
                     "replacement_filename": replacement_filename,
                 }
@@ -177,16 +196,16 @@ def render_preview(
 ) -> str:
     runtime_contract = (manifest or {}).get("runtime_contract") or {}
     blockers = runtime_contract.get("abi_blockers") or [
-        "runtime-abi-fields-not-accepted",
-        "runtime-canonical-color-domain-not-accepted",
-        "runtime-load-validation-not-complete",
+        "srv-visible-absolute-mip-witness-unavailable",
+        "runtime-v3-game-parity-not-validated",
     ]
     lines = [
-        "; PROTOTYPE ONLY - current WWMI runtime has not accepted or validated this ABI.",
+        "; PROTOTYPE ONLY - runtime v3 fields are aligned, but offline/runtime parity is not validated.",
         "; This file is deliberately disabled and is not loaded by the mod.",
         "; abi_status = blocked",
+        "; abi_field_status = aligned",
         f"; prototype_abi_version = {PROTOTYPE_ABI_VERSION}",
-        f"; algorithm_version = {ALGORITHM_VERSION}",
+        f"; runtime_fingerprint_algorithm_version = {ALGORITHM_VERSION}",
         f"; abi_blockers = {','.join(map(str, blockers))}",
         "; Owner scope comes from the active Draw VB/IB gate; no scope fields are duplicated here.",
         "",
@@ -195,9 +214,13 @@ def render_preview(
         lines.extend(
             [
                 f"[TextureRoleOverride_{index:03d}]",
-                f"prototype_abi_version = {rule['prototype_abi_version']}",
-                f"algorithm_version = {rule['algorithm_version']}",
-                f"abi_status = {rule['abi_status']}",
+                f"; prototype_abi_version = {rule['prototype_abi_version']}",
+                f"; runtime_fingerprint_algorithm_version = {rule['algorithm_version']}",
+                f"; abi_status = {rule['abi_status']}",
+                f"; abi_field_status = {rule['abi_field_status']}",
+                f"; runtime_compatible = {str(rule['runtime_compatible']).lower()}",
+                f"; canonical_format = {rule['canonical_format']}",
+                f"; absolute_mip = {rule['absolute_mip']}",
                 f"match_format_family = {rule['match_format_family']}",
                 f"collision_group = {rule['collision_group']}",
                 f"match_resolution = {rule['match_resolution']}",
@@ -211,7 +234,7 @@ def render_preview(
         )
         for context in rule.get("candidate_contexts") or []:
             lines.append(
-                "candidate_context = "
+                "; candidate_context_evidence = "
                 + json.dumps(context, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
             )
         for blocker in rule.get("abi_blockers") or []:

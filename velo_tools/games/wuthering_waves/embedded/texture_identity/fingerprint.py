@@ -1,10 +1,10 @@
-"""Canonical pixel fingerprint primitives for DDS resources."""
+"""Runtime-v3 canonical pixel fingerprint primitives for DDS resources."""
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import itertools
-import math
 import struct
 import zlib
 from dataclasses import dataclass
@@ -15,13 +15,46 @@ from ..slot_textures.dds_meta import DdsMeta, read_dds_meta
 
 
 ALGORITHM_NAME = "canonical-pixel-fingerprint"
-ALGORITHM_VERSION = 4
-CANONICAL_COLOR_DOMAIN = "srv-load-linear-rgba8-v1"
-MIP_SELECTION_POLICY = "closest-major-axis-real-mip-v1"
-RESAMPLE_POLICY = "independent-axis-nearest-center-to-square-v1"
+ALGORITHM_VERSION = 3
+PAYLOAD_ENCODING = "v3:rN:rgba8-zlib:<base64url>"
+CANONICAL_COLOR_DOMAIN = "encoded-rgba8"
+CANONICAL_VIEW_POLICY = "compatible-non-srgb-srv"
+MIP_SELECTION_POLICY = "visible-exact-square-absolute-mip-v3"
 RESOLUTIONS = (16, 32, 64, 128, 256)
 DEFAULT_TOLERANCE_FLOOR = 2.0 / 255.0
 DEFAULT_MINIMUM_MARGIN = 4.0 / 255.0
+
+_DESCRIPTOR_FAMILIES = {
+    "R8G8B8A8_UNORM": "r8g8b8a8",
+    "R8G8B8A8_UNORM_SRGB": "r8g8b8a8",
+    "B8G8R8A8_UNORM": "b8g8r8a8",
+    "B8G8R8A8_UNORM_SRGB": "b8g8r8a8",
+    "B8G8R8X8_UNORM": "b8g8r8x8",
+    "B8G8R8X8_UNORM_SRGB": "b8g8r8x8",
+    "BC1_UNORM": "bc1",
+    "BC1_UNORM_SRGB": "bc1",
+    "BC2_UNORM": "bc2",
+    "BC2_UNORM_SRGB": "bc2",
+    "BC3_UNORM": "bc3",
+    "BC3_UNORM_SRGB": "bc3",
+    "BC4_UNORM": "bc4",
+    "BC4_SNORM": "bc4",
+    "BC5_UNORM": "bc5",
+    "BC5_SNORM": "bc5",
+    "BC6H_UF16": "bc6h",
+    "BC6H_SF16": "bc6h",
+    "BC7_UNORM": "bc7",
+    "BC7_UNORM_SRGB": "bc7",
+}
+
+# Runtime uses dxgi-<numeric enum> for formats outside its named families.
+_DXGI_FORMAT_VALUES = {
+    "R8G8_UNORM": 49,
+    "R8G8_SNORM": 51,
+    "R8_UNORM": 61,
+    "R8_SNORM": 63,
+    "A8_UNORM": 65,
+}
 
 
 class FingerprintError(ValueError):
@@ -43,6 +76,8 @@ class DecodedDds:
     declared_mips: int
     mip_chain_complete: bool
     source_is_srgb: bool
+    canonical_format: str
+    source_sha256: str
     canonical_color_domain: str = CANONICAL_COLOR_DOMAIN
 
 
@@ -57,39 +92,28 @@ class CollisionSelection:
     maximum_intra_distance: float
     nearest_inter_distance: float | None
     pixel_ambiguous: bool
+    unavailable_resolutions: tuple[int, ...]
 
 
 def format_family(format_name: str) -> str:
-    """Return a channel/domain family suitable for runtime candidate filtering."""
+    """Return the exact descriptor family emitted by runtime v3."""
     name = str(format_name or "").upper()
-    if name.startswith(("R8G8B8A8_", "B8G8R8A8_", "B8G8R8X8_", "BC1_", "BC2_", "BC3_", "BC7_")):
-        return "color-rgba8"
-    if name.startswith(("R8_", "BC4_")):
-        return "scalar-r8"
-    if name.startswith(("R8G8_", "BC5_")):
-        return "vector-rg8"
-    if name.startswith("BC6H_"):
-        return "color-rgb-float"
-    for suffix in ("_TYPELESS", "_UNORM_SRGB", "_UNORM", "_SNORM", "_UINT", "_SINT", "_FLOAT"):
-        if name.endswith(suffix):
-            name = name[: -len(suffix)]
-            break
-    return f"dxgi-family:{name.lower() or 'unknown'}"
+    family = _DESCRIPTOR_FAMILIES.get(name)
+    if family:
+        return family
+    numeric = _DXGI_FORMAT_VALUES.get(name)
+    return f"dxgi-{numeric}" if numeric is not None else ""
 
 
-def _linearize_srgb_byte(value: int) -> int:
-    encoded = value / 255.0
-    if encoded <= 0.04045:
-        linear = encoded / 12.92
-    else:
-        linear = ((encoded + 0.055) / 1.055) ** 2.4
-    return min(255, max(0, int(math.floor(linear * 255.0 + 0.5))))
+def canonical_format(format_name: str) -> str:
+    """Return the non-SRGB format used by the runtime analysis SRV."""
+    name = str(format_name or "").upper()
+    if name.endswith("_UNORM_SRGB"):
+        return name[: -len("_SRGB")]
+    return name
 
 
-_SRGB_TO_LINEAR = bytes(_linearize_srgb_byte(value) for value in range(256))
-
-
-def _canonical_rgba(source: bytes, *, bgra: bool, force_alpha: bool, source_is_srgb: bool) -> bytes:
+def _canonical_rgba(source: bytes, *, bgra: bool, force_alpha: bool) -> bytes:
     output = bytearray(len(source))
     if bgra:
         output[0::4] = source[2::4]
@@ -100,11 +124,6 @@ def _canonical_rgba(source: bytes, *, bgra: bool, force_alpha: bool, source_is_s
         output[1::4] = source[1::4]
         output[2::4] = source[2::4]
     output[3::4] = b"\xff" * (len(source) // 4) if force_alpha else source[3::4]
-    if source_is_srgb:
-        table = _SRGB_TO_LINEAR
-        output[0::4] = bytes(table[value] for value in output[0::4])
-        output[1::4] = bytes(table[value] for value in output[1::4])
-        output[2::4] = bytes(table[value] for value in output[2::4])
     return bytes(output)
 
 
@@ -133,7 +152,6 @@ def decode_dds(path: str | Path) -> DecodedDds:
     declared_mips = max(int(meta.mips), 1)
     bgra = meta.format.startswith("B8G8R8")
     force_alpha = meta.format.startswith("B8G8R8X8")
-    source_is_srgb = meta.format.endswith("_SRGB")
     decoded_mips = []
 
     width = meta.width
@@ -162,7 +180,6 @@ def decode_dds(path: str | Path) -> DecodedDds:
                     bytes(source),
                     bgra=bgra,
                     force_alpha=force_alpha,
-                    source_is_srgb=source_is_srgb,
                 ),
             )
         )
@@ -177,74 +194,45 @@ def decode_dds(path: str | Path) -> DecodedDds:
         mips=tuple(decoded_mips),
         declared_mips=declared_mips,
         mip_chain_complete=len(decoded_mips) == declared_mips,
-        source_is_srgb=source_is_srgb,
+        source_is_srgb=meta.format.endswith("_SRGB"),
+        canonical_format=canonical_format(meta.format),
+        source_sha256=hashlib.sha256(data).hexdigest(),
     )
 
 
-def select_real_mip(decoded: DecodedDds, resolution: int) -> tuple[DecodedMip, str]:
+def select_exact_mip(decoded: DecodedDds, resolution: int) -> DecodedMip | None:
     if resolution not in RESOLUTIONS:
         raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
-    if not decoded.mips:
-        raise FingerprintError("DDS has no decoded mip")
-
-    def rank(mip: DecodedMip) -> tuple[float, int, int]:
-        major_axis = max(mip.width, mip.height)
-        ratio_distance = abs(math.log2(major_axis / resolution))
-        return ratio_distance, 0 if major_axis >= resolution else 1, mip.level
-
-    selected = min(decoded.mips, key=rank)
-    major_axis = max(selected.width, selected.height)
-    if major_axis == resolution:
-        reason = "exact-major-axis"
-    elif max(decoded.mips[0].width, decoded.mips[0].height) < resolution:
-        reason = "base-smaller-than-target-upsample"
-    elif selected.level == decoded.mips[-1].level and major_axis > resolution:
-        reason = "target-mip-unavailable-use-smallest-complete"
-    else:
-        reason = "closest-available-real-mip"
-    if not decoded.mip_chain_complete:
-        reason += "-incomplete-chain"
-    return selected, reason
+    for mip in decoded.mips:
+        if mip.width == resolution and mip.height == resolution:
+            return mip
+    return None
 
 
-def sample_grid(mip: DecodedMip, resolution: int) -> bytes:
+def encode_fingerprint(rgba8: bytes, resolution: int) -> str:
     if resolution not in RESOLUTIONS:
         raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
-    if mip.width <= 0 or mip.height <= 0:
-        raise FingerprintError("DDS mip dimensions must be positive")
-    sampled = bytearray(resolution * resolution * 4)
-    output_offset = 0
-    for y in range(resolution):
-        source_y = min(mip.height - 1, ((2 * y + 1) * mip.height) // (2 * resolution))
-        for x in range(resolution):
-            source_x = min(mip.width - 1, ((2 * x + 1) * mip.width) // (2 * resolution))
-            source_offset = (source_y * mip.width + source_x) * 4
-            sampled[output_offset : output_offset + 4] = mip.rgba[source_offset : source_offset + 4]
-            output_offset += 4
-    return bytes(sampled)
-
-
-def encode_fingerprint(sampled_rgba: bytes, resolution: int) -> str:
     expected = resolution * resolution * 4
-    if len(sampled_rgba) != expected:
+    if len(rgba8) != expected:
         raise FingerprintError(
-            f"Fingerprint sample length {len(sampled_rgba)} does not match r{resolution} RGBA8 ({expected})"
+            f"Fingerprint payload length {len(rgba8)} does not match r{resolution} RGBA8 ({expected})"
         )
-    payload = base64.urlsafe_b64encode(zlib.compress(sampled_rgba, level=9)).decode("ascii")
-    return f"v{ALGORITHM_VERSION}:r{resolution}:linear-rgba8-zlib:{payload}"
+    payload = base64.urlsafe_b64encode(zlib.compress(rgba8, level=9)).decode("ascii")
+    return f"v3:r{resolution}:rgba8-zlib:{payload}"
 
 
 def decode_fingerprint(payload: str) -> tuple[int, bytes]:
     parts = str(payload).split(":", 3)
-    if (
-        len(parts) != 4
-        or parts[0] != f"v{ALGORITHM_VERSION}"
-        or parts[2] != "linear-rgba8-zlib"
-    ):
-        raise FingerprintError("Unsupported fingerprint payload")
+    if len(parts) != 4 or parts[0] != "v3" or parts[2] != "rgba8-zlib":
+        raise FingerprintError("Unsupported runtime-v3 fingerprint payload")
     if not parts[1].startswith("r"):
         raise FingerprintError("Fingerprint resolution tag is missing")
-    resolution = int(parts[1][1:])
+    try:
+        resolution = int(parts[1][1:])
+    except ValueError as exc:
+        raise FingerprintError("Fingerprint resolution tag is invalid") from exc
+    if resolution not in RESOLUTIONS:
+        raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
     try:
         raw = zlib.decompress(base64.urlsafe_b64decode(parts[3].encode("ascii")))
     except Exception as exc:
@@ -264,22 +252,51 @@ def fingerprint_dds(
     decoded = decode_dds(path)
     results = {}
     for resolution in resolutions:
-        mip, selection_reason = select_real_mip(decoded, resolution)
-        results[str(resolution)] = {
-            "payload": encode_fingerprint(sample_grid(mip, resolution), resolution),
+        if resolution not in RESOLUTIONS:
+            raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
+        mip = select_exact_mip(decoded, resolution)
+        common = {
             "algorithm_version": ALGORITHM_VERSION,
             "canonical_color_domain": CANONICAL_COLOR_DOMAIN,
+            "canonical_view_policy": CANONICAL_VIEW_POLICY,
             "canonical_resolution": resolution,
-            "source_mip_level": mip.level,
-            "source_mip_width": mip.width,
-            "source_mip_height": mip.height,
+            "canonical_format": decoded.canonical_format,
             "declared_mips": decoded.declared_mips,
             "available_complete_mips": len(decoded.mips),
             "mip_chain_complete": decoded.mip_chain_complete,
             "mip_selection_policy": MIP_SELECTION_POLICY,
-            "mip_selection_reason": selection_reason,
-            "resample_policy": RESAMPLE_POLICY,
             "source_is_srgb": decoded.source_is_srgb,
+        }
+        if mip is None:
+            results[str(resolution)] = {
+                **common,
+                "status": "unavailable",
+                "unavailable_reason": "no-exact-square-mip",
+                "payload_abi_compatible": False,
+                "runtime_compatible": False,
+            }
+            continue
+        results[str(resolution)] = {
+            **common,
+            "status": "payload-ready",
+            "payload": encode_fingerprint(mip.rgba, resolution),
+            "absolute_mip": mip.level,
+            "source_mip_width": mip.width,
+            "source_mip_height": mip.height,
+            "srv_visibility_status": "unproven",
+            "payload_abi_compatible": True,
+            "runtime_compatible": False,
+            "runtime_compatibility_blockers": [
+                "srv-visible-absolute-mip-witness-unavailable",
+                "runtime-v3-game-parity-not-validated",
+            ],
+            "offline_cache_identity": {
+                "resource_version": decoded.source_sha256,
+                "algorithm_version": ALGORITHM_VERSION,
+                "resolution": resolution,
+                "canonical_format": decoded.canonical_format,
+                "absolute_mip": mip.level,
+            },
         }
     return results
 
@@ -299,10 +316,16 @@ def _variant_payloads(identity: Mapping, resolution: int) -> list[tuple[str, str
         record = (variant.get("fingerprints") or {}).get(str(resolution))
         if not variant_id or not isinstance(record, Mapping):
             continue
+        if record.get("status") != "payload-ready":
+            continue
         if int(record.get("algorithm_version", -1)) != ALGORITHM_VERSION:
             raise FingerprintError("Fingerprint algorithm version mismatch")
         if record.get("canonical_color_domain") != CANONICAL_COLOR_DOMAIN:
             raise FingerprintError("Fingerprint canonical color domain mismatch")
+        if record.get("canonical_view_policy") != CANONICAL_VIEW_POLICY:
+            raise FingerprintError("Fingerprint canonical view policy mismatch")
+        if int(record.get("absolute_mip", -1)) < 0:
+            raise FingerprintError("Runtime-v3 fingerprint requires an absolute mip")
         payload = str(record.get("payload") or "")
         payload_resolution, _ = decode_fingerprint(payload)
         if payload_resolution != resolution or int(record.get("canonical_resolution", -1)) != resolution:
@@ -335,6 +358,7 @@ def select_common_resolution(
         raise FingerprintError("A collision group must contain at least one identity")
 
     last = None
+    unavailable = []
     for resolution in RESOLUTIONS:
         per_identity = []
         references = {}
@@ -352,6 +376,7 @@ def select_common_resolution(
             references[identity_id] = reference
             reference_variants[identity_id] = variant_id
         if not complete:
+            unavailable.append(resolution)
             continue
 
         intra_distances = [
@@ -387,10 +412,13 @@ def select_common_resolution(
                 maximum_intra_distance=maximum_intra,
                 nearest_inter_distance=nearest_inter,
                 pixel_ambiguous=False,
+                unavailable_resolutions=tuple(unavailable),
             )
 
-    if last is None or last[0] != RESOLUTIONS[-1]:
-        raise FingerprintError("A complete r256 fingerprint set is required to classify pixel ambiguity")
+    if last is None:
+        raise FingerprintError(
+            "No resolution has an exact square mip for every identity variant"
+        )
     resolution, references, reference_variants, effective_tolerance, maximum_intra, nearest_inter = last
     return CollisionSelection(
         resolution=resolution,
@@ -402,4 +430,5 @@ def select_common_resolution(
         maximum_intra_distance=maximum_intra,
         nearest_inter_distance=nearest_inter,
         pixel_ambiguous=True,
+        unavailable_resolutions=tuple(unavailable),
     )

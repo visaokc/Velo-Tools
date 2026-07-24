@@ -14,10 +14,11 @@ from .fingerprint import (
     ALGORITHM_NAME,
     ALGORITHM_VERSION,
     CANONICAL_COLOR_DOMAIN,
+    CANONICAL_VIEW_POLICY,
     DEFAULT_MINIMUM_MARGIN,
     DEFAULT_TOLERANCE_FLOOR,
     MIP_SELECTION_POLICY,
-    RESAMPLE_POLICY,
+    PAYLOAD_ENCODING,
     RESOLUTIONS,
     FingerprintError,
     fingerprint_dds,
@@ -28,9 +29,9 @@ from ..slot_textures.dds_meta import read_dds_meta
 
 MANIFEST_FILENAME = "TextureIdentityManifest.json"
 SOURCE_EVIDENCE_DIRECTORY = "TextureIdentitySources"
-SCHEMA_ID = "urn:texture-identity-manifest:schema:v2"
-SCHEMA_VERSION = 2
-PROTOTYPE_ABI_VERSION = 2
+SCHEMA_ID = "urn:texture-identity-manifest:schema:v3"
+SCHEMA_VERSION = 3
+PROTOTYPE_ABI_VERSION = 3
 _DDS_HASH = re.compile(r"\bt=([0-9a-fA-F]{8})\b")
 
 
@@ -168,6 +169,15 @@ def build_manifest(
         fingerprint_source_ref = dds_path.name
         try:
             fingerprints = fingerprint_dds(dds_path)
+            ready_fingerprints = [
+                record
+                for record in fingerprints.values()
+                if record.get("status") == "payload-ready"
+            ]
+            if ready_fingerprints:
+                fingerprint_status = "payload-ready-runtime-blocked"
+            else:
+                fingerprint_status = "blocked-no-exact-square-mip"
         except FingerprintError as exc:
             fingerprints = {}
             fingerprint_status = "source-retained-blocked-decoder"
@@ -223,7 +233,17 @@ def build_manifest(
     blocked_decoders = [
         identity["identity"]
         for identity in identities
-        if identity["fingerprint_status"] != "available"
+        if identity["fingerprint_status"] == "source-retained-blocked-decoder"
+    ]
+    blocked_exact_mips = [
+        identity["identity"]
+        for identity in identities
+        if identity["fingerprint_status"] == "blocked-no-exact-square-mip"
+    ]
+    payload_ready = [
+        identity["identity"]
+        for identity in identities
+        if identity["fingerprint_status"] == "payload-ready-runtime-blocked"
     ]
     return {
         "$schema": SCHEMA_ID,
@@ -233,15 +253,16 @@ def build_manifest(
             "name": ALGORITHM_NAME,
             "version": ALGORITHM_VERSION,
             "canonical_color_domain": CANONICAL_COLOR_DOMAIN,
-            "srgb_behavior": "apply-standard-srgb-to-linear-before-rgba8-quantization",
+            "canonical_view_policy": CANONICAL_VIEW_POLICY,
+            "srgb_behavior": "preserve-dds-encoded-rgba8-through-compatible-non-srgb-srv",
             "mip_selection_policy": MIP_SELECTION_POLICY,
-            "non_square_policy": RESAMPLE_POLICY,
-            "missing_target_mip_policy": "select-closest-real-major-axis-mip-prefer-higher-resolution",
-            "small_texture_policy": "select-mip0-and-deterministically-upsample",
-            "incomplete_chain_policy": "use-only-complete-physical-mips-and-record-incomplete-chain",
+            "non_square_policy": "unavailable-no-resample",
+            "missing_target_mip_policy": "unavailable-no-resample",
+            "small_texture_policy": "unavailable-no-resample",
+            "incomplete_chain_policy": "use-only-physically-complete-exact-square-mips",
             "candidate_resolutions": list(RESOLUTIONS),
-            "payload": "v4:rN:linear-rgba8-zlib:<base64url>",
-            "distance": "normalized-linear-rgba8-mean-absolute-error",
+            "payload": PAYLOAD_ENCODING,
+            "distance": "normalized-encoded-rgba8-mean-absolute-error",
             "tolerance_floor": DEFAULT_TOLERANCE_FLOOR,
             "minimum_margin": DEFAULT_MINIMUM_MARGIN,
             "effective_tolerance": "max(tolerance_floor, maximum_intra_distance)",
@@ -249,6 +270,7 @@ def build_manifest(
                 "nearest_inter_distance - effective_tolerance >= minimum_margin"
             ),
             "reference_strategy": "per-identity-minimax-medoid-over-all-variants",
+            "legacy_cache_policy": "reject-non-v3-or-non-encoded-rgba8",
         },
         "source": {
             "metadata_ref": metadata_path.name if metadata_path.is_file() else None,
@@ -257,24 +279,62 @@ def build_manifest(
         },
         "runtime_contract": {
             "prototype_abi_version": PROTOTYPE_ABI_VERSION,
+            "runtime_fingerprint_algorithm_version": ALGORITHM_VERSION,
+            "abi_reference": "texture-role-v3",
+            "abi_field_status": "aligned",
             "owner_scope_source": "active-draw-vb-ib-gate",
             "scan_bound_srvs_only": True,
-            "cache_key": ["resource", "resolution", "algorithm_version"],
+            "cache_key": [
+                "resource",
+                "resource_version",
+                "algorithm_version",
+                "resolution",
+                "canonical_format",
+                "absolute_mip",
+            ],
             "analysis_phase": "present",
             "rule_scope_fields_emitted": False,
-            "collision_policies": ["unique", "merge", "require_draw_context"],
+            "match_resolutions": list(RESOLUTIONS),
+            "match_format_families": [
+                "r8g8b8a8",
+                "b8g8r8a8",
+                "b8g8r8x8",
+                "bc1",
+                "bc2",
+                "bc3",
+                "bc4",
+                "bc5",
+                "bc6h",
+                "bc7",
+                "dxgi-<numeric-enum>",
+            ],
+            "collision_group_default": "default-r{resolution}-{descriptor_family}",
+            "collision_policies": ["reject", "merge", "require_draw_context"],
+            "candidate_context_abi_status": "evidence-only-unmapped",
             "abi_status": "blocked",
             "abi_blockers": [
-                "runtime-abi-fields-not-accepted",
-                "runtime-canonical-color-domain-not-accepted",
-                "runtime-load-validation-not-complete",
+                "srv-visible-absolute-mip-witness-unavailable",
+                "runtime-v3-game-parity-not-validated",
+                "candidate-context-draw_context-mapping-not-implemented",
                 *(
                     ["compressed-dds-fingerprint-decoder-unavailable"]
                     if blocked_decoders
                     else []
                 ),
+                *(
+                    ["exact-square-mip-unavailable"]
+                    if blocked_exact_mips
+                    else []
+                ),
             ],
-            "blocked_identity_count": len(blocked_decoders),
+            "identity_counts": {
+                "total": len(identities),
+                "payload_ready_runtime_blocked": len(payload_ready),
+                "blocked_decoder": len(blocked_decoders),
+                "blocked_no_exact_square_mip": len(blocked_exact_mips),
+                "runtime_compatible": 0,
+            },
+            "blocked_identity_count": len(identities),
         },
         "identities": identities,
     }
