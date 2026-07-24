@@ -1,0 +1,97 @@
+{
+  "$schema": "urn:texture-identity-manifest:schema:v1",
+  "schema": "texture-identity-manifest",
+  "schema_version": 1,
+  "algorithm": {
+    "name": "canonical-pixel-fingerprint",
+    "version": 3,
+    "candidate_resolutions": [
+      16,
+      32,
+      64,
+      128,
+      256
+    ],
+    "payload": "v3:rN:rgba8-zlib:<base64url>",
+    "distance": "normalized-rgba8-mean-absolute-error",
+    "tolerance_floor": 0.00784313725490196,
+    "minimum_margin": 0.01568627450980392,
+    "selection_rule": "nearest_inter_distance - (maximum_intra_distance + tolerance) >= minimum_margin"
+  },
+  "source": {
+    "metadata_ref": "Metadata.json",
+    "shader_texture_usage_ref": "ShaderTextureUsage.json",
+    "resource_origin": "original-game-dump"
+  },
+  "runtime_contract": {
+    "owner_scope_source": "active-draw-vb-ib-gate",
+    "scan_bound_srvs_only": true,
+    "cache_key": [
+      "resource",
+      "resolution"
+    ],
+    "analysis_phase": "present",
+    "rule_scope_fields_emitted": false,
+    "abi_status": "prototype-not-supported-by-current-runtime"
+  },
+  "identities": [
+    {
+      "identity": "texture:1234abcd",
+      "legacy_resource_hash": "1234abcd",
+      "fingerprint_status": "available",
+      "variants": [
+        {
+          "variant": "dump-base",
+          "stable_resource_ref": "Components-0 t=1234abcd.dds",
+          "fingerprint_source_ref": "Components-0 t=1234abcd.dds",
+          "source_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "width": 1024,
+          "height": 1024,
+          "mips": 1,
+          "format": "B8G8R8A8_UNORM",
+          "format_family": "B8G8R8A8",
+          "fingerprints": {
+            "16": "v3:r16:rgba8-zlib:<base64url>",
+            "32": "v3:r32:rgba8-zlib:<base64url>",
+            "64": "v3:r64:rgba8-zlib:<base64url>",
+            "128": "v3:r128:rgba8-zlib:<base64url>",
+            "256": "v3:r256:rgba8-zlib:<base64url>"
+          }
+        }
+      ],
+      "witnesses": {
+        "components": [
+          0
+        ],
+        "draw_bindings": [
+          {
+            "component": 0,
+            "shader_stage": "ps",
+            "observed_slot": "ps-t3",
+            "vertex_shader": "vs=1111111111111111",
+            "pixel_shader": "ps=2222222222222222",
+            "fresh": true
+          }
+        ],
+        "anchors": {
+          "vb0_hashes": [
+            "89abcdef"
+          ],
+          "ib_hashes": [
+            "fedcba98"
+          ],
+          "draws": [
+            {
+              "component": 0,
+              "call_id": 123,
+              "ib_hash": "fedcba98"
+            }
+          ]
+        },
+        "co_bound_resource_hashes": [
+          "5678efab"
+        ]
+      }
+    }
+  ]
+}

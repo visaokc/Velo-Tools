@@ -465,6 +465,14 @@ def register():
     except Exception:
         import traceback
         traceback.print_exc()
+    # Texture identity prototype wraps the completed STU extraction path and
+    # emits only a disabled exporter preview until the runtime ABI exists.
+    try:
+        from .embedded import texture_identity as _texture_identity
+        _texture_identity.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
     # Issue A fix (A1 single container): hide the vendored root panel + re-parent its sub-panels to
     # VELO_PT_game and gate by active_game. Must be called after all this game's sub-panels are registered
     # (by this point the vtww sub-panels have already been registered by _al.register).
@@ -512,6 +520,11 @@ def unregister():
         from .embedded import slot_textures as _slott
         _slott.unregister_ui()
         _slott.remove()
+    except Exception:
+        pass
+    try:
+        from .embedded import texture_identity as _texture_identity
+        _texture_identity.remove()
     except Exception:
         pass
     # Restore the ShaderTextureUsage hook (don't copy WWMI unregister's omission of unhooking the export hook; this patch unhooks explicitly).

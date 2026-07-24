@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:texture-identity-manifest:schema:v1",
+  "title": "Texture Identity Manifest",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "algorithm",
+    "source",
+    "runtime_contract",
+    "identities"
+  ],
+  "properties": {
+    "schema": {
+      "const": "texture-identity-manifest"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "algorithm": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "candidate_resolutions",
+        "payload",
+        "distance"
+      ],
+      "properties": {
+        "name": {
+          "const": "canonical-pixel-fingerprint"
+        },
+        "version": {
+          "const": 3
+        },
+        "candidate_resolutions": {
+          "const": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "resource_origin"
+      ],
+      "properties": {
+        "resource_origin": {
+          "const": "original-game-dump"
+        }
+      },
+      "additionalProperties": true
+    },
+    "runtime_contract": {
+      "type": "object",
+      "required": [
+        "owner_scope_source",
+        "scan_bound_srvs_only",
+        "cache_key",
+        "analysis_phase",
+        "rule_scope_fields_emitted",
+        "abi_status"
+      ],
+      "properties": {
+        "owner_scope_source": {
+          "const": "active-draw-vb-ib-gate"
+        },
+        "scan_bound_srvs_only": {
+          "const": true
+        },
+        "cache_key": {
+          "const": [
+            "resource",
+            "resolution"
+          ]
+        },
+        "analysis_phase": {
+          "const": "present"
+        },
+        "rule_scope_fields_emitted": {
+          "const": false
+        },
+        "abi_status": {
+          "const": "prototype-not-supported-by-current-runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "identities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "identity",
+          "legacy_resource_hash",
+          "fingerprint_status",
+          "variants",
+          "witnesses"
+        ],
+        "properties": {
+          "identity": {
+            "type": "string"
+          },
+          "legacy_resource_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}$"
+          },
+          "fingerprint_status": {
+            "enum": [
+              "available",
+              "source-retained-for-recompute"
+            ]
+          },
+          "variants": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "variant",
+                "stable_resource_ref",
+                "fingerprint_source_ref",
+                "source_sha256",
+                "width",
+                "height",
+                "mips",
+                "format",
+                "format_family",
+                "fingerprints"
+              ]
+            }
+          },
+          "witnesses": {
+            "type": "object",
+            "required": [
+              "components",
+              "draw_bindings",
+              "anchors",
+              "co_bound_resource_hashes"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}
