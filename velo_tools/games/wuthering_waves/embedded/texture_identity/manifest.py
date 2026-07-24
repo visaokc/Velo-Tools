@@ -19,6 +19,7 @@ from .fingerprint import (
     DEFAULT_TOLERANCE_FLOOR,
     MIP_SELECTION_POLICY,
     PAYLOAD_ENCODING,
+    PAYLOAD_PROFILE,
     RESOLUTIONS,
     FingerprintError,
     fingerprint_dds,
@@ -29,8 +30,8 @@ from ..slot_textures.dds_meta import read_dds_meta
 
 MANIFEST_FILENAME = "TextureIdentityManifest.json"
 SOURCE_EVIDENCE_DIRECTORY = "TextureIdentitySources"
-SCHEMA_ID = "urn:texture-identity-manifest:schema:v4"
-SCHEMA_VERSION = 4
+SCHEMA_ID = "urn:texture-identity-manifest:schema:v5"
+SCHEMA_VERSION = 5
 PROTOTYPE_ABI_VERSION = 3
 SOURCE_PROFILES = ("Showcase1", "Dungeon1", "Dungeon2")
 _DDS_HASH = re.compile(r"\bt=([0-9a-fA-F]{8})\b")
@@ -280,7 +281,15 @@ def build_manifest(
             "incomplete_chain_policy": "use-decoded-dump-top-level-image-only",
             "candidate_resolutions": list(RESOLUTIONS),
             "payload": PAYLOAD_ENCODING,
-            "distance": "normalized-encoded-rgba8-mean-absolute-error",
+            "payload_profile": PAYLOAD_PROFILE,
+            "payload_bytes": 41,
+            "distance": "weighted-channel-dhash-statistics-v3",
+            "distance_weights": {
+                "channel_dhash_hamming": 0.75,
+                "mean_mae": 0.15,
+                "deviation_mae": 0.07,
+                "alpha_coverage_absolute": 0.03,
+            },
             "tolerance_floor": DEFAULT_TOLERANCE_FLOOR,
             "minimum_margin": DEFAULT_MINIMUM_MARGIN,
             "effective_tolerance": "max(tolerance_floor, maximum_intra_distance)",
@@ -288,7 +297,7 @@ def build_manifest(
                 "nearest_inter_distance - effective_tolerance >= minimum_margin"
             ),
             "reference_strategy": "per-identity-minimax-medoid-over-all-variants",
-            "legacy_cache_policy": "reject-incompatible-algorithm-domain-or-sampling-policy",
+            "legacy_cache_policy": "reject-incompatible-algorithm-domain-sampling-or-payload-profile",
         },
         "source": {
             "metadata_ref": metadata_path.name if metadata_path.is_file() else None,
@@ -310,6 +319,7 @@ def build_manifest(
                 "resource",
                 "resource_version",
                 "algorithm_version",
+                "payload_profile",
                 "resolution",
                 "canonical_format",
                 "absolute_mip",
@@ -333,15 +343,7 @@ def build_manifest(
             "collision_group_default": "default-r{resolution}-{descriptor_family}",
             "collision_policies": ["reject", "merge", "require_draw_context"],
             "candidate_context_abi_status": "evidence-only-unmapped",
-            "fingerprint_binding": {
-                "preferred_field": "match_fingerprint_file",
-                "inline_fallback_field": "match_fingerprint",
-                "mutually_exclusive": True,
-                "path_base": "current-ini-directory",
-                "sidecar_directory": "TextureFingerprints",
-                "sidecar_encoding": "ascii",
-                "sidecar_content": "single-v3-payload",
-            },
+            "fingerprint_binding": "inline-match_fingerprint",
             "abi_status": "blocked",
             "abi_blockers": [
                 "runtime-v3-game-parity-not-validated",

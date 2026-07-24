@@ -5,8 +5,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import itertools
+import math
 import struct
-import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
@@ -16,7 +16,8 @@ from ..slot_textures.dds_meta import DdsMeta, read_dds_meta
 
 ALGORITHM_NAME = "canonical-pixel-fingerprint"
 ALGORITHM_VERSION = 3
-PAYLOAD_ENCODING = "v3:rN:rgba8-zlib:<base64url>"
+PAYLOAD_ENCODING = "v3:rN:rgba8-phash:<base64url>"
+PAYLOAD_PROFILE = "rgba8-phash"
 CANONICAL_COLOR_DOMAIN = "encoded-rgba8"
 CANONICAL_VIEW_POLICY = "compatible-non-srgb-srv"
 MIP_SELECTION_POLICY = "visible-most-detailed-normalized-cell-center-v3"
@@ -55,6 +56,19 @@ _DXGI_FORMAT_VALUES = {
     "R8_SNORM": 63,
     "A8_UNORM": 65,
 }
+
+
+def _float32(value: float) -> float:
+    return struct.unpack("<f", struct.pack("<f", value))[0]
+
+
+def _quantize_unit(value: float) -> int:
+    clamped = max(0.0, min(1.0, value))
+    scaled = _float32(_float32(clamped) * _float32(255.0))
+    return int(math.floor(scaled + 0.5))
+
+
+_BYTE_TO_FLOAT = tuple(_float32(value / 255.0) for value in range(256))
 
 
 class FingerprintError(ValueError):
@@ -234,13 +248,61 @@ def encode_fingerprint(rgba8: bytes, resolution: int) -> str:
         raise FingerprintError(
             f"Fingerprint payload length {len(rgba8)} does not match r{resolution} RGBA8 ({expected})"
         )
-    payload = base64.urlsafe_b64encode(zlib.compress(rgba8, level=9)).decode("ascii")
-    return f"v3:r{resolution}:rgba8-zlib:{payload}"
+    sample_count = resolution * resolution
+    sums = [0.0] * 4
+    squared_sums = [0.0] * 4
+    covered_alpha = 0
+    for offset in range(0, len(rgba8), 4):
+        for component in range(4):
+            value = _BYTE_TO_FLOAT[rgba8[offset + component]]
+            sums[component] += value
+            squared_sums[component] += _float32(value * value)
+        if _BYTE_TO_FLOAT[rgba8[offset + 3]] >= 0.5:
+            covered_alpha += 1
+
+    means = []
+    deviations = []
+    for component in range(4):
+        mean = sums[component] / sample_count
+        variance = max(0.0, squared_sums[component] / sample_count - mean * mean)
+        means.append(_quantize_unit(_float32(mean)))
+        deviations.append(_quantize_unit(_float32(math.sqrt(variance))))
+    alpha_coverage = _quantize_unit(
+        _float32(_float32(float(covered_alpha)) / _float32(float(sample_count)))
+    )
+
+    channel_hashes = []
+    for component in range(4):
+        channel_hash = 0
+        bit = 1
+        for y in range(8):
+            sample_y = min(resolution - 1, y * 2 * resolution // 16)
+            for x in range(8):
+                left_x = min(resolution - 1, x * 2 * resolution // 16)
+                right_x = min(
+                    resolution - 1,
+                    (x * 2 + 1) * resolution // 16,
+                )
+                left = (sample_y * resolution + left_x) * 4 + component
+                right = (sample_y * resolution + right_x) * 4 + component
+                if rgba8[left] < rgba8[right]:
+                    channel_hash |= bit
+                bit <<= 1
+        channel_hashes.append(channel_hash)
+
+    compact = (
+        struct.pack(">4Q", *channel_hashes)
+        + bytes(means)
+        + bytes(deviations)
+        + bytes((alpha_coverage,))
+    )
+    payload = base64.urlsafe_b64encode(compact).decode("ascii")
+    return f"v3:r{resolution}:rgba8-phash:{payload}"
 
 
 def decode_fingerprint(payload: str) -> tuple[int, bytes]:
     parts = str(payload).split(":", 3)
-    if len(parts) != 4 or parts[0] != "v3" or parts[2] != "rgba8-zlib":
+    if len(parts) != 4 or parts[0] != "v3" or parts[2] != PAYLOAD_PROFILE:
         raise FingerprintError("Unsupported runtime-v3 fingerprint payload")
     if not parts[1].startswith("r"):
         raise FingerprintError("Fingerprint resolution tag is missing")
@@ -250,15 +312,18 @@ def decode_fingerprint(payload: str) -> tuple[int, bytes]:
         raise FingerprintError("Fingerprint resolution tag is invalid") from exc
     if resolution not in RESOLUTIONS:
         raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
+    if len(parts[3]) != 56:
+        raise FingerprintError("Compact fingerprint payload must contain 56 base64url characters")
     try:
-        raw = zlib.decompress(base64.urlsafe_b64decode(parts[3].encode("ascii")))
+        raw = base64.b64decode(
+            parts[3].encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
     except Exception as exc:
         raise FingerprintError("Invalid fingerprint payload") from exc
-    expected = resolution * resolution * 4
-    if len(raw) != expected:
-        raise FingerprintError(
-            f"Fingerprint payload length {len(raw)} does not match r{resolution} RGBA8 ({expected})"
-        )
+    if len(raw) != 41:
+        raise FingerprintError("Compact fingerprint payload must decode to 41 bytes")
     return resolution, raw
 
 
@@ -294,6 +359,7 @@ def fingerprint_dds(
             "mip_selection_policy": MIP_SELECTION_POLICY,
             "source_is_srgb": decoded.source_is_srgb,
             "payload_abi_compatible": True,
+            "payload_profile": PAYLOAD_PROFILE,
             "runtime_compatible": False,
             "runtime_compatibility_blockers": [
                 "runtime-v3-game-parity-not-validated",
@@ -301,6 +367,7 @@ def fingerprint_dds(
             "offline_cache_identity": {
                 "resource_version": decoded.source_sha256,
                 "algorithm_version": ALGORITHM_VERSION,
+                "payload_profile": PAYLOAD_PROFILE,
                 "resolution": resolution,
                 "canonical_format": decoded.canonical_format,
                 "absolute_mip": source_mip.level,
@@ -314,7 +381,28 @@ def fingerprint_distance(left: str, right: str) -> float:
     right_resolution, right_raw = decode_fingerprint(right)
     if left_resolution != right_resolution:
         raise FingerprintError("Fingerprint resolutions differ")
-    return sum(abs(a - b) for a, b in zip(left_raw, right_raw)) / (255.0 * len(left_raw))
+    left_hashes = struct.unpack(">4Q", left_raw[:32])
+    right_hashes = struct.unpack(">4Q", right_raw[:32])
+    different_bits = sum(
+        (left_hash ^ right_hash).bit_count()
+        for left_hash, right_hash in zip(left_hashes, right_hashes)
+    )
+    hash_distance = _float32(different_bits / 256.0)
+    mean_distance = _float32(
+        sum(abs(a - b) for a, b in zip(left_raw[32:36], right_raw[32:36]))
+        / (255.0 * 4.0)
+    )
+    deviation_distance = _float32(
+        sum(abs(a - b) for a, b in zip(left_raw[36:40], right_raw[36:40]))
+        / (255.0 * 4.0)
+    )
+    alpha_distance = _float32(abs(left_raw[40] - right_raw[40]) / 255.0)
+    distance = _float32(hash_distance * _float32(0.75))
+    distance = _float32(distance + _float32(mean_distance * _float32(0.15)))
+    distance = _float32(
+        distance + _float32(deviation_distance * _float32(0.07))
+    )
+    return _float32(distance + _float32(alpha_distance * _float32(0.03)))
 
 
 def _variant_payloads(identity: Mapping, resolution: int) -> list[tuple[str, str]]:
@@ -328,6 +416,8 @@ def _variant_payloads(identity: Mapping, resolution: int) -> list[tuple[str, str
             continue
         if int(record.get("algorithm_version", -1)) != ALGORITHM_VERSION:
             raise FingerprintError("Fingerprint algorithm version mismatch")
+        if record.get("payload_profile") != PAYLOAD_PROFILE:
+            raise FingerprintError("Fingerprint payload profile mismatch")
         if record.get("canonical_color_domain") != CANONICAL_COLOR_DOMAIN:
             raise FingerprintError("Fingerprint canonical color domain mismatch")
         if record.get("canonical_view_policy") != CANONICAL_VIEW_POLICY:
@@ -425,7 +515,7 @@ def select_common_resolution(
 
     if last is None:
         raise FingerprintError(
-            "No resolution has an exact square mip for every identity variant"
+            "No resolution has a fingerprint for every identity variant"
         )
     resolution, references, reference_variants, effective_tolerance, maximum_intra, nearest_inter = last
     return CollisionSelection(

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:texture-identity-manifest:schema:v4",
+  "$id": "urn:texture-identity-manifest:schema:v5",
   "title": "Texture identity manifest",
   "type": "object",
   "required": [
@@ -14,13 +14,13 @@
   ],
   "properties": {
     "$schema": {
-      "const": "urn:texture-identity-manifest:schema:v4"
+      "const": "urn:texture-identity-manifest:schema:v5"
     },
     "schema": {
       "const": "texture-identity-manifest"
     },
     "schema_version": {
-      "const": 4
+      "const": 5
     },
     "algorithm": {
       "type": "object",
@@ -32,7 +32,10 @@
         "mip_selection_policy",
         "candidate_resolutions",
         "payload",
+        "payload_bytes",
+        "payload_profile",
         "distance",
+        "distance_weights",
         "effective_tolerance",
         "selection_rule",
         "reference_strategy"
@@ -63,10 +66,24 @@
           ]
         },
         "payload": {
-          "const": "v3:rN:rgba8-zlib:<base64url>"
+          "const": "v3:rN:rgba8-phash:<base64url>"
+        },
+        "payload_profile": {
+          "const": "rgba8-phash"
+        },
+        "payload_bytes": {
+          "const": 41
         },
         "distance": {
-          "const": "normalized-encoded-rgba8-mean-absolute-error"
+          "const": "weighted-channel-dhash-statistics-v3"
+        },
+        "distance_weights": {
+          "const": {
+            "channel_dhash_hamming": 0.75,
+            "mean_mae": 0.15,
+            "deviation_mae": 0.07,
+            "alpha_coverage_absolute": 0.03
+          }
         },
         "effective_tolerance": {
           "type": "string"
@@ -151,6 +168,7 @@
             "resource",
             "resource_version",
             "algorithm_version",
+            "payload_profile",
             "resolution",
             "canonical_format",
             "absolute_mip"
@@ -185,40 +203,7 @@
           "const": "evidence-only-unmapped"
         },
         "fingerprint_binding": {
-          "type": "object",
-          "required": [
-            "preferred_field",
-            "inline_fallback_field",
-            "mutually_exclusive",
-            "path_base",
-            "sidecar_directory",
-            "sidecar_encoding",
-            "sidecar_content"
-          ],
-          "properties": {
-            "preferred_field": {
-              "const": "match_fingerprint_file"
-            },
-            "inline_fallback_field": {
-              "const": "match_fingerprint"
-            },
-            "mutually_exclusive": {
-              "const": true
-            },
-            "path_base": {
-              "const": "current-ini-directory"
-            },
-            "sidecar_directory": {
-              "const": "TextureFingerprints"
-            },
-            "sidecar_encoding": {
-              "const": "ascii"
-            },
-            "sidecar_content": {
-              "const": "single-v3-payload"
-            }
-          },
-          "additionalProperties": false
+          "const": "inline-match_fingerprint"
         },
         "abi_status": {
           "const": "blocked"
@@ -393,6 +378,9 @@
         "algorithm_version": {
           "const": 3
         },
+        "payload_profile": {
+          "const": "rgba8-phash"
+        },
         "canonical_color_domain": {
           "const": "encoded-rgba8"
         },
@@ -413,7 +401,7 @@
         },
         "payload": {
           "type": "string",
-          "pattern": "^v3:r(16|32|64|128|256):rgba8-zlib:[A-Za-z0-9_-]+={0,2}$"
+          "pattern": "^v3:r(16|32|64|128|256):rgba8-phash:[A-Za-z0-9_-]{55}=$"
         },
         "absolute_mip": {
           "type": "integer",
@@ -450,15 +438,44 @@
           "required": [
             "resource_version",
             "algorithm_version",
+            "payload_profile",
             "resolution",
             "canonical_format",
             "absolute_mip"
-          ]
+          ],
+          "properties": {
+            "resource_version": {
+              "type": "string"
+            },
+            "algorithm_version": {
+              "const": 3
+            },
+            "payload_profile": {
+              "const": "rgba8-phash"
+            },
+            "resolution": {
+              "enum": [
+                16,
+                32,
+                64,
+                128,
+                256
+              ]
+            },
+            "canonical_format": {
+              "type": "string"
+            },
+            "absolute_mip": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
         }
       },
       "required": [
         "status",
         "algorithm_version",
+        "payload_profile",
         "canonical_color_domain",
         "canonical_view_policy",
         "canonical_resolution",

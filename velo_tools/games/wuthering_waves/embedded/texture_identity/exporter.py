@@ -23,7 +23,6 @@ from .manifest import (
 
 
 PREVIEW_FILENAME = "TextureIdentityRules.prototype.ini.disabled"
-FINGERPRINT_DIRECTORY = "TextureFingerprints"
 LEGAL_COLLISION_POLICIES = {"reject", "merge", "require_draw_context"}
 
 
@@ -210,11 +209,6 @@ def render_preview(
         "",
     ]
     for index, rule in enumerate(rules):
-        fingerprint_binding = (
-            f"match_fingerprint_file = {rule['match_fingerprint_file']}"
-            if rule.get("match_fingerprint_file")
-            else f"match_fingerprint = {rule['match_fingerprint']}"
-        )
         lines.extend(
             [
                 f"[TextureRoleOverride_{index:03d}]",
@@ -228,7 +222,7 @@ def render_preview(
                 f"match_format_family = {rule['match_format_family']}",
                 f"collision_group = {rule['collision_group']}",
                 f"match_resolution = {rule['match_resolution']}",
-                fingerprint_binding,
+                f"match_fingerprint = {rule['match_fingerprint']}",
                 f"fingerprint_tolerance = {rule['fingerprint_tolerance']:.8f}",
                 f"minimum_match_margin = {rule['minimum_match_margin']:.8f}",
                 f"reference_variant = {rule['reference_variant']}",
@@ -262,33 +256,6 @@ def render_preview(
     return "\n".join(lines)
 
 
-def write_fingerprint_sidecars(
-    rules: list[Mapping[str, Any]],
-    output_folder: str | Path,
-) -> list[dict[str, Any]]:
-    output_folder = Path(output_folder)
-    sidecar_directory = output_folder / FINGERPRINT_DIRECTORY
-    prepared_rules = []
-    if rules:
-        sidecar_directory.mkdir(parents=True, exist_ok=True)
-    for index, rule in enumerate(rules, start=1):
-        payload = str(rule["match_fingerprint"])
-        try:
-            payload_bytes = payload.encode("ascii")
-        except UnicodeEncodeError as exc:
-            raise FingerprintError("Fingerprint sidecar payload must be ASCII") from exc
-        if not payload_bytes or any(byte in b" \t\r\n" for byte in payload_bytes):
-            raise FingerprintError("Fingerprint sidecar must contain exactly one payload")
-        filename = f"identity-{index:03d}-r{int(rule['match_resolution'])}.fp"
-        (sidecar_directory / filename).write_bytes(payload_bytes)
-        prepared_rule = dict(rule)
-        prepared_rule["match_fingerprint_file"] = (
-            f"{FINGERPRINT_DIRECTORY}\\{filename}"
-        )
-        prepared_rules.append(prepared_rule)
-    return prepared_rules
-
-
 def consume_manifest(source_folder: str | Path, output_folder: str | Path) -> Path | None:
     source_folder = Path(source_folder)
     manifest_path = source_folder / MANIFEST_FILENAME
@@ -296,9 +263,7 @@ def consume_manifest(source_folder: str | Path, output_folder: str | Path) -> Pa
         return None
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     rules = select_rules(manifest)
-    output_folder = Path(output_folder)
-    rules = write_fingerprint_sidecars(rules, output_folder)
-    output_path = output_folder / PREVIEW_FILENAME
+    output_path = Path(output_folder) / PREVIEW_FILENAME
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(render_preview(rules, manifest), encoding="utf-8")
     return output_path
