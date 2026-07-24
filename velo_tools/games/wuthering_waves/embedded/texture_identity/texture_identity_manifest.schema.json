@@ -184,6 +184,42 @@
         "candidate_context_abi_status": {
           "const": "evidence-only-unmapped"
         },
+        "fingerprint_binding": {
+          "type": "object",
+          "required": [
+            "preferred_field",
+            "inline_fallback_field",
+            "mutually_exclusive",
+            "path_base",
+            "sidecar_directory",
+            "sidecar_encoding",
+            "sidecar_content"
+          ],
+          "properties": {
+            "preferred_field": {
+              "const": "match_fingerprint_file"
+            },
+            "inline_fallback_field": {
+              "const": "match_fingerprint"
+            },
+            "mutually_exclusive": {
+              "const": true
+            },
+            "path_base": {
+              "const": "current-ini-directory"
+            },
+            "sidecar_directory": {
+              "const": "TextureFingerprints"
+            },
+            "sidecar_encoding": {
+              "const": "ascii"
+            },
+            "sidecar_content": {
+              "const": "single-v3-payload"
+            }
+          },
+          "additionalProperties": false
+        },
         "abi_status": {
           "const": "blocked"
         },

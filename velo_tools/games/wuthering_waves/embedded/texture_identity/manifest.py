@@ -333,6 +333,15 @@ def build_manifest(
             "collision_group_default": "default-r{resolution}-{descriptor_family}",
             "collision_policies": ["reject", "merge", "require_draw_context"],
             "candidate_context_abi_status": "evidence-only-unmapped",
+            "fingerprint_binding": {
+                "preferred_field": "match_fingerprint_file",
+                "inline_fallback_field": "match_fingerprint",
+                "mutually_exclusive": True,
+                "path_base": "current-ini-directory",
+                "sidecar_directory": "TextureFingerprints",
+                "sidecar_encoding": "ascii",
+                "sidecar_content": "single-v3-payload",
+            },
             "abi_status": "blocked",
             "abi_blockers": [
                 "runtime-v3-game-parity-not-validated",
