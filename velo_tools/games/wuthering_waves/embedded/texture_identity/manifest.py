@@ -7,13 +7,13 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-from .fingerprint import FingerprintError, fingerprint_dds
+from .fingerprint import FingerprintError
+from .runtime_fingerprint import fingerprint_dds_r16
 from ..slot_textures.dds_meta import read_dds_meta
 
 
 MANIFEST_FILENAME = "TextureIdentityManifest.json"
 SCHEMA_VERSION = 1
-MANIFEST_RESOLUTIONS = (16,)
 _DDS_HASH = re.compile(r"\bt=([0-9a-fA-F]{8})\b")
 
 
@@ -40,19 +40,7 @@ def build_manifest(
         meta = read_dds_meta(dds_path)
         if meta is None:
             continue
-        try:
-            record = fingerprint_dds(
-                dds_path,
-                resolutions=MANIFEST_RESOLUTIONS,
-            ).get("16") or {}
-        except FingerprintError:
-            continue
-        fingerprint = str(record.get("payload") or "")
-        if (
-            record.get("status") != "payload-ready"
-            or not fingerprint.startswith("v3:r16:rgba8-phash:")
-        ):
-            continue
+        fingerprint = fingerprint_dds_r16(dds_path)
         identity = {
             "fingerprint": fingerprint,
             "format": meta.format,
