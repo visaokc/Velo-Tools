@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:texture-identity-manifest:schema:v6",
+  "$id": "urn:texture-identity-manifest:schema:v7",
   "title": "Texture identity manifest",
   "type": "object",
   "required": [
@@ -14,13 +14,13 @@
   ],
   "properties": {
     "$schema": {
-      "const": "urn:texture-identity-manifest:schema:v6"
+      "const": "urn:texture-identity-manifest:schema:v7"
     },
     "schema": {
       "const": "texture-identity-manifest"
     },
     "schema_version": {
-      "const": 6
+      "const": 7
     },
     "algorithm": {
       "type": "object",
@@ -30,6 +30,8 @@
         "canonical_color_domain",
         "canonical_view_policy",
         "mip_selection_policy",
+        "minimum_streaming_extent",
+        "streaming_simulation",
         "candidate_resolutions",
         "payload",
         "payload_bytes",
@@ -38,6 +40,7 @@
         "distance_weights",
         "minimum_margin_policy",
         "minimum_margin_safety_factor",
+        "preferred_minimum_match_margin",
         "effective_tolerance",
         "selection_rule",
         "reference_strategy"
@@ -56,7 +59,13 @@
           "const": "compatible-non-srgb-srv"
         },
         "mip_selection_policy": {
-          "const": "visible-most-detailed-normalized-area-average-v3"
+          "const": "simulated-streaming-chain-to-256-area-average-v3"
+        },
+        "minimum_streaming_extent": {
+          "const": 256
+        },
+        "streaming_simulation": {
+          "const": "recursive-encoded-rgba8-area-average-with-level-quantization"
         },
         "candidate_resolutions": {
           "const": [
@@ -93,11 +102,14 @@
         "minimum_margin_safety_factor": {
           "const": 0.25
         },
+        "preferred_minimum_match_margin": {
+          "const": 0.002
+        },
         "effective_tolerance": {
           "type": "string"
         },
         "selection_rule": {
-          "type": "string"
+          "const": "prefer the lowest resolution whose safety-scaled simulated-streaming margin reaches the preferred margin; otherwise use the resolution with the largest positive margin"
         },
         "reference_strategy": {
           "type": "string"
@@ -429,6 +441,19 @@
         "runtime_source_mip_role": {
           "const": "srv-visible-most-detailed"
         },
+        "mip_selection_policy": {
+          "const": "simulated-streaming-chain-to-256-area-average-v3"
+        },
+        "minimum_streaming_extent": {
+          "const": 256
+        },
+        "streaming_variants": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/streaming_variant"
+          }
+        },
         "payload_abi_compatible": {
           "const": true
         },
@@ -501,10 +526,44 @@
         "source_mip_height",
         "source_mip_role",
         "runtime_source_mip_role",
+        "minimum_streaming_extent",
+        "streaming_variants",
         "runtime_compatibility_blockers",
         "offline_cache_identity"
       ],
       "additionalProperties": true
+    },
+    "streaming_variant": {
+      "type": "object",
+      "required": [
+        "variant",
+        "width",
+        "height",
+        "simulated",
+        "payload"
+      ],
+      "properties": {
+        "variant": {
+          "type": "string",
+          "minLength": 1
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "simulated": {
+          "type": "boolean"
+        },
+        "payload": {
+          "type": "string",
+          "pattern": "^v3:r(16|32|64|128|256):rgba8-phash:[A-Za-z0-9_-]{55}=$"
+        }
+      },
+      "additionalProperties": false
     },
     "candidate_context": {
       "type": "object",

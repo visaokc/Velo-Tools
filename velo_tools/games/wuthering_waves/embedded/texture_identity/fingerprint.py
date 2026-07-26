@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
+import numpy
+
 from ..slot_textures.dds_meta import DdsMeta, read_dds_meta
 
 
@@ -20,10 +22,12 @@ PAYLOAD_ENCODING = "v3:rN:rgba8-phash:<base64url>"
 PAYLOAD_PROFILE = "rgba8-phash"
 CANONICAL_COLOR_DOMAIN = "encoded-rgba8"
 CANONICAL_VIEW_POLICY = "compatible-non-srgb-srv"
-MIP_SELECTION_POLICY = "visible-most-detailed-normalized-area-average-v3"
+MIP_SELECTION_POLICY = "simulated-streaming-chain-to-256-area-average-v3"
 RESOLUTIONS = (16, 32, 64, 128, 256)
+MINIMUM_STREAMING_EXTENT = 256
 DEFAULT_TOLERANCE_FLOOR = 2.0 / 255.0
 MINIMUM_MARGIN_SAFETY_FACTOR = 0.25
+PREFERRED_MINIMUM_MATCH_MARGIN = 0.002
 
 _DESCRIPTOR_FAMILIES = {
     "R8G8B8A8_UNORM": "r8g8b8a8",
@@ -106,6 +110,8 @@ class CollisionSelection:
     maximum_intra_distance: float
     nearest_inter_distance: float | None
     observed_minimum_margin: float | None
+    preferred_minimum_margin: float
+    preferred_margin_met: bool
     pixel_ambiguous: bool
     unavailable_resolutions: tuple[int, ...]
 
@@ -142,6 +148,56 @@ def _canonical_rgba(source: bytes, *, bgra: bool, force_alpha: bool) -> bytes:
     return bytes(output)
 
 
+def _decode_dds_with_blender(
+    path: Path,
+    meta: DdsMeta,
+    source_data: bytes,
+) -> DecodedDds:
+    try:
+        import bpy
+    except ImportError as exc:
+        raise FingerprintError(
+            f"Unsupported prototype DDS format outside Blender: {meta.format or 'unknown'}"
+        ) from exc
+
+    image = None
+    try:
+        image = bpy.data.images.load(str(path), check_existing=False)
+        image.colorspace_settings.name = "Non-Color"
+        width, height = (int(value) for value in image.size)
+        if width <= 0 or height <= 0:
+            raise FingerprintError(f"Blender could not decode DDS pixels: {path}")
+        pixels = numpy.empty(width * height * 4, dtype=numpy.float32)
+        image.pixels.foreach_get(pixels)
+        rgba = numpy.clip(
+            numpy.floor(pixels.reshape(height, width, 4)[::-1] * 255.0 + 0.5),
+            0,
+            255,
+        ).astype(numpy.uint8)
+        decoded_mips = (
+            DecodedMip(
+                level=0,
+                width=width,
+                height=height,
+                rgba=rgba.tobytes(),
+            ),
+        )
+    finally:
+        if image is not None:
+            bpy.data.images.remove(image)
+
+    declared_mips = max(int(meta.mips), 1)
+    return DecodedDds(
+        meta=meta,
+        mips=decoded_mips,
+        declared_mips=declared_mips,
+        mip_chain_complete=declared_mips == 1,
+        source_is_srgb=meta.format.endswith("_SRGB"),
+        canonical_format=canonical_format(meta.format),
+        source_sha256=hashlib.sha256(source_data).hexdigest(),
+    )
+
+
 def decode_dds(path: str | Path) -> DecodedDds:
     path = Path(path)
     meta = read_dds_meta(path)
@@ -155,10 +211,9 @@ def decode_dds(path: str | Path) -> DecodedDds:
         "R8G8B8A8_UNORM",
         "R8G8B8A8_UNORM_SRGB",
     }
-    if meta.format not in supported:
-        raise FingerprintError(f"Unsupported prototype DDS format: {meta.format or 'unknown'}")
-
     data = path.read_bytes()
+    if meta.format not in supported:
+        return _decode_dds_with_blender(path, meta, data)
     if len(data) < 128:
         raise FingerprintError(f"Truncated DDS header: {path}")
     has_dx10 = data[84:88] == b"DX10"
@@ -221,31 +276,114 @@ def _sample_grid_values(mip: DecodedMip, resolution: int) -> tuple[float, ...]:
         raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
     if mip.width <= 0 or mip.height <= 0:
         raise FingerprintError("DDS mip dimensions must be positive")
-    sampled = []
-    for y in range(resolution):
-        begin_y = y * mip.height // resolution
-        end_y = min(
-            mip.height,
-            max((y + 1) * mip.height // resolution, begin_y + 1),
+    source = numpy.frombuffer(mip.rgba, dtype=numpy.uint8).reshape(
+        mip.height,
+        mip.width,
+        4,
+    )
+    if mip.width % resolution == 0 and mip.height % resolution == 0:
+        block_width = mip.width // resolution
+        block_height = mip.height // resolution
+        sums = source.reshape(
+            resolution,
+            block_height,
+            resolution,
+            block_width,
+            4,
+        ).sum(axis=(1, 3), dtype=numpy.uint64)
+        counts = block_width * block_height
+    else:
+        integral = numpy.pad(
+            source.astype(numpy.uint64).cumsum(axis=0).cumsum(axis=1),
+            ((1, 0), (1, 0), (0, 0)),
         )
-        for x in range(resolution):
-            begin_x = x * mip.width // resolution
-            end_x = min(
-                mip.width,
-                max((x + 1) * mip.width // resolution, begin_x + 1),
+        begin_x = numpy.arange(resolution) * mip.width // resolution
+        begin_y = numpy.arange(resolution) * mip.height // resolution
+        end_x = numpy.minimum(
+            mip.width,
+            numpy.maximum(
+                (numpy.arange(resolution) + 1) * mip.width // resolution,
+                begin_x + 1,
+            ),
+        )
+        end_y = numpy.minimum(
+            mip.height,
+            numpy.maximum(
+                (numpy.arange(resolution) + 1) * mip.height // resolution,
+                begin_y + 1,
+            ),
+        )
+        sums = (
+            integral[end_y[:, None], end_x[None, :]]
+            - integral[begin_y[:, None], end_x[None, :]]
+            - integral[end_y[:, None], begin_x[None, :]]
+            + integral[begin_y[:, None], begin_x[None, :]]
+        )
+        counts = (
+            (end_y - begin_y)[:, None]
+            * (end_x - begin_x)[None, :]
+        )
+        counts = counts[:, :, None]
+    sampled = sums.astype(numpy.float32)
+    sampled /= numpy.float32(counts)
+    sampled /= numpy.float32(255.0)
+    return tuple(float(value) for value in sampled.reshape(-1))
+
+
+def _half_size_mip(mip: DecodedMip, level: int) -> DecodedMip:
+    target_width = max(1, mip.width // 2)
+    target_height = max(1, mip.height // 2)
+    source = numpy.frombuffer(mip.rgba, dtype=numpy.uint8).reshape(
+        mip.height,
+        mip.width,
+        4,
+    )
+    if mip.width == target_width * 2 and mip.height == target_height * 2:
+        sums = source.reshape(
+            target_height,
+            2,
+            target_width,
+            2,
+            4,
+        ).sum(axis=(1, 3), dtype=numpy.uint16)
+        resized = ((sums + 2) // 4).astype(numpy.uint8)
+    else:
+        resized = numpy.empty((target_height, target_width, 4), dtype=numpy.uint8)
+        for y in range(target_height):
+            begin_y = y * mip.height // target_height
+            end_y = min(
+                mip.height,
+                max((y + 1) * mip.height // target_height, begin_y + 1),
             )
-            sums = [0.0] * 4
-            count = (end_x - begin_x) * (end_y - begin_y)
-            for source_y in range(begin_y, end_y):
-                for source_x in range(begin_x, end_x):
-                    source_offset = (source_y * mip.width + source_x) * 4
-                    for component in range(4):
-                        sums[component] = _float32(
-                            sums[component]
-                            + _BYTE_TO_FLOAT[mip.rgba[source_offset + component]]
-                        )
-            sampled.extend(_float32(value / count) for value in sums)
-    return tuple(sampled)
+            for x in range(target_width):
+                begin_x = x * mip.width // target_width
+                end_x = min(
+                    mip.width,
+                    max((x + 1) * mip.width // target_width, begin_x + 1),
+                )
+                block = source[begin_y:end_y, begin_x:end_x].astype(numpy.uint64)
+                count = block.shape[0] * block.shape[1]
+                resized[y, x] = ((block.sum(axis=(0, 1)) + count // 2) // count)
+    return DecodedMip(
+        level=level,
+        width=target_width,
+        height=target_height,
+        rgba=resized.tobytes(),
+    )
+
+
+def simulated_streaming_chain(source_mip: DecodedMip) -> tuple[DecodedMip, ...]:
+    chain = [source_mip]
+    current = source_mip
+    level = 1
+    while max(current.width, current.height) > MINIMUM_STREAMING_EXTENT:
+        next_mip = _half_size_mip(current, level)
+        if max(next_mip.width, next_mip.height) < MINIMUM_STREAMING_EXTENT:
+            break
+        chain.append(next_mip)
+        current = next_mip
+        level += 1
+    return tuple(chain)
 
 
 def sample_grid(mip: DecodedMip, resolution: int) -> bytes:
@@ -373,15 +511,30 @@ def fingerprint_dds(
     decoded = decode_dds(path)
     results = {}
     source_mip = decoded.mips[0]
+    streaming_chain = simulated_streaming_chain(source_mip)
     for resolution in resolutions:
         if resolution not in RESOLUTIONS:
             raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
+        streaming_variants = []
+        for streaming_mip in streaming_chain:
+            streaming_variants.append(
+                {
+                    "variant": (
+                        f"{streaming_mip.width}x{streaming_mip.height}"
+                    ),
+                    "width": streaming_mip.width,
+                    "height": streaming_mip.height,
+                    "simulated": streaming_mip.level != source_mip.level,
+                    "payload": _encode_fingerprint_samples(
+                        _sample_grid_values(streaming_mip, resolution),
+                        resolution,
+                    ),
+                }
+            )
         results[str(resolution)] = {
             "status": "payload-ready",
-            "payload": _encode_fingerprint_samples(
-                _sample_grid_values(source_mip, resolution),
-                resolution,
-            ),
+            "payload": streaming_variants[0]["payload"],
+            "streaming_variants": streaming_variants,
             "algorithm_version": ALGORITHM_VERSION,
             "canonical_color_domain": CANONICAL_COLOR_DOMAIN,
             "canonical_view_policy": CANONICAL_VIEW_POLICY,
@@ -396,6 +549,7 @@ def fingerprint_dds(
             "available_complete_mips": len(decoded.mips),
             "mip_chain_complete": decoded.mip_chain_complete,
             "mip_selection_policy": MIP_SELECTION_POLICY,
+            "minimum_streaming_extent": MINIMUM_STREAMING_EXTENT,
             "source_is_srgb": decoded.source_is_srgb,
             "payload_abi_compatible": True,
             "payload_profile": PAYLOAD_PROFILE,
@@ -450,9 +604,9 @@ def _variant_payloads(identity: Mapping, resolution: int) -> list[tuple[str, str
         variant_id = str(variant.get("variant") or "")
         record = (variant.get("fingerprints") or {}).get(str(resolution))
         if not variant_id or not isinstance(record, Mapping):
-            continue
+            return []
         if record.get("status") != "payload-ready":
-            continue
+            return []
         if int(record.get("algorithm_version", -1)) != ALGORITHM_VERSION:
             raise FingerprintError("Fingerprint algorithm version mismatch")
         if record.get("payload_profile") != PAYLOAD_PROFILE:
@@ -463,13 +617,44 @@ def _variant_payloads(identity: Mapping, resolution: int) -> list[tuple[str, str
             raise FingerprintError("Fingerprint canonical view policy mismatch")
         if int(record.get("absolute_mip", -1)) < 0:
             raise FingerprintError("Runtime-v3 fingerprint requires an absolute mip")
-        payload = str(record.get("payload") or "")
-        payload_resolution, _ = decode_fingerprint(payload)
-        if payload_resolution != resolution or int(record.get("canonical_resolution", -1)) != resolution:
-            raise FingerprintError(
-                f"Manifest key r{resolution} disagrees with its fingerprint record"
+        streaming_variants = record.get("streaming_variants")
+        has_streaming_variants = (
+            isinstance(streaming_variants, Sequence)
+            and not isinstance(streaming_variants, (str, bytes))
+        )
+        if not has_streaming_variants:
+            streaming_variants = [
+                {
+                    "variant": "source",
+                    "payload": record.get("payload"),
+                }
+            ]
+        if isinstance(streaming_variants, (str, bytes)):
+            return []
+        if not isinstance(streaming_variants, Sequence):
+            return []
+        if not streaming_variants:
+            return []
+        for streaming_variant in streaming_variants:
+            if not isinstance(streaming_variant, Mapping):
+                return []
+            streaming_id = str(streaming_variant.get("variant") or "")
+            payload = str(streaming_variant.get("payload") or "")
+            payload_resolution, _ = decode_fingerprint(payload)
+            if (
+                not streaming_id
+                or payload_resolution != resolution
+                or int(record.get("canonical_resolution", -1)) != resolution
+            ):
+                raise FingerprintError(
+                    f"Manifest key r{resolution} disagrees with its fingerprint record"
+                )
+            sample_id = (
+                f"{variant_id}@{streaming_id}"
+                if has_streaming_variants
+                else variant_id
             )
-        payloads.append((variant_id, payload))
+            payloads.append((sample_id, payload))
     return payloads
 
 
@@ -495,6 +680,7 @@ def select_common_resolution(
         raise FingerprintError("A collision group must contain at least one identity")
 
     last = None
+    viable = []
     unavailable = []
     for resolution in RESOLUTIONS:
         per_identity = []
@@ -504,8 +690,7 @@ def select_common_resolution(
         for identity in identities:
             identity_id = str(identity.get("identity") or "")
             payloads = _variant_payloads(identity, resolution)
-            expected_variants = len(identity.get("variants") or [])
-            if not identity_id or not payloads or len(payloads) != expected_variants:
+            if not identity_id or not payloads:
                 complete = False
                 break
             per_identity.append((identity_id, payloads))
@@ -552,14 +737,15 @@ def select_common_resolution(
             if classification_margins
             else None
         )
+        derived_minimum_margin = max(
+            0.0,
+            float(observed_minimum_margin or 0.0)
+            * MINIMUM_MARGIN_SAFETY_FACTOR,
+        )
         selected_minimum_margin = (
             float(minimum_margin)
             if minimum_margin is not None
-            else max(
-                0.0,
-                float(observed_minimum_margin or 0.0)
-                * MINIMUM_MARGIN_SAFETY_FACTOR,
-            )
+            else derived_minimum_margin
         )
         last = (
             resolution,
@@ -571,11 +757,7 @@ def select_common_resolution(
             observed_minimum_margin,
             selected_minimum_margin,
         )
-        if (
-            observed_minimum_margin is None
-            or observed_minimum_margin > 0.0
-            and observed_minimum_margin >= selected_minimum_margin
-        ):
+        if observed_minimum_margin is None:
             return CollisionSelection(
                 resolution=resolution,
                 fingerprints=references,
@@ -586,14 +768,44 @@ def select_common_resolution(
                 maximum_intra_distance=maximum_intra,
                 nearest_inter_distance=nearest_inter,
                 observed_minimum_margin=observed_minimum_margin,
+                preferred_minimum_margin=PREFERRED_MINIMUM_MATCH_MARGIN,
+                preferred_margin_met=True,
                 pixel_ambiguous=False,
                 unavailable_resolutions=tuple(unavailable),
             )
+        if (
+            observed_minimum_margin > 0.0
+            and observed_minimum_margin >= selected_minimum_margin
+        ):
+            viable.append(last)
+            preferred_target = (
+                float(minimum_margin)
+                if minimum_margin is not None
+                else PREFERRED_MINIMUM_MATCH_MARGIN
+            )
+            if selected_minimum_margin >= preferred_target:
+                return CollisionSelection(
+                    resolution=resolution,
+                    fingerprints=references,
+                    reference_variants=reference_variants,
+                    tolerance=effective_tolerance,
+                    tolerance_floor=tolerance_floor,
+                    minimum_margin=selected_minimum_margin,
+                    maximum_intra_distance=maximum_intra,
+                    nearest_inter_distance=nearest_inter,
+                    observed_minimum_margin=observed_minimum_margin,
+                    preferred_minimum_margin=PREFERRED_MINIMUM_MATCH_MARGIN,
+                    preferred_margin_met=True,
+                    pixel_ambiguous=False,
+                    unavailable_resolutions=tuple(unavailable),
+                )
 
     if last is None:
         raise FingerprintError(
             "No resolution has a fingerprint for every identity variant"
         )
+    if viable:
+        last = max(viable, key=lambda item: (item[7], -item[0]))
     (
         resolution,
         references,
@@ -614,6 +826,8 @@ def select_common_resolution(
         maximum_intra_distance=maximum_intra,
         nearest_inter_distance=nearest_inter,
         observed_minimum_margin=observed_minimum_margin,
-        pixel_ambiguous=True,
+        preferred_minimum_margin=PREFERRED_MINIMUM_MATCH_MARGIN,
+        preferred_margin_met=False,
+        pixel_ambiguous=not bool(viable),
         unavailable_resolutions=tuple(unavailable),
     )

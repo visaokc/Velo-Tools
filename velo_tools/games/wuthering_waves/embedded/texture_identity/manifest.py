@@ -16,10 +16,12 @@ from .fingerprint import (
     CANONICAL_COLOR_DOMAIN,
     CANONICAL_VIEW_POLICY,
     DEFAULT_TOLERANCE_FLOOR,
+    MINIMUM_STREAMING_EXTENT,
     MINIMUM_MARGIN_SAFETY_FACTOR,
     MIP_SELECTION_POLICY,
     PAYLOAD_ENCODING,
     PAYLOAD_PROFILE,
+    PREFERRED_MINIMUM_MATCH_MARGIN,
     RESOLUTIONS,
     FingerprintError,
     fingerprint_dds,
@@ -30,8 +32,8 @@ from ..slot_textures.dds_meta import read_dds_meta
 
 MANIFEST_FILENAME = "TextureIdentityManifest.json"
 SOURCE_EVIDENCE_DIRECTORY = "TextureIdentitySources"
-SCHEMA_ID = "urn:texture-identity-manifest:schema:v6"
-SCHEMA_VERSION = 6
+SCHEMA_ID = "urn:texture-identity-manifest:schema:v7"
+SCHEMA_VERSION = 7
 PROTOTYPE_ABI_VERSION = 3
 SOURCE_PROFILES = ("Showcase1", "Dungeon1", "Dungeon2")
 _DDS_HASH = re.compile(r"\bt=([0-9a-fA-F]{8})\b")
@@ -275,6 +277,10 @@ def build_manifest(
             "canonical_view_policy": CANONICAL_VIEW_POLICY,
             "srgb_behavior": "preserve-dds-encoded-rgba8-through-compatible-non-srgb-srv",
             "mip_selection_policy": MIP_SELECTION_POLICY,
+            "minimum_streaming_extent": MINIMUM_STREAMING_EXTENT,
+            "streaming_simulation": (
+                "recursive-encoded-rgba8-area-average-with-level-quantization"
+            ),
             "normalization_formula": "area=[id*size/N,(id+1)*size/N)",
             "non_square_policy": "normalize-each-axis-independently",
             "small_texture_policy": "deterministic-single-pixel-area-repetition",
@@ -295,9 +301,12 @@ def build_manifest(
                 "observed_minimum_classification_margin * safety_factor"
             ),
             "minimum_margin_safety_factor": MINIMUM_MARGIN_SAFETY_FACTOR,
+            "preferred_minimum_match_margin": PREFERRED_MINIMUM_MATCH_MARGIN,
             "effective_tolerance": "max(tolerance_floor, maximum_intra_distance)",
             "selection_rule": (
-                "every known variant is uniquely closest to its own medoid"
+                "prefer the lowest resolution whose safety-scaled simulated-streaming "
+                "margin reaches the preferred margin; otherwise use the resolution "
+                "with the largest positive margin"
             ),
             "reference_strategy": "per-identity-minimax-medoid-over-all-variants",
             "legacy_cache_policy": "reject-incompatible-algorithm-domain-sampling-or-payload-profile",

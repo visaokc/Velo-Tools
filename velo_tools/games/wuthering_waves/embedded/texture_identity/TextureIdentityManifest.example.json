@@ -1,14 +1,14 @@
 {
   "$schema": "urn:texture-identity-manifest:schema:v6",
-  "schema": "texture-identity-manifest",
-  "schema_version": 6,
+  "schema": "urn:texture-identity-manifest:schema:v7",
+  "schema_version": 7,
   "algorithm": {
     "name": "canonical-pixel-fingerprint",
     "version": 3,
     "canonical_color_domain": "encoded-rgba8",
     "canonical_view_policy": "compatible-non-srgb-srv",
     "srgb_behavior": "preserve-dds-encoded-rgba8-through-compatible-non-srgb-srv",
-    "mip_selection_policy": "visible-most-detailed-normalized-area-average-v3",
+    "mip_selection_policy": "simulated-streaming-chain-to-256-area-average-v3",
     "normalization_formula": "area=[id*size/N,(id+1)*size/N)",
     "non_square_policy": "normalize-each-axis-independently",
     "small_texture_policy": "deterministic-single-pixel-area-repetition",
@@ -26,7 +26,7 @@
     "minimum_margin_policy": "observed_minimum_classification_margin * safety_factor",
     "minimum_margin_safety_factor": 0.25,
     "effective_tolerance": "max(tolerance_floor, maximum_intra_distance)",
-    "selection_rule": "every known variant is uniquely closest to its own medoid",
+    "selection_rule": "prefer the lowest resolution whose safety-scaled simulated-streaming margin reaches the preferred margin; otherwise use the resolution with the largest positive margin",
     "reference_strategy": "per-identity-minimax-medoid-over-all-variants",
     "legacy_cache_policy": "reject-incompatible-algorithm-domain-sampling-or-payload-profile",
     "payload_profile": "rgba8-phash",
@@ -36,7 +36,10 @@
       "mean_mae": 0.15,
       "deviation_mae": 0.07,
       "alpha_coverage_absolute": 0.03
-    }
+    },
+    "minimum_streaming_extent": 256,
+    "streaming_simulation": "recursive-encoded-rgba8-area-average-with-level-quantization",
+    "preferred_minimum_match_margin": 0.002
   },
   "source": {
     "metadata_ref": "Metadata.json",
@@ -145,7 +148,7 @@
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "visible-most-detailed-normalized-area-average-v3",
+              "mip_selection_policy": "simulated-streaming-chain-to-256-area-average-v3",
               "source_is_srgb": false,
               "payload_abi_compatible": true,
               "runtime_compatible": false,
@@ -160,7 +163,17 @@
                 "absolute_mip": 0,
                 "payload_profile": "rgba8-phash"
               },
-              "payload_profile": "rgba8-phash"
+              "payload_profile": "rgba8-phash",
+              "minimum_streaming_extent": 256,
+              "streaming_variants": [
+                {
+                  "variant": "32x16",
+                  "width": 32,
+                  "height": 16,
+                  "simulated": false,
+                  "payload": "v3:r16:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8="
+                }
+              ]
             },
             "32": {
               "status": "payload-ready",
@@ -178,7 +191,7 @@
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "visible-most-detailed-normalized-area-average-v3",
+              "mip_selection_policy": "simulated-streaming-chain-to-256-area-average-v3",
               "source_is_srgb": false,
               "payload_abi_compatible": true,
               "runtime_compatible": false,
@@ -193,7 +206,17 @@
                 "absolute_mip": 0,
                 "payload_profile": "rgba8-phash"
               },
-              "payload_profile": "rgba8-phash"
+              "payload_profile": "rgba8-phash",
+              "minimum_streaming_extent": 256,
+              "streaming_variants": [
+                {
+                  "variant": "32x16",
+                  "width": 32,
+                  "height": 16,
+                  "simulated": false,
+                  "payload": "v3:r32:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8="
+                }
+              ]
             },
             "64": {
               "status": "payload-ready",
@@ -211,7 +234,7 @@
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "visible-most-detailed-normalized-area-average-v3",
+              "mip_selection_policy": "simulated-streaming-chain-to-256-area-average-v3",
               "source_is_srgb": false,
               "payload_abi_compatible": true,
               "runtime_compatible": false,
@@ -226,7 +249,17 @@
                 "absolute_mip": 0,
                 "payload_profile": "rgba8-phash"
               },
-              "payload_profile": "rgba8-phash"
+              "payload_profile": "rgba8-phash",
+              "minimum_streaming_extent": 256,
+              "streaming_variants": [
+                {
+                  "variant": "32x16",
+                  "width": 32,
+                  "height": 16,
+                  "simulated": false,
+                  "payload": "v3:r64:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8="
+                }
+              ]
             },
             "128": {
               "status": "payload-ready",
@@ -244,7 +277,7 @@
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "visible-most-detailed-normalized-area-average-v3",
+              "mip_selection_policy": "simulated-streaming-chain-to-256-area-average-v3",
               "source_is_srgb": false,
               "payload_abi_compatible": true,
               "runtime_compatible": false,
@@ -259,7 +292,17 @@
                 "absolute_mip": 0,
                 "payload_profile": "rgba8-phash"
               },
-              "payload_profile": "rgba8-phash"
+              "payload_profile": "rgba8-phash",
+              "minimum_streaming_extent": 256,
+              "streaming_variants": [
+                {
+                  "variant": "32x16",
+                  "width": 32,
+                  "height": 16,
+                  "simulated": false,
+                  "payload": "v3:r128:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8="
+                }
+              ]
             },
             "256": {
               "status": "payload-ready",
@@ -277,7 +320,7 @@
               "declared_mips": 2,
               "available_complete_mips": 2,
               "mip_chain_complete": true,
-              "mip_selection_policy": "visible-most-detailed-normalized-area-average-v3",
+              "mip_selection_policy": "simulated-streaming-chain-to-256-area-average-v3",
               "source_is_srgb": false,
               "payload_abi_compatible": true,
               "runtime_compatible": false,
@@ -292,7 +335,17 @@
                 "absolute_mip": 0,
                 "payload_profile": "rgba8-phash"
               },
-              "payload_profile": "rgba8-phash"
+              "payload_profile": "rgba8-phash",
+              "minimum_streaming_extent": 256,
+              "streaming_variants": [
+                {
+                  "variant": "32x16",
+                  "width": 32,
+                  "height": 16,
+                  "simulated": false,
+                  "payload": "v3:r256:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8="
+                }
+              ]
             }
           }
         }

@@ -184,6 +184,8 @@ def select_rules(
                     "tolerance_floor": selection.tolerance_floor,
                     "minimum_match_margin": selection.minimum_margin,
                     "observed_minimum_margin": selection.observed_minimum_margin,
+                    "preferred_minimum_margin": selection.preferred_minimum_margin,
+                    "preferred_margin_met": selection.preferred_margin_met,
                     "nearest_inter_distance": selection.nearest_inter_distance,
                     "maximum_intra_distance": selection.maximum_intra_distance,
                     "pixel_ambiguous": selection.pixel_ambiguous,
