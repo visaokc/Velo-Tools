@@ -10,9 +10,7 @@ from typing import Any, Mapping
 
 from .fingerprint import (
     ALGORITHM_VERSION,
-    DEFAULT_TOLERANCE_FLOOR,
     FingerprintError,
-    select_common_resolution,
 )
 from .manifest import (
     MANIFEST_FILENAME,
@@ -100,8 +98,6 @@ def _validate_manifest(manifest: Mapping[str, Any]) -> None:
 def select_rules(
     manifest: Mapping[str, Any],
     replacements: Mapping[str, str] | None = None,
-    *,
-    tolerance_floor: float = DEFAULT_TOLERANCE_FLOOR,
 ) -> list[dict[str, Any]]:
     _validate_manifest(manifest)
     identities = [
@@ -118,19 +114,45 @@ def select_rules(
     for match_format in sorted(groups):
         group = groups[match_format]
         family = _format_family(group[0])
-        try:
-            selection = select_common_resolution(
-                group,
-                tolerance_floor=tolerance_floor,
+        selected = {}
+        for identity in group:
+            identity_id = str(identity.get("identity"))
+            variant = next(
+                (
+                    item
+                    for item in identity.get("variants") or []
+                    if item.get("variant") == "dump-base"
+                ),
+                None,
             )
-        except FingerprintError:
+            if variant is None:
+                variant = next(
+                    (
+                        item
+                        for item in identity.get("variants") or []
+                        if item.get("variant") == "base"
+                    ),
+                    None,
+                )
+            record = ((variant or {}).get("fingerprints") or {}).get("16") or {}
+            payload = str(record.get("payload") or "")
+            if (
+                record.get("status") != "payload-ready"
+                or not payload.startswith("v3:r16:rgba8-phash:")
+            ):
+                selected = {}
+                break
+            selected[identity_id] = (variant, record, payload)
+        if len(selected) != len(group):
             continue
         selected_replacements = {
             replacements.get(str(identity.get("identity")), _resource_name(identity))
             for identity in group
         }
+        payloads = [selected[str(identity.get("identity"))][2] for identity in group]
+        pixel_ambiguous = len(set(payloads)) != len(payloads)
         collision_policy = "reject"
-        if selection.pixel_ambiguous:
+        if pixel_ambiguous:
             collision_policy = (
                 "merge"
                 if len(selected_replacements) == 1
@@ -140,7 +162,7 @@ def select_rules(
             raise FingerprintError(f"Illegal collision policy: {collision_policy}")
 
         group_id = (
-            f"default-r{selection.resolution}-exact-"
+            "default-r16-exact-"
             f"{match_format.lower()}"
         )
         for identity in group:
@@ -157,14 +179,7 @@ def select_rules(
                 blockers.append("candidate-context-draw_context-mapping-not-implemented")
                 if not context_complete:
                     blockers.append("candidate-context-evidence-incomplete")
-            selected_record = next(
-                (
-                    (variant.get("fingerprints") or {}).get(str(selection.resolution))
-                    for variant in variants
-                    if variant.get("variant") == selection.reference_variants[identity_id]
-                ),
-                {},
-            ) or {}
+            selected_variant, selected_record, selected_payload = selected[identity_id]
             rules.append(
                 {
                     "prototype_abi_version": PROTOTYPE_ABI_VERSION,
@@ -174,22 +189,13 @@ def select_rules(
                     "abi_blockers": blockers,
                     "runtime_compatible": False,
                     "identity": identity_id,
-                    "reference_variant": selection.reference_variants[identity_id],
+                    "reference_variant": selected_variant.get("variant"),
                     "match_format": match_format,
                     "match_format_family": family,
                     "collision_group": group_id,
-                    "match_resolution": selection.resolution,
-                    "match_fingerprint": selection.fingerprints[identity_id],
-                    "fingerprint_tolerance": selection.tolerance,
-                    "tolerance_floor": selection.tolerance_floor,
-                    "minimum_match_margin": selection.minimum_margin,
-                    "observed_minimum_margin": selection.observed_minimum_margin,
-                    "preferred_minimum_margin": selection.preferred_minimum_margin,
-                    "preferred_margin_met": selection.preferred_margin_met,
-                    "nearest_inter_distance": selection.nearest_inter_distance,
-                    "maximum_intra_distance": selection.maximum_intra_distance,
-                    "pixel_ambiguous": selection.pixel_ambiguous,
-                    "unavailable_resolutions": list(selection.unavailable_resolutions),
+                    "match_resolution": 16,
+                    "match_fingerprint": selected_payload,
+                    "pixel_ambiguous": pixel_ambiguous,
                     "collision_policy": collision_policy,
                     "candidate_contexts": contexts,
                     "candidate_context_complete": context_complete,
@@ -241,8 +247,6 @@ def render_preview(
                 f"; absolute_mip = {rule['absolute_mip']}",
                 f"fingerprint = {rule['match_fingerprint']}",
                 f"format = {rule['match_format']}",
-                f"fingerprint_tolerance = {rule['fingerprint_tolerance']:.8f}",
-                f"minimum_match_margin = {rule['minimum_match_margin']:.8f}",
                 f"collision_group = {rule['collision_group']}",
                 f"collision_policy = {rule['collision_policy']}",
                 "stages = ps",

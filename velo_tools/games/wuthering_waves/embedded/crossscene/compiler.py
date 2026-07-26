@@ -1000,7 +1000,12 @@ def _append_fold_units(ir: CrossSceneIR, body: Any, manifest: Mapping[str, Any],
                     "    ; Draw skipped: component excluded by ExportSelection",
                     "endif",
                 ])
-                ir.sections.append(IniSectionIR(host_name, lines))
+                ir.sections.append(IniSectionIR(
+                    host_name,
+                    lines,
+                    global_component=global_id,
+                    role="fold_host",
+                ))
                 continue
             if merged:
                 base_meta = body.extracted_object.components[global_id]
@@ -1037,7 +1042,12 @@ def _append_fold_units(ir: CrossSceneIR, body: Any, manifest: Mapping[str, Any],
                 lines.extend([f"        run = {draw_name}", "    endif", "endif"])
             else:
                 lines.extend(["    handling = skip", f"    run = {draw_name}", "endif"])
-            ir.sections.append(IniSectionIR(host_name, lines))
+            ir.sections.append(IniSectionIR(
+                host_name,
+                lines,
+                global_component=global_id,
+                role="fold_host",
+            ))
 
             shared_override = f"CommandListOverrideSharedResources{suffix}"
             remap = remaps.get(str(global_id))
@@ -3497,6 +3507,41 @@ def _add_footer(ir: CrossSceneIR, cfg: Any) -> None:
     ])
 
 
+def _add_texture_identity_contexts(ir: CrossSceneIR) -> None:
+    for section in ir.sections:
+        if not section.name.casefold().startswith("textureoverride"):
+            continue
+        component_id = section.global_component
+        if component_id is None:
+            match = re.match(
+                r"TextureOverrideComponent(\d+)",
+                section.name,
+                re.I,
+            )
+            if match is not None:
+                component_id = int(match.group(1))
+        if component_id is None:
+            continue
+        if any(
+            line.partition("=")[0].strip().casefold()
+            == "texture_identity_context"
+            for line in section.lines
+        ):
+            continue
+        insert_at = next(
+            (
+                index + 1
+                for index, line in enumerate(section.lines)
+                if line.partition("=")[0].strip().casefold() == "hash"
+            ),
+            0,
+        )
+        section.lines.insert(
+            insert_at,
+            f"texture_identity_context = component:{int(component_id)}",
+        )
+
+
 def _with_checksum(text: str) -> str:
     body = text.strip() + "\n"
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
@@ -3853,6 +3898,7 @@ def compile_cross_scene(units: Sequence[Any], root: Any,
         _add_buffer_sections(ir, unit, mode)
     _add_texture_sections(ir, root, units, texture_plan, ini_textures)
     _add_footer(ir, cfg)
+    _add_texture_identity_contexts(ir)
 
     report = _validate_ir(ir, buffers, textures, logo_source, mode)
     rendered = ir.render()
