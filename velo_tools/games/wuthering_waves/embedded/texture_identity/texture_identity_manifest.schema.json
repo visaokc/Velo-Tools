@@ -69,15 +69,11 @@
         },
         "candidate_resolutions": {
           "const": [
-            16,
-            32,
-            64,
-            128,
-            256
+            16
           ]
         },
         "payload": {
-          "const": "v3:rN:rgba8-phash:<base64url>"
+          "const": "v3:r16:rgba8-phash:<base64url>"
         },
         "payload_profile": {
           "const": "rgba8-phash"
@@ -109,7 +105,7 @@
           "type": "string"
         },
         "selection_rule": {
-          "const": "prefer the lowest resolution whose safety-scaled simulated-streaming margin reaches the preferred margin; otherwise use the resolution with the largest positive margin"
+          "const": "use the single exact r16 standard anchor"
         },
         "reference_strategy": {
           "type": "string"
@@ -196,11 +192,7 @@
         },
         "match_resolutions": {
           "const": [
-            16,
-            32,
-            64,
-            128,
-            256
+            16
           ]
         },
         "match_format_families": {
@@ -375,11 +367,7 @@
           "type": "object",
           "propertyNames": {
             "enum": [
-              "16",
-              "32",
-              "64",
-              "128",
-              "256"
+              "16"
             ]
           },
           "additionalProperties": {
@@ -409,11 +397,7 @@
         },
         "canonical_resolution": {
           "enum": [
-            16,
-            32,
-            64,
-            128,
-            256
+            16
           ]
         },
         "canonical_format": {
@@ -421,7 +405,7 @@
         },
         "payload": {
           "type": "string",
-          "pattern": "^v3:r(16|32|64|128|256):rgba8-phash:[A-Za-z0-9_-]{55}=$"
+          "pattern": "^v3:r16:rgba8-phash:[A-Za-z0-9_-]{55}=$"
         },
         "absolute_mip": {
           "type": "integer",
@@ -560,7 +544,7 @@
         },
         "payload": {
           "type": "string",
-          "pattern": "^v3:r(16|32|64|128|256):rgba8-phash:[A-Za-z0-9_-]{55}=$"
+          "pattern": "^v3:r16:rgba8-phash:[A-Za-z0-9_-]{55}=$"
         }
       },
       "additionalProperties": false

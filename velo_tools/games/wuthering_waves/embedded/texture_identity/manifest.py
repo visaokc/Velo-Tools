@@ -19,10 +19,8 @@ from .fingerprint import (
     MINIMUM_STREAMING_EXTENT,
     MINIMUM_MARGIN_SAFETY_FACTOR,
     MIP_SELECTION_POLICY,
-    PAYLOAD_ENCODING,
     PAYLOAD_PROFILE,
     PREFERRED_MINIMUM_MATCH_MARGIN,
-    RESOLUTIONS,
     FingerprintError,
     fingerprint_dds,
     format_family,
@@ -36,6 +34,8 @@ SCHEMA_ID = "urn:texture-identity-manifest:schema:v7"
 SCHEMA_VERSION = 7
 PROTOTYPE_ABI_VERSION = 3
 SOURCE_PROFILES = ("Showcase1", "Dungeon1", "Dungeon2")
+MANIFEST_RESOLUTIONS = (16,)
+MANIFEST_PAYLOAD_ENCODING = "v3:r16:rgba8-phash:<base64url>"
 _DDS_HASH = re.compile(r"\bt=([0-9a-fA-F]{8})\b")
 _LOD_SOURCE = re.compile(r"(^|[^a-z0-9])lods?($|[^a-z0-9])", re.IGNORECASE)
 
@@ -193,7 +193,10 @@ def build_manifest(
         source_sha256 = hashlib.sha256(source_bytes).hexdigest()
         fingerprint_source_ref = dds_path.name
         try:
-            fingerprints = fingerprint_dds(dds_path)
+            fingerprints = fingerprint_dds(
+                dds_path,
+                resolutions=MANIFEST_RESOLUTIONS,
+            )
             ready_fingerprints = [
                 record
                 for record in fingerprints.values()
@@ -285,8 +288,8 @@ def build_manifest(
             "non_square_policy": "normalize-each-axis-independently",
             "small_texture_policy": "deterministic-single-pixel-area-repetition",
             "incomplete_chain_policy": "use-decoded-dump-top-level-image-only",
-            "candidate_resolutions": list(RESOLUTIONS),
-            "payload": PAYLOAD_ENCODING,
+            "candidate_resolutions": list(MANIFEST_RESOLUTIONS),
+            "payload": MANIFEST_PAYLOAD_ENCODING,
             "payload_profile": PAYLOAD_PROFILE,
             "payload_bytes": 41,
             "distance": "weighted-channel-phash-statistics-v3",
@@ -303,11 +306,7 @@ def build_manifest(
             "minimum_margin_safety_factor": MINIMUM_MARGIN_SAFETY_FACTOR,
             "preferred_minimum_match_margin": PREFERRED_MINIMUM_MATCH_MARGIN,
             "effective_tolerance": "max(tolerance_floor, maximum_intra_distance)",
-            "selection_rule": (
-                "prefer the lowest resolution whose safety-scaled simulated-streaming "
-                "margin reaches the preferred margin; otherwise use the resolution "
-                "with the largest positive margin"
-            ),
+            "selection_rule": "use the single exact r16 standard anchor",
             "reference_strategy": "per-identity-minimax-medoid-over-all-variants",
             "legacy_cache_policy": "reject-incompatible-algorithm-domain-sampling-or-payload-profile",
         },
@@ -338,7 +337,7 @@ def build_manifest(
             ],
             "analysis_phase": "present",
             "rule_scope_fields_emitted": False,
-            "match_resolutions": list(RESOLUTIONS),
+            "match_resolutions": list(MANIFEST_RESOLUTIONS),
             "match_format_families": [
                 "r8g8b8a8",
                 "b8g8r8a8",
@@ -395,3 +394,45 @@ def write_manifest(
     path = object_directory / MANIFEST_FILENAME
     path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return path
+
+
+def refresh_manifest(
+    object_directory: str | Path,
+    *,
+    source_directories: tuple[str | Path, ...] = (),
+) -> Path | None:
+    """Rebuild an r16 manifest after a form or cross-scene DDS merge."""
+    object_directory = Path(object_directory)
+    candidates = (object_directory, *(Path(path) for path in source_directories))
+    source_profile = None
+    for candidate in candidates:
+        manifest_path = candidate / MANIFEST_FILENAME
+        if manifest_path.is_file():
+            try:
+                existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+                profile = str((existing.get("source") or {}).get("profile") or "")
+            except (OSError, TypeError, ValueError):
+                profile = ""
+            if profile in SOURCE_PROFILES:
+                source_profile = profile
+                break
+        profile = classify_source_profile(candidate)
+        if profile is not None:
+            source_profile = profile
+            break
+    if source_profile is None:
+        return None
+
+    metadata_path = object_directory / "Metadata.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        metadata = {}
+    object_hash = str((metadata or {}).get("vb0_hash") or object_directory.name)
+    if not re.fullmatch(r"[0-9a-fA-F]{8}", object_hash):
+        return None
+    return write_manifest(
+        object_directory,
+        object_hash.lower(),
+        source_profile=source_profile,
+    )

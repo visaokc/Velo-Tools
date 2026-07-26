@@ -37,6 +37,7 @@ from . import constants
 from . import dds_meta
 from . import log_freshness
 from . import stu_metadata
+from ..texture_identity import manifest as texture_identity_manifest
 
 # Same exclusion list the stock extraction / export use for well-known cubemaps.
 KNOWN_CUBEMAP_HASHES = ['af26db30', '1320a071', '10d7937d', '87505b2b',
@@ -738,6 +739,10 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
                 'components': component_count,
             } for route_hash, component_count in fold_routes_written)
         copied = _copy_form_textures(object_source_folder, combined)
+        texture_identity_manifest.refresh_manifest(
+            object_source_folder,
+            source_directories=(dump_path,),
+        )
         return {'mode': 'cross_scene', 'lifted_ibs': sorted(lifted),
                 'textures_copied': copied, 'form_label': form_label.strip(),
                 'fold_extra_forms': fold_forms_written,
@@ -774,6 +779,10 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         usage.update(base_components)
         refresh_local_discriminator_audit_in_usage(usage)
         stu_metadata.write_usage(usage_path, usage)
+        texture_identity_manifest.refresh_manifest(
+            object_source_folder,
+            source_directories=(dump_path,),
+        )
         return {
             'usage_file': str(usage_path),
             'label': 'base',
@@ -861,6 +870,10 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         ])
     refresh_local_discriminator_audit_in_usage(usage)
     stu_metadata.write_usage(usage_path, usage)
+    texture_identity_manifest.refresh_manifest(
+        object_source_folder,
+        source_directories=(dump_path,),
+    )
     if legacy_path.is_file():
         legacy_path.unlink()
 

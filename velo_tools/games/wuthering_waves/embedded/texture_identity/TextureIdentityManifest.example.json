@@ -14,19 +14,15 @@
     "small_texture_policy": "deterministic-single-pixel-area-repetition",
     "incomplete_chain_policy": "use-decoded-dump-top-level-image-only",
     "candidate_resolutions": [
-      16,
-      32,
-      64,
-      128,
-      256
+      16
     ],
-    "payload": "v3:rN:rgba8-phash:<base64url>",
+    "payload": "v3:r16:rgba8-phash:<base64url>",
     "distance": "weighted-channel-phash-statistics-v3",
     "tolerance_floor": 0.00784313725490196,
     "minimum_margin_policy": "observed_minimum_classification_margin * safety_factor",
     "minimum_margin_safety_factor": 0.25,
     "effective_tolerance": "max(tolerance_floor, maximum_intra_distance)",
-    "selection_rule": "prefer the lowest resolution whose safety-scaled simulated-streaming margin reaches the preferred margin; otherwise use the resolution with the largest positive margin",
+    "selection_rule": "use the single exact r16 standard anchor",
     "reference_strategy": "per-identity-minimax-medoid-over-all-variants",
     "legacy_cache_policy": "reject-incompatible-algorithm-domain-sampling-or-payload-profile",
     "payload_profile": "rgba8-phash",
@@ -73,11 +69,7 @@
     "analysis_phase": "present",
     "rule_scope_fields_emitted": false,
     "match_resolutions": [
-      16,
-      32,
-      64,
-      128,
-      256
+      16
     ],
     "match_format_families": [
       "r8g8b8a8",
@@ -172,178 +164,6 @@
                   "height": 16,
                   "simulated": false,
                   "payload": "v3:r16:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8="
-                }
-              ]
-            },
-            "32": {
-              "status": "payload-ready",
-              "payload": "v3:r32:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8=",
-              "algorithm_version": 3,
-              "canonical_color_domain": "encoded-rgba8",
-              "canonical_view_policy": "compatible-non-srgb-srv",
-              "canonical_resolution": 32,
-              "canonical_format": "B8G8R8A8_UNORM",
-              "absolute_mip": 0,
-              "source_mip_role": "dump-top-level-image",
-              "runtime_source_mip_role": "srv-visible-most-detailed",
-              "source_mip_width": 32,
-              "source_mip_height": 16,
-              "declared_mips": 2,
-              "available_complete_mips": 2,
-              "mip_chain_complete": true,
-              "mip_selection_policy": "simulated-streaming-chain-to-256-area-average-v3",
-              "source_is_srgb": false,
-              "payload_abi_compatible": true,
-              "runtime_compatible": false,
-              "runtime_compatibility_blockers": [
-                "runtime-v3-game-parity-not-validated"
-              ],
-              "offline_cache_identity": {
-                "resource_version": "8067a6fad4a8bb98dfff6fb8bdd21cd88f37f9c8842e4af4dba2d0ae8a6886cd",
-                "algorithm_version": 3,
-                "resolution": 32,
-                "canonical_format": "B8G8R8A8_UNORM",
-                "absolute_mip": 0,
-                "payload_profile": "rgba8-phash"
-              },
-              "payload_profile": "rgba8-phash",
-              "minimum_streaming_extent": 256,
-              "streaming_variants": [
-                {
-                  "variant": "32x16",
-                  "width": 32,
-                  "height": 16,
-                  "simulated": false,
-                  "payload": "v3:r32:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8="
-                }
-              ]
-            },
-            "64": {
-              "status": "payload-ready",
-              "payload": "v3:r64:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8=",
-              "algorithm_version": 3,
-              "canonical_color_domain": "encoded-rgba8",
-              "canonical_view_policy": "compatible-non-srgb-srv",
-              "canonical_resolution": 64,
-              "canonical_format": "B8G8R8A8_UNORM",
-              "absolute_mip": 0,
-              "source_mip_role": "dump-top-level-image",
-              "runtime_source_mip_role": "srv-visible-most-detailed",
-              "source_mip_width": 32,
-              "source_mip_height": 16,
-              "declared_mips": 2,
-              "available_complete_mips": 2,
-              "mip_chain_complete": true,
-              "mip_selection_policy": "simulated-streaming-chain-to-256-area-average-v3",
-              "source_is_srgb": false,
-              "payload_abi_compatible": true,
-              "runtime_compatible": false,
-              "runtime_compatibility_blockers": [
-                "runtime-v3-game-parity-not-validated"
-              ],
-              "offline_cache_identity": {
-                "resource_version": "8067a6fad4a8bb98dfff6fb8bdd21cd88f37f9c8842e4af4dba2d0ae8a6886cd",
-                "algorithm_version": 3,
-                "resolution": 64,
-                "canonical_format": "B8G8R8A8_UNORM",
-                "absolute_mip": 0,
-                "payload_profile": "rgba8-phash"
-              },
-              "payload_profile": "rgba8-phash",
-              "minimum_streaming_extent": 256,
-              "streaming_variants": [
-                {
-                  "variant": "32x16",
-                  "width": 32,
-                  "height": 16,
-                  "simulated": false,
-                  "payload": "v3:r64:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8="
-                }
-              ]
-            },
-            "128": {
-              "status": "payload-ready",
-              "payload": "v3:r128:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8=",
-              "algorithm_version": 3,
-              "canonical_color_domain": "encoded-rgba8",
-              "canonical_view_policy": "compatible-non-srgb-srv",
-              "canonical_resolution": 128,
-              "canonical_format": "B8G8R8A8_UNORM",
-              "absolute_mip": 0,
-              "source_mip_role": "dump-top-level-image",
-              "runtime_source_mip_role": "srv-visible-most-detailed",
-              "source_mip_width": 32,
-              "source_mip_height": 16,
-              "declared_mips": 2,
-              "available_complete_mips": 2,
-              "mip_chain_complete": true,
-              "mip_selection_policy": "simulated-streaming-chain-to-256-area-average-v3",
-              "source_is_srgb": false,
-              "payload_abi_compatible": true,
-              "runtime_compatible": false,
-              "runtime_compatibility_blockers": [
-                "runtime-v3-game-parity-not-validated"
-              ],
-              "offline_cache_identity": {
-                "resource_version": "8067a6fad4a8bb98dfff6fb8bdd21cd88f37f9c8842e4af4dba2d0ae8a6886cd",
-                "algorithm_version": 3,
-                "resolution": 128,
-                "canonical_format": "B8G8R8A8_UNORM",
-                "absolute_mip": 0,
-                "payload_profile": "rgba8-phash"
-              },
-              "payload_profile": "rgba8-phash",
-              "minimum_streaming_extent": 256,
-              "streaming_variants": [
-                {
-                  "variant": "32x16",
-                  "width": 32,
-                  "height": 16,
-                  "simulated": false,
-                  "payload": "v3:r128:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8="
-                }
-              ]
-            },
-            "256": {
-              "status": "payload-ready",
-              "payload": "v3:r256:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8=",
-              "algorithm_version": 3,
-              "canonical_color_domain": "encoded-rgba8",
-              "canonical_view_policy": "compatible-non-srgb-srv",
-              "canonical_resolution": 256,
-              "canonical_format": "B8G8R8A8_UNORM",
-              "absolute_mip": 0,
-              "source_mip_role": "dump-top-level-image",
-              "runtime_source_mip_role": "srv-visible-most-detailed",
-              "source_mip_width": 32,
-              "source_mip_height": 16,
-              "declared_mips": 2,
-              "available_complete_mips": 2,
-              "mip_chain_complete": true,
-              "mip_selection_policy": "simulated-streaming-chain-to-256-area-average-v3",
-              "source_is_srgb": false,
-              "payload_abi_compatible": true,
-              "runtime_compatible": false,
-              "runtime_compatibility_blockers": [
-                "runtime-v3-game-parity-not-validated"
-              ],
-              "offline_cache_identity": {
-                "resource_version": "8067a6fad4a8bb98dfff6fb8bdd21cd88f37f9c8842e4af4dba2d0ae8a6886cd",
-                "algorithm_version": 3,
-                "resolution": 256,
-                "canonical_format": "B8G8R8A8_UNORM",
-                "absolute_mip": 0,
-                "payload_profile": "rgba8-phash"
-              },
-              "payload_profile": "rgba8-phash",
-              "minimum_streaming_extent": 256,
-              "streaming_variants": [
-                {
-                  "variant": "32x16",
-                  "width": 32,
-                  "height": 16,
-                  "simulated": false,
-                  "payload": "v3:r256:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8="
                 }
               ]
             }
