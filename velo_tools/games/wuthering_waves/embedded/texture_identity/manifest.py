@@ -15,8 +15,8 @@ from .fingerprint import (
     ALGORITHM_VERSION,
     CANONICAL_COLOR_DOMAIN,
     CANONICAL_VIEW_POLICY,
-    DEFAULT_MINIMUM_MARGIN,
     DEFAULT_TOLERANCE_FLOOR,
+    MINIMUM_MARGIN_SAFETY_FACTOR,
     MIP_SELECTION_POLICY,
     PAYLOAD_ENCODING,
     PAYLOAD_PROFILE,
@@ -30,8 +30,8 @@ from ..slot_textures.dds_meta import read_dds_meta
 
 MANIFEST_FILENAME = "TextureIdentityManifest.json"
 SOURCE_EVIDENCE_DIRECTORY = "TextureIdentitySources"
-SCHEMA_ID = "urn:texture-identity-manifest:schema:v5"
-SCHEMA_VERSION = 5
+SCHEMA_ID = "urn:texture-identity-manifest:schema:v6"
+SCHEMA_VERSION = 6
 PROTOTYPE_ABI_VERSION = 3
 SOURCE_PROFILES = ("Showcase1", "Dungeon1", "Dungeon2")
 _DDS_HASH = re.compile(r"\bt=([0-9a-fA-F]{8})\b")
@@ -275,26 +275,29 @@ def build_manifest(
             "canonical_view_policy": CANONICAL_VIEW_POLICY,
             "srgb_behavior": "preserve-dds-encoded-rgba8-through-compatible-non-srgb-srv",
             "mip_selection_policy": MIP_SELECTION_POLICY,
-            "normalization_formula": "pixel=min(size-1,((2*id+1)*size)/(2*N))",
+            "normalization_formula": "area=[id*size/N,(id+1)*size/N)",
             "non_square_policy": "normalize-each-axis-independently",
-            "small_texture_policy": "deterministic-cell-center-repetition",
+            "small_texture_policy": "deterministic-single-pixel-area-repetition",
             "incomplete_chain_policy": "use-decoded-dump-top-level-image-only",
             "candidate_resolutions": list(RESOLUTIONS),
             "payload": PAYLOAD_ENCODING,
             "payload_profile": PAYLOAD_PROFILE,
             "payload_bytes": 41,
-            "distance": "weighted-channel-dhash-statistics-v3",
+            "distance": "weighted-channel-phash-statistics-v3",
             "distance_weights": {
-                "channel_dhash_hamming": 0.75,
+                "channel_phash_hamming": 0.064,
                 "mean_mae": 0.15,
                 "deviation_mae": 0.07,
                 "alpha_coverage_absolute": 0.03,
             },
             "tolerance_floor": DEFAULT_TOLERANCE_FLOOR,
-            "minimum_margin": DEFAULT_MINIMUM_MARGIN,
+            "minimum_margin_policy": (
+                "observed_minimum_classification_margin * safety_factor"
+            ),
+            "minimum_margin_safety_factor": MINIMUM_MARGIN_SAFETY_FACTOR,
             "effective_tolerance": "max(tolerance_floor, maximum_intra_distance)",
             "selection_rule": (
-                "nearest_inter_distance - effective_tolerance >= minimum_margin"
+                "every known variant is uniquely closest to its own medoid"
             ),
             "reference_strategy": "per-identity-minimax-medoid-over-all-variants",
             "legacy_cache_policy": "reject-incompatible-algorithm-domain-sampling-or-payload-profile",
@@ -340,10 +343,10 @@ def build_manifest(
                 "bc7",
                 "dxgi-<numeric-enum>",
             ],
-            "collision_group_default": "default-r{resolution}-{descriptor_family}",
+            "collision_group_default": "default-r{resolution}-exact-{dxgi_format}",
             "collision_policies": ["reject", "merge", "require_draw_context"],
             "candidate_context_abi_status": "evidence-only-unmapped",
-            "fingerprint_binding": "inline-match_fingerprint",
+            "fingerprint_binding": "native-textureoverride-inline-fingerprint",
             "abi_status": "blocked",
             "abi_blockers": [
                 "runtime-v3-game-parity-not-validated",

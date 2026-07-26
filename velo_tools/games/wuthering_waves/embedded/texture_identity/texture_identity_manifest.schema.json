@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:texture-identity-manifest:schema:v5",
+  "$id": "urn:texture-identity-manifest:schema:v6",
   "title": "Texture identity manifest",
   "type": "object",
   "required": [
@@ -14,13 +14,13 @@
   ],
   "properties": {
     "$schema": {
-      "const": "urn:texture-identity-manifest:schema:v5"
+      "const": "urn:texture-identity-manifest:schema:v6"
     },
     "schema": {
       "const": "texture-identity-manifest"
     },
     "schema_version": {
-      "const": 5
+      "const": 6
     },
     "algorithm": {
       "type": "object",
@@ -36,6 +36,8 @@
         "payload_profile",
         "distance",
         "distance_weights",
+        "minimum_margin_policy",
+        "minimum_margin_safety_factor",
         "effective_tolerance",
         "selection_rule",
         "reference_strategy"
@@ -54,7 +56,7 @@
           "const": "compatible-non-srgb-srv"
         },
         "mip_selection_policy": {
-          "const": "visible-most-detailed-normalized-cell-center-v3"
+          "const": "visible-most-detailed-normalized-area-average-v3"
         },
         "candidate_resolutions": {
           "const": [
@@ -75,15 +77,21 @@
           "const": 41
         },
         "distance": {
-          "const": "weighted-channel-dhash-statistics-v3"
+          "const": "weighted-channel-phash-statistics-v3"
         },
         "distance_weights": {
           "const": {
-            "channel_dhash_hamming": 0.75,
+            "channel_phash_hamming": 0.064,
             "mean_mae": 0.15,
             "deviation_mae": 0.07,
             "alpha_coverage_absolute": 0.03
           }
+        },
+        "minimum_margin_policy": {
+          "const": "observed_minimum_classification_margin * safety_factor"
+        },
+        "minimum_margin_safety_factor": {
+          "const": 0.25
         },
         "effective_tolerance": {
           "type": "string"
@@ -203,7 +211,7 @@
           "const": "evidence-only-unmapped"
         },
         "fingerprint_binding": {
-          "const": "inline-match_fingerprint"
+          "const": "native-textureoverride-inline-fingerprint"
         },
         "abi_status": {
           "const": "blocked"

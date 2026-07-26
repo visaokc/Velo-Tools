@@ -20,10 +20,10 @@ PAYLOAD_ENCODING = "v3:rN:rgba8-phash:<base64url>"
 PAYLOAD_PROFILE = "rgba8-phash"
 CANONICAL_COLOR_DOMAIN = "encoded-rgba8"
 CANONICAL_VIEW_POLICY = "compatible-non-srgb-srv"
-MIP_SELECTION_POLICY = "visible-most-detailed-normalized-cell-center-v3"
+MIP_SELECTION_POLICY = "visible-most-detailed-normalized-area-average-v3"
 RESOLUTIONS = (16, 32, 64, 128, 256)
 DEFAULT_TOLERANCE_FLOOR = 2.0 / 255.0
-DEFAULT_MINIMUM_MARGIN = 4.0 / 255.0
+MINIMUM_MARGIN_SAFETY_FACTOR = 0.25
 
 _DESCRIPTOR_FAMILIES = {
     "R8G8B8A8_UNORM": "r8g8b8a8",
@@ -105,6 +105,7 @@ class CollisionSelection:
     minimum_margin: float
     maximum_intra_distance: float
     nearest_inter_distance: float | None
+    observed_minimum_margin: float | None
     pixel_ambiguous: bool
     unavailable_resolutions: tuple[int, ...]
 
@@ -214,50 +215,59 @@ def decode_dds(path: str | Path) -> DecodedDds:
     )
 
 
-def sample_grid(mip: DecodedMip, resolution: int) -> bytes:
-    """Match the runtime v3 integer cell-center Load coordinates."""
+def _sample_grid_values(mip: DecodedMip, resolution: int) -> tuple[float, ...]:
+    """Match the runtime v3 integer cell area-average Load coordinates."""
     if resolution not in RESOLUTIONS:
         raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
     if mip.width <= 0 or mip.height <= 0:
         raise FingerprintError("DDS mip dimensions must be positive")
-    sampled = bytearray(resolution * resolution * 4)
-    output_offset = 0
+    sampled = []
     for y in range(resolution):
-        source_y = min(
-            mip.height - 1,
-            ((2 * y + 1) * mip.height) // (2 * resolution),
+        begin_y = y * mip.height // resolution
+        end_y = min(
+            mip.height,
+            max((y + 1) * mip.height // resolution, begin_y + 1),
         )
         for x in range(resolution):
-            source_x = min(
-                mip.width - 1,
-                ((2 * x + 1) * mip.width) // (2 * resolution),
+            begin_x = x * mip.width // resolution
+            end_x = min(
+                mip.width,
+                max((x + 1) * mip.width // resolution, begin_x + 1),
             )
-            source_offset = (source_y * mip.width + source_x) * 4
-            sampled[output_offset : output_offset + 4] = mip.rgba[
-                source_offset : source_offset + 4
-            ]
-            output_offset += 4
-    return bytes(sampled)
+            sums = [0.0] * 4
+            count = (end_x - begin_x) * (end_y - begin_y)
+            for source_y in range(begin_y, end_y):
+                for source_x in range(begin_x, end_x):
+                    source_offset = (source_y * mip.width + source_x) * 4
+                    for component in range(4):
+                        sums[component] = _float32(
+                            sums[component]
+                            + _BYTE_TO_FLOAT[mip.rgba[source_offset + component]]
+                        )
+            sampled.extend(_float32(value / count) for value in sums)
+    return tuple(sampled)
 
 
-def encode_fingerprint(rgba8: bytes, resolution: int) -> str:
-    if resolution not in RESOLUTIONS:
-        raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
+def sample_grid(mip: DecodedMip, resolution: int) -> bytes:
+    return bytes(_quantize_unit(value) for value in _sample_grid_values(mip, resolution))
+
+
+def _encode_fingerprint_samples(samples: Sequence[float], resolution: int) -> str:
     expected = resolution * resolution * 4
-    if len(rgba8) != expected:
+    if resolution not in RESOLUTIONS or len(samples) != expected:
         raise FingerprintError(
-            f"Fingerprint payload length {len(rgba8)} does not match r{resolution} RGBA8 ({expected})"
+            f"Fingerprint sample count {len(samples)} does not match r{resolution} RGBA ({expected})"
         )
     sample_count = resolution * resolution
     sums = [0.0] * 4
     squared_sums = [0.0] * 4
     covered_alpha = 0
-    for offset in range(0, len(rgba8), 4):
+    for offset in range(0, len(samples), 4):
         for component in range(4):
-            value = _BYTE_TO_FLOAT[rgba8[offset + component]]
+            value = _float32(samples[offset + component])
             sums[component] += value
             squared_sums[component] += _float32(value * value)
-        if _BYTE_TO_FLOAT[rgba8[offset + 3]] >= 0.5:
+        if samples[offset + 3] >= 0.5:
             covered_alpha += 1
 
     means = []
@@ -271,23 +281,40 @@ def encode_fingerprint(rgba8: bytes, resolution: int) -> str:
         _float32(_float32(float(covered_alpha)) / _float32(float(sample_count)))
     )
 
+    pi = math.acos(-1.0)
+    basis = []
+    for index in range(8):
+        frequency = (index * (resolution - 1) + 3) // 7
+        basis.append(
+            tuple(
+                math.cos(
+                    pi * (2.0 * position + 1.0) * frequency
+                    / (2.0 * resolution)
+                )
+                for position in range(resolution)
+            )
+        )
+
     channel_hashes = []
     for component in range(4):
+        coefficients = []
+        for v in range(8):
+            for u in range(8):
+                coefficient = 0.0
+                for y in range(resolution):
+                    basis_y = basis[v][y]
+                    for x in range(resolution):
+                        coefficient += (
+                            samples[(y * resolution + x) * 4 + component]
+                            * basis[u][x]
+                            * basis_y
+                        )
+                coefficients.append(coefficient)
+        median = sorted(coefficients[1:])[31]
         channel_hash = 0
-        bit = 1
-        for y in range(8):
-            sample_y = min(resolution - 1, y * 2 * resolution // 16)
-            for x in range(8):
-                left_x = min(resolution - 1, x * 2 * resolution // 16)
-                right_x = min(
-                    resolution - 1,
-                    (x * 2 + 1) * resolution // 16,
-                )
-                left = (sample_y * resolution + left_x) * 4 + component
-                right = (sample_y * resolution + right_x) * 4 + component
-                if rgba8[left] < rgba8[right]:
-                    channel_hash |= bit
-                bit <<= 1
+        for index, coefficient in enumerate(coefficients):
+            if coefficient > median:
+                channel_hash |= 1 << index
         channel_hashes.append(channel_hash)
 
     compact = (
@@ -298,6 +325,18 @@ def encode_fingerprint(rgba8: bytes, resolution: int) -> str:
     )
     payload = base64.urlsafe_b64encode(compact).decode("ascii")
     return f"v3:r{resolution}:rgba8-phash:{payload}"
+
+
+def encode_fingerprint(rgba8: bytes, resolution: int) -> str:
+    expected = resolution * resolution * 4
+    if len(rgba8) != expected:
+        raise FingerprintError(
+            f"Fingerprint payload length {len(rgba8)} does not match r{resolution} RGBA8 ({expected})"
+        )
+    return _encode_fingerprint_samples(
+        tuple(_BYTE_TO_FLOAT[value] for value in rgba8),
+        resolution,
+    )
 
 
 def decode_fingerprint(payload: str) -> tuple[int, bytes]:
@@ -339,8 +378,8 @@ def fingerprint_dds(
             raise FingerprintError(f"Unsupported fingerprint resolution: {resolution}")
         results[str(resolution)] = {
             "status": "payload-ready",
-            "payload": encode_fingerprint(
-                sample_grid(source_mip, resolution),
+            "payload": _encode_fingerprint_samples(
+                _sample_grid_values(source_mip, resolution),
                 resolution,
             ),
             "algorithm_version": ALGORITHM_VERSION,
@@ -397,7 +436,7 @@ def fingerprint_distance(left: str, right: str) -> float:
         / (255.0 * 4.0)
     )
     alpha_distance = _float32(abs(left_raw[40] - right_raw[40]) / 255.0)
-    distance = _float32(hash_distance * _float32(0.75))
+    distance = _float32(hash_distance * _float32(0.064))
     distance = _float32(distance + _float32(mean_distance * _float32(0.15)))
     distance = _float32(
         distance + _float32(deviation_distance * _float32(0.07))
@@ -450,7 +489,7 @@ def select_common_resolution(
     identities: Sequence[Mapping],
     *,
     tolerance_floor: float = DEFAULT_TOLERANCE_FLOOR,
-    minimum_margin: float = DEFAULT_MINIMUM_MARGIN,
+    minimum_margin: float | None = None,
 ) -> CollisionSelection:
     if not identities:
         raise FingerprintError("A collision group must contain at least one identity")
@@ -491,6 +530,37 @@ def select_common_resolution(
         maximum_intra = max(intra_distances, default=0.0)
         effective_tolerance = max(float(tolerance_floor), maximum_intra)
         nearest_inter = min(inter_distances) if inter_distances else None
+        classification_margins = []
+        for identity_id, payloads in per_identity:
+            reference = references[identity_id]
+            other_references = [
+                payload
+                for other_id, payload in references.items()
+                if other_id != identity_id
+            ]
+            if not other_references:
+                continue
+            for _, payload in payloads:
+                own_distance = fingerprint_distance(payload, reference)
+                second_distance = min(
+                    fingerprint_distance(payload, other)
+                    for other in other_references
+                )
+                classification_margins.append(second_distance - own_distance)
+        observed_minimum_margin = (
+            min(classification_margins)
+            if classification_margins
+            else None
+        )
+        selected_minimum_margin = (
+            float(minimum_margin)
+            if minimum_margin is not None
+            else max(
+                0.0,
+                float(observed_minimum_margin or 0.0)
+                * MINIMUM_MARGIN_SAFETY_FACTOR,
+            )
+        )
         last = (
             resolution,
             references,
@@ -498,17 +568,24 @@ def select_common_resolution(
             effective_tolerance,
             maximum_intra,
             nearest_inter,
+            observed_minimum_margin,
+            selected_minimum_margin,
         )
-        if nearest_inter is None or nearest_inter - effective_tolerance >= minimum_margin:
+        if (
+            observed_minimum_margin is None
+            or observed_minimum_margin > 0.0
+            and observed_minimum_margin >= selected_minimum_margin
+        ):
             return CollisionSelection(
                 resolution=resolution,
                 fingerprints=references,
                 reference_variants=reference_variants,
                 tolerance=effective_tolerance,
                 tolerance_floor=tolerance_floor,
-                minimum_margin=minimum_margin,
+                minimum_margin=selected_minimum_margin,
                 maximum_intra_distance=maximum_intra,
                 nearest_inter_distance=nearest_inter,
+                observed_minimum_margin=observed_minimum_margin,
                 pixel_ambiguous=False,
                 unavailable_resolutions=tuple(unavailable),
             )
@@ -517,16 +594,26 @@ def select_common_resolution(
         raise FingerprintError(
             "No resolution has a fingerprint for every identity variant"
         )
-    resolution, references, reference_variants, effective_tolerance, maximum_intra, nearest_inter = last
+    (
+        resolution,
+        references,
+        reference_variants,
+        effective_tolerance,
+        maximum_intra,
+        nearest_inter,
+        observed_minimum_margin,
+        selected_minimum_margin,
+    ) = last
     return CollisionSelection(
         resolution=resolution,
         fingerprints=references,
         reference_variants=reference_variants,
         tolerance=effective_tolerance,
         tolerance_floor=tolerance_floor,
-        minimum_margin=minimum_margin,
+        minimum_margin=selected_minimum_margin,
         maximum_intra_distance=maximum_intra,
         nearest_inter_distance=nearest_inter,
+        observed_minimum_margin=observed_minimum_margin,
         pixel_ambiguous=True,
         unavailable_resolutions=tuple(unavailable),
     )

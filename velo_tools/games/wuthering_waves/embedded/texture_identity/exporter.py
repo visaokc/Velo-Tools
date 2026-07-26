@@ -10,7 +10,6 @@ from typing import Any, Mapping
 
 from .fingerprint import (
     ALGORITHM_VERSION,
-    DEFAULT_MINIMUM_MARGIN,
     DEFAULT_TOLERANCE_FLOOR,
     FingerprintError,
     select_common_resolution,
@@ -43,6 +42,16 @@ def _format_family(identity: Mapping[str, Any]) -> str:
     if len(families) != 1 or not next(iter(families), ""):
         raise FingerprintError("Every identity variant must share one non-empty format family")
     return next(iter(families))
+
+
+def _match_format(identity: Mapping[str, Any]) -> str:
+    formats = {
+        str(variant.get("format") or "")
+        for variant in identity.get("variants") or []
+    }
+    if len(formats) != 1 or not next(iter(formats), ""):
+        raise FingerprintError("Every identity variant must share one non-empty format")
+    return next(iter(formats))
 
 
 def _candidate_contexts(identity: Mapping[str, Any]) -> tuple[list[Mapping[str, Any]], bool]:
@@ -93,7 +102,6 @@ def select_rules(
     replacements: Mapping[str, str] | None = None,
     *,
     tolerance_floor: float = DEFAULT_TOLERANCE_FLOOR,
-    minimum_margin: float = DEFAULT_MINIMUM_MARGIN,
 ) -> list[dict[str, Any]]:
     _validate_manifest(manifest)
     identities = [
@@ -103,17 +111,17 @@ def select_rules(
     ]
     groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for identity in identities:
-        groups[_format_family(identity)].append(identity)
+        groups[_match_format(identity)].append(identity)
 
     replacements = dict(replacements or {})
     rules = []
-    for family in sorted(groups):
-        group = groups[family]
+    for match_format in sorted(groups):
+        group = groups[match_format]
+        family = _format_family(group[0])
         try:
             selection = select_common_resolution(
                 group,
                 tolerance_floor=tolerance_floor,
-                minimum_margin=minimum_margin,
             )
         except FingerprintError:
             continue
@@ -131,7 +139,10 @@ def select_rules(
         if collision_policy not in LEGAL_COLLISION_POLICIES:
             raise FingerprintError(f"Illegal collision policy: {collision_policy}")
 
-        group_id = f"default-r{selection.resolution}-{family}"
+        group_id = (
+            f"default-r{selection.resolution}-exact-"
+            f"{match_format.lower()}"
+        )
         for identity in group:
             identity_id = str(identity.get("identity"))
             variants = identity.get("variants") or []
@@ -164,6 +175,7 @@ def select_rules(
                     "runtime_compatible": False,
                     "identity": identity_id,
                     "reference_variant": selection.reference_variants[identity_id],
+                    "match_format": match_format,
                     "match_format_family": family,
                     "collision_group": group_id,
                     "match_resolution": selection.resolution,
@@ -171,6 +183,7 @@ def select_rules(
                     "fingerprint_tolerance": selection.tolerance,
                     "tolerance_floor": selection.tolerance_floor,
                     "minimum_match_margin": selection.minimum_margin,
+                    "observed_minimum_margin": selection.observed_minimum_margin,
                     "nearest_inter_distance": selection.nearest_inter_distance,
                     "maximum_intra_distance": selection.maximum_intra_distance,
                     "pixel_ambiguous": selection.pixel_ambiguous,
@@ -208,10 +221,15 @@ def render_preview(
         "; Owner scope comes from the active Draw VB/IB gate; no scope fields are duplicated here.",
         "",
     ]
-    for index, rule in enumerate(rules):
+    for rule in rules:
+        identity_hash = re.sub(
+            r"[^0-9a-zA-Z_]",
+            "_",
+            str(rule["identity"]).rsplit(":", 1)[-1],
+        )
         lines.extend(
             [
-                f"[TextureRoleOverride_{index:03d}]",
+                f"[TextureOverrideTexture_{identity_hash}]",
                 f"; prototype_abi_version = {rule['prototype_abi_version']}",
                 f"; runtime_fingerprint_algorithm_version = {rule['algorithm_version']}",
                 f"; abi_status = {rule['abi_status']}",
@@ -219,15 +237,14 @@ def render_preview(
                 f"; runtime_compatible = {str(rule['runtime_compatible']).lower()}",
                 f"; canonical_format = {rule['canonical_format']}",
                 f"; absolute_mip = {rule['absolute_mip']}",
-                f"match_format_family = {rule['match_format_family']}",
-                f"collision_group = {rule['collision_group']}",
-                f"match_resolution = {rule['match_resolution']}",
-                f"match_fingerprint = {rule['match_fingerprint']}",
+                f"fingerprint = {rule['match_fingerprint']}",
+                f"format = {rule['match_format']}",
                 f"fingerprint_tolerance = {rule['fingerprint_tolerance']:.8f}",
                 f"minimum_match_margin = {rule['minimum_match_margin']:.8f}",
-                f"reference_variant = {rule['reference_variant']}",
+                f"collision_group = {rule['collision_group']}",
                 f"collision_policy = {rule['collision_policy']}",
-                f"replacement = {rule['replacement']}",
+                "stages = ps",
+                f"this = {rule['replacement']}",
             ]
         )
         for context in rule.get("candidate_contexts") or []:
