@@ -1158,6 +1158,7 @@ def _slot_plan(
         selected_component_ids: Optional[Iterable[int]] = None,
 ) -> Any:
     if (not bool(getattr(cfg, "velo_slot_style_textures", False))
+            or bool(getattr(cfg, "use_texture_identity_matching", False))
             or not textures or not selection.objects):
         return None
     from ..slot_textures import dds_meta, generator, hook, stu_metadata
@@ -1743,6 +1744,7 @@ def _texture_plan(
     cfg = settings.cfg
     result = TexturePlan()
     if (not bool(getattr(cfg, "velo_slot_style_textures", False))
+            or bool(getattr(cfg, "use_texture_identity_matching", False))
             or not textures or not settings.selection.objects):
         catalog = {str(texture.hash).lower() for texture in textures}
         for texture_hash, component_ids in _root_texture_components(root).items():

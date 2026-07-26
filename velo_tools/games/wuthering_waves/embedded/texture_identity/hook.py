@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .exporter import consume_manifest
-from .manifest import classify_source_profile, write_manifest
+from .exporter import PREVIEW_FILENAME, apply_manifest_to_ini
+from .manifest import MANIFEST_FILENAME, write_manifest
 
 
 _INSTALLED = False
@@ -20,6 +20,7 @@ _EXPORT_MODULE = None
 _UI_MODULE = None
 _CAPTURE = {}
 _ACTIVE_SOURCE_PROFILE = None
+_ACTIVE_MANIFEST_ENABLED = False
 
 
 def _capture_components(mesh_object) -> dict:
@@ -47,24 +48,20 @@ def _wrapped_build_components(self, vb_layout, shapekeys):
 
 
 def _wrapped_extract_frame_data(cfg):
-    global _ACTIVE_SOURCE_PROFILE
-    source_path = getattr(cfg, "frame_dump_folder", "")
-    try:
-        source_path = _EXTRACT_MODULE.resolve_path(source_path)
-    except Exception:
-        pass
-    _ACTIVE_SOURCE_PROFILE = classify_source_profile(source_path)
+    global _ACTIVE_SOURCE_PROFILE, _ACTIVE_MANIFEST_ENABLED
+    _ACTIVE_SOURCE_PROFILE = "extracted-object"
+    _ACTIVE_MANIFEST_ENABLED = bool(
+        getattr(cfg, "extract_texture_identity_manifest", True))
     try:
         return _ORIGINAL_EXTRACT_FRAME_DATA(cfg)
     finally:
         _ACTIVE_SOURCE_PROFILE = None
+        _ACTIVE_MANIFEST_ENABLED = False
 
 
 def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=False):
     try:
         result = _ORIGINAL_WRITE_OBJECTS(output_directory, objects, allow_missing_shapekeys)
-        if _ACTIVE_SOURCE_PROFILE is None:
-            return result
         output_directory = Path(output_directory)
         for object_hash, object_data in objects.items():
             object_name = object_hash
@@ -74,12 +71,16 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                     object_name += "_MISSING_SHAPEKEYS"
                 else:
                     continue
-            write_manifest(
-                output_directory / object_name,
-                object_hash,
-                source_profile=_ACTIVE_SOURCE_PROFILE,
-                capture=_CAPTURE.get(object_hash),
-            )
+            object_directory = output_directory / object_name
+            if _ACTIVE_MANIFEST_ENABLED:
+                write_manifest(
+                    object_directory,
+                    object_hash,
+                    source_profile=_ACTIVE_SOURCE_PROFILE,
+                    capture=_CAPTURE.get(object_hash),
+                )
+            elif not _ACTIVE_MANIFEST_ENABLED:
+                (object_directory / MANIFEST_FILENAME).unlink(missing_ok=True)
     finally:
         _CAPTURE.clear()
     return result
@@ -90,10 +91,17 @@ def _wrapped_write_files(self):
     source_folder = getattr(self, "object_source_folder", None)
     output_folder = getattr(self, "mod_output_folder", None)
     if source_folder is not None and output_folder is not None:
-        try:
-            consume_manifest(source_folder, output_folder)
-        except Exception as exc:
-            print(f"[texture-identity] preview generation skipped: {exc}")
+        output_folder = Path(output_folder)
+        (output_folder / PREVIEW_FILENAME).unlink(missing_ok=True)
+        if (
+            bool(getattr(self.cfg, "use_texture_identity_matching", False))
+            and not bool(getattr(self.cfg, "partial_export", False))
+            and bool(getattr(self.cfg, "write_ini", True))
+        ):
+            apply_manifest_to_ini(
+                source_folder,
+                output_folder / "mod.ini",
+            )
     return result
 
 

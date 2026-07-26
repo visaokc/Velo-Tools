@@ -743,7 +743,8 @@ def _bind_form_ibs(dungeon_specs, form_ibs):
 
 
 def build_cross_scene_merge(base_folder, dungeon_specs, out_folder,
-                            editable_ibs=None, form_ibs=None):
+                            editable_ibs=None, form_ibs=None,
+                            write_texture_identity_manifest=True):
     """Build a self-contained schema-v3 cross-scene aggregate root."""
     base = Path(base_folder)
     out = Path(out_folder)
@@ -1102,15 +1103,16 @@ def build_cross_scene_merge(base_folder, dungeon_specs, out_folder,
               % ", ".join(texture_prune["root_textures_pruned"]))
 
     crossscene_manifest.write_manifest(out, manifest)
-    texture_identity_manifest.refresh_manifest(
-        out,
-        source_directories=tuple(
-            [base]
-            + [Path(spec["folder"]) for spec in dungeon_specs]
-            + [Path(spec["folder"]) for spec in editable_ibs]
-            + [Path(spec["folder"]) for spec in bound_forms]
-        ),
-    )
+    if write_texture_identity_manifest:
+        texture_identity_manifest.refresh_manifest(
+            out,
+            source_directories=tuple(
+                [base]
+                + [Path(spec["folder"]) for spec in dungeon_specs]
+                + [Path(spec["folder"]) for spec in editable_ibs]
+                + [Path(spec["folder"]) for spec in bound_forms]
+            ),
+        )
 
     # Foolproof: if a fold(dungeon) IB's overlap ratio with the base mesh is too low (barely the same mesh) -> likely
     # an independent morph (e.g. another form's face); mis-setting it as Fold would fold it into the base buffer and break it.

@@ -128,6 +128,7 @@
         },
         "profile": {
           "enum": [
+            "extracted-object",
             "Showcase1",
             "Dungeon1",
             "Dungeon2"
@@ -135,13 +136,14 @@
         },
         "allowed_profiles": {
           "const": [
+            "extracted-object",
             "Showcase1",
             "Dungeon1",
             "Dungeon2"
           ]
         },
         "lod_dump_policy": {
-          "const": "excluded"
+          "const": "not-used-as-a-manifest-generation-gate"
         },
         "image_source": {
           "const": "dump-top-level-dds-image"

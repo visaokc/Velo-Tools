@@ -159,6 +159,10 @@ def _decode_dds_with_blender(
         raise FingerprintError(
             f"Unsupported prototype DDS format outside Blender: {meta.format or 'unknown'}"
         ) from exc
+    if getattr(getattr(bpy, "data", None), "images", None) is None:
+        raise FingerprintError(
+            f"Unsupported prototype DDS format outside Blender: {meta.format or 'unknown'}"
+        )
 
     image = None
     try:

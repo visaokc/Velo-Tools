@@ -43,11 +43,12 @@
     "resource_origin": "original-game-dump",
     "profile": "Showcase1",
     "allowed_profiles": [
+      "extracted-object",
       "Showcase1",
       "Dungeon1",
       "Dungeon2"
     ],
-    "lod_dump_policy": "excluded",
+    "lod_dump_policy": "not-used-as-a-manifest-generation-gate",
     "image_source": "dump-top-level-dds-image"
   },
   "runtime_contract": {

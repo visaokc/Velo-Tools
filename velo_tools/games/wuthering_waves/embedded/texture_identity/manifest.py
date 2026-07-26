@@ -33,7 +33,7 @@ SOURCE_EVIDENCE_DIRECTORY = "TextureIdentitySources"
 SCHEMA_ID = "urn:texture-identity-manifest:schema:v7"
 SCHEMA_VERSION = 7
 PROTOTYPE_ABI_VERSION = 3
-SOURCE_PROFILES = ("Showcase1", "Dungeon1", "Dungeon2")
+SOURCE_PROFILES = ("extracted-object", "Showcase1", "Dungeon1", "Dungeon2")
 MANIFEST_RESOLUTIONS = (16,)
 MANIFEST_PAYLOAD_ENCODING = "v3:r16:rgba8-phash:<base64url>"
 _DDS_HASH = re.compile(r"\bt=([0-9a-fA-F]{8})\b")
@@ -46,6 +46,8 @@ def classify_source_profile(path: str | Path) -> str | None:
     if _LOD_SOURCE.search(text):
         return None
     for profile in SOURCE_PROFILES:
+        if profile == "extracted-object":
+            continue
         if re.search(
             rf"(^|[^a-z0-9]){re.escape(profile)}($|[^a-z0-9])",
             text,
@@ -167,7 +169,7 @@ def build_manifest(
 ) -> dict[str, Any]:
     if source_profile not in SOURCE_PROFILES:
         raise FingerprintError(
-            "Texture identity analysis requires Showcase1, Dungeon1, or Dungeon2 top-level dump evidence"
+            "Texture identity analysis requires extracted-object source data"
         )
     object_directory = Path(object_directory)
     stu_path = object_directory / "ShaderTextureUsage.json"
@@ -316,7 +318,7 @@ def build_manifest(
             "resource_origin": "original-game-dump",
             "profile": source_profile,
             "allowed_profiles": list(SOURCE_PROFILES),
-            "lod_dump_policy": "excluded",
+            "lod_dump_policy": "not-used-as-a-manifest-generation-gate",
             "image_source": "dump-top-level-dds-image",
         },
         "runtime_contract": {
@@ -404,7 +406,7 @@ def refresh_manifest(
     """Rebuild an r16 manifest after a form or cross-scene DDS merge."""
     object_directory = Path(object_directory)
     candidates = (object_directory, *(Path(path) for path in source_directories))
-    source_profile = None
+    source_profile = "extracted-object"
     for candidate in candidates:
         manifest_path = candidate / MANIFEST_FILENAME
         if manifest_path.is_file():
@@ -416,12 +418,6 @@ def refresh_manifest(
             if profile in SOURCE_PROFILES:
                 source_profile = profile
                 break
-        profile = classify_source_profile(candidate)
-        if profile is not None:
-            source_profile = profile
-            break
-    if source_profile is None:
-        return None
 
     metadata_path = object_directory / "Metadata.json"
     try:

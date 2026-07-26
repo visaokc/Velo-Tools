@@ -1,4 +1,4 @@
-"""Consume identity manifests and render a disabled runtime-rule preview."""
+"""Consume identity manifests for native r16 TextureOverride export."""
 
 from __future__ import annotations
 
@@ -21,6 +21,13 @@ from .manifest import (
 
 PREVIEW_FILENAME = "TextureIdentityRules.prototype.ini.disabled"
 LEGAL_COLLISION_POLICIES = {"reject", "merge", "require_draw_context"}
+_SECTION = re.compile(
+    r"(?ms)^(?P<header>\[TextureOverride[^\]\r\n]*\][^\r\n]*(?:\r?\n))"
+    r"(?P<body>.*?)(?=^\[|\Z)"
+)
+_HASH_LINE = re.compile(
+    r"(?im)^(?P<indent>[ \t]*)hash[ \t]*=[ \t]*(?P<hash>[0-9a-f]{8})[ \t]*$"
+)
 
 
 def _resource_name(identity: Mapping[str, Any]) -> str:
@@ -290,3 +297,60 @@ def consume_manifest(source_folder: str | Path, output_folder: str | Path) -> Pa
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(render_preview(rules, manifest), encoding="utf-8")
     return output_path
+
+
+def apply_manifest_to_ini(
+    source_folder: str | Path,
+    ini_path: str | Path,
+) -> int:
+    source_folder = Path(source_folder)
+    manifest_path = source_folder / MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        raise FingerprintError(
+            f"Texture identity mode requires {MANIFEST_FILENAME}")
+    ini_path = Path(ini_path)
+    if not ini_path.is_file():
+        raise FingerprintError("Texture identity mode requires an exported mod.ini")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    rules = select_rules(manifest)
+    rules_by_hash = {
+        str(rule["identity"]).rsplit(":", 1)[-1].lower(): rule
+        for rule in rules
+    }
+    if not rules_by_hash:
+        raise FingerprintError("Texture identity manifest contains no usable r16 rules")
+
+    text = ini_path.read_text(encoding="utf-8")
+    replaced = 0
+
+    def replace_section(match):
+        nonlocal replaced
+        body = match.group("body")
+        hash_match = _HASH_LINE.search(body)
+        if hash_match is None:
+            return match.group(0)
+        rule = rules_by_hash.get(hash_match.group("hash").lower())
+        if rule is None:
+            return match.group(0)
+        newline = "\r\n" if "\r\n" in match.group(0) else "\n"
+        indent = hash_match.group("indent")
+        replacement = newline.join(
+            (
+                f"{indent}fingerprint = {rule['match_fingerprint']}",
+                f"{indent}format = {rule['match_format']}",
+                f"{indent}collision_group = {rule['collision_group']}",
+                f"{indent}collision_policy = {rule['collision_policy']}",
+                f"{indent}stages = ps",
+            )
+        )
+        body = body[:hash_match.start()] + replacement + body[hash_match.end():]
+        replaced += 1
+        return match.group("header") + body
+
+    transformed = _SECTION.sub(replace_section, text)
+    if replaced == 0:
+        raise FingerprintError(
+            "Texture identity mode found no matching texture Hash overrides in mod.ini")
+    ini_path.write_text(transformed, encoding="utf-8")
+    return replaced

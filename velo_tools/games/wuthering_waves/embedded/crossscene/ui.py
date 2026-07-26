@@ -102,7 +102,12 @@ class VTWW_OT_xscene_merge(bpy.types.Operator):
             from ... import xscene_merge
             rep = xscene_merge.build_cross_scene_merge(
                 base, specs, out, editable_ibs=editable or None,
-                form_ibs=forms or None)
+                form_ibs=forms or None,
+                write_texture_identity_manifest=bool(getattr(
+                    s.VTWW_settings,
+                    "extract_texture_identity_manifest",
+                    True,
+                )))
         except Exception as exc:
             traceback.print_exc()
             self.report({'ERROR'}, "合并失败：%s（详见系统控制台）" % exc)

@@ -627,8 +627,25 @@ def read_trusted_form_anchors(object_source_folder):
     return out
 
 
+def _sync_texture_identity_manifest(
+    object_source_folder,
+    dump_path,
+    enabled: bool,
+):
+    manifest_path = (
+        Path(object_source_folder) / texture_identity_manifest.MANIFEST_FILENAME)
+    if not enabled:
+        manifest_path.unlink(missing_ok=True)
+        return None
+    return texture_identity_manifest.refresh_manifest(
+        object_source_folder,
+        source_directories=(dump_path,),
+    )
+
+
 def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
-                    texture_filter: TextureFilter = None) -> dict:
+                    texture_filter: TextureFilter = None,
+                    refresh_texture_identity: bool = True) -> dict:
     """Parses one extra-form RAW dump and merges it into ShaderTextureUsage.json.
 
     texture_filter should mirror the settings the base extraction ran with
@@ -739,10 +756,8 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
                 'components': component_count,
             } for route_hash, component_count in fold_routes_written)
         copied = _copy_form_textures(object_source_folder, combined)
-        texture_identity_manifest.refresh_manifest(
-            object_source_folder,
-            source_directories=(dump_path,),
-        )
+        _sync_texture_identity_manifest(
+            object_source_folder, dump_path, refresh_texture_identity)
         return {'mode': 'cross_scene', 'lifted_ibs': sorted(lifted),
                 'textures_copied': copied, 'form_label': form_label.strip(),
                 'fold_extra_forms': fold_forms_written,
@@ -779,10 +794,8 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         usage.update(base_components)
         refresh_local_discriminator_audit_in_usage(usage)
         stu_metadata.write_usage(usage_path, usage)
-        texture_identity_manifest.refresh_manifest(
-            object_source_folder,
-            source_directories=(dump_path,),
-        )
+        _sync_texture_identity_manifest(
+            object_source_folder, dump_path, refresh_texture_identity)
         return {
             'usage_file': str(usage_path),
             'label': 'base',
@@ -870,10 +883,8 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         ])
     refresh_local_discriminator_audit_in_usage(usage)
     stu_metadata.write_usage(usage_path, usage)
-    texture_identity_manifest.refresh_manifest(
-        object_source_folder,
-        source_directories=(dump_path,),
-    )
+    _sync_texture_identity_manifest(
+        object_source_folder, dump_path, refresh_texture_identity)
     if legacy_path.is_file():
         legacy_path.unlink()
 
