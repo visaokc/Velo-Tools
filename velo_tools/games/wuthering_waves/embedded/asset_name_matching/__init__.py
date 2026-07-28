@@ -1,4 +1,4 @@
-"""Texture identity extraction and exporter prototype."""
+"""Driver mounts for Unreal asset-name texture matching."""
 
 from .hook import install, remove
 

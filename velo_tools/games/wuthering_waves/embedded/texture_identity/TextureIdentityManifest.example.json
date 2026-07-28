@@ -1,9 +1,0 @@
-{
-  "schema_version": 1,
-  "textures": {
-    "1234abcd": {
-      "fingerprint": "v3:r16:rgba8-phash:__________8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQCAf_CQUAAP8=",
-      "format": "B8G8R8A8_UNORM"
-    }
-  }
-}

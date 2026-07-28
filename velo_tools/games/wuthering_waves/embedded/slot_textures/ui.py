@@ -15,8 +15,7 @@ import bpy
 
 _MISSING = object()
 _orig_slot_style_annotation = _MISSING
-_orig_texture_identity_extract_annotation = _MISSING
-_orig_texture_identity_export_annotation = _MISSING
+_orig_asset_name_annotation = _MISSING
 _orig_skip_dirty_slot_annotation = _MISSING
 _orig_auto_split_annotation = _MISSING
 _orig_draw_menu_export_mod = None
@@ -25,8 +24,8 @@ _orig_draw_menu_extract_frame_data = None
 
 # ------------------------------------------------------- settings injection --
 
-def _enable_texture_identity_export(self, _context):
-    if getattr(self, "use_texture_identity_matching", False):
+def _enable_asset_name_export(self, _context):
+    if getattr(self, "use_asset_name_matching", False):
         self.velo_slot_style_textures = False
 
 
@@ -34,19 +33,15 @@ def inject_settings():
     """Adds the export option to VTWW_Settings. Must run BEFORE the vendored
     settings class is registered (same constraint as _patch_tool_mode)."""
     global _orig_slot_style_annotation
-    global _orig_texture_identity_extract_annotation
-    global _orig_texture_identity_export_annotation
+    global _orig_asset_name_annotation
     global _orig_skip_dirty_slot_annotation, _orig_auto_split_annotation
     from ..._wwmi_core.addon import settings as _wsettings
 
     _orig_slot_style_annotation = _wsettings.VTWW_Settings.__annotations__.get(
         "velo_slot_style_textures", _MISSING)
-    _orig_texture_identity_extract_annotation = (
+    _orig_asset_name_annotation = (
         _wsettings.VTWW_Settings.__annotations__.get(
-            "extract_texture_identity_manifest", _MISSING))
-    _orig_texture_identity_export_annotation = (
-        _wsettings.VTWW_Settings.__annotations__.get(
-            "use_texture_identity_matching", _MISSING))
+            "use_asset_name_matching", _MISSING))
     _orig_skip_dirty_slot_annotation = _wsettings.VTWW_Settings.__annotations__.get(
         "skip_slot_residual_textures", _MISSING)
     _orig_auto_split_annotation = _wsettings.VTWW_Settings.__annotations__.get(
@@ -61,24 +56,16 @@ def inject_settings():
         ),
         default=False,
     )
-    _wsettings.VTWW_Settings.__annotations__["extract_texture_identity_manifest"] = (
+    _wsettings.VTWW_Settings.__annotations__["use_asset_name_matching"] = (
         bpy.props.BoolProperty(
-            name="生成 r16 贴图指纹 JSON",
+            name="使用资产名称匹配",
             description=(
-                "提取完成后为实际存在的 DDS 生成 TextureIdentityManifest.json；"
-                "形态贴图合并和跨场景合并会同步重建该清单"
-            ),
-            default=True,
-        ))
-    _wsettings.VTWW_Settings.__annotations__["use_texture_identity_matching"] = (
-        bpy.props.BoolProperty(
-            name="使用 r16 贴图指纹匹配",
-            description=(
-                "把导出 INI 中可识别的贴图 Hash 覆盖改为精确 r16 指纹覆盖；"
-                "需要源目录存在 TextureIdentityManifest.json，与插槽风格贴图互斥"
+                "把导出 INI 中带资产路径证据的贴图 Hash 覆盖改为 "
+                "match_asset_name；资产路径来自 F8 转储并随 "
+                "ShaderTextureUsage.json 保留，与插槽风格贴图互斥"
             ),
             default=False,
-            update=_enable_texture_identity_export,
+            update=_enable_asset_name_export,
         ))
     _wsettings.VTWW_Settings.__annotations__["skip_slot_residual_textures"] = bpy.props.BoolProperty(
         name="贴图过滤：跳过 Dirty Slot",
@@ -99,8 +86,7 @@ def inject_settings():
 
 def restore_settings():
     global _orig_slot_style_annotation
-    global _orig_texture_identity_extract_annotation
-    global _orig_texture_identity_export_annotation
+    global _orig_asset_name_annotation
     global _orig_skip_dirty_slot_annotation, _orig_auto_split_annotation
     from ..._wwmi_core.addon import settings as _wsettings
 
@@ -110,22 +96,14 @@ def restore_settings():
         _wsettings.VTWW_Settings.__annotations__["velo_slot_style_textures"] = (
             _orig_slot_style_annotation)
     _orig_slot_style_annotation = _MISSING
-    if _orig_texture_identity_extract_annotation is _MISSING:
+    if _orig_asset_name_annotation is _MISSING:
         _wsettings.VTWW_Settings.__annotations__.pop(
-            "extract_texture_identity_manifest", None)
+            "use_asset_name_matching", None)
     else:
         _wsettings.VTWW_Settings.__annotations__[
-            "extract_texture_identity_manifest"
-        ] = _orig_texture_identity_extract_annotation
-    _orig_texture_identity_extract_annotation = _MISSING
-    if _orig_texture_identity_export_annotation is _MISSING:
-        _wsettings.VTWW_Settings.__annotations__.pop(
-            "use_texture_identity_matching", None)
-    else:
-        _wsettings.VTWW_Settings.__annotations__[
-            "use_texture_identity_matching"
-        ] = _orig_texture_identity_export_annotation
-    _orig_texture_identity_export_annotation = _MISSING
+            "use_asset_name_matching"
+        ] = _orig_asset_name_annotation
+    _orig_asset_name_annotation = _MISSING
     if _orig_skip_dirty_slot_annotation is _MISSING:
         _wsettings.VTWW_Settings.__annotations__.pop("skip_slot_residual_textures", None)
     else:
@@ -158,12 +136,12 @@ def _patch_export_menu():
         box.label(text="Velo 兼容选项", icon="TOOL_SETTINGS")
         if hasattr(cfg, "velo_auto_split_by_material"):
             box.prop(cfg, "velo_auto_split_by_material")
-        if hasattr(cfg, "use_texture_identity_matching"):
-            box.prop(cfg, "use_texture_identity_matching")
+        if hasattr(cfg, "use_asset_name_matching"):
+            box.prop(cfg, "use_asset_name_matching")
         if hasattr(cfg, "velo_slot_style_textures"):
             row = box.row()
             row.enabled = not bool(
-                getattr(cfg, "use_texture_identity_matching", False))
+                getattr(cfg, "use_asset_name_matching", False))
             row.prop(cfg, "velo_slot_style_textures")
             slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
             if (slot_cfg is not None and cfg.velo_slot_style_textures):
@@ -211,11 +189,6 @@ def _patch_extract_menu():
             layout.row().prop(cfg, 'skip_slot_residual_textures')
 
         layout.row()
-
-        if hasattr(cfg, "extract_texture_identity_manifest"):
-            box = layout.box()
-            box.label(text="Velo 兼容选项", icon="TOOL_SETTINGS")
-            box.prop(cfg, "extract_texture_identity_manifest")
 
         layout.row().operator(_wui.VTWW_ExtractFrameData.bl_idname)
 
@@ -359,8 +332,6 @@ class VTWW_OT_merge_form_textures(bpy.types.Operator):
                 resolve_path(slot_cfg.form_dump_folder),
                 slot_cfg.form_label,
                 texture_filter=form_merge.texture_filter_from_cfg(cfg),
-                refresh_texture_identity=bool(
-                    getattr(cfg, "extract_texture_identity_manifest", True)),
             )
         except Exception as exc:
             traceback.print_exc()

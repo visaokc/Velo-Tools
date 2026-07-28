@@ -55,12 +55,12 @@ def _make_patched(orig_execute):
                     context, cfg, base_col, str(root), out, hole=False,
                     excluded_buffers=self.get_excluded_buffers(context))
                 if (
-                    bool(getattr(cfg, "use_texture_identity_matching", False))
+                    bool(getattr(cfg, "use_asset_name_matching", False))
                     and not bool(getattr(cfg, "partial_export", False))
                     and bool(getattr(cfg, "write_ini", True))
                 ):
-                    from ..texture_identity.exporter import apply_manifest_to_ini
-                    rep["texture_identity_rules"] = apply_manifest_to_ini(
+                    from ..asset_name_matching.exporter import apply_stu_to_ini
+                    rep["asset_name_rules"] = apply_stu_to_ini(
                         root,
                         Path(out) / "mod.ini",
                     )
@@ -78,9 +78,9 @@ def _make_patched(orig_execute):
             if rep.get("slot_style"):
                 msg += " | slot-style textures (%d slot, %d hash-fallback)" % (
                     len(rep.get("tex_slot") or []), len(rep.get("tex_blindzone") or []))
-            if rep.get("texture_identity_rules"):
-                msg += " | r16 fingerprint textures %d" % int(
-                    rep["texture_identity_rules"])
+            if rep.get("asset_name_rules"):
+                msg += " | asset-name textures %d" % int(
+                    rep["asset_name_rules"])
             if rep.get("final_ini_written") is False:
                 msg += " | final mod.ini skipped (write_ini off / partial export)"
             if rep.get("final_textures_written") is False:

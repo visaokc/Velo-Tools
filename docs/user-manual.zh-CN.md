@@ -527,7 +527,7 @@ EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导�
 
 其它“跳过”类过滤会减少输出，也可能移除后来需要的贴图证据。准备使用插槽风格贴图或多形态合并时，优先保留完整证据。
 
-提取会生成 `ShaderTextureUsage.json`。该文件记录 Component、draw、shader pair、`ps-tN` 槽位、资源 Hash 和新鲜度证据，是插槽风格贴图和形态贴图合并的重要输入。
+提取会生成 `ShaderTextureUsage.json`。该文件记录 Component、draw、shader pair、`ps-tN` 槽位、资源 Hash、新鲜度证据，以及 F8 转储已捕获的完整 Unreal `asset_path`，是资产名称匹配、插槽风格贴图和形态贴图合并的重要输入。
 
 ### 6.3 导入对象
 
@@ -767,14 +767,27 @@ global persist $ShapeKey_161 = 0.0
 
 `persist` 值可能被 `d3dx_user.ini` 中已经保存的值覆盖。修改 `mod.ini` 默认值后若没有生效，应同步更新或删除对应持久化值。包含自定义 ShapeKey 数据时必须执行完整导出；Partial Export 不会单独更新这一管线。
 
-### 7.5 插槽风格贴图与原生 Hash 风格
+### 7.5 资产名称、插槽风格与原生 Hash 风格
 
-Hash-style 与 slot-style 可以在同一个 Mod 中共存。它们不是互斥的全局模式，而是按 Component 选择的贴图路径。
+Hash-style 与 slot-style 可以在同一个 Mod 中共存。资产名称匹配则是独立导出模式，与 slot-style 互斥。
 
 | 路径 | 匹配依据 | 适用情况 |
 | --- | --- | --- |
 | 原生 Hash 风格 | 提取证据中的资源 Hash | Hash 稳定、原版 WWMI 路径已经可靠。 |
+| 资产名称匹配 | F8 转储写入 STU 的完整 Unreal `asset_path`，导出时取 UObject 短名 | Runtime 已支持 `match_asset_name`，需要摆脱流送 Hash 变化但仍保留明确资产身份。 |
 | 插槽风格贴图 | draw 范围内 `ps-tN` 的完整正向槽位格式组合 | Hash 可能漂移，但槽位布局有足够证据可安全区分。 |
+
+#### 资产名称匹配
+
+使用带 `TextureAssetManifest.jsonl` 的 F8 转储进行提取后，每条对应贴图记录末尾都会写入完整 `asset_path`。形态合并、独立 IB 重编号和 Cross-Scene 聚合会原样保留该字段。
+
+在 **导出 Mod -> Velo 兼容选项**中启用 **使用资产名称匹配**后，具备路径证据的原生 Hash override 会只输出：
+
+```ini
+match_asset_name = T_Example_D
+```
+
+导出器不写完整路径，也不生成像素指纹。已知同名短名若对应不同完整路径会 fail closed；没有路径证据的记录继续保留原生 Hash。
 
 #### 启用流程
 

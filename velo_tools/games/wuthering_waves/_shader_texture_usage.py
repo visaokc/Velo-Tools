@@ -4,7 +4,7 @@ Schema v3 (aligned with the XQFA WWMI-Tools fork so extractions are
 interchangeable between the two plugins):
 
     "Component {id}" -> "vs=<hash>" -> "ps=<hash>" -> "ps-tN" ->
-        {"filename", "hash", "format", "width", "height"}
+        {"filename", "hash", "format", "width", "height", "asset_path"}
 
 Schema v4 (ADR 0007 rev 12, additive - emitted only when the dump's log.txt
 yields usable binding-freshness evidence): top-level ``"version": 4``, per
@@ -69,16 +69,19 @@ from pathlib import Path
 
 from ._wwmi_core.extract_frame_data import component_builder as _cb_module
 from ._wwmi_core.extract_frame_data import extract_frame_data as _efd_module
+from ._wwmi_core.migoto_io.dump_parser import dump_parser as _dump_module
 from ._wwmi_core.migoto_io.dump_parser.filename_parser import ShaderType
 
 from .embedded.slot_textures import dds_meta as _dds_meta
 from .embedded.slot_textures import log_freshness as _log_freshness
 from .embedded.slot_textures import stu_metadata as _stu_metadata
 from .embedded.slot_textures.constants import SERVICE_SLOTS
+from .embedded import asset_paths as _asset_paths
 
 _INSTALLED = False
 _ORIG_BUILD_COMPONENTS = None
 _ORIG_WRITE_OBJECTS = None
+_ORIG_DUMP_POST_INIT = None
 # vb0_hash -> list of "full descriptor lists" ordered by component (component_id is the index)
 _CAPTURE = {}
 
@@ -109,7 +112,11 @@ def _shader_keys(descriptor):
             ps.raw if ps is not None else 'ps=?')
 
 
-def texture_record(descriptor, filename: str = '') -> OrderedDict:
+def texture_record(
+        descriptor,
+        filename: str = '',
+        asset_path: str = '',
+) -> OrderedDict:
     """Rich slot record (XQFA-compatible shape) for one texture descriptor.
     Format/size come from the dump DDS header; unreadable / non-DDS sources
     yield empty format and zero size (the generator skips such slots in
@@ -121,6 +128,7 @@ def texture_record(descriptor, filename: str = '') -> OrderedDict:
         ('format', meta.format if meta else ''),
         ('width', meta.width if meta else 0),
         ('height', meta.height if meta else 0),
+        ('asset_path', asset_path),
     ))
 
 
@@ -131,6 +139,22 @@ def _wrapped_build_components(self, vb_layout, shapekeys):
     # sorted by vertex_offset, in the same order as self.components / later ComponentData /
     # component_id. Overwrite: each round build precedes write, so it is naturally fresh.
     _CAPTURE[self.vb0_hash] = [list(cd.draw_data.textures) for cd in self.components_data]
+
+
+def _wrapped_dump_post_init(self):
+    original_listdir = _dump_module.os.listdir
+
+    def list_dump_resources(path):
+        return [
+            filename for filename in original_listdir(path)
+            if filename.casefold() != _asset_paths.MANIFEST_FILENAME.casefold()
+        ]
+
+    _dump_module.os.listdir = list_dump_resources
+    try:
+        return _ORIG_DUMP_POST_INIT(self)
+    finally:
+        _dump_module.os.listdir = original_listdir
 
 
 def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=False):
@@ -153,12 +177,14 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
             # ADR 0007 rev 12: binding-freshness evidence from the dump's
             # log.txt (None -> legacy json without freshness flags).
             evidence = None
+            asset_path_index = {}
             if per_object:
                 first_desc = next((d for lst in per_object for d in lst), None)
                 if first_desc is not None:
                     dump_root = _log_freshness.find_dump_root(first_desc.path)
                     if dump_root is not None:
                         evidence = _log_freshness.parse_log_freshness(dump_root)
+                        asset_path_index = _asset_paths.load_asset_paths(dump_root)
                 if evidence is None:
                     print(f'[velo slot-textures] {object_name}: no usable log.txt '
                           f'freshness evidence - writing legacy ShaderTextureUsage.json '
@@ -215,7 +241,23 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                     vs_key, ps_key = _shader_keys(desc)
                     survives = desc.get_slot_hash() in surviving
                     if desc.hash not in record_cache:
-                        record_cache[desc.hash] = texture_record(desc, stock_filename(desc))
+                        record_cache[desc.hash] = texture_record(
+                            desc,
+                            stock_filename(desc),
+                            _asset_paths.asset_path_for_dump_file(
+                                asset_path_index, desc.path),
+                        )
+                    else:
+                        captured_path = _asset_paths.asset_path_for_dump_file(
+                            asset_path_index, desc.path)
+                        existing_path = record_cache[desc.hash]['asset_path']
+                        if captured_path and existing_path and captured_path != existing_path:
+                            raise ValueError(
+                                f"Texture Hash {desc.hash} maps to conflicting "
+                                "Unreal asset paths in this extraction"
+                            )
+                        if captured_path and not existing_path:
+                            record_cache[desc.hash]['asset_path'] = captured_path
                     record = record_cache[desc.hash]
                     slot_key = desc.get_slot()
                     fresh = None
@@ -446,17 +488,21 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
 
 def install_patches():
     global _INSTALLED, _ORIG_BUILD_COMPONENTS, _ORIG_WRITE_OBJECTS
+    global _ORIG_DUMP_POST_INIT
     if _INSTALLED:
         return
     _ORIG_BUILD_COMPONENTS = _cb_module.MeshObject.build_components
     _ORIG_WRITE_OBJECTS = _efd_module.write_objects
+    _ORIG_DUMP_POST_INIT = _dump_module.Dump.__post_init__
     _cb_module.MeshObject.build_components = _wrapped_build_components
     _efd_module.write_objects = _wrapped_write_objects
+    _dump_module.Dump.__post_init__ = _wrapped_dump_post_init
     _INSTALLED = True
 
 
 def uninstall_patches():
     global _INSTALLED, _ORIG_BUILD_COMPONENTS, _ORIG_WRITE_OBJECTS
+    global _ORIG_DUMP_POST_INIT
     if not _INSTALLED:
         return
     try:
@@ -464,8 +510,11 @@ def uninstall_patches():
             _cb_module.MeshObject.build_components = _ORIG_BUILD_COMPONENTS
         if _ORIG_WRITE_OBJECTS is not None:
             _efd_module.write_objects = _ORIG_WRITE_OBJECTS
+        if _ORIG_DUMP_POST_INIT is not None:
+            _dump_module.Dump.__post_init__ = _ORIG_DUMP_POST_INIT
     finally:
         _ORIG_BUILD_COMPONENTS = None
         _ORIG_WRITE_OBJECTS = None
+        _ORIG_DUMP_POST_INIT = None
         _CAPTURE.clear()
         _INSTALLED = False

@@ -1158,7 +1158,7 @@ def _slot_plan(
         selected_component_ids: Optional[Iterable[int]] = None,
 ) -> Any:
     if (not bool(getattr(cfg, "velo_slot_style_textures", False))
-            or bool(getattr(cfg, "use_texture_identity_matching", False))
+            or bool(getattr(cfg, "use_asset_name_matching", False))
             or not textures or not selection.objects):
         return None
     from ..slot_textures import dds_meta, generator, hook, stu_metadata
@@ -1744,7 +1744,7 @@ def _texture_plan(
     cfg = settings.cfg
     result = TexturePlan()
     if (not bool(getattr(cfg, "velo_slot_style_textures", False))
-            or bool(getattr(cfg, "use_texture_identity_matching", False))
+            or bool(getattr(cfg, "use_asset_name_matching", False))
             or not textures or not settings.selection.objects):
         catalog = {str(texture.hash).lower() for texture in textures}
         for texture_hash, component_ids in _root_texture_components(root).items():
@@ -3509,41 +3509,6 @@ def _add_footer(ir: CrossSceneIR, cfg: Any) -> None:
     ])
 
 
-def _add_texture_identity_contexts(ir: CrossSceneIR) -> None:
-    for section in ir.sections:
-        if not section.name.casefold().startswith("textureoverride"):
-            continue
-        component_id = section.global_component
-        if component_id is None:
-            match = re.match(
-                r"TextureOverrideComponent(\d+)",
-                section.name,
-                re.I,
-            )
-            if match is not None:
-                component_id = int(match.group(1))
-        if component_id is None:
-            continue
-        if any(
-            line.partition("=")[0].strip().casefold()
-            == "texture_identity_context"
-            for line in section.lines
-        ):
-            continue
-        insert_at = next(
-            (
-                index + 1
-                for index, line in enumerate(section.lines)
-                if line.partition("=")[0].strip().casefold() == "hash"
-            ),
-            0,
-        )
-        section.lines.insert(
-            insert_at,
-            f"texture_identity_context = component:{int(component_id)}",
-        )
-
-
 def _with_checksum(text: str) -> str:
     body = text.strip() + "\n"
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
@@ -3900,7 +3865,6 @@ def compile_cross_scene(units: Sequence[Any], root: Any,
         _add_buffer_sections(ir, unit, mode)
     _add_texture_sections(ir, root, units, texture_plan, ini_textures)
     _add_footer(ir, cfg)
-    _add_texture_identity_contexts(ir)
 
     report = _validate_ir(ir, buffers, textures, logo_source, mode)
     rendered = ir.render()

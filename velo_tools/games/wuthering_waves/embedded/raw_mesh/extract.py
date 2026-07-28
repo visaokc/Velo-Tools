@@ -28,6 +28,7 @@ from ..._wwmi_core.migoto_io.dump_parser.dump_parser import Dump
 from ..._wwmi_core.migoto_io.dump_parser.filename_parser import ShaderType
 from ..._wwmi_core.blender_import.buffers import IndexBuffer
 
+from .. import asset_paths
 from ..slot_textures import dds_meta as _dds_meta
 
 from . import scan
@@ -57,7 +58,7 @@ def _shader_keys(desc):
     return vs, ps
 
 
-def _texture_record(desc, filename='') -> OrderedDict:
+def _texture_record(desc, filename='', asset_path='') -> OrderedDict:
     meta = _dds_meta.read_dds_meta(desc.path)
     return OrderedDict((
         ('filename', filename),
@@ -65,6 +66,7 @@ def _texture_record(desc, filename='') -> OrderedDict:
         ('format', meta.format if meta else ''),
         ('width', meta.width if meta else 0),
         ('height', meta.height if meta else 0),
+        ('asset_path', asset_path),
     ))
 
 
@@ -112,7 +114,7 @@ def _clean_existing(folder: Path):
 
 
 def _write_textures(folder: Path, built: List[_BuiltComponent],
-                    skip_jpg: bool, min_size: int):
+                    skip_jpg: bool, min_size: int, asset_path_index):
     tex_files: Dict[str, dict] = {}
     record_cache: Dict[str, OrderedDict] = {}
     texture_usage = OrderedDict()
@@ -132,8 +134,19 @@ def _write_textures(folder: Path, built: List[_BuiltComponent],
             vs, ps = _shader_keys(desc)
             shaders = '-'.join(s.raw for s in desc.shaders)
             tu.setdefault(slot, []).append(f'{h}-{shaders}')
+            texture_asset_path = asset_paths.asset_path_for_dump_file(
+                asset_path_index, desc.path)
             if h not in record_cache:
-                record_cache[h] = _texture_record(desc)
+                record_cache[h] = _texture_record(
+                    desc, asset_path=texture_asset_path)
+            else:
+                known_path = record_cache[h].get('asset_path', '')
+                if known_path and texture_asset_path and known_path != texture_asset_path:
+                    raise RawMeshExtractError(
+                        f'Texture hash {h} maps to multiple asset paths: '
+                        f'{known_path!r} and {texture_asset_path!r}.')
+                if texture_asset_path and not known_path:
+                    record_cache[h]['asset_path'] = texture_asset_path
             su.setdefault(vs, OrderedDict()).setdefault(ps, OrderedDict())[slot] = record_cache[h]
             entry = tex_files.setdefault(
                 h, {'path': desc.path, 'suffix': Path(desc.path).suffix, 'comp_ids': set()})
@@ -187,7 +200,9 @@ def extract(dump_folder: str, output_folder: str, hashes_text: str,
             (folder / f'Component {i} vb{slot}.buf').write_bytes(data)
 
     min_size = skip_small_kb * 1024 if skip_small else 0
-    n_textures = _write_textures(folder, built, skip_jpg, min_size)
+    asset_path_index = asset_paths.load_asset_paths(dump_path)
+    n_textures = _write_textures(
+        folder, built, skip_jpg, min_size, asset_path_index)
 
     components_meta = [{
         'vertex_count': bc.vertex_count,

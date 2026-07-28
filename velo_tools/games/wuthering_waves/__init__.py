@@ -465,11 +465,10 @@ def register():
     except Exception:
         import traceback
         traceback.print_exc()
-    # Texture identity prototype wraps the completed STU extraction path and
-    # emits only a disabled exporter preview until v3 sampling/color parity is validated.
+    # Asset-name matching consumes the completed STU after normal export.
     try:
-        from .embedded import texture_identity as _texture_identity
-        _texture_identity.install()
+        from .embedded import asset_name_matching as _asset_name_matching
+        _asset_name_matching.install()
     except Exception:
         import traceback
         traceback.print_exc()
@@ -523,8 +522,8 @@ def unregister():
     except Exception:
         pass
     try:
-        from .embedded import texture_identity as _texture_identity
-        _texture_identity.remove()
+        from .embedded import asset_name_matching as _asset_name_matching
+        _asset_name_matching.remove()
     except Exception:
         pass
     # Restore the ShaderTextureUsage hook (don't copy WWMI unregister's omission of unhooking the export hook; this patch unhooks explicitly).

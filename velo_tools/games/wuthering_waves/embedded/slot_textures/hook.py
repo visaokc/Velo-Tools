@@ -40,7 +40,7 @@ def install():
 
     def _wrapped_build_from_template(self, context, cfg, template_string=None, with_checksum=False):
         if (not getattr(cfg, 'velo_slot_style_textures', False)
-                or getattr(cfg, 'use_texture_identity_matching', False)
+                or getattr(cfg, 'use_asset_name_matching', False)
                 or getattr(cfg, 'use_custom_template', False)
                 or getattr(cfg, 'custom_template_live_update', False)):
             return _ORIG_BUILD_FROM_TEMPLATE(self, context, cfg,

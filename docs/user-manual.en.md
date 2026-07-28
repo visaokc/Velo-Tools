@@ -113,7 +113,7 @@ For WWMI cross-scene work, the merged source folder becomes the object source. I
 | --- | --- | --- |
 | `Metadata.json` | EFMI/WWMI extraction | Import/export geometry, component, skeleton, and LOD metadata |
 | `TextureUsage.json` | EFMI/WWMI extraction | Basic texture attribution and import-time material assignment |
-| `ShaderTextureUsage.json` | Velo WWMI extraction | Shader-pair, `ps-tN`, format, freshness, and form evidence for slot-style export |
+| `ShaderTextureUsage.json` | Velo WWMI extraction | Shader-pair, `ps-tN`, format, freshness, form, and captured Unreal asset-path evidence |
 | `VertexGroupMap.json` | Velo EFMI extraction | Unified-to-component-local vertex-group translation for EFMI Merged mode |
 | `CrossIB.json` | Velo EFMI extraction or CrossIB panel | EFMI Component match, pass topology, transparency, and input-compatibility evidence consumed by CrossIB export |
 | `CrossSceneManifest.json` | Velo WWMI cross-scene merge | Runtime IB ownership and component/VG/LOD/fold/morph routing not derivable from root Metadata/STU |
@@ -577,6 +577,18 @@ Hash-style replacement uses the captured texture resource identity. It is the de
 Use Hash-style when the target identities are stable and no texture-streaming fallback is observed.
 
 Hash-style cannot infer an identity missing from the source. A visually identical DDS can still have a different runtime Hash.
+
+#### Asset-Name Matching
+
+When an F8 frame dump contains `TextureAssetManifest.jsonl`, extraction stores the full Unreal Object Path as `asset_path` in each corresponding `ShaderTextureUsage.json` texture record. Form merges, editable-IB remapping, and Cross-Scene aggregation preserve that field.
+
+Enable **使用资产名称匹配 (Use Asset-Name Matching)** under WWMI export **Velo 兼容选项 (Velo Compatibility Options)** to convert eligible native Hash overrides to:
+
+```ini
+match_asset_name = T_Example_D
+```
+
+The exporter does not emit the full path or a pixel fingerprint. Known duplicate short names that refer to different full paths fail closed; records without captured path evidence remain on their native Hash path. Asset-name matching and slot-style are mutually exclusive export modes.
 
 #### Slot-Style
 

@@ -14,7 +14,7 @@
 # (single file; legacy extra_forms sidecars are auto-migrated in and deleted).
 #
 # Schema v3: slot records are rich objects {filename, hash, format, width,
-# height} (XQFA-fork compatible), with format/size read from the dump DDS
+# height, asset_path}, with format/size read from the dump DDS
 # headers — the slot-style combination conditions match ORIGINAL game formats,
 # so they must be captured while the dump files are still around.
 
@@ -37,7 +37,7 @@ from . import constants
 from . import dds_meta
 from . import log_freshness
 from . import stu_metadata
-from ..texture_identity import manifest as texture_identity_manifest
+from .. import asset_paths
 
 # Same exclusion list the stock extraction / export use for well-known cubemaps.
 KNOWN_CUBEMAP_HASHES = ['af26db30', '1320a071', '10d7937d', '87505b2b',
@@ -87,7 +87,7 @@ def _shader_keys(descriptor):
             ps.raw if ps is not None else 'ps=?')
 
 
-def _texture_record(descriptor) -> OrderedDict:
+def _texture_record(descriptor, asset_path_index=None) -> OrderedDict:
     """Rich slot record; extra forms write no texture files, so filename stays
     empty (same convention as the XQFA exporter for unavailable data)."""
     meta = dds_meta.read_dds_meta(descriptor.path)
@@ -97,6 +97,8 @@ def _texture_record(descriptor) -> OrderedDict:
         ('format', meta.format if meta else ''),
         ('width', meta.width if meta else 0),
         ('height', meta.height if meta else 0),
+        ('asset_path', asset_paths.asset_path_for_dump_file(
+            asset_path_index or {}, descriptor.path)),
     ))
 
 
@@ -150,7 +152,12 @@ def _match_object(mesh_objects, vb0_hash: str, cb4_hash: str):
         f'{len(candidates)} objects - cannot pick the form object unambiguously')
 
 
-def _build_components_usage(mesh_object, surviving_sets, evidence=None):
+def _build_components_usage(
+        mesh_object,
+        surviving_sets,
+        evidence=None,
+        asset_path_index=None,
+):
     """Component N -> "vs=.." -> "ps=.." -> "ps-tN" -> rich record (exactly
     the base ShaderTextureUsage.json shape: only descriptors surviving the
     stock texture filter are seated, which strips the inherited-binding noise
@@ -204,7 +211,8 @@ def _build_components_usage(mesh_object, surviving_sets, evidence=None):
                     # Conflicting bindings for the same (pair, slot) within one
                     # frame: multi-state variant, mark unknown (generator skips).
                     pair[slot] = OrderedDict((('filename', ''), ('hash', None),
-                                              ('format', ''), ('width', 0), ('height', 0)))
+                                              ('format', ''), ('width', 0),
+                                              ('height', 0), ('asset_path', '')))
                     seat_fresh.pop(seat, None)
                     continue
             elif slot in pair and pair[slot].get('hash') == descriptor.hash:
@@ -212,7 +220,19 @@ def _build_components_usage(mesh_object, surviving_sets, evidence=None):
                     seat_fresh[seat] = True  # OR-aggregate across draws
                 continue
             if descriptor.hash not in record_cache:
-                record_cache[descriptor.hash] = _texture_record(descriptor)
+                record_cache[descriptor.hash] = _texture_record(
+                    descriptor, asset_path_index)
+            else:
+                captured_path = asset_paths.asset_path_for_dump_file(
+                    asset_path_index or {}, descriptor.path)
+                existing_path = record_cache[descriptor.hash]['asset_path']
+                if captured_path and existing_path and captured_path != existing_path:
+                    raise FormMergeError(
+                        f"Texture Hash {descriptor.hash} maps to conflicting "
+                        "Unreal asset paths in this form dump"
+                    )
+                if captured_path and not existing_path:
+                    record_cache[descriptor.hash]['asset_path'] = captured_path
             pair[slot] = record_cache[descriptor.hash]
             if fresh is not None:
                 seat_fresh[seat] = fresh
@@ -351,6 +371,16 @@ def _merge_variant_records(dst_components, src_components):
                             # Same seat re-verified as freshly bound in the new
                             # dump: upgrade the canonical flag.
                             existing['fresh'] = True
+                        if new_hash and new_hash == existing.get('hash'):
+                            src_path = str(record.get('asset_path') or '')
+                            dst_path = str(existing.get('asset_path') or '')
+                            if src_path and dst_path and src_path != dst_path:
+                                raise FormMergeError(
+                                    f"Texture Hash {new_hash} has conflicting "
+                                    "Unreal asset paths across form dumps"
+                                )
+                            if src_path and not dst_path:
+                                existing['asset_path'] = src_path
                         continue
                     if src_fresh is False:
                         # Stale-inherited src records are not evidence: never
@@ -378,7 +408,7 @@ def _merge_variant_records(dst_components, src_components):
                         # arbitrate the states - never assign this seat
                         dst_slots[slot] = OrderedDict((
                             ('filename', ''), ('hash', None), ('format', ''),
-                            ('width', 0), ('height', 0)))
+                            ('width', 0), ('height', 0), ('asset_path', '')))
                         conflicts_marked += 1
                         continue
                     conflicts_marked += 1  # different family: guards
@@ -627,25 +657,8 @@ def read_trusted_form_anchors(object_source_folder):
     return out
 
 
-def _sync_texture_identity_manifest(
-    object_source_folder,
-    dump_path,
-    enabled: bool,
-):
-    manifest_path = (
-        Path(object_source_folder) / texture_identity_manifest.MANIFEST_FILENAME)
-    if not enabled:
-        manifest_path.unlink(missing_ok=True)
-        return None
-    return texture_identity_manifest.refresh_manifest(
-        object_source_folder,
-        source_directories=(dump_path,),
-    )
-
-
 def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
-                    texture_filter: TextureFilter = None,
-                    refresh_texture_identity: bool = True) -> dict:
+                    texture_filter: TextureFilter = None) -> dict:
     """Parses one extra-form RAW dump and merges it into ShaderTextureUsage.json.
 
     texture_filter should mirror the settings the base extraction ran with
@@ -664,6 +677,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
     # ADR 0007 rev 12: binding-freshness evidence for the extra-form records
     # (None -> legacy records without freshness flags).
     evidence = log_freshness.parse_log_freshness(dump_path)
+    asset_path_index = asset_paths.load_asset_paths(dump_path)
 
     metadata_path = object_source_folder / 'Metadata.json'
     if not metadata_path.is_file():
@@ -717,7 +731,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             if route is None:
                 continue
             components_usage, src = _build_components_usage(
-                obj, surviving.get(vb0), evidence)
+                obj, surviving.get(vb0), evidence, asset_path_index)
             component_map = route.get('component_map') or {}
             _merge_cross_scene_texture_sources(
                 combined, src, component_map)
@@ -756,8 +770,6 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
                 'components': component_count,
             } for route_hash, component_count in fold_routes_written)
         copied = _copy_form_textures(object_source_folder, combined)
-        _sync_texture_identity_manifest(
-            object_source_folder, dump_path, refresh_texture_identity)
         return {'mode': 'cross_scene', 'lifted_ibs': sorted(lifted),
                 'textures_copied': copied, 'form_label': form_label.strip(),
                 'fold_extra_forms': fold_forms_written,
@@ -772,7 +784,8 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             f'{len(base_components)} - forms must share the same mesh')
 
     components_usage, texture_sources = _build_components_usage(
-        mesh_object, surviving.get(mesh_object.vb0_hash), evidence)
+        mesh_object, surviving.get(mesh_object.vb0_hash), evidence,
+        asset_path_index)
     textures_copied = _copy_form_textures(object_source_folder, texture_sources)
 
     label = form_label.strip()
@@ -794,8 +807,6 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         usage.update(base_components)
         refresh_local_discriminator_audit_in_usage(usage)
         stu_metadata.write_usage(usage_path, usage)
-        _sync_texture_identity_manifest(
-            object_source_folder, dump_path, refresh_texture_identity)
         return {
             'usage_file': str(usage_path),
             'label': 'base',
@@ -883,8 +894,6 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
         ])
     refresh_local_discriminator_audit_in_usage(usage)
     stu_metadata.write_usage(usage_path, usage)
-    _sync_texture_identity_manifest(
-        object_source_folder, dump_path, refresh_texture_identity)
     if legacy_path.is_file():
         legacy_path.unlink()
 
