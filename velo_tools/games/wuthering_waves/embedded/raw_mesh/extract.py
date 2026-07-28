@@ -58,7 +58,7 @@ def _shader_keys(desc):
     return vs, ps
 
 
-def _texture_record(desc, filename='', asset_path='') -> OrderedDict:
+def _texture_record(desc, filename='') -> OrderedDict:
     meta = _dds_meta.read_dds_meta(desc.path)
     return OrderedDict((
         ('filename', filename),
@@ -66,7 +66,7 @@ def _texture_record(desc, filename='', asset_path='') -> OrderedDict:
         ('format', meta.format if meta else ''),
         ('width', meta.width if meta else 0),
         ('height', meta.height if meta else 0),
-        ('asset_path', asset_path),
+        ('asset_path', ''),
     ))
 
 
@@ -117,6 +117,7 @@ def _write_textures(folder: Path, built: List[_BuiltComponent],
                     skip_jpg: bool, min_size: int, asset_path_index):
     tex_files: Dict[str, dict] = {}
     record_cache: Dict[str, OrderedDict] = {}
+    asset_paths_by_hash: Dict[str, str] = {}
     texture_usage = OrderedDict()
     shader_usage = OrderedDict()
 
@@ -130,23 +131,24 @@ def _write_textures(folder: Path, built: List[_BuiltComponent],
             if min_size and Path(desc.path).stat().st_size < min_size:
                 continue
             h = desc.hash
+            if not h:
+                continue
             slot = desc.get_slot()
             vs, ps = _shader_keys(desc)
             shaders = '-'.join(s.raw for s in desc.shaders)
             tu.setdefault(slot, []).append(f'{h}-{shaders}')
             texture_asset_path = asset_paths.asset_path_for_dump_file(
                 asset_path_index, desc.path)
+            known_asset_path = asset_paths_by_hash.get(h)
+            if known_asset_path and texture_asset_path and (
+                    known_asset_path != texture_asset_path):
+                raise RawMeshExtractError(
+                    f'Texture hash {h} maps to multiple asset paths: '
+                    f'{known_asset_path!r} and {texture_asset_path!r}.')
+            if texture_asset_path:
+                asset_paths_by_hash[h] = texture_asset_path
             if h not in record_cache:
-                record_cache[h] = _texture_record(
-                    desc, asset_path=texture_asset_path)
-            else:
-                known_path = record_cache[h].get('asset_path', '')
-                if known_path and texture_asset_path and known_path != texture_asset_path:
-                    raise RawMeshExtractError(
-                        f'Texture hash {h} maps to multiple asset paths: '
-                        f'{known_path!r} and {texture_asset_path!r}.')
-                if texture_asset_path and not known_path:
-                    record_cache[h]['asset_path'] = texture_asset_path
+                record_cache[h] = _texture_record(desc)
             su.setdefault(vs, OrderedDict()).setdefault(ps, OrderedDict())[slot] = record_cache[h]
             entry = tex_files.setdefault(
                 h, {'path': desc.path, 'suffix': Path(desc.path).suffix, 'comp_ids': set()})
@@ -164,6 +166,11 @@ def _write_textures(folder: Path, built: List[_BuiltComponent],
         if h in record_cache:
             record_cache[h]['filename'] = name
 
+    asset_paths.enrich_existing_texture_records(
+        shader_usage,
+        folder,
+        asset_paths_by_hash,
+    )
     (folder / 'TextureUsage.json').write_text(json.dumps(texture_usage, indent=4))
     (folder / 'ShaderTextureUsage.json').write_text(json.dumps(shader_usage, indent=4))
     return len(tex_files)

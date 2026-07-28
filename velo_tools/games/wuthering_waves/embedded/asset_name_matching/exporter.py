@@ -45,7 +45,8 @@ def _walk_texture_records(value: Any):
 
 
 def asset_names_by_hash(source_folder: str | Path) -> dict[str, str]:
-    usage_path = Path(source_folder) / "ShaderTextureUsage.json"
+    source_folder = Path(source_folder)
+    usage_path = source_folder / "ShaderTextureUsage.json"
     if not usage_path.is_file():
         raise AssetNameMatchError(
             "Asset-name matching requires ShaderTextureUsage.json"
@@ -61,7 +62,12 @@ def asset_names_by_hash(source_folder: str | Path) -> dict[str, str]:
     for record in _walk_texture_records(usage):
         texture_hash = str(record.get("hash") or "").strip().lower()
         asset_path = str(record.get("asset_path") or "").strip()
-        if not asset_path:
+        filename = str(record.get("filename") or "").strip()
+        if (
+            not asset_path
+            or not filename
+            or not (source_folder / filename).is_file()
+        ):
             continue
         paths_by_hash.setdefault(texture_hash, set()).add(asset_path)
         for variant in record.get("variants") or ():

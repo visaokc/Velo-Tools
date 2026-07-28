@@ -779,7 +779,7 @@ Hash-style 与 slot-style 可以在同一个 Mod 中共存。资产名称匹配�
 
 #### 资产名称匹配
 
-使用带 `TextureAssetManifest.jsonl` 的 F8 转储进行提取后，每条对应贴图记录末尾都会写入完整 `asset_path`。形态合并、独立 IB 重编号和 Cross-Scene 聚合会原样保留该字段。
+使用带 `TextureAssetManifest.jsonl` 的 F8 转储进行提取时，Velo 会先按原流程完成 DDS 过滤与准确命名，再只给提取目录中确实存在对应命名 DDS 的 STU 记录写入完整 `asset_path`。`observed_only`、无 Hash、已过滤或文件缺失的记录不会获得可导出的路径证据。形态合并也会先复制最终保留的 DDS 再执行同一判断；独立 IB 重编号和 Cross-Scene 聚合只原样保留这些已确认字段。
 
 在 **导出 Mod -> Velo 兼容选项**中启用 **使用资产名称匹配**后，具备路径证据的原生 Hash override 会只输出：
 

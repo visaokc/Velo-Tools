@@ -580,7 +580,7 @@ Hash-style cannot infer an identity missing from the source. A visually identica
 
 #### Asset-Name Matching
 
-When an F8 frame dump contains `TextureAssetManifest.jsonl`, extraction stores the full Unreal Object Path as `asset_path` in each corresponding `ShaderTextureUsage.json` texture record. Form merges, editable-IB remapping, and Cross-Scene aggregation preserve that field.
+When an F8 frame dump contains `TextureAssetManifest.jsonl`, extraction first completes its normal DDS filtering and naming, then stores the full Unreal Object Path as `asset_path` only in `ShaderTextureUsage.json` records backed by a named DDS that actually exists in the extracted folder. Observation-only, hashless, filtered, or missing-file records do not gain exportable path evidence. Form merges apply the same rule after copying their retained DDS files; editable-IB remapping and Cross-Scene aggregation preserve the confirmed field.
 
 Enable **使用资产名称匹配 (Use Asset-Name Matching)** under WWMI export **Velo 兼容选项 (Velo Compatibility Options)** to convert eligible native Hash overrides to:
 

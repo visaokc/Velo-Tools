@@ -87,7 +87,7 @@ def _shader_keys(descriptor):
             ps.raw if ps is not None else 'ps=?')
 
 
-def _texture_record(descriptor, asset_path_index=None) -> OrderedDict:
+def _texture_record(descriptor) -> OrderedDict:
     """Rich slot record; extra forms write no texture files, so filename stays
     empty (same convention as the XQFA exporter for unavailable data)."""
     meta = dds_meta.read_dds_meta(descriptor.path)
@@ -97,8 +97,7 @@ def _texture_record(descriptor, asset_path_index=None) -> OrderedDict:
         ('format', meta.format if meta else ''),
         ('width', meta.width if meta else 0),
         ('height', meta.height if meta else 0),
-        ('asset_path', asset_paths.asset_path_for_dump_file(
-            asset_path_index or {}, descriptor.path)),
+        ('asset_path', ''),
     ))
 
 
@@ -156,7 +155,6 @@ def _build_components_usage(
         mesh_object,
         surviving_sets,
         evidence=None,
-        asset_path_index=None,
 ):
     """Component N -> "vs=.." -> "ps=.." -> "ps-tN" -> rich record (exactly
     the base ShaderTextureUsage.json shape: only descriptors surviving the
@@ -220,19 +218,7 @@ def _build_components_usage(
                     seat_fresh[seat] = True  # OR-aggregate across draws
                 continue
             if descriptor.hash not in record_cache:
-                record_cache[descriptor.hash] = _texture_record(
-                    descriptor, asset_path_index)
-            else:
-                captured_path = asset_paths.asset_path_for_dump_file(
-                    asset_path_index or {}, descriptor.path)
-                existing_path = record_cache[descriptor.hash]['asset_path']
-                if captured_path and existing_path and captured_path != existing_path:
-                    raise FormMergeError(
-                        f"Texture Hash {descriptor.hash} maps to conflicting "
-                        "Unreal asset paths in this form dump"
-                    )
-                if captured_path and not existing_path:
-                    record_cache[descriptor.hash]['asset_path'] = captured_path
+                record_cache[descriptor.hash] = _texture_record(descriptor)
             pair[slot] = record_cache[descriptor.hash]
             if fresh is not None:
                 seat_fresh[seat] = fresh
@@ -285,6 +271,35 @@ def _copy_form_textures(object_source_folder: Path, sources: dict) -> int:
         except OSError:
             pass  # unreadable dump file: the map entry alone still helps
     return copied
+
+
+def _enrich_copied_texture_records(
+        usage,
+        object_source_folder,
+        sources,
+        asset_path_index,
+):
+    paths_by_hash = {}
+    for texture_hash, (dump_path, _component_ids) in sources.items():
+        if not texture_hash:
+            continue
+        captured_path = asset_paths.asset_path_for_dump_file(
+            asset_path_index or {}, dump_path)
+        if not captured_path:
+            continue
+        previous = paths_by_hash.get(texture_hash)
+        if previous and previous != captured_path:
+            raise FormMergeError(
+                f"Texture Hash {texture_hash} maps to conflicting "
+                "Unreal asset paths in this form dump"
+            )
+        paths_by_hash[texture_hash] = captured_path
+    asset_paths.enrich_existing_texture_records(
+        usage,
+        object_source_folder,
+        paths_by_hash,
+        resolve_missing_filenames=True,
+    )
 
 
 def _merge_variant_records(dst_components, src_components):
@@ -731,7 +746,7 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             if route is None:
                 continue
             components_usage, src = _build_components_usage(
-                obj, surviving.get(vb0), evidence, asset_path_index)
+                obj, surviving.get(vb0), evidence)
             component_map = route.get('component_map') or {}
             _merge_cross_scene_texture_sources(
                 combined, src, component_map)
@@ -752,6 +767,13 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
                 int(component_name.rsplit(' ', 1)[-1])
                 for component_name in remapped_usage)
             fold_routes_written.append((route_hash, len(remapped_usage)))
+        copied = _copy_form_textures(object_source_folder, combined)
+        _enrich_copied_texture_records(
+            merged_form_components,
+            object_source_folder,
+            combined,
+            asset_path_index,
+        )
         if multi_components:
             first_route = fold_routes_written[0][0]
             entry, replaced, variants_added = _upsert_extra_form(
@@ -769,7 +791,6 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
                 'variants_added': variants_added,
                 'components': component_count,
             } for route_hash, component_count in fold_routes_written)
-        copied = _copy_form_textures(object_source_folder, combined)
         return {'mode': 'cross_scene', 'lifted_ibs': sorted(lifted),
                 'textures_copied': copied, 'form_label': form_label.strip(),
                 'fold_extra_forms': fold_forms_written,
@@ -784,9 +805,14 @@ def merge_form_dump(object_source_folder, dump_path, form_label: str = '',
             f'{len(base_components)} - forms must share the same mesh')
 
     components_usage, texture_sources = _build_components_usage(
-        mesh_object, surviving.get(mesh_object.vb0_hash), evidence,
-        asset_path_index)
+        mesh_object, surviving.get(mesh_object.vb0_hash), evidence)
     textures_copied = _copy_form_textures(object_source_folder, texture_sources)
+    _enrich_copied_texture_records(
+        components_usage,
+        object_source_folder,
+        texture_sources,
+        asset_path_index,
+    )
 
     label = form_label.strip()
     if label.lower() == 'base':

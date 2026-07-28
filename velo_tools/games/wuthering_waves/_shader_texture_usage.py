@@ -236,6 +236,7 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                       f'but no usable log.txt freshness evidence was found - '
                       f'legacy ShaderTextureUsage.json kept unfiltered')
             record_cache = {}
+            asset_paths_by_hash = {}
             skipped_dirty_slots = 0
             for component_id, component in enumerate(object_data.components):
                 # slot_hash values surviving the original pipeline filter (whether a texture file is included is entirely decided by the original pipeline).
@@ -251,24 +252,21 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                 for desc in full:
                     vs_key, ps_key = _shader_keys(desc)
                     survives = desc.get_slot_hash() in surviving
-                    if desc.hash not in record_cache:
-                        record_cache[desc.hash] = texture_record(
-                            desc,
-                            stock_filename(desc),
-                            _asset_paths.asset_path_for_dump_file(
-                                asset_path_index, desc.path),
-                        )
-                    else:
-                        captured_path = _asset_paths.asset_path_for_dump_file(
-                            asset_path_index, desc.path)
-                        existing_path = record_cache[desc.hash]['asset_path']
-                        if captured_path and existing_path and captured_path != existing_path:
+                    captured_path = _asset_paths.asset_path_for_dump_file(
+                        asset_path_index, desc.path)
+                    if desc.hash and captured_path:
+                        existing_path = asset_paths_by_hash.get(desc.hash)
+                        if existing_path and captured_path != existing_path:
                             raise ValueError(
                                 f"Texture Hash {desc.hash} maps to conflicting "
                                 "Unreal asset paths in this extraction"
                             )
-                        if captured_path and not existing_path:
-                            record_cache[desc.hash]['asset_path'] = captured_path
+                        asset_paths_by_hash[desc.hash] = captured_path
+                    if desc.hash not in record_cache:
+                        record_cache[desc.hash] = texture_record(
+                            desc,
+                            stock_filename(desc),
+                        )
                     record = record_cache[desc.hash]
                     slot_key = desc.get_slot()
                     fresh = None
@@ -489,6 +487,11 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                 except Exception:
                     pass  # unreadable previous file: write fresh maps only
             _stu_metadata.sync_form_component_modes(shader_texture_usage)
+            _asset_paths.enrich_existing_texture_records(
+                shader_texture_usage,
+                object_directory,
+                asset_paths_by_hash,
+            )
 
             with open(usage_path, "w") as f:
                 f.write(_stu_metadata.dumps_usage(shader_texture_usage))

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+from typing import Any
 
 
 MANIFEST_FILENAME = "TextureAssetManifest.jsonl"
+_TEXTURE_HASH = re.compile(r"^[0-9a-f]{8}$")
 
 
 class AssetPathManifestError(ValueError):
@@ -52,3 +55,44 @@ def asset_path_for_dump_file(
         dump_file: str | Path,
 ) -> str:
     return asset_paths.get(Path(dump_file).stem.casefold(), "")
+
+
+def _texture_records(value: Any):
+    if isinstance(value, dict):
+        texture_hash = str(value.get("hash") or "").strip().lower()
+        if _TEXTURE_HASH.fullmatch(texture_hash):
+            yield value
+        for child in value.values():
+            yield from _texture_records(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _texture_records(child)
+
+
+def enrich_existing_texture_records(
+        usage: dict,
+        source_folder: str | Path,
+        paths_by_hash: dict[str, str],
+        *,
+        resolve_missing_filenames: bool = False,
+) -> None:
+    """Attach paths only to records backed by a real, named extracted DDS."""
+    source_folder = Path(source_folder)
+    filenames_by_hash: dict[str, str] = {}
+    if resolve_missing_filenames:
+        for texture_hash in paths_by_hash:
+            matches = sorted(source_folder.glob(f"* t={texture_hash}.*"))
+            if len(matches) == 1:
+                filenames_by_hash[texture_hash] = matches[0].name
+
+    for record in _texture_records(usage):
+        texture_hash = str(record.get("hash") or "").strip().lower()
+        filename = str(record.get("filename") or "").strip()
+        if not filename and resolve_missing_filenames:
+            filename = filenames_by_hash.get(texture_hash, "")
+            if filename:
+                record["filename"] = filename
+        if not filename or not (source_folder / filename).is_file():
+            record["asset_path"] = ""
+            continue
+        record["asset_path"] = paths_by_hash.get(texture_hash, "")
