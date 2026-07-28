@@ -22,6 +22,9 @@ _HASH_LINE = re.compile(
 _MOD_ENABLED_DECLARATION = re.compile(
     r"(?im)^[ \t]*global[ \t]+(?P<name>\$mod_enabled(?:_ib[0-9]+)?)[ \t]*="
 )
+_OBJECT_DETECTED_DECLARATION = re.compile(
+    r"(?im)^[ \t]*global[ \t]+\$object_detected[ \t]*="
+)
 _ASSET_GATE_LINE = re.compile(
     r"(?im)^(?P<indent>[ \t]*)if[ \t]+(?:"
     r"\$object_detected(?:_ib[0-9]+)?"
@@ -146,11 +149,14 @@ def apply_stu_to_ini(
     }
     if {"$mod_enabled_ib0", "$mod_enabled_ib2"} <= mod_enabled_variables:
         mod_gate = "$mod_enabled_ib0 || $mod_enabled_ib2"
-    elif "$mod_enabled" in mod_enabled_variables:
-        mod_gate = "$mod_enabled"
+    elif (
+        "$mod_enabled" in mod_enabled_variables
+        and _OBJECT_DETECTED_DECLARATION.search(text) is not None
+    ):
+        mod_gate = "$object_detected"
     else:
         raise AssetNameMatchError(
-            "Asset-name matching requires the generated mod-enabled gate"
+            "Asset-name matching requires the generated texture gate"
         )
     if _CHECK_TEXTURE_OVERRIDE_LINE.search(text) is None:
         raise AssetNameMatchError(

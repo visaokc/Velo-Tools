@@ -588,7 +588,7 @@ Enable **使用资产名称匹配 (Use Asset-Name Matching)** under WWMI export 
 match_asset_name = T_Example_D
 ```
 
-Asset-name overrides use the normal draw-scoped `CheckTextureOverride` pre/post path. Their gate follows the generated legacy mod state: `$mod_enabled` for ordinary single-IB exports, or `$mod_enabled_ib0 || $mod_enabled_ib2` for Cross-Scene exports. Neither the object-detection flag nor `$\WWMIv1\enable_mods` is used as a substitute. The exporter does not emit `match_priority`, the full path, or a pixel fingerprint. Known duplicate short names that refer to different full paths fail closed; records without captured path evidence remain on their native Hash path. Asset-name matching and slot-style are mutually exclusive export modes.
+Asset-name overrides use the normal draw-scoped `CheckTextureOverride` pre/post path. Their gate follows the generated legacy Hash section: ordinary single-IB exports retain `$object_detected`, while Cross-Scene exports use `$mod_enabled_ib0 || $mod_enabled_ib2`. `$\WWMIv1\enable_mods` is not used as a substitute. The exporter does not emit `match_priority`, the full path, or a pixel fingerprint. Known duplicate short names that refer to different full paths fail closed; records without captured path evidence remain on their native Hash path. Asset-name matching and slot-style are mutually exclusive export modes.
 
 #### Slot-Style
 
