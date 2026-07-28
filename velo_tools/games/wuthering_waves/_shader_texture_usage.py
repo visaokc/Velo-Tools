@@ -194,11 +194,22 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
             # texture filenames the original write loop produced
             # (Components-{ids} t={hash}{suffix}).
             hash_components = {}
+            hashless_components = set()
             for component_id, component in enumerate(object_data.components):
                 for texture in component.textures:
+                    if not texture.hash:
+                        hashless_components.add(str(component_id))
+                        continue
                     hash_components.setdefault(texture.hash, set()).add(str(component_id))
+            if hashless_components:
+                joined = '-'.join(sorted(hashless_components))
+                for invalid_path in object_directory.glob(
+                        f'Components-{joined} t=None.*'):
+                    invalid_path.unlink(missing_ok=True)
 
             def stock_filename(descriptor):
+                if not descriptor.hash:
+                    return ''
                 ids = hash_components.get(descriptor.hash)
                 if not ids:
                     return ''
