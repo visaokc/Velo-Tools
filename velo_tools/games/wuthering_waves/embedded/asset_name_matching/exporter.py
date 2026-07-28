@@ -19,11 +19,22 @@ _SECTION = re.compile(
 _HASH_LINE = re.compile(
     r"(?im)^(?P<indent>[ \t]*)hash[ \t]*=[ \t]*(?P<hash>[0-9a-f]{8})[ \t]*$"
 )
-_OBJECT_DETECTED_GATE = re.compile(
-    r"(?<![A-Za-z0-9_])\$object_detected(?:_ib[0-9]+)?\b"
+_MOD_ENABLED_DECLARATION = re.compile(
+    r"(?im)^[ \t]*global[ \t]+(?P<name>\$mod_enabled(?:_ib[0-9]+)?)[ \t]*="
+)
+_ASSET_GATE_LINE = re.compile(
+    r"(?im)^(?P<indent>[ \t]*)if[ \t]+(?:"
+    r"\$object_detected(?:_ib[0-9]+)?"
+    r"|\$\\WWMIv1\\enable_mods"
+    r"|\$mod_enabled(?:_ib[0-9]+)?"
+    r"(?:[ \t]*\|\|[ \t]*\$mod_enabled_ib[0-9]+)*"
+    r")(?:[ \t]*==[ \t]*1)?[ \t]*$"
 )
 _MATCH_PRIORITY_LINE = re.compile(
     r"(?im)^[ \t]*match_priority[ \t]*=[^\r\n]*(?:\r?\n|\Z)"
+)
+_CHECK_TEXTURE_OVERRIDE_LINE = re.compile(
+    r"(?im)^[ \t]*CheckTextureOverride[ \t]*=[ \t]*ps-t[0-8][ \t]*$"
 )
 _TEXTURE_HASH = re.compile(r"^[0-9a-f]{8}$")
 
@@ -129,6 +140,23 @@ def apply_stu_to_ini(
         )
 
     text = ini_path.read_text(encoding="utf-8")
+    mod_enabled_variables = {
+        match.group("name").lower()
+        for match in _MOD_ENABLED_DECLARATION.finditer(text)
+    }
+    if {"$mod_enabled_ib0", "$mod_enabled_ib2"} <= mod_enabled_variables:
+        mod_gate = "$mod_enabled_ib0 || $mod_enabled_ib2"
+    elif "$mod_enabled" in mod_enabled_variables:
+        mod_gate = "$mod_enabled"
+    else:
+        raise AssetNameMatchError(
+            "Asset-name matching requires the generated mod-enabled gate"
+        )
+    if _CHECK_TEXTURE_OVERRIDE_LINE.search(text) is None:
+        raise AssetNameMatchError(
+            "Asset-name matching requires the generated draw-scoped "
+            "CheckTextureOverride commands"
+        )
     replaced = 0
 
     def replace_section(match):
@@ -143,10 +171,17 @@ def apply_stu_to_ini(
         indent = hash_match.group("indent")
         replacement = f"{indent}match_asset_name = {asset_name}"
         body = body[:hash_match.start()] + replacement + body[hash_match.end():]
-        body = _OBJECT_DETECTED_GATE.sub(
-            lambda _match: r"$\WWMIv1\enable_mods",
+        body, gates_replaced = _ASSET_GATE_LINE.subn(
+            lambda gate_match: (
+                f"{gate_match.group('indent')}if {mod_gate}"
+            ),
             body,
         )
+        if gates_replaced == 0:
+            raise AssetNameMatchError(
+                "Asset-name matching found a TextureOverride without its "
+                "generated mod-enabled gate"
+            )
         body = _MATCH_PRIORITY_LINE.sub("", body)
         replaced += 1
         return match.group("header") + body
