@@ -22,6 +22,9 @@ _HASH_LINE = re.compile(
 _OBJECT_DETECTED_GATE = re.compile(
     r"(?<![A-Za-z0-9_])\$object_detected(?:_ib[0-9]+)?\b"
 )
+_MATCH_PRIORITY_LINE = re.compile(
+    r"(?im)^[ \t]*match_priority[ \t]*=[^\r\n]*(?:\r?\n|\Z)"
+)
 _TEXTURE_HASH = re.compile(r"^[0-9a-f]{8}$")
 
 
@@ -144,6 +147,7 @@ def apply_stu_to_ini(
             lambda _match: r"$\WWMIv1\enable_mods",
             body,
         )
+        body = _MATCH_PRIORITY_LINE.sub("", body)
         replaced += 1
         return match.group("header") + body
 
