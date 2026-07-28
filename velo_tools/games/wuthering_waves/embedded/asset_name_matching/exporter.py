@@ -19,6 +19,9 @@ _SECTION = re.compile(
 _HASH_LINE = re.compile(
     r"(?im)^(?P<indent>[ \t]*)hash[ \t]*=[ \t]*(?P<hash>[0-9a-f]{8})[ \t]*$"
 )
+_OBJECT_DETECTED_GATE = re.compile(
+    r"(?<![A-Za-z0-9_])\$object_detected(?:_ib[0-9]+)?\b"
+)
 _TEXTURE_HASH = re.compile(r"^[0-9a-f]{8}$")
 
 
@@ -137,6 +140,10 @@ def apply_stu_to_ini(
         indent = hash_match.group("indent")
         replacement = f"{indent}match_asset_name = {asset_name}"
         body = body[:hash_match.start()] + replacement + body[hash_match.end():]
+        body = _OBJECT_DETECTED_GATE.sub(
+            lambda _match: r"$\WWMIv1\enable_mods",
+            body,
+        )
         replaced += 1
         return match.group("header") + body
 

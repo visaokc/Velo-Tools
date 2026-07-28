@@ -787,7 +787,7 @@ Hash-style 与 slot-style 可以在同一个 Mod 中共存。资产名称匹配�
 match_asset_name = T_Example_D
 ```
 
-导出器不写完整路径，也不生成像素指纹。已知同名短名若对应不同完整路径会 fail closed；没有路径证据的记录继续保留原生 Hash。
+导出器会用 `$\WWMIv1\enable_mods` 门控这些 TextureOverride，不会沿用 stock 的对象局部 `$object_detected`。导出器不写完整路径，也不生成像素指纹。已知同名短名若对应不同完整路径会 fail closed；没有路径证据的记录继续保留原生 Hash。
 
 #### 启用流程
 

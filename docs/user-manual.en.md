@@ -588,7 +588,7 @@ Enable **使用资产名称匹配 (Use Asset-Name Matching)** under WWMI export 
 match_asset_name = T_Example_D
 ```
 
-The exporter does not emit the full path or a pixel fingerprint. Known duplicate short names that refer to different full paths fail closed; records without captured path evidence remain on their native Hash path. Asset-name matching and slot-style are mutually exclusive export modes.
+The exporter gates these TextureOverrides with `$\WWMIv1\enable_mods`, never the stock object-local `$object_detected` flag. It does not emit the full path or a pixel fingerprint. Known duplicate short names that refer to different full paths fail closed; records without captured path evidence remain on their native Hash path. Asset-name matching and slot-style are mutually exclusive export modes.
 
 #### Slot-Style
 
