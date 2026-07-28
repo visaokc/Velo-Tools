@@ -4,7 +4,7 @@ Schema v3 (aligned with the XQFA WWMI-Tools fork so extractions are
 interchangeable between the two plugins):
 
     "Component {id}" -> "vs=<hash>" -> "ps=<hash>" -> "ps-tN" ->
-        {"filename", "hash", "format", "width", "height", "asset_path"}
+        {"filename", "hash", "format", "width", "height", optional "asset_path"}
 
 Schema v4 (ADR 0007 rev 12, additive - emitted only when the dump's log.txt
 yields usable binding-freshness evidence): top-level ``"version": 4``, per
@@ -115,7 +115,6 @@ def _shader_keys(descriptor):
 def texture_record(
         descriptor,
         filename: str = '',
-        asset_path: str = '',
 ) -> OrderedDict:
     """Rich slot record (XQFA-compatible shape) for one texture descriptor.
     Format/size come from the dump DDS header; unreadable / non-DDS sources
@@ -128,7 +127,6 @@ def texture_record(
         ('format', meta.format if meta else ''),
         ('width', meta.width if meta else 0),
         ('height', meta.height if meta else 0),
-        ('asset_path', asset_path),
     ))
 
 
@@ -244,14 +242,15 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                 full = per_object[component_id] if (per_object and component_id < len(per_object)) else []
 
                 # (vs_key, ps_key) -> slot_key ->
-                # [record, fresh, verified_inherited, observed_only]. Freshness is
+                # [record, fresh, verified_inherited]. Freshness is
                 # OR-aggregated across the pair's draws; on same-seat hash
                 # disagreements fresh beats inherited (legacy: last-wins).
                 seats = {}
                 pair_depth_only = {}
                 for desc in full:
+                    if desc.get_slot_hash() not in surviving:
+                        continue
                     vs_key, ps_key = _shader_keys(desc)
-                    survives = desc.get_slot_hash() in surviving
                     captured_path = _asset_paths.asset_path_for_dump_file(
                         asset_path_index, desc.path)
                     if desc.hash and captured_path:
@@ -271,7 +270,6 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                     slot_key = desc.get_slot()
                     fresh = None
                     verified_inherited = False
-                    observed_only = False
                     if evidence is not None:
                         fresh = _log_freshness.slot_is_fresh(
                             evidence, desc.call_id, desc.slot_id,
@@ -281,10 +279,6 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                         prev = pair_depth_only.get((vs_key, ps_key))
                         pair_depth_only[(vs_key, ps_key)] = (
                             depth if prev is None else (prev and depth))
-                        if not survives:
-                            if rt is not True:
-                                continue
-                            observed_only = True
                         if skip_dirty_slot and fresh is False:
                             verified_inherited = (
                                 desc.slot_id in SERVICE_SLOTS
@@ -292,26 +286,19 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                                     evidence, desc.call_id, desc.slot_id,
                                     desc.hash, character_cb_hash, desc.old_hash))
                             if not verified_inherited:
-                                if rt is not True:
-                                    skipped_dirty_slots += 1
-                                    continue
-                                observed_only = True
-                    elif not survives:
-                        continue
+                                skipped_dirty_slots += 1
+                                continue
                     slot_map = seats.setdefault((vs_key, ps_key), {})
                     entry = slot_map.get(slot_key)
                     if entry is None:
-                        slot_map[slot_key] = [
-                            record, fresh, verified_inherited, observed_only]
+                        slot_map[slot_key] = [record, fresh, verified_inherited]
                     elif fresh is None:
-                        slot_map[slot_key] = [record, None, False, False]
+                        slot_map[slot_key] = [record, None, False]
                     elif entry[0]['hash'] == record['hash']:
                         entry[1] = bool(entry[1]) or fresh
                         entry[2] = bool(entry[2]) or verified_inherited
-                        entry[3] = bool(entry[3]) and observed_only
                     elif fresh or not entry[1]:
-                        slot_map[slot_key] = [
-                            record, fresh, verified_inherited, observed_only]
+                        slot_map[slot_key] = [record, fresh, verified_inherited]
                     # else: seated record is fresh, newcomer is stale -> keep seat
 
                 # Deterministic ordering: sort vs / ps / slot keys for easy diffing.
@@ -322,7 +309,7 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                         slot_map = seats[(vs_key, ps_key)]
                         ps_out = OrderedDict()
                         for slot_key in sorted(slot_map):
-                            record, fresh, verified_inherited, observed_only = slot_map[slot_key]
+                            record, fresh, verified_inherited = slot_map[slot_key]
                             if fresh is None:
                                 ps_out[slot_key] = record
                             else:
@@ -332,8 +319,6 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                                 seat_record['fresh'] = bool(fresh)
                                 if verified_inherited:
                                     seat_record['verified_inherited'] = True
-                                if observed_only:
-                                    seat_record['observed_only'] = True
                                 ps_out[slot_key] = seat_record
                         if evidence is not None:
                             ps_out['depth_only'] = bool(
@@ -367,8 +352,6 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                             for slot_key, record in ps_block.items():
                                 if (not str(slot_key).startswith('ps-t')
                                         or not isinstance(record, dict)):
-                                    continue
-                                if record.get('observed_only') is True:
                                     continue
                                 tex_hash = str(record.get('hash') or '')
                                 if not tex_hash:

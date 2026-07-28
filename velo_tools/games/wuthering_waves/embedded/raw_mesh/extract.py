@@ -66,7 +66,6 @@ def _texture_record(desc, filename='') -> OrderedDict:
         ('format', meta.format if meta else ''),
         ('width', meta.width if meta else 0),
         ('height', meta.height if meta else 0),
-        ('asset_path', ''),
     ))
 
 

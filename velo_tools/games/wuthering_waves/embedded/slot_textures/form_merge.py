@@ -14,7 +14,7 @@
 # (single file; legacy extra_forms sidecars are auto-migrated in and deleted).
 #
 # Schema v3: slot records are rich objects {filename, hash, format, width,
-# height, asset_path}, with format/size read from the dump DDS
+# height, optional asset_path}, with format/size read from the dump DDS
 # headers — the slot-style combination conditions match ORIGINAL game formats,
 # so they must be captured while the dump files are still around.
 
@@ -97,7 +97,6 @@ def _texture_record(descriptor) -> OrderedDict:
         ('format', meta.format if meta else ''),
         ('width', meta.width if meta else 0),
         ('height', meta.height if meta else 0),
-        ('asset_path', ''),
     ))
 
 
@@ -210,7 +209,7 @@ def _build_components_usage(
                     # frame: multi-state variant, mark unknown (generator skips).
                     pair[slot] = OrderedDict((('filename', ''), ('hash', None),
                                               ('format', ''), ('width', 0),
-                                              ('height', 0), ('asset_path', '')))
+                                              ('height', 0)))
                     seat_fresh.pop(seat, None)
                     continue
             elif slot in pair and pair[slot].get('hash') == descriptor.hash:
@@ -423,7 +422,7 @@ def _merge_variant_records(dst_components, src_components):
                         # arbitrate the states - never assign this seat
                         dst_slots[slot] = OrderedDict((
                             ('filename', ''), ('hash', None), ('format', ''),
-                            ('width', 0), ('height', 0), ('asset_path', '')))
+                            ('width', 0), ('height', 0)))
                         conflicts_marked += 1
                         continue
                     conflicts_marked += 1  # different family: guards

@@ -93,6 +93,10 @@ def enrich_existing_texture_records(
             if filename:
                 record["filename"] = filename
         if not filename or not (source_folder / filename).is_file():
-            record["asset_path"] = ""
+            record.pop("asset_path", None)
             continue
-        record["asset_path"] = paths_by_hash.get(texture_hash, "")
+        asset_path = paths_by_hash.get(texture_hash, "")
+        if asset_path:
+            record["asset_path"] = asset_path
+        else:
+            record.pop("asset_path", None)
