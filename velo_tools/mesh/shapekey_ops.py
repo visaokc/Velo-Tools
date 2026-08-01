@@ -5,6 +5,9 @@ properties.py (to centralize management with existing properties); this module
 handles: scan/refresh, auto-listening (depsgraph), batch renaming.
 """
 
+import json
+from pathlib import Path
+
 import bpy
 from bpy.props import IntProperty, StringProperty
 
@@ -20,6 +23,7 @@ from .shapekey_model import (
     remap_ui_state,
     sorted_shapekey_names,
     unique_temp_names,
+    wwmi_native_deform_numbers,
 )
 
 
@@ -212,12 +216,34 @@ class VELO_OT_shapekey_contributors_tooltip(bpy.types.Operator):
 # Operator: auto-rename -> "Deform N <basename>"
 # ---------------------------------------------------------------------------
 
+def _reserved_deform_numbers(context):
+    scene = context.scene
+    host = getattr(scene, "velo_tools", None)
+    if getattr(host, "active_game", "ENDFIELD") != "WUTHERING":
+        return set()
+
+    cfg = getattr(scene, "VTWW_settings", None)
+    source = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
+    source = bpy.path.abspath(source).strip() if source else ""
+    if not source:
+        raise ValueError("鸣潮模式自动编号前，请先在游戏区选择对象源文件夹")
+
+    metadata_path = Path(source) / "Metadata.json"
+    if not metadata_path.is_file():
+        raise ValueError(f"对象源文件夹中缺少 Metadata.json：{metadata_path}")
+    try:
+        with metadata_path.open(encoding="utf-8") as stream:
+            metadata = json.load(stream)
+        return wwmi_native_deform_numbers(metadata)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"无法读取 WWMI 原生 ShapeKey 编号：{exc}") from exc
+
 class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
     bl_idname = "velo.rename_shapekeys_deform"
     bl_label = "自动重命名 (Deform N)"
     bl_description = (
-        "为已勾选且可重命名的形态键分配编号; 手动移除中间编号后，"
-        "会从留下的空号开始修复已解锁后缀"
+        "为已勾选且可重命名的形态键分配最小可用编号; 鸣潮模式会从"
+        "对象源 Metadata.json 保留原生编号，手工高编号不会抬高后续编号"
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -244,11 +270,18 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
             item.original_name or item.name: int(item.deform_rename_order)
             for item in s.shapekey_items
         }
+        try:
+            reserved_numbers = _reserved_deform_numbers(context)
+        except ValueError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
         plan = build_rename_plan(
             order,
             selected_names,
             unlock_from=unlock_from,
             order_hints=order_hints,
+            reserved_numbers=reserved_numbers,
         )
         skipped = len(selected_names) - len(plan)
 

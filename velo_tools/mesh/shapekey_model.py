@@ -108,7 +108,30 @@ def shapekey_count_label(count, minimum_digits=1):
     return "x" + "\u2007" * (digits - len(count_text)) + count_text
 
 
-def build_rename_plan(names, selected_names, unlock_from=-1, order_hints=None):
+def wwmi_native_deform_numbers(metadata):
+    """Return Metadata-owned WWMI Deform IDs, including deleted Blender keys."""
+    shapes = (metadata or {}).get("shapekeys") or {}
+    batches = shapes.get("batches") or []
+    if batches:
+        occupied = set()
+        for batch_id, batch in enumerate(batches):
+            count = int((batch or {}).get("shapekey_count", 0) or 0)
+            if not 0 <= count <= 127:
+                raise ValueError(
+                    f"WWMI ShapeKey batch {batch_id} count is outside 0..127")
+            start = batch_id * 127
+            occupied.update(range(start, start + count))
+        return occupied
+
+    count = int(shapes.get("shapekey_count", 0) or 0)
+    if count < 0:
+        raise ValueError("WWMI ShapeKey count cannot be negative")
+    return set(range(count))
+
+
+def build_rename_plan(
+        names, selected_names, unlock_from=-1, order_hints=None,
+        reserved_numbers=None):
     """Build collision-free new names, optionally repairing an unlocked suffix."""
     ordered_names = sorted_shapekey_names(names)
     selected = set(selected_names)
@@ -154,7 +177,8 @@ def build_rename_plan(names, selected_names, unlock_from=-1, order_hints=None):
         number for name in ordered_names
         if (number := deform_number(name)) is not None
     }
-    next_number = max(occupied_numbers) + 1 if occupied_numbers else 1
+    occupied_numbers.update(int(number) for number in (reserved_numbers or ()))
+    next_number = 1
     plan = []
     for name in ordered_names:
         if name not in selected or deform_number(name) is not None:
