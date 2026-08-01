@@ -6,7 +6,11 @@ from pathlib import Path
 
 from ..._wwmi_core.blender_export import blender_export as _be_module
 
-from .generator import inject_single_ib_ini, write_hlsl_assets
+from .generator import (
+    collect_shape_key_names,
+    inject_single_ib_ini,
+    write_hlsl_assets,
+)
 from .planner import ShapeKeyPlanError
 from .runtime import prepare_exporter
 
@@ -52,6 +56,8 @@ def install() -> None:
         result = _ORIG_BUILD_DATA_BUFFERS(self)
         enabled = bool(getattr(self.cfg, "unrestricted_custom_shape_keys", True))
         plan = prepare_exporter(self, enabled=enabled)
+        self.velo_shape_key_names = collect_shape_key_names(
+            (self,), plan.channels if plan is not None else {})
         if (plan is not None and plan.parsed.custom_records
                 and (bool(getattr(self.cfg, "partial_export", False))
                      or not bool(getattr(self.cfg, "write_ini", True)))):
@@ -78,6 +84,7 @@ def install() -> None:
             plan,
             plan.channels,
             mesh_vertex_count=int(self.merged_object.vertex_count),
+            shape_names=getattr(self, "velo_shape_key_names", {}),
         )
         self.ini.ini_string = self.ini.with_checksum(text)
         return result

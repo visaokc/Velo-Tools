@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any, TYPE_CHECKING, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .planner import ShapeKeyPlanError
 
@@ -22,21 +22,47 @@ OBSOLETE_HLSL_FILENAMES = (
 _HLSL_DIR = Path(__file__).parent / "hlsl"
 _SECTION_RE = re.compile(r"(?m)^\[([^\]\r\n]+)\]\s*$")
 _CHECKSUM_RE = re.compile(r"(?m)^; SHA256 CHECKSUM: [0-9a-fA-F]{64}\s*$")
+_DEFORM_NAME_RE = re.compile(r"^\s*deform\s*(\d+).*$", re.IGNORECASE)
 
 
 def _state_name(kind: str, suffix: str) -> str:
     return f"$external_shape_{kind}{suffix}"
 
 
+def collect_shape_key_names(
+        domains: Iterable[Any], channels: Mapping[int, int],
+) -> Mapping[int, str]:
+    names = {shape_id: set() for shape_id in channels}
+    for domain in domains:
+        obj = getattr(getattr(domain, "merged_object", None), "object", None)
+        shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
+        for key in getattr(shape_keys, "key_blocks", ()) or ():
+            name = " ".join(str(getattr(key, "name", "")).split())
+            match = _DEFORM_NAME_RE.fullmatch(name)
+            if match is None:
+                continue
+            shape_id = int(match.group(1))
+            if shape_id in names:
+                names[shape_id].add(name)
+    return {
+        shape_id: " | ".join(sorted(values, key=str.casefold))
+        for shape_id, values in names.items() if values
+    }
+
+
 def control_constant_lines(
         channels: Mapping[int, int],
         domain_suffixes: Iterable[str],
+        shape_names: Optional[Mapping[int, str]] = None,
 ) -> List[str]:
     if not channels:
         return []
     lines = []
+    shape_names = shape_names or {}
     lines.append("global $external_shape_active = 0")
     for shape_id, _channel in sorted(channels.items(), key=lambda item: item[1]):
+        if shape_id in shape_names:
+            lines.append(f"; ShapeKey_{shape_id}: {shape_names[shape_id]}")
         lines.append(f"global persist $ShapeKey_{shape_id} = 0.0")
     for suffix in domain_suffixes:
         lines.append(f"global {_state_name('applied', suffix)} = 0")
@@ -204,6 +230,7 @@ def inject_single_ib_ini(
         channels: Mapping[int, int],
         *,
         mesh_vertex_count: int,
+        shape_names: Optional[Mapping[int, str]] = None,
 ) -> str:
     """Inject the independent pipeline into a rendered stock/LOD INI."""
     text = _CHECKSUM_RE.sub("", text).rstrip() + "\n"
@@ -211,7 +238,7 @@ def inject_single_ib_ini(
         return text
     _validate_channel_range(text, channels)
     suffix = ""
-    constants = control_constant_lines(channels, (suffix,))
+    constants = control_constant_lines(channels, (suffix,), shape_names)
     present = control_present_lines(channels, (suffix,))
     text = _append_section_lines(text, "Constants", constants)
     text = _append_section_lines(text, "Present", present)
