@@ -306,6 +306,15 @@ class AddonUpdaterUpdateNow(bpy.types.Operator):
         if updater.invalid_updater:
             return {'CANCELLED'}
 
+        target_version = updater.version_tuple_from_text(
+            updater.update_version)
+        if updater.update_ready and target_version and \
+                target_version <= updater.current_version:
+            # Guard against stale cache surviving a manual addon install.
+            updater.json_reset_restore()
+            self.report({'INFO'}, "插件已是最新版本")
+            return {'CANCELLED'}
+
         if updater.manual_only:
             bpy.ops.wm.url_open(url=updater.website)
         if updater.update_ready:

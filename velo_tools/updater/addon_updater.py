@@ -1194,11 +1194,27 @@ class SingletonUpdater:
             and self._json["update_ready"])
 
         if is_ready:
-            self._update_ready = True
-            self._update_link = self._json["version_text"]["link"]
-            self._update_version = str(self._json["version_text"]["version"])
-            # Cached update.
-            callback(True)
+            cached_version = self.version_tuple_from_text(
+                self._json["version_text"]["version"])
+            if cached_version > self._current_version:
+                self._update_ready = True
+                self._update_link = self._json["version_text"]["link"]
+                self._update_version = cached_version
+                # Cached update.
+                if callback:
+                    callback(True)
+                return
+
+            # A manual install can leave the updater data directory behind.
+            # Discard a cached target that is no newer than the running addon.
+            self._update_ready = False
+            self._update_link = None
+            self._update_version = None
+            self._json["update_ready"] = False
+            self._json["version_text"] = dict()
+            self.save_updater_json()
+            if callback:
+                callback(False)
             return
 
         # do the check
