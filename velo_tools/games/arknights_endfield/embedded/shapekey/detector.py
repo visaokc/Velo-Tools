@@ -7,9 +7,8 @@ Regex (case-insensitive):
 
 Rules:
 - 'Basis' and any name not matching the regex are silently skipped.
-- Two valid Deform shape keys whose extracted *name* part is identical but
-  with different *slot* numbers are reported as a hard conflict and abort
-  the export.
+- Names are descriptive only; the numeric Deform ID is the runtime identity.
+- One object cannot contain multiple data payloads for the same Deform ID.
 """
 import re
 
@@ -51,16 +50,6 @@ def collect_deform_keys(blender_object):
     return result
 
 
-def validate_no_name_conflicts(deform_keys):
-    """Return list of (name, [slots...]) for names assigned to >1 slot.
-    Empty list = OK.
-    """
-    name_to_slots = {}
-    for d in deform_keys:
-        name_to_slots.setdefault(d["name"], set()).add(d["slot"])
-    return [(n, sorted(slots)) for n, slots in name_to_slots.items() if len(slots) > 1]
-
-
 def validate_no_duplicate_keys(deform_keys):
     """Return list of (slot, name, [raw_names...]) for the same (slot, name)
     appearing on more than one shape-key block. Empty list = OK.
@@ -84,12 +73,8 @@ def validate_no_duplicate_keys(deform_keys):
 
 def validate_no_slot_name_disagreement(deform_keys):
     """Return list of (slot, [names...]) for slots that map to >1 distinct
-    name. Used to catch the case where the user typed e.g.
-        Component0 -> Deform 2 Key1123
-        Component4 -> Deform 2 Key2
-    Both share slot 2 so the generator emits two `$Shape_*` variables for
-    the same IniParams channel, only one of which actually drives the
-    blend. Block the export and ask the user to rename them consistently.
+    name within one object. Callers apply this per object so one numeric ID
+    cannot address multiple delta payloads in the same component.
     """
     slot_to_names = {}
     for d in deform_keys:
@@ -103,21 +88,11 @@ def validate_no_slot_name_disagreement(deform_keys):
 
 def format_slot_name_disagreement_message(disagreements):
     """Human-readable error for same-slot-different-name conflicts."""
-    lines = ["形态键命名冲突，无法导出 Mod。同一个 Deform 编号下出现了不同的名字："]
+    lines = ["形态键编号重复，无法导出 Mod。同一个物体内的 Deform 编号对应了多个形态键："]
     for slot, names in disagreements:
         names_str = ", ".join(f"'{n}'" for n in names)
         lines.append(f"  - Deform {slot} 同时出现名字: {names_str}")
-    lines.append("修复方法：把同一个 Deform 编号下的所有形态键改成相同的名字。")
-    return "\n".join(lines)
-
-
-def format_conflict_message(conflicts):
-    """Human-readable Chinese error message for the UI / exception."""
-    lines = ["形态键命名冲突，无法导出 Mod。请检查以下重名："]
-    for name, slots in conflicts:
-        slot_str = ", ".join(f"Deform {s} {name}" for s in slots)
-        lines.append(f"  - 名字 '{name}' 同时被槽位 {slots} 占用 → {slot_str}")
-    lines.append("修复方法：合并到同一槽位，或改名其中之一。")
+    lines.append("修复方法：为这些形态键分配不同的 Deform 编号。")
     return "\n".join(lines)
 
 

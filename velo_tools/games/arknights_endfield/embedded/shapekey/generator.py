@@ -22,9 +22,9 @@ Resource naming reference table
 
 IniParams index
 ---------------
-Each shape key name occupies one freq channel:
-    name #0 -> x100 = $Freq_<name0>    (IniParams[100].x)
-    name #1 -> x101 = $Freq_<name1>
+Each exported Deform ID occupies one channel:
+    Deform ID A -> x100 = $ShapeKey_<A>    (IniParams[100].x)
+    Deform ID B -> x101 = $ShapeKey_<B>
     ...
 Export-slot note: Blender Deform numbers are source ids. The baker maps them
 to exported shader slots, then channel_idx == shader_slot drives x100+channel.
@@ -42,149 +42,28 @@ ACTIVE_SLOT_SUM_PER_LINE = 15
 
 # ---------------------------------------------------------------- helpers
 
-VAR_PREFIX = "Shape_"
-
-_MULTI_UNDERSCORE_RE = re.compile(r"_+")
 _ACTIVE_SLOT_BLOCK_RE = re.compile(
     r"// VELO_ACTIVE_SHAPE_SLOTS_BEGIN.*?// VELO_ACTIVE_SHAPE_SLOTS_END",
     re.DOTALL,
 )
 
 
-def _is_ascii_identifier(raw: str) -> bool:
-    """True iff raw is non-empty pure ASCII letters/digits/underscores."""
-    if not raw:
-        return False
-    for ch in raw:
-        if not (ch.isascii() and (ch.isalnum() or ch == "_")):
-            return False
-    return True
+def _shape_var_name(slot: int) -> str:
+    return f"ShapeKey_{int(slot)}"
 
 
-def _has_ascii_letters(raw: str) -> bool:
-    for ch in raw or "":
-        if ch.isascii() and ch.isalpha():
-            return True
-    return False
-
-
-def _capitalize_ascii_word(raw: str) -> str:
-    if not raw:
-        return raw
-    first = raw[0]
-    if first.isascii() and first.isalpha() and first.islower():
-        return first.upper() + raw[1:]
-    return raw
-
-
-def _salvage_ascii_identifier(raw: str) -> str:
-    """Try to salvage a readable ASCII identifier from mixed names.
-
-    Rules:
-      - Pure Chinese / no English letters -> give up and let caller fall back.
-      - Keep ASCII letters/digits/underscores.
-      - Spaces become word boundaries; alpha words after spaces are capitalized
-        and separated with a single underscore.
-      - Digits after spaces attach to the previous token (`Down 1` -> `Down1`).
-      - Other illegal characters are ignored, but still mark a word boundary so
-        the next ASCII word starts in uppercase (`rope-down` -> `RopeDown`).
-    """
-    if not _has_ascii_letters(raw):
-        return ""
-
-    out = []
-    pending_boundary = None
-
-    for ch in raw or "":
-        if ch.isascii() and ch.isalpha():
-            if not out:
-                out.append(ch.upper() if ch.islower() else ch)
-            elif pending_boundary == "space":
-                if out[-1] != "_":
-                    out.append("_")
-                out.append(ch.upper() if ch.islower() else ch)
-            elif pending_boundary == "separator":
-                out.append(ch.upper() if ch.islower() else ch)
-            else:
-                out.append(ch)
-            pending_boundary = None
-            continue
-
-        if ch.isascii() and ch.isdigit():
-            out.append(ch)
-            pending_boundary = None
-            continue
-
-        if ch == "_":
-            if out and out[-1] != "_":
-                out.append("_")
-            pending_boundary = None
-            continue
-
-        if ch.isspace():
-            if out:
-                pending_boundary = "space"
-            continue
-
-        if out:
-            pending_boundary = "separator"
-
-    safe = "".join(out).strip("_")
-    safe = _MULTI_UNDERSCORE_RE.sub("_", safe)
-    return safe
-
-
-def _safe_shape_identifier(name: str, slot: int) -> str:
-    if _is_ascii_identifier(name):
-        safe = name
-    else:
-        safe = _salvage_ascii_identifier(name)
-        if not safe:
-            safe = f"Key{int(slot)}"
-    if safe and safe[0].isdigit():
-        safe = "_" + safe
-    return safe
-
-
-def _shape_var_name(name: str, slot: int) -> str:
-    """Build the global INI variable basename for a shape key.
-
-    Rule:
-      - If the Blender name part (after 'Deform <num>') is pure ASCII
-        identifier-friendly, keep it: Shape_<name>
-      - If the name is mixed Chinese/English or contains illegal characters,
-        salvage the ASCII part into a readable identifier.
-      - If there is no usable ASCII content (pure Chinese / pure symbols / ...),
-        fall back to the deterministic placeholder Shape_Key<slot>.
-    """
-    return f"{VAR_PREFIX}{_safe_shape_identifier(name, slot)}"
-
-
-def _validate_export_var_collisions(bake_results):
-    """Abort if two different slots would collapse into the same $Shape_* var."""
-    var_to_meta = {}
-    collisions = []
-
-    for r in bake_results:
-        var = _shape_var_name(r["name"], r["slot"])
-        meta = var_to_meta.setdefault(var, {"slots": set(), "names": set()})
-        meta["slots"].add(int(r["slot"]))
-        meta["names"].add(r["name"])
-
-    for var, meta in sorted(var_to_meta.items()):
-        if len(meta["slots"]) > 1:
-            collisions.append((var, sorted(meta["slots"]), sorted(meta["names"])))
-
-    if not collisions:
-        return
-
-    lines = ["形态键导出命名冲突，无法生成 ini。以下形态键在清洗后落成了同一个变量名："]
-    for var, slots, names in collisions:
-        lines.append(
-            f"  - ${var} 同时对应槽位 {slots}，原始名字: {', '.join(repr(name) for name in names)}"
-        )
-    lines.append("修复方法：调整这些形态键的英文部分，使每个槽位导出的变量名唯一。")
-    raise RuntimeError("\n".join(lines))
+def _shape_comment_names(bake_results):
+    names = {}
+    for result in bake_results:
+        slot = int(result["slot"])
+        raw_name = " ".join(str(
+            result.get("raw_name") or f"Deform {slot} {result['name']}"
+        ).split())
+        names.setdefault(slot, set()).add(raw_name)
+    return {
+        slot: " | ".join(sorted(values, key=str.casefold))
+        for slot, values in names.items()
+    }
 
 
 def _validate_channel_assignments(bake_results):
@@ -198,7 +77,7 @@ def _validate_channel_assignments(bake_results):
         if not (0 <= ch < 128):
             out_of_range.append((ch, int(r["slot"]), r["name"]))
             continue
-        meta = (int(r["slot"]), r["name"])
+        meta = int(r["slot"])
         prev = channel_to_meta.setdefault(ch, meta)
         if prev != meta:
             conflicts.append((ch, prev, meta))
@@ -215,7 +94,7 @@ def _validate_channel_assignments(bake_results):
 
     if conflicts:
         details = ", ".join(
-            f"x{100 + ch}: Deform {a[0]} '{a[1]}' vs Deform {b[0]} '{b[1]}'"
+            f"x{100 + ch}: Deform {a} vs Deform {b}"
             for ch, a, b in conflicts
         )
         raise RuntimeError(
@@ -419,7 +298,7 @@ def build_compute_shaders(bake_results, components_meta):
 # ---------------------------------------------------------------- constants
 
 def build_constants_lines(bake_results):
-    """Append to [Constants]: declare the global $Shape_ variable for each shape key name.
+    """Append to [Constants]: declare one numeric variable per Deform ID.
 
     Use 'global persist' so the user-tuned intensity is retained after the next
     game launch / mod reload. Non-persistent variables are reset to their initial
@@ -427,12 +306,14 @@ def build_constants_lines(bake_results):
     """
     if not bake_results:
         return []
-    _validate_export_var_collisions(bake_results)
-    seen = []
+    shape_names = _shape_comment_names(bake_results)
+    seen = set()
+    ordered_slots = []
     for r in bake_results:
-        var = _shape_var_name(r["name"], r["slot"])
-        if var not in seen:
-            seen.append(var)
+        slot = int(r["slot"])
+        if slot not in seen:
+            seen.add(slot)
+            ordered_slots.append(slot)
     out = [
         "",
         "; --- ShapeKey: runtime optimization gate ---",
@@ -440,10 +321,11 @@ def build_constants_lines(bake_results):
         "global $ShapeKeyOptActive = 0",
         "global $ShapeKeyOptWasActive = 0",
         "",
-        "; --- ShapeKey: per-name intensity globals (0.0 = off, 1.0 = full) ---",
+        "; --- ShapeKey: per-ID intensity globals (0.0 = off, 1.0 = full) ---",
     ]
-    for var in seen:
-        out.append(f"global persist ${var} = 0.0")
+    for slot in ordered_slots:
+        out.append(f"; ShapeKey_{slot}: {shape_names[slot]}")
+        out.append(f"global persist ${_shape_var_name(slot)} = 0.0")
     return out
 
 
@@ -451,24 +333,21 @@ def build_constants_lines(bake_results):
 
 def build_present_lines(bake_results):
     """Append to [Present]:
-        1. xN = $Shape_<name>   push the weight into IniParams[100+N].x
+        1. xN = $ShapeKey_<id>   push the weight into IniParams[100+N].x
         2. post run = CustomShader_ShapeKeyAnim_C<cid>  dispatch compute
     """
     if not bake_results:
         return []
-    _validate_export_var_collisions(bake_results)
     _validate_channel_assignments(bake_results)
     out = ["", "; --- ShapeKey: push weights into IniParams ---"]
 
-    # Collect (channel_idx -> (name, slot)), deduplicate, then output sorted by channel_idx
-    channel_to_meta = {}
+    # Collect channel-to-ID assignments, deduplicate, then sort by channel.
+    channel_to_slot = {}
     for r in bake_results:
         ch = int(r["channel_idx"])
-        if ch not in channel_to_meta:
-            channel_to_meta[ch] = (r["name"], r["slot"])
-    for ch in sorted(channel_to_meta.keys()):
-        name, slot = channel_to_meta[ch]
-        out.append(f"x{100 + ch} = ${_shape_var_name(name, slot)}")
+        channel_to_slot.setdefault(ch, int(r["slot"]))
+    for ch in sorted(channel_to_slot):
+        out.append(f"x{100 + ch} = ${_shape_var_name(channel_to_slot[ch])}")
 
     active_slots = collect_active_shader_slots(bake_results)
     out.append("; --- ShapeKey: skip compute while all weights are inactive ---")

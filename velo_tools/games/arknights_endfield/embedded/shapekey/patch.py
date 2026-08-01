@@ -145,9 +145,10 @@ def _collect_all_deform_keys_from_context(context):
         dups = detector.validate_no_duplicate_keys(keys)
         if dups:
             raise RuntimeError(detector.format_duplicate_message(dups))
-        confs = detector.validate_no_name_conflicts(keys)
-        if confs:
-            raise RuntimeError(detector.format_conflict_message(confs))
+        disagree = detector.validate_no_slot_name_disagreement(keys)
+        if disagree:
+            raise RuntimeError(
+                detector.format_slot_name_disagreement_message(disagree))
         all_keys.extend(keys)
     return all_keys
 
@@ -192,16 +193,10 @@ def _early_validate_all_shape_keys(context):
         return
 
     # 1. per-object: same (slot, name) appearing twice on one object.
-    # 2. per-object: cross-slot name conflict (same name -> different slots).
-    # 3. global: same Deform-N number wired to two different name parts.
+    # 2. per-object: one Deform ID assigned to multiple data payloads.
     all_keys = _collect_all_deform_keys_from_context(context)
 
     if all_keys:
-        disagree = detector.validate_no_slot_name_disagreement(all_keys)
-        if disagree:
-            raise RuntimeError(
-                detector.format_slot_name_disagreement_message(disagree)
-            )
         merge_buffers = True
         s2 = getattr(context.scene, "shapekey_settings", None)
         if s2 is not None:
@@ -262,9 +257,9 @@ def _patched_build_data_buffers(self, merged_object, component_id=-1):
             msg = detector.format_duplicate_message(duplicates)
             print(f"[ShapeKey] {msg}")
             raise RuntimeError(msg)
-        conflicts = detector.validate_no_name_conflicts(deform_keys)
+        conflicts = detector.validate_no_slot_name_disagreement(deform_keys)
         if conflicts:
-            msg = detector.format_conflict_message(conflicts)
+            msg = detector.format_slot_name_disagreement_message(conflicts)
             print(f"[ShapeKey] {msg}")
             raise RuntimeError(msg)
         meshes_path = getattr(self, "meshes_path", None)
@@ -343,15 +338,6 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
     result = orig(self, context, cfg, template_string=template_string, with_checksum=False)
 
     if _settings_enabled() and _bake_results:
-        # Cross-component validation runs OUTSIDE the try/except so a true
-        # user-input error is not silently swallowed and printed -- it must
-        # abort the export with a clear message.
-        agg = [{"slot": int(r["slot"]), "name": r["name"]} for r in _bake_results]
-        disagree = detector.validate_no_slot_name_disagreement(agg)
-        if disagree:
-            msg = detector.format_slot_name_disagreement_message(disagree)
-            print(f"[ShapeKey] {msg}")
-            raise RuntimeError(msg)
         try:
             # Inject [Constants] additions.
             cons_lines = generator.build_constants_lines(_bake_results)

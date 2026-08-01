@@ -391,25 +391,19 @@ def _draw_shapekey_row(layout, context):
             raw_str = ", ".join(f"'{r}'" for r in raws)
             warn.label(text=f"  [{obj_name}] Deform {slot} '{name}' → {raw_str}")
 
-    # Cross-slot name conflict: block export.
-    conflicts = detector.validate_no_name_conflicts(leaf_keys)
-    if conflicts:
+    # One object cannot carry two data payloads for the same Deform ID.
+    disagreements = []
+    for obj_name, ks in by_obj.items():
+        for slot, names in detector.validate_no_slot_name_disagreement(ks):
+            disagreements.append((obj_name, slot, names))
+    if disagreements:
         warn = layout.column(align=True)
         warn.alert = True
-        warn.label(text="形状键命名冲突 — 导出将被阻止：", icon='ERROR')
-        for name, slots in conflicts:
-            warn.label(text=f"  '{name}' 被 Deform {slots} 占用")
-
-    # Same-slot / different-name across components: block export.
-    disagree = detector.validate_no_slot_name_disagreement(leaf_keys)
-    if disagree:
-        warn = layout.column(align=True)
-        warn.alert = True
-        warn.label(text="同一 Deform 编号在不同物体上对应不同名称 — 导出将被阻止：",
+        warn.label(text="同一物体的 Deform 编号重复 — 导出将被阻止：",
                    icon='ERROR')
-        for slot, names in disagree:
-            names_str = ", ".join(f"'{n}'" for n in names)
-            warn.label(text=f"  Deform {slot} → {names_str}")
+        for obj_name, slot, names in disagreements:
+            names_str = ", ".join(f"'{name}'" for name in names)
+            warn.label(text=f"  [{obj_name}] Deform {slot} → {names_str}")
 
 
 def _make_patched_draw(orig_draw):

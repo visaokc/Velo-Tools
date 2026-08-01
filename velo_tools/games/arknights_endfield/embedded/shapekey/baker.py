@@ -328,7 +328,8 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
             vb0_delta[valid] = mesh_delta[vb0_to_mesh[valid]]
             mask = ~np.isclose(vb0_delta, 0.0, atol=1e-6).all(axis=1)
             packed_delta = vb0_delta[mask].astype(np.float32)
-            per_slot.append((slot, shader_slot, d["name"], mask, packed_delta))
+            per_slot.append((
+                slot, shader_slot, d["name"], d.get("raw"), mask, packed_delta))
 
         # Concatenate deltas + build the lookup
         # lookup[v*MAX_SLOTS + s] = -1 (none) or the offset into the merged deltas
@@ -336,7 +337,7 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
         all_deltas = []
         running_offset = 0
         results = []
-        for slot, shader_slot, name, mask, packed_delta in per_slot:
+        for slot, shader_slot, name, raw_name, mask, packed_delta in per_slot:
             channel_idx = shader_slot
             active_count = int(mask.sum())
             if active_count > 0:
@@ -356,6 +357,7 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
                 "shader_slot": shader_slot,
                 "channel_idx": channel_idx,
                 "name": name,
+                "raw_name": raw_name or f"Deform {slot} {name}",
                 "active_count": active_count,
                 "vertex_count": m_count,
                 "component_id": component_id,
@@ -441,6 +443,7 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
             "shader_slot": shader_slot,
             "channel_idx": channel_idx,
             "name": d["name"],
+            "raw_name": d.get("raw") or f"Deform {slot} {d['name']}",
             "active_count": active_count,
             "vertex_count": m_count,
             "delta_filename": delta_filename,
