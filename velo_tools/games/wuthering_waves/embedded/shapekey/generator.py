@@ -34,16 +34,20 @@ def collect_shape_key_names(
 ) -> Mapping[int, str]:
     names = {shape_id: set() for shape_id in channels}
     for domain in domains:
-        obj = getattr(getattr(domain, "merged_object", None), "object", None)
-        shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
-        for key in getattr(shape_keys, "key_blocks", ()) or ():
-            name = " ".join(str(getattr(key, "name", "")).split())
-            match = _DEFORM_NAME_RE.fullmatch(name)
-            if match is None:
-                continue
-            shape_id = int(match.group(1))
-            if shape_id in names:
-                names[shape_id].add(name)
+        selected = getattr(getattr(domain, "plan", None), "selected", ()) or ()
+        objects = [getattr(item, "object", None) for item in selected]
+        objects.append(
+            getattr(getattr(domain, "merged_object", None), "object", None))
+        for obj in objects:
+            shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
+            for key in getattr(shape_keys, "key_blocks", ()) or ():
+                name = " ".join(str(getattr(key, "name", "")).split())
+                match = _DEFORM_NAME_RE.fullmatch(name)
+                if match is None:
+                    continue
+                shape_id = int(match.group(1))
+                if shape_id in names:
+                    names[shape_id].add(name)
     return {
         shape_id: " | ".join(sorted(values, key=str.casefold))
         for shape_id, values in names.items() if values
