@@ -1,6 +1,6 @@
 # Velo Tools 中文使用手册
 
-> 适用版本：Velo Tools v1.5.2。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
+> 适用版本：Velo Tools v1.5.3。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
 
 Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI 工作流、鸣潮 WWMI 工作流放在同一个 **Velo Tools** 面板中。
 
@@ -93,6 +93,7 @@ Velo Tools 使用宿主级更新器更新整个 `velo_tools/` 插件。不要单
 - 只有主动开启“接收预发布版本”时才显示 pre-release。
 - 更新完成后重启 Blender。
 - 源码目录联接或开发安装不要使用“立即更新”；该按钮面向普通 release zip 安装。
+- 手动安装新版后，宿主更新器会清除等于或低于当前安装版本的旧缓存目标；插件重新载入后，不应继续显示同版本更新提示。
 
 升级前建议备份正在编辑的 `.blend` 和自定义 INI 模板。更新插件不会替你更新旧 Frame Dump 或对象源目录中的游戏证据。
 
@@ -247,7 +248,7 @@ Hash-style 导出使用的是提取证据中的资源 identity，来源包括 Fr
 - 滑块会同步同名 ShapeKey 的值。
 - 列表始终先按已有 `Deform N` 的数字升序排列，再将其它名称按大小写不敏感的自然 A-Z 排列；刷新和对象遍历顺序变化不会打乱位置。
 - 左侧复选框用于选择参与**自动重命名**的可重命名项，默认全部不选；操作栏中的**全选/全不选**可切换全部可重命名项。该按钮不再伪装成列表表头，因此不依赖 UIList 内边距、滚动条宽度、主题、DPI 或 UI scale。
-- 已有 `Deform N` 或 `Deform N 后缀` 的名称默认受保护，不会被自动修改。新编号会动态扫描当前最大值并从下一号开始；没有已有编号时从 1 开始，不依赖任何角色固定数量。若手动移除连续编号中某一项的 `Deform N` 前缀，该项及其后的编号会立即解锁；再次自动重命名时从留下的空号补起，并按原编号顺序修复后缀，修复完成后重新锁定。
+- 已有 `Deform N` 或 `Deform N 后缀` 的名称默认受保护，不会被自动修改。自动重命名把每个现有数字 ID 当作独立占位，并从最小可用正整数开始补空号；手动固定的高 ID 不会再把后续自动编号整体推到它之后。WWMI 模式还会读取所选对象源的 `Metadata.json`，保留所有原生 batch 范围，即使某些原生 ShapeKey 已从 Blender 删除也不会占用其 ID；对象源元数据缺失或无效时会直接取消，避免碰撞。EFMI 模式编号不读取、也不要求对象源目录。
 - 自动生成的格式为 `Deform N <完整原名>`。刷新后勾选和活动行按名称保持；改名后会跟随新名称移动到数字排序区。
 - 鼠标悬浮在 `xN` 上可查看包含该 ShapeKey 的全部网格对象。名称列优先获得侧边栏新增宽度，value 滑块最多占 8 个 Blender UI units；`xN` 会按当前最大位数保留等宽文本，拖动侧边栏时所有可见行保持统一列宽。
 
@@ -437,13 +438,16 @@ Deform12 CapeLift
 5. 展开 **显示已识别的 ShapeKey**，刷新并检查结果。
 6. 修复冲突后导出。
 
-以下情况会阻止导出：
+同一物体内重复使用数字 Deform ID 会阻止导出，因为两个 delta payload 不能共用该物体的同一运行时 channel。原始 Blender 名称不再决定运行时 identity：同一名称可以使用不同 ID，同一 ID 也可以在不同 Component 中对应不同名称。
 
-- 同一物体重复使用相同 `(编号, 名称)`。
-- 同一名称被分配给不同 Deform 编号。
-- 同一 Deform 编号在不同对象中对应不同名称。
-- 生成的 INI 变量名清理后发生冲突。
-- 一个运行时 channel 无法唯一对应一个 ShapeKey。
+每个导出 ID 使用稳定的数字变量，原始 Blender 名称只写入注释；多个 Component 为同一 ID 提供不同名称时，注释会按确定顺序合并去重：
+
+```ini
+; ShapeKey_12: CapeLift
+global persist $ShapeKey_12 = 0.0
+```
+
+外部 INI 逻辑应引用 `$ShapeKey_<编号>`，不要再引用由 Blender 名称清理得到的旧变量名。
 
 ### 5.8 导出 Mod
 
@@ -757,13 +761,14 @@ Mod State / Constants / Present
 - 关闭：自定义记录仍从原生 Buffer 中剥离，但不生成其变量、Buffer、shader 或 INI 逻辑，只保留原生 ShapeKey。
 - 没有有效自定义 delta：即使开关开启，也不会生成空资源或额外逻辑。
 
-每个实际导出的自定义 ID 会生成一个未钳制的持久变量：
+每个实际导出的自定义 ID 会生成一个未钳制的持久变量，并在前一行用注释保留原始 Blender 名称；同一 ID 的不同名称会按确定顺序合并：
 
 ```ini
+; ShapeKey_161: Smile
 global persist $ShapeKey_161 = 0.0
 ```
 
-同一 ID 跨 Component 或 IB 共用同一个变量。可以设置负值或大于 `1.0` 的值；例如把 `$ShapeKey_164` 改为 `1.0` 后重新加载 INI，即可检查该形态。变量只按编号命名，不保留 Blender 后缀。
+同一 ID 跨 Component 或 IB 共用同一个变量。可以设置负值或大于 `1.0` 的值；例如把 `$ShapeKey_164` 改为 `1.0` 后重新加载 INI，即可检查该形态。变量只按编号命名，Blender 后缀保留在注释中而不是标识符中。
 
 `persist` 值可能被 `d3dx_user.ini` 中已经保存的值覆盖。修改 `mod.ini` 默认值后若没有生效，应同步更新或删除对应持久化值。包含自定义 ShapeKey 数据时必须执行完整导出；Partial Export 不会单独更新这一管线。
 

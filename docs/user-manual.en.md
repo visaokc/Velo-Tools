@@ -1,6 +1,6 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.5.2. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.5.3. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
@@ -82,6 +82,7 @@ Open **Edit -> Preferences -> Add-ons -> Velo-Tools** and use the Velo updater.
 - Enable pre-release updates only when you deliberately want a test build.
 - Restart Blender after the updater finishes.
 - Update Velo Tools as one add-on. Do not update its embedded EFMI or WWMI cores separately.
+- A manual install clears cached update targets that are equal to or older than the installed version, so an old same-version banner should disappear after the add-on reloads.
 
 > **Source-link warning:** never run the updater from a developer junction or source-link installation. The updater replaces files in the install directory, which would be the linked repository.
 
@@ -196,7 +197,7 @@ These operations may disable **忽略嵌套集合 (Ignore Nested Collections)** 
 
 Use **形态键聚合 (按集合) (ShapeKey Aggregation by Collection)** to scan equal-name ShapeKeys across meshes and synchronize their names and values. The list is deterministic: existing `Deform N` entries appear first in numeric order, followed by all other names in case-insensitive natural A-Z order. Widening the sidebar gives the extra space to the name field; the value slider is capped at 8 Blender UI units, and all visible rows switch to the new column layout together during a resize.
 
-The left checkbox selects entries for **自动重命名 (Auto Rename)**. All entries start unchecked; use the native **全选/全不选 (Select All/Clear All)** action beside the refresh and auto-rename actions to toggle every currently renameable entry. It deliberately sits outside the scrolling list instead of imitating a column header, so its placement does not depend on UIList padding, scrollbar width, theme, DPI, or UI scale. Existing `Deform N` names are protected by default. New IDs are discovered dynamically from the collection and begin at the current maximum plus one (or 1 when no ID exists), preserving the full original name as the suffix. If you manually remove the `Deform N` prefix from the middle of a continuous numbered run, that item and the numbered suffix unlock immediately; the next auto-rename fills the vacated ID in the original numeric order, then locks the repaired run again. Hover over `xN` to see every mesh object that contains that ShapeKey. Contributor labels reserve equal digit width so mixed one- and multi-digit counts keep every value slider aligned. Refreshing or automatic rescanning preserves the checked rows and active row by name.
+The left checkbox selects entries for **自动重命名 (Auto Rename)**. All entries start unchecked; use the native **全选/全不选 (Select All/Clear All)** action beside the refresh and auto-rename actions to toggle every currently renameable entry. It deliberately sits outside the scrolling list instead of imitating a column header, so its placement does not depend on UIList padding, scrollbar width, theme, DPI, or UI scale. Existing `Deform N` names are protected by default. Auto Rename treats every existing numeric ID as an occupied pin and fills the lowest free positive ID, preserving the full original name as the suffix; a manually pinned high ID therefore does not force later automatic names above it. In WWMI mode, the selected object source `Metadata.json` also reserves every native batch range, including native keys deleted from Blender. Missing or invalid WWMI source metadata cancels Auto Rename instead of risking a native-ID collision. EFMI mode does not read or require an object source for numbering. Hover over `xN` to see every mesh object that contains that ShapeKey. Contributor labels reserve equal digit width so mixed one- and multi-digit counts keep every value slider aligned. Refreshing or automatic rescanning preserves the checked rows and active row by name.
 
 This is a Blender organization tool. It is not the EFMI runtime ShapeKey exporter described later.
 
@@ -380,18 +381,20 @@ Workflow:
 5. Review the live detected list and click a row to jump to its object.
 6. Fix every conflict, then export.
 
-Export is blocked by any of these conflicts:
+Export is blocked when one object contains duplicate numeric Deform IDs, because two delta payloads cannot share one runtime channel on the same object. The original Blender names do not define the runtime identity: the same name may use different IDs, and one ID may have different names across components.
 
-- duplicate `(slot, name)` ShapeKey blocks on one object;
-- the same name assigned to different slots;
-- the same slot assigned to different names across components;
-- sanitized INI identifiers that collide.
+Every exported ID uses a stable numeric global and keeps its source name only as a comment. When several components contribute different names to one ID, the comment merges the distinct names deterministically:
+
+```ini
+; ShapeKey_12: CapeLift
+global persist $ShapeKey_12 = 0.0
+```
 
 With buffer merging on, each component receives two extra merged buffer files regardless of its Deform-key count. The default position buffer is never merged.
 
 With buffer merging off, Velo writes legacy per-slot delta, lookup, and frequency-index files.
 
-The generated runtime globals use the ShapeKey name. Keep names stable if external INI logic refers to them.
+External INI logic should refer to `$ShapeKey_<slot>`, not a cleaned form of the Blender name.
 
 ## WWMI Single-IB
 
@@ -558,13 +561,14 @@ Mod State / Constants / Present
 - **Disabled:** custom records are still removed from the native buffers, but no custom variables, buffers, shaders, or INI logic are emitted.
 - **No effective custom delta:** no empty external resources or runtime logic are emitted, even when the option is enabled.
 
-Every effective custom ID receives one unclamped persistent variable:
+Every effective custom ID receives one unclamped persistent variable, preceded by a comment containing the original Blender name or deterministically merged names:
 
 ```ini
+; ShapeKey_161: Smile
 global persist $ShapeKey_161 = 0.0
 ```
 
-The same ID shares one variable across components and IB domains. Negative values and values above `1.0` are allowed. Variable names use only the numeric ID and do not preserve Blender suffixes.
+The same ID shares one variable across components and IB domains. Negative values and values above `1.0` are allowed. Variable names use only the numeric ID; Blender suffixes are preserved as comments rather than identifiers.
 
 An already stored value in `d3dx_user.ini` can override the default edited in `mod.ini`. Update or remove the matching persisted value when changing defaults. ShapeKey data changes require a complete export; Partial Export cannot update this pipeline independently.
 
@@ -922,9 +926,7 @@ Then adjust the geometry error threshold, voxel/sample size, prefilter candidate
 
 ### EFMI ShapeKey Export Is Blocked
 
-Inspect the detected list for duplicate slot/name pairs, one name on several slots, or several names on one slot.
-
-Rename the conflicting keys consistently. Non-Deform ShapeKeys are ignored rather than exported.
+Inspect the detected list for duplicate numeric Deform IDs on the same object. Assign each exported ShapeKey on that object a unique ID. Different names may share an ID across components, and the same name may use different IDs. Non-Deform ShapeKeys are ignored rather than exported.
 
 ### Weight Transfer Fails Before Writing
 
