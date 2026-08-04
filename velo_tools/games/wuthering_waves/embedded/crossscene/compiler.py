@@ -3946,12 +3946,7 @@ def write_compiled_mod(compiled: CompiledMod, output: Path | str,
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     meshes = _safe_meshes_path(output)
-    if not gates.partial_export:
-        if meshes.exists():
-            shutil.rmtree(meshes)
-        meshes.mkdir(parents=True, exist_ok=True)
-    else:
-        meshes.mkdir(parents=True, exist_ok=True)
+    meshes.mkdir(parents=True, exist_ok=True)
     for filename, buffer in compiled.buffers.items():
         (meshes / filename).write_bytes(_buffer_bytes(buffer))
     if not gates.partial_export and __package__:

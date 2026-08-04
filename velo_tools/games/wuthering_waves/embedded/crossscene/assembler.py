@@ -922,11 +922,12 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     Writes the merged mod to out, returns a report dict.
 
     write_ini / copy_textures / partial_export: the user's stock file-output toggles, applied to THIS
-    final assembled mod exactly as a single-IB export applies them -- ``Meshes/`` is always written,
+    final assembled mod exactly as a single-IB export applies them -- generated files in ``Meshes/``
+    are always written and overwrite same-named files,
     ``mod.ini`` only when ``not partial_export and write_ini``, ``Textures/`` only when
     ``not partial_export and copy_textures``. (The sub-IB exports always wrote everything; the
-    orchestrator forces that so the merge can read them.) ``out`` is the user's mod folder, so only
-    our own products (Meshes/ Textures/ mod.ini) are cleaned -- never the whole ``out``.
+    orchestrator forces that so the merge can read them.) ``out`` is the user's mod folder; unrelated
+    author files in ``Meshes/`` and ``Textures/`` are preserved.
 
     texture_root: when given, the merged root is the single authoritative HASH-style allowlist --
     only blind-zone hashes whose ``t=<hash>.dds`` still exists directly at the merged root (root-only
@@ -945,13 +946,11 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     delivery_inventory = _texture_delivery.build_delivery_inventory(
         texture_root, mods)
     slot_contracts = _collect_slot_contracts(mods, namespace_aliases)
-    # Clean ONLY generated mesh products. Textures follow stock WWMI semantics: existing files are
-    # author assets and are not deleted or overwritten.
+    # Preserve author assets. Generated meshes overwrite only same-named files, while textures follow
+    # stock WWMI semantics and are neither deleted nor overwritten.
     os.makedirs(out, exist_ok=True)
     meshes_dir = os.path.join(out, "Meshes")
     textures_dir = os.path.join(out, "Textures")
-    if os.path.exists(meshes_dir):
-        shutil.rmtree(meshes_dir)
     os.makedirs(meshes_dir, exist_ok=True)
     if write_textures:
         os.makedirs(textures_dir, exist_ok=True)
