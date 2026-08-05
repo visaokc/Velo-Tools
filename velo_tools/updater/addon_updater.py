@@ -1421,7 +1421,7 @@ class SingletonUpdater:
                 tg = tag
                 break
         if tg:
-            new_version = self.version_tuple_from_text(self.tag_latest)
+            new_version = self.version_tuple_from_text(name)
             self._update_version = new_version
             self._update_link = self.select_link(self, tg)
         elif self._include_branches and name in self._include_branch_list:
