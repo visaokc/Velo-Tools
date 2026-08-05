@@ -931,7 +931,7 @@ class SingletonUpdater:
                 sub_path = name[name.index(zsep) + 1:]
                 if name.endswith(zsep):
                     try:
-                        os.mkdir(os.path.join(outdir, sub_path))
+                        os.makedirs(os.path.join(outdir, sub_path), exist_ok=True)
                         self.print_verbose(
                             "Extract - mkdir: " + os.path.join(outdir, sub_path))
                     except OSError as exc:
@@ -941,7 +941,9 @@ class SingletonUpdater:
                             self.print_trace()
                             return -1
                 else:
-                    with open(os.path.join(outdir, sub_path), "wb") as outfile:
+                    output_path = os.path.join(outdir, sub_path)
+                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                    with open(output_path, "wb") as outfile:
                         data = zfile.read(name)
                         outfile.write(data)
                         self.print_verbose(
