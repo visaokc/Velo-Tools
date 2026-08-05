@@ -69,7 +69,10 @@ def is_installed() -> bool:
     return marker_payload.get("fingerprint") == _lock_fingerprint() and (
         (root / "scipy" / "__init__.py").is_file()
         and (root / "igl").exists()
-        and (root / "robust_laplacian.py").is_file()
+        and (
+            (root / "robust_laplacian.py").is_file()
+            or (root / "robust_laplacian" / "__init__.py").is_file()
+        )
     )
 
 

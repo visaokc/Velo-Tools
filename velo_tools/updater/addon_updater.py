@@ -1048,6 +1048,8 @@ class SingletonUpdater:
 
     def cleanup_legacy_dependencies(self):
         """Remove legacy bundled native dependencies from physical installs."""
+        if self._current_version and self._current_version < (1, 5, 5):
+            return False
         attributes = getattr(os.lstat(self._addon_root), "st_file_attributes", 0)
         if attributes & 0x400:
             return False
