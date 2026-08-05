@@ -11,7 +11,7 @@ import urllib.request
 import zipfile
 
 
-LOCK_PATH = Path(__file__).with_name("_native_dependencies.json")
+LOCK_PATH = Path(__file__).with_name("_optional_native_dependencies.json")
 DOWNLOAD_TIMEOUT = 30
 
 

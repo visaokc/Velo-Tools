@@ -221,7 +221,7 @@ Open **权重工具 (Weight Tools)**.
 - **Robust** performs surface matching followed by inpaint. It is the default Velo path.
 - **面插值传递 (Surface Interpolation Transfer)** uses Blender Data Transfer with `POLYINTERP_NEAREST`.
 
-Robust uses optional CPython 3.11 native packages. On first use, Velo shows the download size (about 51.5 MiB) and installed cache size (about 171.4 MiB) before downloading `scipy`, `libigl`, and `robust-laplacian`. The verified packages are installed in a shared local cache outside the add-on, so ordinary Velo installs, updates, backups, EFMI, WWMI, ShapeKey, and Cross-Scene workflows do not carry this payload. You do not need the standalone Robust Weight Transfer add-on.
+Robust uses optional CPython 3.11 native packages. On first use, Velo shows the download size (about 51.5 MiB) and installed cache size (about 173.3 MiB) before downloading `scipy`, `libigl`, and `robust-laplacian`. The verified packages are installed in a shared local cache outside the add-on, so ordinary Velo installs, updates, backups, EFMI, WWMI, ShapeKey, and Cross-Scene workflows do not carry this payload. You do not need the standalone Robust Weight Transfer add-on.
 
 If the standalone add-on is already enabled and has loaded a complete compatible dependency set, Velo reuses those modules without adding its private dependency directory to `sys.path`. Otherwise Velo loads its own private copies temporarily, so the two add-ons can coexist.
 

@@ -277,7 +277,7 @@ Hash-style 导出使用的是提取证据中的资源 identity，来源包括 Fr
 | **Robust** | Velo 主路径，使用表面匹配和 inpaint 处理覆盖。 |
 | **面插值传递** | 使用接近 Blender Data Transfer 的表面插值。 |
 
-Robust 使用可选的 CPython 3.11 native dependencies。首次使用前，Velo 会先显示下载体积（约 51.5 MiB）和共享 cache 安装体积（约 171.4 MiB），经用户确认后再下载并校验 `scipy`、`libigl` 和 `robust-laplacian`。依赖安装在插件目录外的本地共享 cache，不会再进入普通 Velo 安装包、更新备份，也不会影响 EFMI、WWMI、ShapeKey 或 Cross-Scene 工作流；无需安装独立 Robust Weight Transfer 插件。
+Robust 使用可选的 CPython 3.11 native dependencies。首次使用前，Velo 会先显示下载体积（约 51.5 MiB）和共享 cache 安装体积（约 173.3 MiB），经用户确认后再下载并校验 `scipy`、`libigl` 和 `robust-laplacian`。依赖安装在插件目录外的本地共享 cache，不会再进入普通 Velo 安装包、更新备份，也不会影响 EFMI、WWMI、ShapeKey 或 Cross-Scene 工作流；无需安装独立 Robust Weight Transfer 插件。
 
 如果独立插件已经启用并完整加载了兼容依赖，Velo 会直接复用现有模块，不会把自己的私有依赖目录加入 `sys.path`；否则只临时从 Velo 私有目录加载依赖。因此两个插件可以共存。
 

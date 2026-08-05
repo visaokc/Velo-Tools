@@ -908,11 +908,12 @@ class SingletonUpdater:
 
         # Clear the existing source folder in case previous files remain.
         outdir = os.path.join(self._updater_path, "source")
-        try:
-            shutil.rmtree(outdir)
-            self.print_verbose("Source folder cleared")
-        except:
-            self.print_trace()
+        if os.path.isdir(outdir):
+            try:
+                shutil.rmtree(outdir)
+                self.print_verbose("Source folder cleared")
+            except OSError:
+                self.print_trace()
 
         # Create parent directories if needed, would not be relevant unless
         # installing addon into another location or via an addon manager.
