@@ -1045,6 +1045,19 @@ class SingletonUpdater:
             except OSError:
                 self.print_trace()
 
+    def cleanup_legacy_dependencies(self):
+        """Remove legacy bundled native dependencies from physical installs."""
+        attributes = getattr(os.lstat(self._addon_root), "st_file_attributes", 0)
+        if attributes & 0x400:
+            return False
+        legacy_deps = os.path.join(
+            self._addon_root, "weights", "_native_deps")
+        if not os.path.isdir(legacy_deps):
+            return False
+        shutil.rmtree(legacy_deps)
+        self.print_verbose("Removed legacy bundled native dependencies")
+        return True
+
     def deep_merge_directory(self, base, merger, clean=False):
         """Merge folder 'merger' into 'base' without deleting existing"""
         if not os.path.exists(base):
@@ -1061,12 +1074,7 @@ class SingletonUpdater:
         # note: will not delete the update.json, update folder, staging, or
         # staging but will delete all other folders/files in addon directory.
         error = None
-        attributes = getattr(os.lstat(base), "st_file_attributes", 0)
-        if not attributes & 0x400:
-            legacy_deps = os.path.join(base, "weights", "_native_deps")
-            if os.path.isdir(legacy_deps):
-                shutil.rmtree(legacy_deps)
-                self.print_verbose("Removed legacy bundled native dependencies")
+        self.cleanup_legacy_dependencies()
         if clean:
             try:
                 # Implement clearing of all folders/files, except the updater

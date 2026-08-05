@@ -1427,6 +1427,7 @@ def register():
     updater.select_link = select_link_function
     updater.auto_reload_post_update = False
     updater.cleanup_staging()
+    updater.cleanup_legacy_dependencies()
     # Special situation: we just updated the addon, show a popup to tell the
     # user it worked. Could enclosed in try/catch in case other issues arise.
     show_reload_popup()
