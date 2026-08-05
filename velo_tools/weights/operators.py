@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 import textwrap
 
 import bpy
 from bpy.props import EnumProperty, IntProperty, StringProperty
 
 from . import algorithms as _algo
+from . import native_dependencies as _native_deps
 from . import props as _props
 from . import runtime as _runtime
 
@@ -34,6 +36,74 @@ def _invalidate_weight_overlay_caches(context=None):
                     area.tag_redraw()
     except Exception:
         pass
+
+
+_native_install_job = None
+
+
+def native_install_status():
+    if _native_deps.is_installed():
+        return "installed", ""
+    if _native_install_job is not None:
+        if _native_install_job["thread"].is_alive():
+            return "running", ""
+        if _native_install_job["error"]:
+            return "error", _native_install_job["error"]
+    return "missing", ""
+
+
+def _poll_native_install():
+    if _native_install_job is not None and _native_install_job["thread"].is_alive():
+        return 0.25
+    _invalidate_weight_overlay_caches()
+    return None
+
+
+class VELO_OT_weight_install_native_dependencies(bpy.types.Operator):
+    bl_idname = "velo.weight_install_native_dependencies"
+    bl_label = "安装 Robust 依赖"
+    bl_description = "下载并校验 Robust Weight Tools 所需的可选 native dependencies"
+    bl_options = {'INTERNAL'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        size_mib = _native_deps.download_size_bytes() / (1024 * 1024)
+        installed_mib = _native_deps.installed_size_bytes() / (1024 * 1024)
+        col = self.layout.column(align=True)
+        col.label(text=f"将下载约 {size_mib:.1f} MiB 的 scipy、libigl 和 robust-laplacian。")
+        col.label(text=f"安装后共享 cache 约占 {installed_mib:.1f} MiB。")
+        col.label(text="共享 cache 不进入 Velo Tools 插件目录或更新备份。")
+
+    def execute(self, context):
+        global _native_install_job
+        status, _error = native_install_status()
+        if status == "installed":
+            self.report({'INFO'}, "Robust 依赖已经安装")
+            return {'CANCELLED'}
+        if status == "running":
+            self.report({'INFO'}, "Robust 依赖正在后台下载")
+            return {'CANCELLED'}
+
+        job = {"thread": None, "error": ""}
+
+        def worker():
+            try:
+                _native_deps.install()
+            except Exception as exc:
+                job["error"] = str(exc)
+
+        job["thread"] = threading.Thread(
+            target=worker,
+            name="velo-native-dependencies",
+            daemon=True,
+        )
+        _native_install_job = job
+        job["thread"].start()
+        bpy.app.timers.register(_poll_native_install, first_interval=0.25)
+        self.report({'INFO'}, "Robust 依赖已开始后台下载")
+        return {'FINISHED'}
 
 
 def _last_report_text(context):
@@ -1401,6 +1471,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
 
 
 _classes = (
+    VELO_OT_weight_install_native_dependencies,
     VELO_OT_weight_refresh_groups,
     VELO_OT_weight_show_last_report,
     VELO_OT_weight_copy_last_report,

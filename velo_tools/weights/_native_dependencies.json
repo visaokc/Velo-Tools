@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "installed_size": 179736579,
   "platforms": {
     "Python311-win_amd64": [
       {
@@ -7,6 +8,7 @@
         "import_name": "scipy",
         "version": "1.15.3",
         "filename": "scipy-1.15.3-cp311-cp311-win_amd64.whl",
+        "size": 41246504,
         "url": "https://files.pythonhosted.org/packages/ab/a7/0ddaf514ce8a8714f6ed243a2b391b41dbb65251affe21ee3077ec45ea9a/scipy-1.15.3-cp311-cp311-win_amd64.whl",
         "sha256": "ae48a786a28412d744c62fd7816a4118ef97e5be0bee968ce8f0a2fba7acf3bb"
       },
@@ -15,6 +17,7 @@
         "import_name": "igl",
         "version": "2.5.1",
         "filename": "libigl-2.5.1-cp311-cp311-win_amd64.whl",
+        "size": 7514352,
         "url": "https://files.pythonhosted.org/packages/5e/07/23be39b9b38ae70e94dd91a5162de0e60c78b13604ea040c7cd961cc3659/libigl-2.5.1-cp311-cp311-win_amd64.whl",
         "sha256": "d681810b272b603b1581104385d810926623474e755381fda6b2f79c495067d4"
       },
@@ -23,6 +26,7 @@
         "import_name": "robust_laplacian",
         "version": "1.0.0",
         "filename": "robust_laplacian-1.0.0-cp311-cp311-win_amd64.whl",
+        "size": 5236543,
         "url": "https://files.pythonhosted.org/packages/fe/43/68dfc391e9d3d329483a22f38f17734789cdf29ec2493735d59af3efd80b/robust_laplacian-1.0.0-cp311-cp311-win_amd64.whl",
         "sha256": "478cf2ca7abc094fe9a26d21d589eede8b3f442848444d35aae08882df1899b9"
       }

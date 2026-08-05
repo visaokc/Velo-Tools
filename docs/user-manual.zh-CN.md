@@ -1,6 +1,6 @@
 # Velo Tools 中文使用手册
 
-> 适用版本：Velo Tools v1.5.4。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
+> 适用版本：Velo Tools v1.5.5。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
 
 Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI 工作流、鸣潮 WWMI 工作流放在同一个 **Velo Tools** 面板中。
 
@@ -277,7 +277,7 @@ Hash-style 导出使用的是提取证据中的资源 identity，来源包括 Fr
 | **Robust** | Velo 主路径，使用表面匹配和 inpaint 处理覆盖。 |
 | **面插值传递** | 使用接近 Blender Data Transfer 的表面插值。 |
 
-Windows 正式包已经自带 Robust 所需的 CPython 3.11 原生依赖，不需要另外安装独立的 Robust Weight Transfer 插件。Velo 只打包 `scipy`、`libigl` 和 `robust-laplacian`，不会包含该插件的代码、UI、operator 或示例资源。
+Robust 使用可选的 CPython 3.11 native dependencies。首次使用前，Velo 会先显示下载体积（约 51.5 MiB）和共享 cache 安装体积（约 171.4 MiB），经用户确认后再下载并校验 `scipy`、`libigl` 和 `robust-laplacian`。依赖安装在插件目录外的本地共享 cache，不会再进入普通 Velo 安装包、更新备份，也不会影响 EFMI、WWMI、ShapeKey 或 Cross-Scene 工作流；无需安装独立 Robust Weight Transfer 插件。
 
 如果独立插件已经启用并完整加载了兼容依赖，Velo 会直接复用现有模块，不会把自己的私有依赖目录加入 `sys.path`；否则只临时从 Velo 私有目录加载依赖。因此两个插件可以共存。
 

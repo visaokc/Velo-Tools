@@ -3,6 +3,8 @@ from __future__ import annotations
 import bpy
 
 from . import algorithms as _algo
+from . import native_dependencies as _native_deps
+from . import operators as _operators
 
 
 def _report_summary(text, limit=84):
@@ -158,7 +160,24 @@ class VELO_PT_weight_transfer(bpy.types.Panel):
         if settings.mirror_donor_status:
             icon = 'ERROR' if "锁定" in settings.mirror_donor_status or "未找到" in settings.mirror_donor_status else 'INFO'
             donor_box.label(text=settings.mirror_donor_status, icon=icon)
-        layout.operator("velo.weight_transfer", icon='MOD_DATA_TRANSFER')
+        transfer_row = layout.row(align=True)
+        if settings.engine == 'ROBUST':
+            dependency_status, dependency_error = _operators.native_install_status()
+            if dependency_status == "installed":
+                transfer_row.operator("velo.weight_transfer", icon='MOD_DATA_TRANSFER')
+            elif dependency_status == "running":
+                transfer_row.enabled = False
+                transfer_row.label(text="正在后台安装 Robust 依赖…", icon='TIME')
+            else:
+                transfer_row.operator(
+                    "velo.weight_install_native_dependencies",
+                    text=f"安装 Robust 依赖 ({_native_deps.download_size_bytes() / 1048576:.1f} MiB)",
+                    icon='IMPORT',
+                )
+                if dependency_error:
+                    layout.label(text=dependency_error, icon='ERROR')
+        else:
+            transfer_row.operator("velo.weight_transfer", icon='MOD_DATA_TRANSFER')
         if settings.last_report:
             box = layout.box()
             icon = 'ERROR' if ("失败" in settings.last_report or "错误" in settings.last_report) else 'INFO'

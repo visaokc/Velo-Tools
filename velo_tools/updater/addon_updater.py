@@ -744,6 +744,8 @@ class SingletonUpdater:
         local = os.path.join(self._updater_path, "update_staging")
         error = None
 
+        self.cleanup_staging()
+
         # Make/clear the staging folder, to ensure the folder is always clean.
         self.print_verbose(
             "Preparing staging folder for download:\n" + str(local))
@@ -767,9 +769,6 @@ class SingletonUpdater:
             self._error_msg = "Error: {}".format(error)
             return False
 
-        if self._backup_current:
-            self.create_backup()
-
         self.print_verbose("Now retrieving the new source zip")
         self._source_zip = os.path.join(local, "source.zip")
         self.print_verbose("Starting download update zip")
@@ -789,7 +788,8 @@ class SingletonUpdater:
             request.add_header(
                 'User-Agent', "Python/" + str(platform.python_version()))
 
-            self.url_retrieve(urllib.request.urlopen(request, context=context),
+            self.url_retrieve(
+                urllib.request.urlopen(request, context=context, timeout=30),
                               self._source_zip)
             # Add additional checks on file size being non-zero.
             self.print_verbose("Successfully downloaded update zip")
@@ -836,16 +836,16 @@ class SingletonUpdater:
                                 ignore=shutil.ignore_patterns(
                                     *self._backup_ignore_patterns))
             except:
-                print("Failed to create backup, still attempting update.")
+                print("Failed to create backup; update cancelled.")
                 self.print_trace()
-                return
+                return False
         else:
             try:
                 shutil.copytree(self._addon_root, tempdest)
             except:
-                print("Failed to create backup, still attempting update.")
+                print("Failed to create backup; update cancelled.")
                 self.print_trace()
-                return
+                return False
         shutil.move(tempdest, local)
 
         # Save the date for future reference.
@@ -853,6 +853,7 @@ class SingletonUpdater:
         self._json["backup_date"] = "{m}-{d}-{yr}".format(
             m=now.strftime("%B"), d=now.day, yr=now.year)
         self.save_updater_json()
+        return True
 
     def restore_backup(self):
         """Restore the last backed up addon version, user initiated only"""
@@ -983,6 +984,10 @@ class SingletonUpdater:
 
         # Merge code with the addon directory, using blender default behavior,
         # plus any modifiers indicated by user (e.g. force remove/keep).
+        if self._backup_current and not self.create_backup():
+            self._error = "Install failed"
+            self._error_msg = "Failed to create rollback backup"
+            return -1
         self.deep_merge_directory(self._addon_root, unpath, clean)
 
         # Now save the json state.
@@ -992,7 +997,27 @@ class SingletonUpdater:
         self.save_updater_json()
         self.reload_addon()
         self._update_ready = False
+        self.cleanup_staging()
         return 0
+
+    def cleanup_staging(self):
+        """Remove transient update downloads and extracted source trees."""
+        paths = [
+            os.path.join(self._updater_path, "source"),
+            os.path.join(self._updater_path, "update_staging"),
+            os.path.join(
+                self._addon_root,
+                os.pardir,
+                self._addon + "_updater_backup_temp",
+            ),
+        ]
+        for path in paths:
+            if not os.path.isdir(path):
+                continue
+            try:
+                shutil.rmtree(path)
+            except OSError:
+                self.print_trace()
 
     def deep_merge_directory(self, base, merger, clean=False):
         """Merge folder 'merger' into 'base' without deleting existing"""
@@ -1010,6 +1035,12 @@ class SingletonUpdater:
         # note: will not delete the update.json, update folder, staging, or
         # staging but will delete all other folders/files in addon directory.
         error = None
+        attributes = getattr(os.lstat(base), "st_file_attributes", 0)
+        if not attributes & 0x400:
+            legacy_deps = os.path.join(base, "weights", "_native_deps")
+            if os.path.isdir(legacy_deps):
+                shutil.rmtree(legacy_deps)
+                self.print_verbose("Removed legacy bundled native dependencies")
         if clean:
             try:
                 # Implement clearing of all folders/files, except the updater

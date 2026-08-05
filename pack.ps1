@@ -8,8 +8,7 @@
 #   ./pack.ps1                 # package the committed HEAD tree
 #   ./pack.ps1 -Ref v1.2.7     # package a specific tag/commit
 #
-# Preferred path uses `git archive` for the tracked source at the given ref, then
-# injects the pinned native Weight Tools dependencies declared by that source tree.
+# Preferred path uses `git archive` for the tracked source at the given ref.
 # Falls back to Compress-Archive of the working tree when git/ref is unavailable.
 param(
     [string]$Ref = "HEAD"
@@ -198,8 +197,6 @@ if ($useGit) {
     } finally { Pop-Location }
     Write-Host "Packed via Compress-Archive (working tree): $outZip"
 }
-
-Add-NativeDependencies -ZipPath $outZip
 
 Write-Host "Version: $version"
 Write-Host "OK: $outZip"

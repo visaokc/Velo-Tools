@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 import sys
 from contextlib import contextmanager
-from pathlib import Path
+
+from . import native_dependencies
 
 
 _np = None
@@ -14,8 +15,7 @@ _load_error = ""
 
 
 def _bundled_site_packages():
-    py_tag = f"Python{sys.version_info.major}{sys.version_info.minor}"
-    return Path(__file__).resolve().parent / "_native_deps" / py_tag / "site-packages"
+    return native_dependencies.site_packages_path()
 
 
 @contextmanager

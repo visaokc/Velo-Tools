@@ -22,6 +22,7 @@ Implements draw calls, popups, and operators that use the addon_updater.
 """
 
 import os
+import threading
 import traceback
 import bpy
 from bpy.app.handlers import persistent
@@ -91,6 +92,66 @@ if not getattr(updater, "invalid_updater", False):
     updater._addon_root = _velo_addon_root
     updater._addon_package = "velo_tools"
     updater._updater_path = os.path.join(_velo_addon_root, "velo_tools_updater")
+
+
+_update_job = None
+
+
+def _poll_update_job():
+    """Finish an update job on Blender's main thread after file work completes."""
+    global _update_job
+    job = _update_job
+    if job is None:
+        return None
+    if job["thread"].is_alive():
+        return 0.2
+
+    _update_job = None
+    result = job["result"]
+    if result == 0:
+        post_update_callback(updater.addon)
+    else:
+        post_update_callback(
+            updater.addon,
+            job["error"] or updater.error_msg or "更新失败",
+        )
+    return None
+
+
+def _start_update_job(*, revert_tag=None, clean=False):
+    """Run download/staging/merge off the Blender UI thread."""
+    global _update_job
+    if _update_job is not None and _update_job["thread"].is_alive():
+        return False
+
+    job = {"thread": None, "result": None, "error": None}
+
+    def worker():
+        try:
+            job["result"] = updater.run_update(
+                force=False,
+                revert_tag=revert_tag,
+                callback=None,
+                clean=clean,
+            )
+        except Exception as exc:
+            updater._error = "Error trying to run update"
+            updater._error_msg = str(exc)
+            job["error"] = str(exc)
+            job["result"] = -1
+            updater.print_trace()
+        finally:
+            updater.cleanup_staging()
+
+    job["thread"] = threading.Thread(
+        target=worker,
+        name="velo-tools-updater",
+        daemon=True,
+    )
+    _update_job = job
+    job["thread"].start()
+    bpy.app.timers.register(_poll_update_job, first_interval=0.2)
+    return True
 
 
 # -----------------------------------------------------------------------------
@@ -318,24 +379,10 @@ class AddonUpdaterUpdateNow(bpy.types.Operator):
         if updater.manual_only:
             bpy.ops.wm.url_open(url=updater.website)
         if updater.update_ready:
-            # if it fails, offer to open the website instead
-            try:
-                res = updater.run_update(force=False,
-                                         callback=post_update_callback,
-                                         clean=self.clean_install)
-
-                # Should return 0, if not something happened.
-                if updater.verbose:
-                    if res == 0:
-                        print("Updater returned successful")
-                    else:
-                        print("Updater error response: {}".format(res))
-            except Exception as expt:
-                updater._error = "Error trying to run update"
-                updater._error_msg = str(expt)
-                updater.print_trace()
-                atr = AddonUpdaterInstallManually.bl_idname.split(".")
-                getattr(getattr(bpy.ops, atr[0]), atr[1])('INVOKE_DEFAULT')
+            if not _start_update_job(clean=self.clean_install):
+                self.report({'INFO'}, "更新正在进行中")
+                return {'CANCELLED'}
+            self.report({'INFO'}, "更新已在后台开始，完成后会提示结果")
         elif updater.update_ready is None:
             (update_ready, version, link) = updater.check_for_update(now=True)
             # Re-launch this dialog.
@@ -413,20 +460,12 @@ class AddonUpdaterUpdateTarget(bpy.types.Operator):
         if updater.invalid_updater:
             return {'CANCELLED'}
 
-        res = updater.run_update(
-            force=False,
-            revert_tag=self.target,
-            callback=post_update_callback,
-            clean=self.clean_install)
-
-        # Should return 0, if not something happened.
-        if res == 0:
-            updater.print_verbose("Updater returned successful")
-        else:
-            updater.print_verbose(
-                "Updater returned {}, , error occurred".format(res))
+        if not _start_update_job(
+                revert_tag=self.target,
+                clean=self.clean_install):
+            self.report({'INFO'}, "更新正在进行中")
             return {'CANCELLED'}
-
+        self.report({'INFO'}, "指定版本已在后台开始安装，完成后会提示结果")
         return {'FINISHED'}
 
 
@@ -1367,7 +1406,7 @@ def register():
     updater.current_version = bl_info["version"]
     updater.verbose = False  # make False for production default
     updater.backup_current = True  # True by default
-    updater.backup_ignore_patterns = ["__pycache__"]
+    updater.backup_ignore_patterns = ["__pycache__", "velo_tools_updater"]
     updater.overwrite_patterns = ["*.png", "*.jpg", "README.md", "LICENSE.txt", "*.j2"]
     updater.remove_pre_update_patterns = ["*.py", "*.pyc"]
     # Only published GitHub Releases drive updates -- never branch tips. This
@@ -1387,6 +1426,7 @@ def register():
     updater.skip_tag = skip_tag_function  # min and max used in this function
     updater.select_link = select_link_function
     updater.auto_reload_post_update = False
+    updater.cleanup_staging()
     # Special situation: we just updated the addon, show a popup to tell the
     # user it worked. Could enclosed in try/catch in case other issues arise.
     show_reload_popup()
