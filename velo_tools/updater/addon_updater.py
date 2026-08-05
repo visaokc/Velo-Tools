@@ -103,6 +103,7 @@ class SingletonUpdater:
         self._update_version = None
         self._source_zip = None
         self._preserve_updater_package = False
+        self._progress_callback = None
         self._check_thread = None
         self._select_link = None
         self.skip_tag = None
@@ -745,6 +746,7 @@ class SingletonUpdater:
         local = os.path.join(self._updater_path, "update_staging")
         error = None
 
+        self.report_progress("准备更新", 0.02, "正在准备临时目录")
         self.cleanup_staging()
 
         # Make/clear the staging folder, to ensure the folder is always clean.
@@ -773,6 +775,7 @@ class SingletonUpdater:
         self.print_verbose("Now retrieving the new source zip")
         self._source_zip = os.path.join(local, "source.zip")
         self.print_verbose("Starting download update zip")
+        self.report_progress("下载更新包", 0.08, "正在连接下载服务器")
         try:
             request = urllib.request.Request(url)
             context = ssl._create_unverified_context()
@@ -900,6 +903,7 @@ class SingletonUpdater:
 
     def unpack_staged_zip(self, clean=False):
         """Unzip the downloaded file, and validate contents"""
+        self.report_progress("解压与校验", 0.60, "正在检查下载包")
         if not os.path.isfile(self._source_zip):
             self.print_verbose("Error, update zip not found")
             self._error = "Install failed"
@@ -947,7 +951,15 @@ class SingletonUpdater:
             # this avoids adding the first subfolder to the path length,
             # which can be too long if the download has the SHA in the name.
             zsep = '/'  # Not using os.sep, always the / value even on windows.
-            for name in zfile.namelist():
+            names = zfile.namelist()
+            name_count = max(len(names), 1)
+            for index, name in enumerate(names, 1):
+                self.report_progress(
+                    "解压与校验",
+                    0.60 + (0.10 * index / name_count),
+                    "正在解压文件：{}%".format(
+                        round(index * 100 / name_count)),
+                )
                 if zsep not in name:
                     continue
                 top_folder = name[:name.index(zsep) + 1]
@@ -1008,14 +1020,21 @@ class SingletonUpdater:
 
         # Merge code with the addon directory, using blender default behavior,
         # plus any modifiers indicated by user (e.g. force remove/keep).
-        if self._backup_current and not self.create_backup():
-            self._error = "Install failed"
-            self._error_msg = "Failed to create rollback backup"
-            return -1
+        if self._backup_current:
+            self.report_progress("创建 rollback backup", 0.72, "正在备份当前版本")
+            if not self.create_backup():
+                self._error = "Install failed"
+                self._error_msg = "Failed to create rollback backup"
+                return -1
+            self.report_progress("创建 rollback backup", 0.85, "当前版本已备份")
+        else:
+            self.report_progress("准备安装", 0.85, "正在准备安装目标版本")
+        self.report_progress("安装", 0.88, "正在安装目标版本")
         if self.deep_merge_directory(self._addon_root, unpath, clean) == -1:
             self._error = "Install failed"
             self._error_msg = "Failed to merge downloaded files"
             return -1
+        self.report_progress("安装", 0.96, "目标版本已写入")
 
         # Now save the json state.
         # Change to True to trigger the handler on other side if allowing
@@ -1219,21 +1238,56 @@ class SingletonUpdater:
         self._update_version = None
         self._source_zip = None
         self._preserve_updater_package = False
+        self._progress_callback = None
         self._error = None
         self._error_msg = None
+
+    def report_progress(self, phase, progress, detail=""):
+        """Send thread-safe primitive progress values to the Blender UI layer."""
+        callback = self._progress_callback
+        if callback is not None:
+            callback(phase, max(0.0, min(float(progress), 1.0)), detail)
 
     def url_retrieve(self, url_file, filepath):
         """Custom urlretrieve implementation"""
         chunk = 1024 * 8
-        f = open(filepath, "wb")
-        while 1:
-            data = url_file.read(chunk)
-            if not data:
-                # print("done.")
-                break
-            f.write(data)
-            # print("Read %s bytes" % len(data))
-        f.close()
+        headers = getattr(url_file, "headers", None)
+        total_text = headers.get("Content-Length") if headers is not None else None
+        try:
+            total = int(total_text) if total_text else 0
+        except (TypeError, ValueError):
+            total = 0
+        downloaded = 0
+        last_reported_percent = -1
+        last_reported_mib = -1
+        with open(filepath, "wb") as f:
+            while 1:
+                data = url_file.read(chunk)
+                if not data:
+                    break
+                f.write(data)
+                downloaded += len(data)
+                if total > 0:
+                    percent = min(round(downloaded * 100 / total), 100)
+                    if percent == last_reported_percent:
+                        continue
+                    last_reported_percent = percent
+                    progress = 0.08 + (0.47 * min(downloaded / total, 1.0))
+                    detail = "正在下载：{}%（{:.1f} / {:.1f} MiB）".format(
+                        percent,
+                        downloaded / (1024 * 1024),
+                        total / (1024 * 1024),
+                    )
+                else:
+                    downloaded_mib = downloaded // (1024 * 1024)
+                    if downloaded_mib == last_reported_mib:
+                        continue
+                    last_reported_mib = downloaded_mib
+                    progress = 0.08
+                    detail = "正在下载：{:.1f} MiB".format(
+                        downloaded / (1024 * 1024))
+                self.report_progress("下载更新包", progress, detail)
+        self.report_progress("下载更新包", 0.55, "更新包下载完成")
 
     def version_tuple_from_text(self, text):
         """Convert text into a tuple of numbers (int).

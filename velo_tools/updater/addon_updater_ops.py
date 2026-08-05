@@ -104,9 +104,11 @@ def _poll_update_job():
     if job is None:
         return None
     if job["thread"].is_alive():
+        ui_refresh(None)
         return 0.2
 
     _update_job = None
+    ui_refresh(None)
     result = job["result"]
     if result == 0:
         post_update_callback(updater.addon)
@@ -124,9 +126,22 @@ def _start_update_job(*, revert_tag=None, clean=False):
     if _update_job is not None and _update_job["thread"].is_alive():
         return False
 
-    job = {"thread": None, "result": None, "error": None}
+    job = {
+        "thread": None,
+        "result": None,
+        "error": None,
+        "phase": "准备更新",
+        "progress": 0.0,
+        "detail": "正在启动后台更新",
+    }
+
+    def update_progress(phase, progress, detail=""):
+        job["phase"] = phase
+        job["progress"] = progress
+        job["detail"] = detail
 
     def worker():
+        updater._progress_callback = update_progress
         try:
             job["result"] = updater.run_update(
                 force=False,
@@ -141,7 +156,14 @@ def _start_update_job(*, revert_tag=None, clean=False):
             job["result"] = -1
             updater.print_trace()
         finally:
+            update_progress("清理", 0.98, "正在清理临时文件")
             updater.cleanup_staging()
+            updater._progress_callback = None
+            if job["result"] == 0:
+                update_progress("完成", 1.0, "安装完成，等待重启 Blender")
+            else:
+                job["phase"] = "更新失败"
+                job["detail"] = job["error"] or updater.error_msg or "更新失败"
 
     job["thread"] = threading.Thread(
         target=worker,
@@ -151,6 +173,28 @@ def _start_update_job(*, revert_tag=None, clean=False):
     _update_job = job
     job["thread"].start()
     bpy.app.timers.register(_poll_update_job, first_interval=0.2)
+    return True
+
+
+def _draw_update_job_progress(layout):
+    """Draw the active install status and suppress conflicting controls."""
+    job = _update_job
+    if job is None:
+        return False
+    progress = max(0.0, min(float(job.get("progress", 0.0)), 1.0))
+    phase = job.get("phase") or "更新中"
+    detail = job.get("detail") or "后台更新正在进行"
+    percent = round(progress * 100)
+    text = "总体 {}% · {}".format(percent, phase)
+    if hasattr(layout, "progress"):
+        layout.progress(factor=progress, type='BAR', text=text)
+    else:
+        filled = round(progress * 20)
+        bar = "█" * filled + "░" * (20 - filled)
+        layout.label(text="{}  总体 {}%".format(bar, percent), icon="TIME")
+        layout.label(text=phase)
+    layout.label(text=detail)
+    layout.label(text="更新期间仍可继续使用 Blender；完成后会弹出结果。")
     return True
 
 
@@ -578,22 +622,26 @@ class AddonUpdaterUpdatedSuccessful(bpy.types.Operator):
             if "just_restored" in saved and saved["just_restored"]:
                 col = layout.column()
                 col.label(text="插件已还原", icon="RECOVER_LAST")
+                col.label(text="需要重启 Blender 才会加载此版本。")
+                col.label(text="也可以点击弹窗外，稍后手动重启。")
                 alert_row = col.row()
                 alert_row.alert = True
                 alert_row.operator(
                     "wm.quit_blender",
-                    text="重启 Blender 以重新加载",
+                    text="关闭 Blender 并重新打开",
                     icon="BLANK1")
                 updater.json_reset_restore()
             else:
                 col = layout.column()
                 col.label(
-                    text="插件安装成功", icon="FILE_TICK")
+                    text="插件更新完成", icon="FILE_TICK")
+                col.label(text="需要重启 Blender 才会加载新版本。")
+                col.label(text="也可以点击弹窗外，稍后手动重启。")
                 alert_row = col.row()
                 alert_row.alert = True
                 alert_row.operator(
                     "wm.quit_blender",
-                    text="重启 Blender 以重新加载",
+                    text="关闭 Blender 并重新打开",
                     icon="BLANK1")
 
         else:
@@ -1022,6 +1070,9 @@ def update_settings_ui(self, context, element=None):
         box.label(text="获取更新器首选项出错", icon='ERROR')
         return
 
+    if _draw_update_job_progress(box):
+        return
+
     # auto-update settings
     # box.label(text="Updater Settings")
     row = box.row()
@@ -1032,7 +1083,7 @@ def update_settings_ui(self, context, element=None):
         if "just_updated" in saved_state and saved_state["just_updated"]:
             row.alert = True
             row.operator("wm.quit_blender",
-                         text="重启 Blender 以完成更新",
+                         text="关闭 Blender 并重新打开",
                          icon="ERROR")
             return
 
@@ -1192,6 +1243,9 @@ def update_settings_ui_condensed(self, context, element=None):
         row.label(text="Error getting updater preferences", icon='ERROR')
         return
 
+    if _draw_update_job_progress(element):
+        return
+
     # Special case to tell user to restart blender, if set that way.
     if not updater.auto_reload_post_update:
         saved_state = updater.json
@@ -1199,7 +1253,7 @@ def update_settings_ui_condensed(self, context, element=None):
             row.alert = True  # mark red
             row.operator(
                 "wm.quit_blender",
-                text="Restart blender to complete update",
+                text="关闭 Blender 并重新打开",
                 icon="ERROR")
             return
 
