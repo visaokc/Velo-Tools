@@ -62,11 +62,38 @@ def site_packages_path() -> Path:
 def is_installed() -> bool:
     root = site_packages_path()
     marker = root / ".velo-native-deps.json"
-    return marker.is_file() and (
+    try:
+        marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return marker_payload.get("fingerprint") == _lock_fingerprint() and (
         (root / "scipy" / "__init__.py").is_file()
         and (root / "igl").exists()
         and (root / "robust_laplacian.py").is_file()
     )
+
+
+def cleanup_stale_caches() -> None:
+    """Best-effort removal of dependency versions no longer referenced."""
+    current = cache_root()
+    platform_root = current.parent
+    if not platform_root.is_dir():
+        return
+    for candidate in platform_root.iterdir():
+        if candidate == current or not candidate.is_dir():
+            continue
+        candidate_text = str(candidate.resolve()).casefold() + os.sep
+        if any(
+            str(getattr(module, "__file__", "")).casefold().startswith(candidate_text)
+            for module in tuple(sys.modules.values())
+        ):
+            continue
+        try:
+            shutil.rmtree(candidate)
+        except OSError:
+            # A previous cache can still contain loaded Windows extension modules.
+            # It will be retried after Blender restarts.
+            pass
 
 
 def _download(item: dict, destination: Path) -> None:
@@ -91,13 +118,19 @@ def _download(item: dict, destination: Path) -> None:
 
 
 def install() -> Path:
-    dependencies = _load_dependencies()
     root = cache_root()
+    destination = site_packages_path()
+    if is_installed():
+        return destination
+    dependencies = _load_dependencies()
     downloads = root / "downloads"
     staging = root / "site-packages.staging"
+    previous = root / "site-packages.previous"
     downloads.mkdir(parents=True, exist_ok=True)
     if staging.exists():
         shutil.rmtree(staging)
+    if previous.exists():
+        shutil.rmtree(previous)
     staging.mkdir(parents=True)
     try:
         for item in dependencies:
@@ -123,13 +156,22 @@ def install() -> Path:
             json.dumps({"fingerprint": _lock_fingerprint()}),
             encoding="utf-8",
         )
-        destination = site_packages_path()
         if destination.exists():
-            shutil.rmtree(destination)
-        staging.replace(destination)
+            destination.replace(previous)
+        try:
+            staging.replace(destination)
+        except Exception:
+            if not destination.exists() and previous.exists():
+                previous.replace(destination)
+            raise
+        if previous.exists():
+            shutil.rmtree(previous)
         shutil.rmtree(downloads, ignore_errors=True)
         return destination
     except Exception:
         if staging.exists():
             shutil.rmtree(staging)
+        if not destination.exists() and previous.exists():
+            previous.replace(destination)
+        shutil.rmtree(downloads, ignore_errors=True)
         raise

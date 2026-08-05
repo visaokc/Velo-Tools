@@ -806,21 +806,15 @@ class SingletonUpdater:
         """Save a backup of the current installed addon prior to an update."""
         self.print_verbose("Backing up current addon folder")
         local = os.path.join(self._updater_path, "backup")
+        previous = os.path.join(self._updater_path, "backup.previous")
         tempdest = os.path.join(
             self._addon_root, os.pardir, self._addon + "_updater_backup_temp")
 
         self.print_verbose("Backup destination path: " + str(local))
 
-        if os.path.isdir(local):
-            try:
-                shutil.rmtree(local)
-            except:
-                self.print_verbose(
-                    "Failed to removed previous backup folder, continuing")
-                self.print_trace()
+        self._recover_backup_swap()
 
-        # Remove the temp folder.
-        # Shouldn't exist but could if previously interrupted.
+        # Remove the copy destination left by an interrupted attempt.
         if os.path.isdir(tempdest):
             try:
                 shutil.rmtree(tempdest)
@@ -838,6 +832,7 @@ class SingletonUpdater:
             except:
                 print("Failed to create backup; update cancelled.")
                 self.print_trace()
+                shutil.rmtree(tempdest, ignore_errors=True)
                 return False
         else:
             try:
@@ -845,8 +840,21 @@ class SingletonUpdater:
             except:
                 print("Failed to create backup; update cancelled.")
                 self.print_trace()
+                shutil.rmtree(tempdest, ignore_errors=True)
                 return False
-        shutil.move(tempdest, local)
+
+        try:
+            if os.path.isdir(local):
+                shutil.move(local, previous)
+            shutil.move(tempdest, local)
+        except Exception:
+            self.print_verbose("Failed to replace rollback backup")
+            self.print_trace()
+            if not os.path.isdir(local) and os.path.isdir(previous):
+                shutil.move(previous, local)
+            shutil.rmtree(tempdest, ignore_errors=True)
+            return False
+        shutil.rmtree(previous, ignore_errors=True)
 
         # Save the date for future reference.
         now = datetime.now()
@@ -854,6 +862,20 @@ class SingletonUpdater:
             m=now.strftime("%B"), d=now.day, yr=now.year)
         self.save_updater_json()
         return True
+
+    def _recover_backup_swap(self):
+        """Recover or finish an interrupted single-backup replacement."""
+        local = os.path.join(self._updater_path, "backup")
+        previous = os.path.join(self._updater_path, "backup.previous")
+        if not os.path.isdir(previous):
+            return
+        try:
+            if os.path.isdir(local):
+                shutil.rmtree(previous)
+            else:
+                shutil.move(previous, local)
+        except OSError:
+            self.print_trace()
 
     def restore_backup(self):
         """Restore the last backed up addon version, user initiated only"""
@@ -988,7 +1010,10 @@ class SingletonUpdater:
             self._error = "Install failed"
             self._error_msg = "Failed to create rollback backup"
             return -1
-        self.deep_merge_directory(self._addon_root, unpath, clean)
+        if self.deep_merge_directory(self._addon_root, unpath, clean) == -1:
+            self._error = "Install failed"
+            self._error_msg = "Failed to merge downloaded files"
+            return -1
 
         # Now save the json state.
         # Change to True to trigger the handler on other side if allowing
@@ -1002,6 +1027,7 @@ class SingletonUpdater:
 
     def cleanup_staging(self):
         """Remove transient update downloads and extracted source trees."""
+        self._recover_backup_swap()
         paths = [
             os.path.join(self._updater_path, "source"),
             os.path.join(self._updater_path, "update_staging"),
