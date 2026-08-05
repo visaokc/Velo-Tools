@@ -1,6 +1,6 @@
 # Velo Tools 中文使用手册
 
-> 适用版本：Velo Tools v1.5.3。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
+> 适用版本：Velo Tools v1.5.4。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
 
 Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI 工作流、鸣潮 WWMI 工作流放在同一个 **Velo Tools** 面板中。
 
@@ -440,12 +440,16 @@ Deform12 CapeLift
 
 同一物体内重复使用数字 Deform ID 会阻止导出，因为两个 delta payload 不能共用该物体的同一运行时 channel。原始 Blender 名称不再决定运行时 identity：同一名称可以使用不同 ID，同一 ID 也可以在不同 Component 中对应不同名称。
 
+不符合 `Deform <编号> <名称>` 命名的普通 ShapeKey 不会生成运行时变量，而是按 Blender 中的当前值计算进导出 Basis；即使同一物体还包含标准 Deform ShapeKey，也不会因此被归零或丢失。标准 Deform ShapeKey 则保留用于提取运行时 delta。
+
 每个导出 ID 使用稳定的数字变量，原始 Blender 名称只写入注释；多个 Component 为同一 ID 提供不同名称时，注释会按确定顺序合并去重：
 
 ```ini
 ; ShapeKey_12: CapeLift
-global persist $ShapeKey_12 = 0.0
+global persist $ShapeKey_12 = 0.375
 ```
+
+变量初始值继承导出时 Blender 中对应 ShapeKey 的值；Velo 只在计算 Basis 和运行时 delta 时临时将标准 Deform 归零。如果同一运行时 ID 在不同物体上的导出前值不一致，导出会停止，而不是选择一个含糊的全局默认值。
 
 外部 INI 逻辑应引用 `$ShapeKey_<编号>`，不要再引用由 Blender 名称清理得到的旧变量名。
 
@@ -765,10 +769,10 @@ Mod State / Constants / Present
 
 ```ini
 ; ShapeKey_161: Smile
-global persist $ShapeKey_161 = 0.0
+global persist $ShapeKey_161 = 0.375
 ```
 
-同一 ID 跨 Component 或 IB 共用同一个变量。可以设置负值或大于 `1.0` 的值；例如把 `$ShapeKey_164` 改为 `1.0` 后重新加载 INI，即可检查该形态。变量只按编号命名，Blender 后缀保留在注释中而不是标识符中。
+变量初始值继承导出时 Blender 中对应 ShapeKey 的值。非标准 ShapeKey 按当前值计算进导出 Basis，不生成运行时变量。同一 Deform ID 跨 Component 或 IB 共用一个变量；如果不同物体为该 ID 提供了不同导出前值，导出会停止。可以设置负值或大于 `1.0` 的值；例如把 `$ShapeKey_164` 改为 `1.0` 后重新加载 INI，即可检查该形态。变量只按编号命名，Blender 后缀保留在注释中而不是标识符中。
 
 `persist` 值可能被 `d3dx_user.ini` 中已经保存的值覆盖。修改 `mod.ini` 默认值后若没有生效，应同步更新或删除对应持久化值。包含自定义 ShapeKey 数据时必须执行完整导出；Partial Export 不会单独更新这一管线。
 

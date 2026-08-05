@@ -1,6 +1,6 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.5.3. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.5.4. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
@@ -383,12 +383,16 @@ Workflow:
 
 Export is blocked when one object contains duplicate numeric Deform IDs, because two delta payloads cannot share one runtime channel on the same object. The original Blender names do not define the runtime identity: the same name may use different IDs, and one ID may have different names across components.
 
+ShapeKeys that do not match the `Deform <slot> <name>` contract are not exposed as runtime controls. Their current Blender values are instead evaluated into the exported Basis, even when the same object also contains runtime Deform keys. Numbered Deform keys are kept separate for delta extraction, so the non-standard authored result is not lost or reset by the runtime export path.
+
 Every exported ID uses a stable numeric global and keeps its source name only as a comment. When several components contribute different names to one ID, the comment merges the distinct names deterministically:
 
 ```ini
 ; ShapeKey_12: CapeLift
-global persist $ShapeKey_12 = 0.0
+global persist $ShapeKey_12 = 0.375
 ```
+
+The initial value is the ShapeKey value authored in Blender at export time; it is temporarily zeroed only while Velo calculates the Basis and runtime delta. If one runtime ID has conflicting authored values across objects, export stops instead of choosing an ambiguous global default.
 
 With buffer merging on, each component receives two extra merged buffer files regardless of its Deform-key count. The default position buffer is never merged.
 
@@ -565,10 +569,10 @@ Every effective custom ID receives one unclamped persistent variable, preceded b
 
 ```ini
 ; ShapeKey_161: Smile
-global persist $ShapeKey_161 = 0.0
+global persist $ShapeKey_161 = 0.375
 ```
 
-The same ID shares one variable across components and IB domains. Negative values and values above `1.0` are allowed. Variable names use only the numeric ID; Blender suffixes are preserved as comments rather than identifiers.
+The initial value is the ShapeKey value authored in Blender at export time. Non-standard ShapeKeys are evaluated at their current values into the exported Basis and are not exposed as runtime controls. The same Deform ID shares one variable across components and IB domains; conflicting authored values for that ID stop export. Negative values and values above `1.0` are allowed. Variable names use only the numeric ID; Blender suffixes are preserved as comments rather than identifiers.
 
 An already stored value in `d3dx_user.ini` can override the default edited in `mod.ini`. Update or remove the matching persisted value when changing defaults. ShapeKey data changes require a complete export; Partial Export cannot update this pipeline independently.
 
@@ -926,7 +930,7 @@ Then adjust the geometry error threshold, voxel/sample size, prefilter candidate
 
 ### EFMI ShapeKey Export Is Blocked
 
-Inspect the detected list for duplicate numeric Deform IDs on the same object. Assign each exported ShapeKey on that object a unique ID. Different names may share an ID across components, and the same name may use different IDs. Non-Deform ShapeKeys are ignored rather than exported.
+Inspect the detected list for duplicate numeric Deform IDs on the same object. Assign each exported ShapeKey on that object a unique ID. Different names may share an ID across components, and the same name may use different IDs. Non-Deform ShapeKeys are baked into the exported Basis at their current values rather than emitted as runtime controls.
 
 ### Weight Transfer Fails Before Writing
 
