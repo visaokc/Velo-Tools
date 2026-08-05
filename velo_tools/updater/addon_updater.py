@@ -102,6 +102,7 @@ class SingletonUpdater:
         self._update_link = None
         self._update_version = None
         self._source_zip = None
+        self._preserve_updater_package = False
         self._check_thread = None
         self._select_link = None
         self.skip_tag = None
@@ -1098,6 +1099,8 @@ class SingletonUpdater:
                 for f in folders:
                     if os.path.join(base, f) == self._updater_path:
                         continue
+                    if self._preserve_updater_package and f == "updater":
+                        continue
                     shutil.rmtree(os.path.join(base, f))
                     self.print_verbose(
                         "Clean removing folder and contents {}".format(
@@ -1112,8 +1115,11 @@ class SingletonUpdater:
         # but avoid removing/altering backup and updater file.
         for path, dirs, files in os.walk(base):
             # Prune ie skip updater folder.
+            protected = [self._updater_path]
+            if self._preserve_updater_package:
+                protected.append(os.path.join(base, "updater"))
             dirs[:] = [d for d in dirs
-                       if os.path.join(path, d) not in [self._updater_path]]
+                       if os.path.join(path, d) not in protected]
             for file in files:
                 for pattern in self.remove_pre_update_patterns:
                     if fnmatch.filter([file], pattern):
@@ -1134,6 +1140,8 @@ class SingletonUpdater:
             dirs[:] = [d for d in dirs
                        if os.path.join(path, d) not in [self._updater_path]]
             rel_path = os.path.relpath(path, merger)
+            if self._preserve_updater_package and rel_path == os.curdir:
+                dirs[:] = [d for d in dirs if d != "updater"]
             dest_path = os.path.join(base, rel_path)
             if not os.path.exists(dest_path):
                 os.makedirs(dest_path)
@@ -1207,6 +1215,7 @@ class SingletonUpdater:
         self._update_link = None
         self._update_version = None
         self._source_zip = None
+        self._preserve_updater_package = False
         self._error = None
         self._error_msg = None
 
@@ -1457,6 +1466,12 @@ class SingletonUpdater:
         if revert_tag is not None:
             self.set_tag(revert_tag)
             self._update_ready = True
+            target_version = self.version_tuple_from_text(revert_tag)
+            self._preserve_updater_package = bool(
+                target_version
+                and self._current_version
+                and target_version < self._current_version
+            )
 
         # clear the errors if any
         self._error = None
