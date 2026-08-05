@@ -41,6 +41,7 @@ _SUPPORTED_EFMI_MODULE_PREFIXES = (
 _bake_results = []          # list of dicts from baker.bake_deform_keys
 _components_meta = {}       # comp_id -> {"vertex_count": int}
 _export_slot_map = None     # original Deform number -> exported shader slot
+_shape_defaults = {}
 
 
 def _get_required_hlsl_names():
@@ -114,10 +115,20 @@ def _settings_enabled():
 
 
 def _reset_state():
-    global _bake_results, _components_meta, _export_slot_map
+    global _bake_results, _components_meta, _export_slot_map, _shape_defaults
     _bake_results = []
     _components_meta = {}
     _export_slot_map = None
+    _shape_defaults = {}
+
+
+def _collect_shape_defaults_from_context(context):
+    from .....core.export.shapekey_state import merge_shape_key_defaults
+
+    mappings = []
+    for item in _collect_all_deform_keys_from_context(context):
+        mappings.append({int(item["slot"]): float(item["key_block"].value)})
+    return merge_shape_key_defaults(mappings)
 
 
 def _get_current_efmi_data_model(exporter):
@@ -202,6 +213,11 @@ def _early_validate_all_shape_keys(context):
         if s2 is not None:
             merge_buffers = bool(getattr(s2, "merge_buffers", True))
         baker.build_export_slot_map(all_keys, baker.slot_capacity(merge_buffers))
+        from .....core.export.shapekey_state import merge_shape_key_defaults
+        merge_shape_key_defaults(
+            ({int(item["slot"]): float(item["key_block"].value)}
+             for item in all_keys)
+        )
 
 
 # ───────────────────────── patched ModExporter ─────────────────────────
@@ -228,6 +244,7 @@ def _patched_export_mod(self, *args, **kwargs):
 
 
 def _patched_build_data_buffers(self, merged_object, component_id=-1):
+    global _shape_defaults
     entry = _patched_exporter.get(id(type(self)))
     orig = entry[1] if entry else None
     if orig is None:
@@ -238,6 +255,7 @@ def _patched_build_data_buffers(self, merged_object, component_id=-1):
     # a sentinel for the first iteration. (-1 would mean "merged" mode.)
     if component_id <= 0:
         _reset_state()
+        _shape_defaults = _collect_shape_defaults_from_context(bpy.context)
 
     result = orig(self, merged_object, component_id)
 
@@ -309,6 +327,7 @@ def _patched_build_data_buffers(self, merged_object, component_id=-1):
             vb0_buffer=vb0_buffer, mirror_mesh=mirror_mesh,
             merge_buffers=merge_buffers, slot_map=slot_map,
             vb0_vertex_ids=vb0_vertex_ids,
+            default_values=_shape_defaults,
         )
         _bake_results.extend(baked)
         if baked:

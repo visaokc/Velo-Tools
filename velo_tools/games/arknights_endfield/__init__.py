@@ -545,7 +545,12 @@ def register():
     try:
         from ...core.export import material_partition as _material_partition
         from ._efmi_core.blender_export.blender_export import ObjectMergerEFMI
-        _material_partition.install(ObjectMergerEFMI, "VTEF_settings")
+        from .embedded.shapekey.export_state import finalize_merger
+        _material_partition.install(
+            ObjectMergerEFMI,
+            "VTEF_settings",
+            after_finalize=finalize_merger,
+        )
     except Exception:
         import traceback
         traceback.print_exc()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import math
 import shutil
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -23,6 +24,23 @@ _HLSL_DIR = Path(__file__).parent / "hlsl"
 _SECTION_RE = re.compile(r"(?m)^\[([^\]\r\n]+)\]\s*$")
 _CHECKSUM_RE = re.compile(r"(?m)^; SHA256 CHECKSUM: [0-9a-fA-F]{64}\s*$")
 _DEFORM_NAME_RE = re.compile(r"^\s*deform\s*(\d+).*$", re.IGNORECASE)
+_EXPORTED_SHAPE_ID_RE = re.compile(
+    r".*(?:deform|custom)[_ -]*(\d+).*$", re.IGNORECASE)
+
+
+def _shape_id(name: str) -> int | None:
+    match = _EXPORTED_SHAPE_ID_RE.fullmatch(name or "")
+    return int(match.group(1)) if match is not None else None
+
+
+def _format_ini_float(value: float) -> str:
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError("ShapeKey default value must be finite")
+    text = format(value, ".9g")
+    if "." not in text and "e" not in text.casefold():
+        text += ".0"
+    return text
 
 
 def _state_name(kind: str, suffix: str) -> str:
@@ -54,20 +72,53 @@ def collect_shape_key_names(
     }
 
 
+def collect_shape_key_defaults(
+        domains: Iterable[Any], channels: Mapping[int, int],
+) -> Mapping[int, float]:
+    defaults = {}
+    for domain in domains:
+        selected = getattr(getattr(domain, "plan", None), "selected", ()) or ()
+        objects = [getattr(item, "object", None) for item in selected]
+        objects.append(
+            getattr(getattr(domain, "merged_object", None), "object", None))
+        for obj in objects:
+            shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
+            for key in getattr(shape_keys, "key_blocks", ()) or ():
+                shape_id = _shape_id(str(getattr(key, "name", "")))
+                if shape_id is None or shape_id not in channels:
+                    continue
+                value = float(getattr(key, "value", 0.0))
+                previous = defaults.get(shape_id)
+                if previous is not None and not math.isclose(
+                    previous, value, rel_tol=0.0, abs_tol=1e-6
+                ):
+                    raise ValueError(
+                        f"Deform {shape_id} has inconsistent Blender values "
+                        f"({_format_ini_float(previous)} and {_format_ini_float(value)})"
+                    )
+                defaults[shape_id] = value
+    return defaults
+
+
 def control_constant_lines(
         channels: Mapping[int, int],
         domain_suffixes: Iterable[str],
         shape_names: Optional[Mapping[int, str]] = None,
+        shape_defaults: Optional[Mapping[int, float]] = None,
 ) -> List[str]:
     if not channels:
         return []
     lines = []
     shape_names = shape_names or {}
+    shape_defaults = shape_defaults or {}
     lines.append("global $external_shape_active = 0")
     for shape_id, _channel in sorted(channels.items(), key=lambda item: item[1]):
         if shape_id in shape_names:
             lines.append(f"; ShapeKey_{shape_id}: {shape_names[shape_id]}")
-        lines.append(f"global persist $ShapeKey_{shape_id} = 0.0")
+        lines.append(
+            f"global persist $ShapeKey_{shape_id} = "
+            f"{_format_ini_float(shape_defaults.get(shape_id, 0.0))}"
+        )
     for suffix in domain_suffixes:
         lines.append(f"global {_state_name('applied', suffix)} = 0")
     return lines
@@ -235,6 +286,7 @@ def inject_single_ib_ini(
         *,
         mesh_vertex_count: int,
         shape_names: Optional[Mapping[int, str]] = None,
+        shape_defaults: Optional[Mapping[int, float]] = None,
 ) -> str:
     """Inject the independent pipeline into a rendered stock/LOD INI."""
     text = _CHECKSUM_RE.sub("", text).rstrip() + "\n"
@@ -242,7 +294,8 @@ def inject_single_ib_ini(
         return text
     _validate_channel_range(text, channels)
     suffix = ""
-    constants = control_constant_lines(channels, (suffix,), shape_names)
+    constants = control_constant_lines(
+        channels, (suffix,), shape_names, shape_defaults)
     present = control_present_lines(channels, (suffix,))
     text = _append_section_lines(text, "Constants", constants)
     text = _append_section_lines(text, "Present", present)

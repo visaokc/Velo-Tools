@@ -221,7 +221,7 @@ def build_export_slot_map(deform_keys, max_slots):
 
 def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
                      vb0_buffer=None, mirror_mesh=False, merge_buffers=True,
-                     slot_map=None, vb0_vertex_ids=None):
+                     slot_map=None, vb0_vertex_ids=None, default_values=None):
     """Bake all Deform shape keys into VB0-ordered delta + map (+ optional merge).
 
     merge_buffers=True (added in v0.2.2, default)
@@ -362,6 +362,8 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
                 "vertex_count": m_count,
                 "component_id": component_id,
                 "merge_buffers": True,
+                "default_value": float((default_values or {}).get(
+                    slot, getattr(d["key_block"], "value", 0.0))),
             })
 
         if results:
@@ -450,6 +452,8 @@ def bake_deform_keys(merged_obj, deform_keys, meshes_path, component_id,
             "map_filename": map_filename,
             "component_id": component_id,
             "merge_buffers": False,
+            "default_value": float((default_values or {}).get(
+                slot, getattr(d["key_block"], "value", 0.0))),
         })
 
     if results:

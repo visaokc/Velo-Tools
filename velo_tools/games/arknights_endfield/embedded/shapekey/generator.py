@@ -31,7 +31,35 @@ to exported shader slots, then channel_idx == shader_slot drives x100+channel.
 """
 
 
+import math
 import re
+
+
+def _format_ini_float(value):
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError("ShapeKey default value must be finite")
+    text = format(value, ".9g")
+    if "." not in text and "e" not in text.casefold():
+        text += ".0"
+    return text
+
+
+def _shape_defaults(bake_results):
+    defaults = {}
+    for result in bake_results:
+        slot = int(result["slot"])
+        value = float(result.get("default_value", 0.0))
+        previous = defaults.get(slot)
+        if previous is not None and not math.isclose(
+            previous, value, rel_tol=0.0, abs_tol=1e-6
+        ):
+            raise ValueError(
+                f"Deform {slot} has inconsistent Blender values "
+                f"({_format_ini_float(previous)} and {_format_ini_float(value)})"
+            )
+        defaults[slot] = value
+    return defaults
 
 
 MAX_SLOTS = 24
@@ -307,6 +335,7 @@ def build_constants_lines(bake_results):
     if not bake_results:
         return []
     shape_names = _shape_comment_names(bake_results)
+    shape_defaults = _shape_defaults(bake_results)
     seen = set()
     ordered_slots = []
     for r in bake_results:
@@ -325,7 +354,10 @@ def build_constants_lines(bake_results):
     ]
     for slot in ordered_slots:
         out.append(f"; ShapeKey_{slot}: {shape_names[slot]}")
-        out.append(f"global persist ${_shape_var_name(slot)} = 0.0")
+        out.append(
+            f"global persist ${_shape_var_name(slot)} = "
+            f"{_format_ini_float(shape_defaults.get(slot, 0.0))}"
+        )
     return out
 
 

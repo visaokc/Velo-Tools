@@ -376,7 +376,8 @@ def _postprocess_merger(merger, after_split=None) -> None:
         )
 
 
-def install(merger_cls: type, settings_attr: str, after_split=None) -> None:
+def install(merger_cls: type, settings_attr: str, after_split=None,
+            after_finalize=None) -> None:
     """Install one reversible wrapper on a vendored ObjectMerger subclass."""
     if merger_cls in _PATCHES:
         return
@@ -409,6 +410,8 @@ def install(merger_cls: type, settings_attr: str, after_split=None) -> None:
         original_finalize(self)
         if getattr(self, "_velo_material_partition_plans", None) is not None:
             _postprocess_merger(self, after_split=after_split)
+        if after_finalize is not None:
+            after_finalize(self)
 
     merger_cls.import_objects_from_collection = import_objects_from_collection
     merger_cls.finalize_temp_objects_geometry = finalize_temp_objects_geometry
@@ -417,6 +420,7 @@ def install(merger_cls: type, settings_attr: str, after_split=None) -> None:
         original_finalize,
         settings_attr,
         after_split,
+        after_finalize,
     )
 
 

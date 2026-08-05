@@ -3752,6 +3752,7 @@ def _add_shape_key_controls(
     if not active:
         return
     from ..shapekey.generator import (
+        collect_shape_key_defaults,
         collect_shape_key_names,
         control_constant_lines,
         control_present_lines,
@@ -3768,7 +3769,11 @@ def _add_shape_key_controls(
     suffixes = tuple(str(unit.plan.suffix) for unit, _plan in active)
     ir.get("Constants").lines.extend(
         control_constant_lines(
-            channels, suffixes, collect_shape_key_names(units, channels)))
+            channels,
+            suffixes,
+            collect_shape_key_names(units, channels),
+            collect_shape_key_defaults(units, channels),
+        ))
     ir.get("Present").lines.extend(
         control_present_lines(channels, suffixes))
 
