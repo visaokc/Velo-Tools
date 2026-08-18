@@ -41,6 +41,7 @@ def validate_merged_skeleton_template(template_string: str) -> None:
         "CommandList\\EFMIv1\\InitializeMergedSkeleton",
         "CommandList\\EFMIv1\\MergedSkeleton_AttachComponent",
         "CommandList\\EFMIv1\\Component_ReadConfig",
+        "CommandList\\EFMIv1\\SpatialIdentity_IdentifyComponentInstances",
         "CommandList\\EFMIv1\\Component_DrawInstances",
     )
     missing = [item for item in (*required_sections, *required_calls) if item not in template_string]
