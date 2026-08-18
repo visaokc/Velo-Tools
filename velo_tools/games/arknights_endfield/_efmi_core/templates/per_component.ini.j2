@@ -309,6 +309,7 @@ $lod_level = 0
 {%- endif %}
 if $mod_enabled && DRAW_TYPE == 4
     {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
+    $component_id = {{ component_id }}
     run = CommandList\EFMIv1\Component_ReadConfig
     run = CommandList\EFMIv1\SpatialIdentity_IdentifyComponentInstances
     {%- endif %}
@@ -341,6 +342,7 @@ $object_detected = 1
 $lod_level = {{ lod_id + 1 }}
 if $mod_enabled && DRAW_TYPE == 4
     {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
+    $component_id = {{ component_id }}
     run = CommandList\EFMIv1\Component_ReadConfig
     run = CommandList\EFMIv1\SpatialIdentity_IdentifyComponentInstances
     {%- endif %}
