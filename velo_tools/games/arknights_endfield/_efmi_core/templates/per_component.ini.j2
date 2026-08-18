@@ -147,9 +147,14 @@ $mod_id = $\EFMIv1\mod_id
 if $mod_id >= 0
     $mod_enabled = 1
     {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
+    $\EFMIv1\bones_count = $bones_count
+    $\EFMIv1\component_count = $component_count
+    $\EFMIv1\instance_count = $instance_count
+    $\EFMIv1\custom_mesh_scale = $custom_mesh_scale
     if !$merged_skeleton_initialized
         run = CommandList\EFMIv1\Object_ReadConfig
         run = CommandList\EFMIv1\InitializeMergedSkeleton
+        Resource\EFMIv1\Output_MergedSkeleton = copy ResourceOutputMergedSkeleton_Template
         $merged_skeleton_initialized = 1
     endif
     {%- endif %}
@@ -158,6 +163,16 @@ endif
 {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
 
 ; EFMI v1.4 MergedSkeleton component inputs
+[ResourceOutputMergedSkeleton_Template]
+type = RWBuffer
+format = R32G32B32A32_FLOAT
+array = {{ (512 + 2 * merged_runtime_plan.bones_count * merged_runtime_plan.instance_count) * 3 }}
+
+[ResourceOutput_MergedSkeleton]
+type = RWBuffer
+format = R32G32B32A32_FLOAT
+array = {{ (512 + 2 * merged_runtime_plan.bones_count * merged_runtime_plan.instance_count) * 3 }}
+
 [CommandListCallback_MergedSkeleton_ConnectComponent]
 run = CommandList\EFMIv1\MergedSkeleton_AttachComponent
 
@@ -209,6 +224,8 @@ data = {{ remap.values | join(', ') }}
 [CommandList_Draw_Component{{ component_id }}]
 $component_id = {{ component_id }}
 $gpu_posed = 1
+$\EFMIv1\component_id = {{ component_id }}
+$\EFMIv1\gpu_posed = 1
 CommandListCallback_Component_DrawCustom = ref CommandList_Draw_Component{{ component_id }}_Custom
 run = CommandList\EFMIv1\Component_DrawInstances
 
@@ -310,6 +327,9 @@ $lod_level = 0
 if $mod_enabled && DRAW_TYPE == 4
     {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
     $component_id = {{ component_id }}
+    $\EFMIv1\component_id = {{ component_id }}
+    $\EFMIv1\lod_level = $lod_level
+    $\EFMIv1\gpu_posed = 1
     run = CommandList\EFMIv1\Component_ReadConfig
     run = CommandList\EFMIv1\SpatialIdentity_IdentifyComponentInstances
     {%- endif %}
@@ -343,6 +363,9 @@ $lod_level = {{ lod_id + 1 }}
 if $mod_enabled && DRAW_TYPE == 4
     {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
     $component_id = {{ component_id }}
+    $\EFMIv1\component_id = {{ component_id }}
+    $\EFMIv1\lod_level = $lod_level
+    $\EFMIv1\gpu_posed = 1
     run = CommandList\EFMIv1\Component_ReadConfig
     run = CommandList\EFMIv1\SpatialIdentity_IdentifyComponentInstances
     {%- endif %}

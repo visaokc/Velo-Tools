@@ -32,6 +32,8 @@ def validate_merged_skeleton_template(template_string: str) -> None:
     """Validate the mod-owned wiring required by EFMI v1.4 MergedSkeleton."""
     required_sections = (
         "[CommandListCallback_MergedSkeleton_ConnectComponent]",
+        "[ResourceOutputMergedSkeleton_Template]",
+        "[ResourceOutput_MergedSkeleton]",
         "[PoolInput_MergedSkeleton_Component_VertexGroupOffsets]",
         "[PoolInput_MergedSkeleton_Component_VertexGroupCounts]",
         "[PoolInput_MergedSkeleton_Component_LodRemaps]",
