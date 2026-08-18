@@ -27,6 +27,7 @@ class ComponentPlan:
     vg_offset: int
     vg_count: int
     global_ids: tuple[int, ...]
+    global_by_local: tuple[int, ...]
     lod_remaps: tuple[LodRemap, ...]
 
 
@@ -44,6 +45,17 @@ class MergedRuntimePlan:
     @property
     def component_counts(self) -> tuple[int, ...]:
         return tuple(item.vg_count for item in self.components)
+
+    @property
+    def global_to_runtime(self) -> tuple[int, ...]:
+        """Translate authoring global VG ids to EFMI's contiguous runtime slots."""
+        result = {}
+        for component in self.components:
+            for local_id, global_id in enumerate(component.global_by_local):
+                result.setdefault(global_id, component.vg_offset + local_id)
+        if not result:
+            return ()
+        return tuple(result.get(index, -1) for index in range(max(result) + 1))
 
 
 def _int(value: Any, label: str) -> int:
@@ -82,9 +94,11 @@ def _lod_values(component: Any, local_to_global: dict[int, int], lod: Any, lod_i
                     f"LOD {lod_id + 1} references Component local VG {component_local_id} "
                     "which is absent from VertexGroupMap.json"
                 )
-            values[lod_local_id] = local_to_global[component_local_id]
+            # EFMI's importer reads this as a source index in the current
+            # Component's local skeleton, not as an authoring global VG id.
+            values[lod_local_id] = component_local_id
     else:
-        values = dict(local_to_global)
+        values = {local_id: local_id for local_id in local_to_global}
 
     if not values:
         raise MergedRuntimeError(f"Component LOD {lod_id + 1} has no vertex-group remap")
@@ -107,6 +121,7 @@ def build_plan(metadata: Any, vertex_group_map: vgmap.VertexGroupMap, instance_c
         )
     plans: list[ComponentPlan] = []
     global_ids: set[int] = set()
+    runtime_offset = 0
     for component_id, (component, entry) in enumerate(zip(components, vertex_group_map.components)):
         local_to_global = _local_to_global(component)
         sidecar_map = {int(key): int(value) for key, value in entry.vg_map.items()}
@@ -117,7 +132,6 @@ def build_plan(metadata: Any, vertex_group_map: vgmap.VertexGroupMap, instance_c
             )
         if not local_to_global and not getattr(component, "cpu_posed", False):
             raise MergedRuntimeError(f"Component {component_id} has no vertex-group map")
-        vg_offset = _int(getattr(component, "vg_offset", 0), f"Component {component_id} vg_offset")
         metadata_vg_count = _int(getattr(component, "vg_count", 0), f"Component {component_id} vg_count")
         # Older/merged authoring sources may leave the component-local palette
         # fields at zero while the sidecar and LOD metadata carry the complete
@@ -139,13 +153,15 @@ def build_plan(metadata: Any, vertex_group_map: vgmap.VertexGroupMap, instance_c
         plans.append(
             ComponentPlan(
                 component_id=component_id,
-                vg_offset=vg_offset,
+                vg_offset=runtime_offset,
                 vg_count=vg_count,
                 global_ids=tuple(sorted(local_to_global.values())),
+                global_by_local=tuple(local_to_global[index] for index in range(vg_count)),
                 lod_remaps=lod_remaps,
             )
         )
-    bones_count = max(global_ids, default=-1) + 1
+        runtime_offset += vg_count
+    bones_count = runtime_offset
     if bones_count <= 0 and any(not getattr(item, "cpu_posed", False) for item in components):
         raise MergedRuntimeError("MergedSkeleton requires at least one GPU-posed global vertex group")
     for component in plans:

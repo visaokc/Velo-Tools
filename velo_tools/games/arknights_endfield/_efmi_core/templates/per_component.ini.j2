@@ -202,7 +202,7 @@ data = {{ remap.values | join(', ') }}
 
 ; Shading: Custom Mesh Draw CommandLists -------------------------
 
-{%- for component_id, component in enumerate(extracted_object.components) if merged_object.components[component_id].objects | length > 0 %}
+{%- for component_id, component in enumerate(extracted_object.components) if cfg.mod_skeleton_type == 'MERGED_SKELETON' or merged_object.components[component_id].objects | length > 0 %}
 
 {{note("Do custom draw calls for Component %d" | format(loop.index0))}}
 {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
@@ -216,10 +216,14 @@ run = CommandList\EFMIv1\Component_DrawInstances
 {%- else %}
 [CommandList_Draw_Component{{ component_id }}]
 {%- endif %}
+{%- if merged_object.components[component_id].objects | length > 0 %}
 {{note("Trigger TextureOverride sections for PS slots from 0 to 20 with matching `hash` values")}}
 {{note("If hash of resource in slot matches TextureOverride hash, TextureOverride puts defined custom texture Resource in `this` slot")}}
 run = CommandList\EFMIv1\OverrideTextures
-{%- if not component.cpu_posed %}
+{%- else %}
+; Empty host: import this Component's skeleton but do not draw replacement geometry.
+{%- endif %}
+{%- if merged_object.components[component_id].objects | length > 0 and not component.cpu_posed %}
 {{note("Do by-slot resource overrides")}}
 ib = ref Resource_Component{{ component_id }}_IB
 {{note("Conditional vertex buffers swap (with multiple LoD levels support)")}}
@@ -263,7 +267,7 @@ elif $lod_level == {{ lod_id + 1 }}
     {%- endif %}
 {%- endfor %}
 endif
-{%- else %}
+{%- elif merged_object.components[component_id].objects | length > 0 %}
 ; Component is posed on CPU, vertex buffers modding not supported
 {%- endif %}
 {%- for obj in merged_object.components[component_id].objects %}
@@ -309,7 +313,7 @@ if $mod_enabled && DRAW_TYPE == 4
     {%- endif %}
     {{note("Skip original draw call")}}
     handling = skip
-    {%- if merged_object.components[component_id].objects | length > 0 %}
+    {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' or merged_object.components[component_id].objects | length > 0 %}
     {{note("Do custom draw calls")}}
     run = CommandList_Draw_Component{{ component_id }}
     {%- else %}
@@ -340,7 +344,7 @@ if $mod_enabled && DRAW_TYPE == 4
     {%- endif %}
 {{note("Skip original draw call")}}
     handling = skip
-    {%- if merged_object.components[component_id].objects | length > 0 %}
+    {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' or merged_object.components[component_id].objects | length > 0 %}
     {{note("Do custom draw calls")}}
     run = CommandList_Draw_Component{{ component_id }}
     {%- else %}
