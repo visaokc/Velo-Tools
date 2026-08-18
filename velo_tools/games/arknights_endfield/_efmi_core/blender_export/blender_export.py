@@ -305,15 +305,6 @@ class ModExporter:
                     buffers_format[buffer_name] = layout
                 layout.add_element(BufferSemantic(buffer_semantic.abstract, buffer_semantic.format))
 
-            if self._runtime_merged:
-                blend_layout = buffers_format.get(f'Component{component_id}_VB2')
-                if blend_layout is not None:
-                    blend_indices = blend_layout.get_element(Semantic.Blendindices)
-                    if blend_indices is not None:
-                        blend_indices.format = DXGIFormat.R16G16B16A16_UINT
-                        blend_indices.stride = 8
-                        blend_layout.fill_stride()
-
         extracted_component = self.extracted_object.components[component_id]
         for lod_id, lod in enumerate(extracted_component.lods):
             if not lod.vb_formats:
@@ -336,27 +327,6 @@ class ModExporter:
             )
             
             self.buffers.update(buffers)
-
-            if self._runtime_merged and self.merged_runtime_plan is not None:
-                runtime_map = self.merged_runtime_plan.global_to_runtime
-                for buffer_name, buffer in self.buffers.items():
-                    if not buffer_name.startswith(f'Component{component_id}_VB2'):
-                        continue
-                    indices = buffer.get_field(Semantic.Blendindices)
-                    if indices is None:
-                        continue
-                    if not runtime_map or int(indices.max()) >= len(runtime_map):
-                        raise ConfigError(
-                            'component_collection',
-                            f'Component{component_id} contains a global VG outside the MergedSkeleton runtime map.',
-                        )
-                    remapped = numpy.asarray(runtime_map, dtype=indices.dtype)[indices]
-                    if int(remapped.min()) < 0:
-                        raise ConfigError(
-                            'component_collection',
-                            f'Component{component_id} references a global VG without a runtime skeleton slot.',
-                        )
-                    buffer.set_field(Semantic.Blendindices, remapped)
 
             if not self._runtime_merged:
                 self.build_lod_buffers(component_id)

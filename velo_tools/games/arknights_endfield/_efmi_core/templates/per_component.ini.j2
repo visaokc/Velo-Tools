@@ -275,7 +275,7 @@ elif $lod_level == {{ lod_id + 1 }}
     {{note("Use VB1 with full mesh layout")}}
     vb1 = ref Resource_Component{{ component_id }}_VB1
     {%- endif %}
-    {%- if "VB2" in lod.vb_formats or lod.vg_map %}
+    {%- if "VB2" in lod.vb_formats or (lod.vg_map and cfg.mod_skeleton_type != 'MERGED_SKELETON') %}
     {{note("Use VB2 with LoD mesh layout and/or remapped weights (if LoD mesh uses simplified skeleton)")}}
     vb2 = ref Resource_Component{{ component_id }}_VB2_LOD{{ lod_id + 1 }}
     {%- elif 'Component'~component_id~'_VB2' in buffers.keys() %}
