@@ -91,6 +91,13 @@ global $mod_enabled = 0
 global $object_detected = 0
 {{note("Indicates if our object has LoDs applied")}}
 global $lod_level = 0
+{%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
+global $merged_skeleton_initialized = 0
+global $bones_count = {{ merged_runtime_plan.bones_count }}
+global $component_count = {{ merged_runtime_plan.component_count }}
+global $instance_count = {{ merged_runtime_plan.instance_count }}
+global $custom_mesh_scale = {{ skeleton_scale }}
+{%- endif %}
 {%- if cfg.use_ini_toggles %}
 ; Swap vars aka state values for toggles (marked as `persist` to keep state saved in `d3dx_user.ini`)
 {%- for var in cfg.ini_toggles.vars %}
@@ -139,7 +146,48 @@ $mod_id = $\EFMIv1\mod_id
 {{note("Enable our mod if EFMI assigned valid $mod_id to it")}}
 if $mod_id >= 0
     $mod_enabled = 1
+    {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
+    if !$merged_skeleton_initialized
+        run = CommandList\EFMIv1\Object_ReadConfig
+        run = CommandList\EFMIv1\InitializeMergedSkeleton
+        $merged_skeleton_initialized = 1
+    endif
+    {%- endif %}
 endif
+
+{%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
+
+; EFMI v1.4 MergedSkeleton component inputs
+[CommandListCallback_MergedSkeleton_ConnectComponent]
+run = CommandList\EFMIv1\MergedSkeleton_AttachComponent
+
+[PoolInput_MergedSkeleton_Component_VertexGroupOffsets]
+{%- for component in merged_runtime_plan.components %}
+{{ component.component_id }} = {{ component.vg_offset }}
+{%- endfor %}
+
+[PoolInput_MergedSkeleton_Component_VertexGroupCounts]
+{%- for component in merged_runtime_plan.components %}
+{{ component.component_id }} = {{ component.vg_count }}
+{%- endfor %}
+
+[PoolInput_MergedSkeleton_Component_LodRemaps]
+{%- for component in merged_runtime_plan.components %}
+{%- for lod_id in range(4) %}
+{%- set remap = (component.lod_remaps[lod_id] if lod_id < (component.lod_remaps | length) else none) %}
+{{ component.component_id * 4 + lod_id }} = {% if remap %}Resource_MergedSkeleton_Component{{ component.component_id }}_LOD{{ lod_id + 1 }}_Remap{% else %}null{% endif %}
+{%- endfor %}
+{%- endfor %}
+
+{%- for component in merged_runtime_plan.components %}
+{%- for remap in component.lod_remaps %}
+[Resource_MergedSkeleton_Component{{ component.component_id }}_LOD{{ remap.lod_id + 1 }}_Remap]
+type = Buffer
+format = R32_UINT
+data = {{ remap.values | join(', ') }}
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
 
 {%- if cfg.use_ini_toggles %}
 
@@ -157,7 +205,17 @@ endif
 {%- for component_id, component in enumerate(extracted_object.components) if merged_object.components[component_id].objects | length > 0 %}
 
 {{note("Do custom draw calls for Component %d" | format(loop.index0))}}
+{%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
 [CommandList_Draw_Component{{ component_id }}]
+$component_id = {{ component_id }}
+$gpu_posed = 1
+CommandListCallback_Component_DrawCustom = ref CommandList_Draw_Component{{ component_id }}_Custom
+run = CommandList\EFMIv1\Component_DrawInstances
+
+[CommandList_Draw_Component{{ component_id }}_Custom]
+{%- else %}
+[CommandList_Draw_Component{{ component_id }}]
+{%- endif %}
 {{note("Trigger TextureOverride sections for PS slots from 0 to 20 with matching `hash` values")}}
 {{note("If hash of resource in slot matches TextureOverride hash, TextureOverride puts defined custom texture Resource in `this` slot")}}
 run = CommandList\EFMIv1\OverrideTextures
@@ -213,14 +271,14 @@ endif
 {%- if cfg.use_ini_toggles %}
 if {{ formatter.format_ini_drawvar(obj.name) }}
     {%- if not component.cpu_posed %}
-    drawindexedinstanced = {{ obj.index_count }}, INSTANCE_COUNT, {{ obj.index_offset }}, 0, FIRST_INSTANCE
+    drawindexedinstanced = {{ obj.index_count }}, {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}1, {{ obj.index_offset }}, 0, $draw_call_instance_id{%- else %}INSTANCE_COUNT, {{ obj.index_offset }}, 0, FIRST_INSTANCE{%- endif %}
     {%- else %}
     draw = from_caller
     {%- endif %}
 endif
 {%- else %}
 {%- if not component.cpu_posed %}
-drawindexedinstanced = {{ obj.index_count }}, INSTANCE_COUNT, {{ obj.index_offset }}, 0, FIRST_INSTANCE
+drawindexedinstanced = {{ obj.index_count }}, {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}1, {{ obj.index_offset }}, 0, $draw_call_instance_id{%- else %}INSTANCE_COUNT, {{ obj.index_offset }}, 0, FIRST_INSTANCE{%- endif %}
 {%- else %}
 {{note("Use original draw type and arguments (since mesh geometry is not modified)")}}
 draw = from_caller
@@ -246,6 +304,9 @@ $object_detected = 1
 $lod_level = 0
 {%- endif %}
 if $mod_enabled && DRAW_TYPE == 4
+    {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
+    run = CommandList\EFMIv1\Component_ReadConfig
+    {%- endif %}
     {{note("Skip original draw call")}}
     handling = skip
     {%- if merged_object.components[component_id].objects | length > 0 %}
@@ -274,6 +335,9 @@ $object_detected = 1
 {{note("Signal our mod that object LoD is found on screen and we can start overriding it")}}
 $lod_level = {{ lod_id + 1 }}
 if $mod_enabled && DRAW_TYPE == 4
+    {%- if cfg.mod_skeleton_type == 'MERGED_SKELETON' %}
+    run = CommandList\EFMIv1\Component_ReadConfig
+    {%- endif %}
 {{note("Skip original draw call")}}
     handling = skip
     {%- if merged_object.components[component_id].objects | length > 0 %}

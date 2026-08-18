@@ -432,7 +432,7 @@ class VTEF_PT_SidePanelAdvancedExport(bpy.types.Panel):
             layout.row().prop(cfg, 'fill_missing_mesh_data')
             layout.row().prop(cfg, 'allow_export_without_lods')
             # layout.row().prop(cfg, 'unrestricted_custom_shape_keys')
-            if cfg.mod_skeleton_type == 'MERGED':
+            if cfg.mod_skeleton_type in {'MERGED', 'MERGED_SKELETON'}:
                 layout.row().prop(cfg, 'skeleton_scale')
 
         # layout.row().prop(cfg, 'partial_export')

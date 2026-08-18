@@ -566,7 +566,9 @@ EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导�
 | 想统一编辑、但运行时保持部件独立 | Merged | Per-Component (from Merged) |
 | 跨场景且存在独立 Buffer/可编辑 IB | Merged | 优先验证 Per-Component (from Merged) |
 
-Merged 运行时允许统一权重和骨架缩放，但可能有一帧更新延迟；同屏出现多个相同被改对象时，Mod 可能暂停。
+`Merged（统一顶点组）` 是旧的统一编号 authoring 模式，导出后仍使用部件独立 runtime。`Merged（骨架合并）` 才会调用 EFMI v1.4.0+ 官方 `MergedSkeleton`，允许统一权重和骨架缩放；运行时可能有一帧更新延迟，同屏出现多个相同被改对象时 Mod 可能暂停。
+
+`Merged（骨架合并）` 需要匹配的 `VertexGroupMap.json` 和 LOD 映射；缺失、越界或不一致时导出会直接停止，不会降级为旧模式。
 
 Per-Component 没有统一顶点组的自由度，也不支持自定义骨架缩放，但运行结构更接近部件局部骨架。
 
@@ -1064,6 +1066,8 @@ ps-tN = ref ResourceTexture...
 ### 9.2 Merged 导入或导出失败
 
 EFMI Merged 需要与对象源目录匹配的 `VertexGroupMap.json`。重新用启用 **生成 VertexGroupMap.json**的提取结果导入，不要从其它对象目录复制映射文件。
+
+选择 `Merged（骨架合并）` 时还必须使用 EFMI v1.4.0+；自定义模板必须包含官方 MergedSkeleton contract，否则应改用内置模板或修复模板。
 
 WWMI 应确认导入和导出的骨架模式一致。若使用 Per-Component (from Merged)，检查是否有顶点权重越过所属 Component 的允许骨骼范围。
 

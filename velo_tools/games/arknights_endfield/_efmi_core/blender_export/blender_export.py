@@ -20,6 +20,7 @@ from .ini_maker import IniMaker
 
 from ..data_models.data_model_efmi import DataModelEFMI
 from ... import vgmap as velo_vgmap
+from ... import merged_runtime as velo_merged_runtime
 
 class Fatal(Exception): pass
 
@@ -71,6 +72,8 @@ class ModExporter:
 
         self.buffers = {}
         self.textures =  []
+        self._runtime_merged = False
+        self.merged_runtime_plan = None
 
     def export_mod(self):
     
@@ -97,7 +100,7 @@ class ModExporter:
                 Please extract data again from a new frame dump.
             """)
 
-        self._vg_names_are_global = self.cfg.mod_skeleton_type == 'MERGED'
+        self._vg_names_are_global = self.cfg.mod_skeleton_type in {'MERGED', 'MERGED_SKELETON'}
         if self._vg_names_are_global:
             try:
                 vertex_group_map = velo_vgmap.load_for_metadata(self.object_source_folder, self.extracted_object)
@@ -117,6 +120,15 @@ class ModExporter:
                         + ', '.join(f'Component {idx}' for idx in cpu_components)
                     ),
                 )
+            if self.cfg.mod_skeleton_type == 'MERGED_SKELETON':
+                try:
+                    self.merged_runtime_plan = velo_merged_runtime.build_plan(
+                        self.extracted_object,
+                        vertex_group_map,
+                    )
+                except velo_merged_runtime.MergedRuntimeError as exc:
+                    raise ConfigError('object_source_folder', str(exc)) from exc
+                self._runtime_merged = True
         
         lods_count = sum([len(component.lods) for component in self.extracted_object.components])
         if lods_count == 0 and not self.cfg.allow_export_without_lods:
@@ -127,11 +139,8 @@ class ModExporter:
                 Please do note that to dump character LODs correctly you should switch to another character and take a few steps back.
             """)
         
-        # Velo's "Merged" mode is an authoring convention: imported VG names are
-        # global ids and get translated back to component-local ids before EFMI
-        # writes normal per-component buffers. Do not use EFMI's old merged
-        # skeleton runtime path here.
-        self.skeleton_type = SkeletonType.PerComponent
+        # Keep the legacy Merged authoring path separate from the v1.4 runtime path.
+        self.skeleton_type = SkeletonType.Merged if self._runtime_merged else SkeletonType.PerComponent
 
         self.merged_object = MergedObject(
             object=None,
@@ -216,7 +225,15 @@ class ModExporter:
             fill_missing_mesh_data=self.cfg.fill_missing_mesh_data,
             add_missing_vertex_groups=self.cfg.add_missing_vertex_groups,
             allow_empty_components=True,
-            vg_names_are_global=getattr(self, '_vg_names_are_global', False),
+            vg_names_are_global=(
+                getattr(self, '_vg_names_are_global', False)
+                and not getattr(self, '_runtime_merged', False)
+            ),
+            global_vg_count=(
+                self.merged_runtime_plan.bones_count
+                if getattr(self, '_runtime_merged', False) and self.merged_runtime_plan is not None
+                else None
+            ),
         )
         print(f'Merged object build time: {time.time() - start_time :.3f}s ({self.merged_object.vertex_count} vertices, {self.merged_object.index_count} indices)')
         return object_merger.merged_object
@@ -306,7 +323,8 @@ class ModExporter:
             
             self.buffers.update(buffers)
 
-            self.build_lod_buffers(component_id)
+            if not self._runtime_merged:
+                self.build_lod_buffers(component_id)
 
             merged_object.vertex_count = vertex_count
             merged_object.shapekeys.vertex_count = len(self.buffers.get('ShapeKeyVertexId', []))
@@ -337,7 +355,11 @@ class ModExporter:
             scene=self.context.scene,
             mod_info=ModInfo(
                 efmi_tools_version=Version(self.cfg.efmi_tools_version),
-                required_efmi_version=Version(self.cfg.required_efmi_version),
+                required_efmi_version=Version(
+                    '.'.join(str(value) for value in velo_merged_runtime.effective_required_version(self.cfg.required_efmi_version))
+                    if self._runtime_merged
+                    else self.cfg.required_efmi_version
+                ),
                 mod_name=self.cfg.mod_name,
                 mod_author=self.cfg.mod_author,
                 mod_desc=self.cfg.mod_desc,
@@ -351,6 +373,7 @@ class ModExporter:
             comment_code=self.cfg.comment_ini,
             skeleton_scale=self.cfg.skeleton_scale,
             unrestricted_custom_shape_keys=self.cfg.unrestricted_custom_shape_keys,
+            merged_runtime_plan=self.merged_runtime_plan,
         )
 
         self.ini = ini_maker

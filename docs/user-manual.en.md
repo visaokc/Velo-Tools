@@ -310,7 +310,7 @@ Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
 
 **Velo 兼容选项 (Velo Compatibility) -> 导出时自动按材质拆分 (Auto Split by Material on Export)** is enabled by default. If one joined object actually uses at least two `Component N`-prefixed materials, Velo separates only the export copy and keeps the scene object and ShapeKeys unchanged. Every used material in this mode must match the object's Component; conflicts report the collection, object, and material slot and stop export. Objects with no material, one material, or only unprefixed preview materials retain native object-name behavior. Turning the option off restores the complete legacy path without validation or splitting.
 
-EFMI Merged export uses `VertexGroupMap.json` to translate unified authoring names back to component-local runtime numbering.
+EFMI `Merged（统一顶点组）` export uses `VertexGroupMap.json` to translate unified authoring names back to component-local runtime numbering. `Merged（骨架合并）` is a separate EFMI v1.4.0+ runtime strategy: it keeps unified VG authoring and emits the official per-instance MergedSkeleton remap/callback contract.
 
 If an old project stored its map only inside `Metadata.json`, run **从旧 Metadata 转换 VertexGroupMap (Convert VertexGroupMap from Legacy Metadata)** before Merged export.
 
@@ -856,6 +856,8 @@ Also check hidden collection, hidden object, and muted ShapeKey filters.
 Generate `VertexGroupMap.json` during extraction. For an older source, use the legacy Metadata conversion action.
 
 `VertexGroupMap.json` is not LOD data; extract LOD data separately when required.
+
+`Merged（骨架合并）` additionally validates Component/LOD remaps and rejects missing or inconsistent data instead of silently falling back to Per-Component output. Custom templates must contain the EFMI v1.4.0 MergedSkeleton contract.
 
 ### Per-Component (from Merged) Rejects Stray Weights
 

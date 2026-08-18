@@ -23,8 +23,31 @@ from .object_merger import MergedObject
 from .metadata_collector import ModInfo
 from .texture_collector import Texture
 from .text_formatter import TextFormatter
+from ...merged_runtime import MergedRuntimePlan
 
 from ..libs.jinja2 import Environment, FileSystemLoader, TemplateSyntaxError, UndefinedError
+
+
+def validate_merged_skeleton_template(template_string: str) -> None:
+    """Validate the mod-owned wiring required by EFMI v1.4 MergedSkeleton."""
+    required_sections = (
+        "[CommandListCallback_MergedSkeleton_ConnectComponent]",
+        "[PoolInput_MergedSkeleton_Component_VertexGroupOffsets]",
+        "[PoolInput_MergedSkeleton_Component_VertexGroupCounts]",
+        "[PoolInput_MergedSkeleton_Component_LodRemaps]",
+    )
+    required_calls = (
+        "CommandList\\EFMIv1\\Object_ReadConfig",
+        "CommandList\\EFMIv1\\InitializeMergedSkeleton",
+        "CommandList\\EFMIv1\\MergedSkeleton_AttachComponent",
+        "CommandList\\EFMIv1\\Component_ReadConfig",
+        "CommandList\\EFMIv1\\Component_DrawInstances",
+    )
+    missing = [item for item in (*required_sections, *required_calls) if item not in template_string]
+    if missing:
+        raise ValueError(
+            "Merged（骨架合并）模板缺少 EFMI v1.4.0 contract：" + ", ".join(missing)
+        )
 
 
 chached_template: Environment | None = None
@@ -44,6 +67,7 @@ class IniMaker:
     comment_code: bool
     unrestricted_custom_shape_keys: bool
     skeleton_scale: float
+    merged_runtime_plan: MergedRuntimePlan | None = None
     formatter: TextFormatter = TextFormatter()
     # Output
     ini_string: str = field(init=False)
@@ -100,7 +124,7 @@ class IniMaker:
 
         default_templates_path = Path(os.path.realpath(__file__)).parent.parent / 'templates'
 
-        if cfg.mod_skeleton_type in {'MERGED', 'COMPONENT'}:
+        if cfg.mod_skeleton_type in {'MERGED', 'COMPONENT', 'MERGED_SKELETON'}:
             default_template_path = default_templates_path / 'per_component.ini.j2'
         else:
             raise ValueError(f'Unknown skeleton type {cfg.mod_skeleton_type}!')
@@ -140,6 +164,9 @@ class IniMaker:
         # Use default template if custom one is not configured or empty
         if template_string is None or not(template_string.strip()):
             template_string = self.get_default_template(context, cfg, remove_code_comments=not cfg.comment_ini)
+
+        if cfg.mod_skeleton_type == 'MERGED_SKELETON':
+            validate_merged_skeleton_template(template_string)
 
         def get_template_fragment(error_line_id: int) -> str:
             template_lines = template_string.split("\n")
