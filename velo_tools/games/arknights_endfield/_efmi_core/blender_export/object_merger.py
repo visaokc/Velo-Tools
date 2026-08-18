@@ -129,6 +129,7 @@ class ObjectMerger:
     # drop VGs whose global id is not in this component's bone palette.
     vg_names_are_global: bool = False
     global_vg_count: int | None = None
+    preserve_global_vgs: bool = False
     # Output
     merged_object: MergedObject = field(init=False)
 
@@ -285,7 +286,7 @@ class ObjectMerger:
                 # VGs whose global id is not in this component's bone palette are
                 # dropped (warned if they carry weights). After translation the rest
                 # of the pipeline runs exactly like a PerComponent-import flow.
-                if self.vg_names_are_global:
+                if self.vg_names_are_global and not self.preserve_global_vgs:
                     # Pre-clean: drop zero-weight VGs introduced by import-time
                     # full-palette injection (Step 3.5 in blender_import). This
                     # keeps the downstream stray-VG check honest: any VG that
@@ -296,7 +297,7 @@ class ObjectMerger:
                     except Exception as _e:
                         print(f'[Velo Tools Endfield][WARN] cleanup empty VGs failed for {temp_obj.name}: {_e}')
                     self._translate_global_vg_names_to_local(temp_obj, actual_component_id)
-                else:
+                elif not self.vg_names_are_global:
                     self._validate_per_component_vg_ids(temp_obj, actual_component_id, local_vg_count)
                 # Handle Vertex Groups
                 vertex_groups = get_vertex_groups(temp_obj)

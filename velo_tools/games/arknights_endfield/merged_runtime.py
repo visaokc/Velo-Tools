@@ -118,7 +118,11 @@ def build_plan(metadata: Any, vertex_group_map: vgmap.VertexGroupMap, instance_c
         if not local_to_global and not getattr(component, "cpu_posed", False):
             raise MergedRuntimeError(f"Component {component_id} has no vertex-group map")
         vg_offset = _int(getattr(component, "vg_offset", 0), f"Component {component_id} vg_offset")
-        vg_count = _int(getattr(component, "vg_count", 0), f"Component {component_id} vg_count")
+        metadata_vg_count = _int(getattr(component, "vg_count", 0), f"Component {component_id} vg_count")
+        # Older/merged authoring sources may leave the component-local palette
+        # fields at zero while the sidecar and LOD metadata carry the complete
+        # local palette. Derive that count from the authoritative local map.
+        vg_count = metadata_vg_count or (max(local_to_global, default=-1) + 1)
         if local_to_global and vg_count <= max(local_to_global):
             raise MergedRuntimeError(
                 f"Component {component_id} vg_count={vg_count} does not cover local VG {max(local_to_global)}"

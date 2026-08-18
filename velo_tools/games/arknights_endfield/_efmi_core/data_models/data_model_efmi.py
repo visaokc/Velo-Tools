@@ -117,7 +117,21 @@ class DataModelEFMI(DataModel):
         # Request 16-bit VG ids for Blend Remap system
         if build_blend_remaps:
             # Number of VGs per vertex may vary based on buffers_format, we should respect it
-            num_vgs = buffers_format['Blend'].get_element(AbstractSemantic(Semantic.Blendindices, 0)).get_num_values()
+            blend_layout = buffers_format.get('Blend')
+            if blend_layout is None:
+                # EFMI component exports name the same layout ComponentN_VB2;
+                # true MergedSkeleton exports can exceed the 8-bit VG range and
+                # still need the remap path without inventing a second buffer key.
+                blend_layout = next(
+                    (
+                        layout for layout in buffers_format.values()
+                        if layout.get_element(AbstractSemantic(Semantic.Blendindices, 0)) is not None
+                    ),
+                    None,
+                )
+            if blend_layout is None:
+                raise KeyError('Blend')
+            num_vgs = blend_layout.get_element(AbstractSemantic(Semantic.Blendindices, 0)).get_num_values()
             buffers_format['BlendRemapVertexVG'] = BufferLayout([
                 BufferSemantic(AbstractSemantic(Semantic.Blendindices, 1), DXGIFormat.R16_UINT, stride=num_vgs*2),
             ])

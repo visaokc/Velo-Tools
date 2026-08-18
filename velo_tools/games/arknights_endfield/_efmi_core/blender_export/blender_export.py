@@ -227,13 +227,13 @@ class ModExporter:
             allow_empty_components=True,
             vg_names_are_global=(
                 getattr(self, '_vg_names_are_global', False)
-                and not getattr(self, '_runtime_merged', False)
             ),
             global_vg_count=(
                 self.merged_runtime_plan.bones_count
                 if getattr(self, '_runtime_merged', False) and self.merged_runtime_plan is not None
                 else None
             ),
+            preserve_global_vgs=getattr(self, '_runtime_merged', False),
         )
         print(f'Merged object build time: {time.time() - start_time :.3f}s ({self.merged_object.vertex_count} vertices, {self.merged_object.index_count} indices)')
         return object_merger.merged_object
