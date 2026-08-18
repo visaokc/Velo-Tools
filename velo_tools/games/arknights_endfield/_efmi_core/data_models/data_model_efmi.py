@@ -106,7 +106,8 @@ class DataModelEFMI(DataModel):
             mirror_mesh: bool = False,
             mesh_scale: float = 1.0,
             mesh_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
-            object_index_layout: list[int] | None = None
+            object_index_layout: list[int] | None = None,
+            vertex_group_remap: numpy.ndarray | None = None
         ) -> tuple[dict[str, NumpyBuffer], int]:
 
         if buffers_format is None:
@@ -155,6 +156,18 @@ class DataModelEFMI(DataModel):
             mesh_rotation=mesh_rotation,
             cache_index_data=build_blend_remaps,
         )
+
+        if vertex_group_remap is not None:
+            blend_indices = vertex_buffer.get_field(AbstractSemantic(Semantic.Blendindices, 0))
+            mapped_indices = vertex_group_remap[blend_indices]
+            blend_weights = vertex_buffer.get_field(AbstractSemantic(Semantic.Blendweights, 0))
+            weighted = blend_weights > 0 if blend_weights is not None else numpy.ones_like(mapped_indices, dtype=bool)
+            if numpy.any((mapped_indices < 0) & weighted):
+                raise ValueError('MergedSkeleton VB2 contains weighted global vertex groups outside the Component palette')
+            vertex_buffer.set_field(
+                AbstractSemantic(Semantic.Blendindices, 0),
+                numpy.maximum(mapped_indices, 0).astype(numpy.uint32),
+            )
 
         # Remove TBN, we don't want to export it as buffer
         del buffers_format['TBN']

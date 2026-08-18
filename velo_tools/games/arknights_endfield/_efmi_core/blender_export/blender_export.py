@@ -7,7 +7,7 @@ from ..addon.exceptions import ConfigError
 
 from ..migoto_io.blender_interface.utility import *
 from ..migoto_io.blender_tools.meshes import *
-from ..migoto_io.data_model.byte_buffer import NumpyBuffer, BufferLayout, BufferSemantic, Semantic
+from ..migoto_io.data_model.byte_buffer import NumpyBuffer, BufferLayout, BufferSemantic, Semantic, AbstractSemantic
 from ..migoto_io.data_model.dxgi_format import DXGIFormat
 from ..migoto_io.data_model.data_model import DataModel
 from ..migoto_io.migoto_model.migoto_format import MigotoFmt
@@ -305,6 +305,19 @@ class ModExporter:
                     buffers_format[buffer_name] = layout
                 layout.add_element(BufferSemantic(buffer_semantic.abstract, buffer_semantic.format))
 
+            if self._runtime_merged and f'Component{component_id}_VB2' in buffers_format:
+                # Merged authoring can address global VGs above the source
+                # R8 component palette. Keep the official local-index data
+                # path, but widen BlendIndices before buffer serialization.
+                blend_indices = buffers_format[f'Component{component_id}_VB2'].get_element(
+                    AbstractSemantic(Semantic.Blendindices, 0)
+                )
+                if blend_indices is not None:
+                    blend_indices.format = DXGIFormat.R16G16B16A16_UINT
+                    blend_indices.stride = 8
+                    buffers_format[f'Component{component_id}_VB2'].fill_stride()
+                    buffers_format[f'Component{component_id}_VB2'].fill_offsets()
+
         extracted_component = self.extracted_object.components[component_id]
         for lod_id, lod in enumerate(extracted_component.lods):
             if not lod.vb_formats:
@@ -324,6 +337,10 @@ class ModExporter:
                 mirror_mesh=self.cfg.mirror_mesh,
                 mesh_rotation=self.extracted_object.rotation.to_tuple(),
                 object_index_layout=index_layout,
+                vertex_group_remap=(
+                    self._component_global_to_local_remap(component_id)
+                    if self._runtime_merged else None
+                ),
             )
             
             self.buffers.update(buffers)
@@ -351,6 +368,13 @@ class ModExporter:
                 merged_object.blend_remap_count = remap_id
 
         print(f'Total mesh data collection time: {time.time() - start_time :.3f}s')
+
+    def _component_global_to_local_remap(self, component_id: int) -> numpy.ndarray:
+        plan = self.merged_runtime_plan.components[component_id]
+        remap = numpy.full(self.merged_runtime_plan.bones_count, -1, dtype=numpy.int32)
+        for local_id, global_id in enumerate(plan.global_by_local):
+            remap[global_id] = local_id
+        return remap
     
     def build_mod_ini(self):
         start_time = time.time()

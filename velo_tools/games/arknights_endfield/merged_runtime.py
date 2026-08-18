@@ -96,9 +96,9 @@ def _lod_values(component: Any, local_to_global: dict[int, int], lod: Any, lod_i
                 )
             # EFMI's importer reads this as a source index in the current
             # Component's local skeleton, not as an authoring global VG id.
-            values[lod_local_id] = component_local_id
+            values[lod_local_id] = local_to_global[component_local_id]
     else:
-        values = {local_id: local_id for local_id in local_to_global}
+        values = dict(local_to_global)
 
     if not values:
         raise MergedRuntimeError(f"Component LOD {lod_id + 1} has no vertex-group remap")
@@ -119,9 +119,8 @@ def build_plan(metadata: Any, vertex_group_map: vgmap.VertexGroupMap, instance_c
             f"VertexGroupMap.json component count {len(vertex_group_map.components)} "
             f"does not match Metadata.json component count {len(components)}"
         )
-    plans: list[ComponentPlan] = []
+    local_maps: list[dict[int, int]] = []
     global_ids: set[int] = set()
-    runtime_offset = 0
     for component_id, (component, entry) in enumerate(zip(components, vertex_group_map.components)):
         local_to_global = _local_to_global(component)
         sidecar_map = {int(key): int(value) for key, value in entry.vg_map.items()}
@@ -146,22 +145,26 @@ def build_plan(metadata: Any, vertex_group_map: vgmap.VertexGroupMap, instance_c
                 f"Component {component_id} has incomplete local VG remap; expected ids 0..{vg_count - 1}"
             )
         global_ids.update(local_to_global.values())
+        local_maps.append(local_to_global)
+    bones_count = max(global_ids, default=-1) + 1
+    plans: list[ComponentPlan] = []
+    for component_id, (component, local_to_global) in enumerate(zip(components, local_maps)):
+        # MergedSkeleton authoring permits every populated Component to carry
+        # weights for the complete global skeleton. All Components therefore
+        # use the same global-indexed palette at runtime (offset zero).
+        full_palette = tuple(range(bones_count))
         lod_remaps = tuple(
             _lod_values(component, local_to_global, lod, lod_id)
             for lod_id, lod in enumerate(getattr(component, "lods", []) or [])
         )
-        plans.append(
-            ComponentPlan(
-                component_id=component_id,
-                vg_offset=runtime_offset,
-                vg_count=vg_count,
-                global_ids=tuple(sorted(local_to_global.values())),
-                global_by_local=tuple(local_to_global[index] for index in range(vg_count)),
-                lod_remaps=lod_remaps,
-            )
-        )
-        runtime_offset += vg_count
-    bones_count = runtime_offset
+        plans.append(ComponentPlan(
+            component_id=component_id,
+            vg_offset=0,
+            vg_count=bones_count,
+            global_ids=full_palette,
+            global_by_local=full_palette,
+            lod_remaps=lod_remaps,
+        ))
     if bones_count <= 0 and any(not getattr(item, "cpu_posed", False) for item in components):
         raise MergedRuntimeError("MergedSkeleton requires at least one GPU-posed global vertex group")
     for component in plans:
