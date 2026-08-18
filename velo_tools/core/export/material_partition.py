@@ -32,11 +32,23 @@ def component_id_from_name(name: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def classify_materials(object_name: str, materials: Sequence[UsedMaterial]) -> PartitionPlan:
+def classify_materials(
+    object_name: str,
+    materials: Sequence[UsedMaterial],
+    *,
+    enforce_component_match: bool = True,
+) -> PartitionPlan:
     """Classify one eligible export object using its actually used materials."""
     component_id = component_id_from_name(object_name)
     if component_id is None:
         return PartitionPlan("OBJECT_NAME", None, frozenset(material.name for material in materials))
+
+    if not enforce_component_match:
+        return PartitionPlan(
+            "OBJECT_NAME",
+            component_id,
+            frozenset(material.name for material in materials),
+        )
 
     prefixed: dict[object, UsedMaterial] = {}
     for material in materials:
@@ -116,9 +128,19 @@ def _source_name(temp_object) -> str:
     return str(temp_object.object.get("_velo_export_source_name", temp_object.name))
 
 
-def _classify_with_location(object_name: str, obj, used: Sequence[UsedMaterial]) -> PartitionPlan:
+def _classify_with_location(
+    object_name: str,
+    obj,
+    used: Sequence[UsedMaterial],
+    *,
+    enforce_component_match: bool = True,
+) -> PartitionPlan:
     try:
-        return classify_materials(object_name, used)
+        return classify_materials(
+            object_name,
+            used,
+            enforce_component_match=enforce_component_match,
+        )
     except ValueError as exc:
         message = str(exc).replace(
             "导出已拒绝：对象 `",
@@ -311,6 +333,9 @@ def _fragment_component_index(
 
 def _postprocess_merger(merger, after_split=None) -> None:
     plans = getattr(merger, "_velo_material_partition_plans", {})
+    enforce_component_match = not bool(
+        getattr(merger, "_velo_allow_host_material_routes", False)
+    )
     rebuilt = [[] for _component in merger.components]
     source_entries = []
     postprocess_errors = []
@@ -324,7 +349,10 @@ def _postprocess_merger(merger, after_split=None) -> None:
         for temp_object, plan in original_entries:
             realized = _used_materials(temp_object.object)
             realized_plan = _classify_with_location(
-                _source_name(temp_object), temp_object.object, realized
+                _source_name(temp_object),
+                temp_object.object,
+                realized,
+                enforce_component_match=enforce_component_match,
             )
             realized_names = frozenset(item.name for item in realized)
             mode_changed = realized_plan.mode != plan.mode
@@ -387,6 +415,9 @@ def install(merger_cls: type, settings_attr: str, after_split=None,
     def import_objects_from_collection(self):
         original_import(self)
         cfg = getattr(self.context.scene, settings_attr, None)
+        self._velo_allow_host_material_routes = (
+            getattr(cfg, "mod_skeleton_type", None) == "MERGED_SKELETON"
+        )
         if not bool(getattr(cfg, "velo_auto_split_by_material", True)):
             self._velo_material_partition_plans = None
             return
@@ -394,11 +425,18 @@ def install(merger_cls: type, settings_attr: str, after_split=None,
         for component in self.components:
             entries = []
             for temp_object in component.objects:
-                plan = _cached_plan(temp_object.object)
+                plan = (
+                    None
+                    if self._velo_allow_host_material_routes
+                    else _cached_plan(temp_object.object)
+                )
                 if plan is None:
                     used = _used_materials(temp_object.object)
                     plan = _classify_with_location(
-                        _source_name(temp_object), temp_object.object, used
+                        _source_name(temp_object),
+                        temp_object.object,
+                        used,
+                        enforce_component_match=not self._velo_allow_host_material_routes,
                     )
                     if self.apply_modifiers:
                         _validate_solidify(temp_object, used)
