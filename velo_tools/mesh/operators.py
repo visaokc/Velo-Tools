@@ -1378,9 +1378,11 @@ class VELO_OT_add_component_prefix(bpy.types.Operator):
             base_name = _strip_component_prefix(obj.name)
             new_name = f"{prefix} {base_name}" if base_name else prefix
             if obj.name == new_name:
+                obj["velo_component_id"] = component_id
                 unchanged += 1
                 continue
             obj.name = new_name
+            obj["velo_component_id"] = component_id
             renamed += 1
 
         self.report({'INFO'}, f"完成: 改名 {renamed} 个物体, 跳过 {unchanged} 个")
