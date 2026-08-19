@@ -50,12 +50,28 @@ def _collection_has_content(collection):
     return bool(collection.objects) or any(_collection_has_content(child) for child in collection.children)
 
 
+def _move_child_first(parent, child):
+    children = list(parent.children)
+    if not children or children[0] == child:
+        return
+    if child not in children:
+        parent.children.link(child)
+        children.append(child)
+    for collection in children:
+        parent.children.unlink(collection)
+    parent.children.link(child)
+    for collection in children:
+        if collection != child:
+            parent.children.link(collection)
+
+
 def _skeleton_collection(scene, preferred=None):
     target = preferred if preferred is not None and _collection_has_content(preferred) else scene.collection
     skeleton = target.children.get("Skeleton")
     if skeleton is None:
         skeleton = bpy.data.collections.new("Skeleton")
         target.children.link(skeleton)
+    _move_child_first(target, skeleton)
     return skeleton
 
 
@@ -162,7 +178,11 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
         direction = head - heads[parent]
     if direction.length < 1e-5:
         direction = Vector((0.0, 0.0, 1.0))
-    return head + direction.normalized() * max(segment_length * 0.5, _MIN_TAIL_LENGTH)
+    parent_length = 0.0
+    if 0 <= parent < len(bones):
+        parent_tail = _bone_tail(parent, bones, heads)
+        parent_length = (parent_tail - heads[parent]).length
+    return head + direction.normalized() * max(parent_length, _MIN_TAIL_LENGTH)
 
 
 def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=False, bones=None,
