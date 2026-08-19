@@ -72,7 +72,7 @@ class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
 
 class VELO_OT_wwmi_skeleton_import(bpy.types.Operator):
     bl_idname = "velo.wwmi_skeleton_import"
-    bl_label = "从模型文件夹导入骨架"
+    bl_label = "从解包路径导入骨架"
     bl_description = "从解包模型文件夹读取 UEMODEL 骨架；存在 Component 网格时自动绑定 Armature 修改器"
 
     def execute(self, context):
@@ -82,8 +82,10 @@ class VELO_OT_wwmi_skeleton_import(bpy.types.Operator):
             return {'CANCELLED'}
         try:
             from .games.wuthering_waves.skeleton_import import import_skeleton
+            cfg = getattr(context.scene, "VTWW_settings", None)
             arm_obj, bone_count, bound_count = import_skeleton(
-                Path(bpy.path.abspath(settings.unpack_folder)))
+                Path(bpy.path.abspath(settings.unpack_folder)),
+                mirror_mesh=bool(getattr(cfg, "mirror_mesh", False)))
         except Exception as exc:
             self.report({'ERROR'}, f"骨架导入失败：{exc}")
             return {'CANCELLED'}
@@ -136,12 +138,66 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
             raise ValueError(f"{scope} 的映射仍有歧义：{preview}")
         return pairs
 
+    @staticmethod
+    def _numeric_sort_key(row):
+        try:
+            return (0, int(row.numeric_id), row.numeric_id)
+        except ValueError:
+            return (1, row.numeric_id)
+
+    @staticmethod
+    def _hierarchy_sort_key(rows, unpack_folder):
+        from .games.wuthering_waves.skeleton_import import _find_skeleton
+
+        bones = _find_skeleton(Path(bpy.path.abspath(unpack_folder)))
+        bone_order = {bone.name: index for index, bone in enumerate(bones)}
+        hierarchy_keys = {}
+        for index, bone in enumerate(bones):
+            ancestors = []
+            current = index
+            while 0 <= current < len(bones):
+                ancestors.append(current)
+                current = bones[current].parent
+            hierarchy_keys[bone.name] = tuple(reversed(ancestors))
+        return sorted(
+            rows,
+            key=lambda row: (0, hierarchy_keys[row.original_name], VELO_OT_wwmi_bone_map_toggle._numeric_sort_key(row))
+            if row.original_name in bone_order
+            else (1, row.original_name, VELO_OT_wwmi_bone_map_toggle._numeric_sort_key(row)),
+        )
+
+    def _sort_rows(self, settings):
+        rows = list(settings.rows)
+        if self.target == 'NUMERIC':
+            ordered = sorted(rows, key=self._numeric_sort_key)
+        else:
+            if not settings.unpack_folder.strip():
+                raise ValueError("按骨骼层级重排需要填写解包路径")
+            ordered = self._hierarchy_sort_key(rows, settings.unpack_folder)
+        if rows == ordered:
+            return
+        active = settings.active_row
+        snapshot = [(row.numeric_id, row.original_name, row.component_name) for row in ordered]
+        settings.rows.clear()
+        for numeric_id, original_name, component_name in snapshot:
+            row = settings.rows.add()
+            row.numeric_id = numeric_id
+            row.original_name = original_name
+            row.component_name = component_name
+        settings.active_row = min(active, max(0, len(snapshot) - 1))
+
     def execute(self, context):
         settings = context.scene.velo_wwmi_bone_map
         rows = [r for r in settings.rows if r.numeric_id and r.original_name]
         if not rows:
             self.report({'ERROR'}, "映射表没有完整的数字编号与原始骨骼名")
             return {'CANCELLED'}
+        if self.target == 'ORIGINAL':
+            try:
+                self._hierarchy_sort_key(list(settings.rows), settings.unpack_folder)
+            except Exception as exc:
+                self.report({'ERROR'}, f"映射表重排失败：{exc}")
+                return {'CANCELLED'}
         for obj in _selected_meshes(context):
             try:
                 pairs = self._pairs_for_object(obj, rows)
@@ -160,6 +216,11 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
                 vg = obj.vertex_groups.get(f"__velo_tmp__{old}")
                 if vg:
                     vg.name = new
+        try:
+            self._sort_rows(settings)
+        except Exception as exc:
+            self.report({'ERROR'}, f"映射表重排失败：{exc}")
+            return {'CANCELLED'}
         settings.show_original = self.target == "ORIGINAL"
         return {'FINISHED'}
 
@@ -217,6 +278,8 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
         match_box.prop(settings, "voxel_size")
         layout.operator("velo.wwmi_bone_map_generate", icon='SORTBYEXT')
         layout.operator("velo.wwmi_skeleton_import", icon='ARMATURE_DATA')
+        if cfg is not None:
+            layout.prop(cfg, "mirror_mesh", text="镜像骨架")
         layout.template_list("VELO_UL_wwmi_bone_map", "", settings, "rows", settings, "active_row", rows=8)
         layout.operator("velo.wwmi_bone_map_add", text="新增空行", icon='ADD')
         row = layout.row(align=True)
