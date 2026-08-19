@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
+from mathutils import Quaternion, Vector
 
 from .bone_mapping import BoneMappingError, UEBone, load_uemodel_skeleton
 
@@ -32,12 +32,16 @@ def _find_skeleton(folder: Path) -> tuple[UEBone, ...]:
 
 def _world_heads(bones: tuple[UEBone, ...]) -> list[Vector]:
     heads = [None] * len(bones)
+    rotations = [None] * len(bones)
     for index, bone in enumerate(bones):
         local = Vector(bone.position)
+        local_rotation = Quaternion((bone.rotation[3], bone.rotation[0], bone.rotation[1], bone.rotation[2]))
         if 0 <= bone.parent < index:
-            heads[index] = heads[bone.parent] + local
+            heads[index] = heads[bone.parent] + rotations[bone.parent] @ local
+            rotations[index] = rotations[bone.parent] @ local_rotation
         else:
             heads[index] = local
+            rotations[index] = local_rotation
     return heads
 
 

@@ -66,14 +66,6 @@ class _SkinMesh:
     _blend_weights: numpy.ndarray
     bone_names: tuple[str, ...]
 
-
-@dataclass(frozen=True)
-class UEBone:
-    name: str
-    parent: int
-    position: tuple[float, float, float]
-    rotation: tuple[float, float, float, float]
-
     def positions(self):
         return self._positions
 
@@ -85,6 +77,14 @@ class UEBone:
 
     def blend_weights(self):
         return self._blend_weights
+
+
+@dataclass(frozen=True)
+class UEBone:
+    name: str
+    parent: int
+    position: tuple[float, float, float]
+    rotation: tuple[float, float, float, float]
 
 
 def _parse_lod(data: bytes, bone_names: tuple[str, ...], model_name: str):
