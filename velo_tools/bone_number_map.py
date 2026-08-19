@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import bpy
 
@@ -10,6 +11,7 @@ import bpy
 class VELO_WWMI_BoneMapRow(bpy.types.PropertyGroup):
     numeric_id: bpy.props.StringProperty(name="数字编号", default="")
     original_name: bpy.props.StringProperty(name="原始骨骼名", default="")
+    component_name: bpy.props.StringProperty(name="来源 Component", default="")
 
 
 class VELO_WWMI_BoneMapSettings(bpy.types.PropertyGroup):
@@ -58,10 +60,11 @@ class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
         settings.rows.clear()
-        for number, bone_name in mapping.items():
+        for number, bone_name, component_name, _support in mapping:
             row = settings.rows.add()
             row.numeric_id = str(number)
             row.original_name = bone_name
+            row.component_name = component_name
         settings.show_original = False
         self.report({'INFO'}, f"已由 {len(evidence)} 个 Component 的体素匹配生成 {len(mapping)} 行")
         return {'FINISHED'}
@@ -72,28 +75,45 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
     bl_label = "切换编号显示"
     target: bpy.props.EnumProperty(items=[("ORIGINAL", "原始名字", ""), ("NUMERIC", "数字编号", "")])
 
+    @staticmethod
+    def _component_name(obj):
+        match = re.search(r'Component\s+(\d+(?:\.\d+)?)', obj.name)
+        return f"Component {match.group(1)}" if match else ""
+
+    def _pairs_for_object(self, obj, rows):
+        component_name = self._component_name(obj)
+        scoped = [row for row in rows if row.component_name == component_name] if component_name else []
+        candidates = scoped or rows
+        pairs = {}
+        collisions = set()
+        for row in candidates:
+            key, value = ((row.original_name, row.numeric_id)
+                          if self.target == "NUMERIC" else (row.numeric_id, row.original_name))
+            previous = pairs.get(key)
+            if previous is not None and previous != value:
+                if not component_name and self.target == "NUMERIC":
+                    continue
+                collisions.add(key)
+            else:
+                pairs[key] = value
+        if collisions:
+            preview = "、".join(sorted(collisions)[:3])
+            scope = component_name or "当前网格"
+            raise ValueError(f"{scope} 的映射仍有歧义：{preview}")
+        return pairs
+
     def execute(self, context):
         settings = context.scene.velo_wwmi_bone_map
-        mapping = {r.numeric_id: r.original_name for r in settings.rows if r.numeric_id and r.original_name}
-        if not mapping:
+        rows = [r for r in settings.rows if r.numeric_id and r.original_name]
+        if not rows:
             self.report({'ERROR'}, "映射表没有完整的数字编号与原始骨骼名")
             return {'CANCELLED'}
-        if self.target == "NUMERIC":
-            reverse = {}
-            duplicates = set()
-            for numeric_id, original_name in mapping.items():
-                if original_name in reverse and reverse[original_name] != numeric_id:
-                    duplicates.add(original_name)
-                else:
-                    reverse[original_name] = numeric_id
-            if duplicates:
-                preview = "、".join(sorted(duplicates)[:3])
-                self.report({'ERROR'}, f"原始骨骼名存在多个数字编号，无法无损反向切换：{preview}")
-                return {'CANCELLED'}
-            pairs = reverse
-        else:
-            pairs = mapping
         for obj in _selected_meshes(context):
+            try:
+                pairs = self._pairs_for_object(obj, rows)
+            except ValueError as exc:
+                self.report({'ERROR'}, str(exc))
+                return {'CANCELLED'}
             renames = [(vg.name, pairs[vg.name]) for vg in obj.vertex_groups if vg.name in pairs and pairs[vg.name] != vg.name]
             used = {vg.name for vg in obj.vertex_groups}
             for old, new in renames:
@@ -116,6 +136,7 @@ class VELO_UL_wwmi_bone_map(bpy.types.UIList):
         row.prop(item, "numeric_id", text="")
         row.label(text="→")
         row.prop(item, "original_name", text="")
+        row.label(text=item.component_name or "-")
         op = row.operator("velo.wwmi_bone_map_remove", text="", icon='REMOVE')
         op.index = index
 
@@ -146,7 +167,7 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         s = getattr(context.scene, "velo_tools", None)
-        return s is not None and s.active_tab == 'MATCH' and s.active_game == 'WUTHERING'
+        return s is not None and s.active_tab == 'MATCH'
     def draw(self, context):
         layout = self.layout; settings = context.scene.velo_wwmi_bone_map
         layout.prop(settings, "unpack_folder")

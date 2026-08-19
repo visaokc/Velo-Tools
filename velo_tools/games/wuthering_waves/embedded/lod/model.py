@@ -9,13 +9,14 @@
 import io
 import json
 import hashlib
+import re
 
 import numpy
 
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..._wwmi_core.migoto_io.data_model.byte_buffer import MigotoFmt, NumpyBuffer, Semantic
+from ..._wwmi_core.migoto_io.data_model.byte_buffer import MigotoFormat, NumpyBuffer, Semantic
 
 
 @dataclass
@@ -31,11 +32,31 @@ class LodMesh:
     def _ensure_parsed(self):
         if self._vb is not None:
             return
-        fmt = MigotoFmt(io.StringIO(self.fmt_text))
+        fmt = MigotoFormat.from_fmt_text(self.fmt_text)
         self._ib = NumpyBuffer(fmt.ib_layout)
         self._ib.import_raw_data(self.ib_bytes)
         self._vb = NumpyBuffer(fmt.vb_layout)
-        self._vb.import_raw_data(self.vb_bytes)
+        # Some WWMI dumps declare blend fields as R8 while reserving eight bytes
+        # between adjacent semantics. Preserve the on-disk offsets and spans.
+        semantics = sorted(fmt.vb_layout.semantics, key=lambda item: item.offset)
+        fields = []
+        offsets = []
+        for index, semantic in enumerate(semantics):
+            next_offset = (
+                semantics[index + 1].offset
+                if index + 1 < len(semantics)
+                else fmt.stride
+            )
+            span = next_offset - semantic.offset
+            fields.append((semantic.get_name(), semantic.format.get_numpy_type(span)))
+            offsets.append(semantic.offset)
+        dtype = numpy.dtype({
+            'names': [name for name, _ in fields],
+            'formats': [field_type for _, field_type in fields],
+            'offsets': offsets,
+            'itemsize': fmt.stride,
+        })
+        self._vb.data = numpy.frombuffer(self.vb_bytes, dtype=dtype)
 
     def positions(self) -> numpy.ndarray:
         self._ensure_parsed()
@@ -64,6 +85,7 @@ class LodComponent:
     content_hash: str  # sha1 over ib+vb bytes; WWMI has no per-component IB hash
     meta: dict         # component entry from Metadata.json (offsets, counts, vg_map)
     mesh_name: str     # mutable diagnostics label; matcher writes "Skipped ..." markers
+    source_name: str = ""
 
     @property
     def vertex_count(self) -> int:
@@ -84,13 +106,15 @@ def _content_hash(ib_bytes: bytes, vb_bytes: bytes) -> str:
     return digest.hexdigest()
 
 
-def _make_component(index: int, fmt_text: str, vb_bytes: bytes, ib_bytes: bytes, meta: dict) -> LodComponent:
+def _make_component(index: int, fmt_text: str, vb_bytes: bytes, ib_bytes: bytes, meta: dict,
+                    source_name: str = "") -> LodComponent:
     return LodComponent(
         index=index,
         mesh=LodMesh(fmt_text=fmt_text, vb_bytes=vb_bytes, ib_bytes=ib_bytes),
         content_hash=_content_hash(ib_bytes, vb_bytes),
         meta=meta,
-        mesh_name=f"Component {index}",
+        mesh_name=source_name or f"Component {index}",
+        source_name=source_name or f"Component {index}",
     )
 
 
@@ -102,9 +126,20 @@ def load_full_object(source_folder: Path) -> LodObject:
         meta = json.load(f)
 
     components = []
-    for index, component_meta in enumerate(meta['components']):
-        base = source_folder / f'Component {index}'
-        fmt_path, vb_path, ib_path = base.with_suffix('.fmt'), base.with_suffix('.vb'), base.with_suffix('.ib')
+    file_groups = {}
+    for fmt_path in source_folder.glob('Component *.fmt'):
+        match = re.fullmatch(r'Component (\d+)(?:\.(\d+))?', fmt_path.stem)
+        if match:
+            file_groups[fmt_path.stem] = (int(match.group(1)), int(match.group(2) or 0))
+    for source_name, (index, _suffix) in sorted(file_groups.items(), key=lambda item: (item[1], item[0])):
+        if index >= len(meta['components']):
+            raise FileNotFoundError(f'Object source folder has no Metadata.json entry for {source_name}')
+        component_meta = meta['components'][index]
+        # Do not use Path.with_suffix here: it truncates the ``.001`` suffix
+        # in names such as ``Component 5.001`` back to ``Component 5``.
+        fmt_path = source_folder / f'{source_name}.fmt'
+        vb_path = source_folder / f'{source_name}.vb'
+        ib_path = source_folder / f'{source_name}.ib'
         for path in (fmt_path, vb_path, ib_path):
             if not path.is_file():
                 raise FileNotFoundError(f'Object source folder is missing {path.name}!')
@@ -114,6 +149,7 @@ def load_full_object(source_folder: Path) -> LodObject:
             vb_bytes=vb_path.read_bytes(),
             ib_bytes=ib_path.read_bytes(),
             meta=component_meta,
+            source_name=source_name,
         ))
 
     return LodObject(

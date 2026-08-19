@@ -253,10 +253,9 @@ def _match_vertex_groups_unique(component_mesh, source_mesh, candidates_count=6)
             raise BoneMappingError(f"无法为 Component local VG 建立一对一骨骼匹配：{missing[:8]}")
         candidate_width = min(len(source_ids), candidate_width * 2)
 
-
 def mapping_from_assignments(assignments, *, vg_candidates=6):
-    """Translate proven Component/model matches into global-id/name pairs."""
-    claims = {}
+    """Keep every proven global-id/name occurrence with its source Component."""
+    rows = []
     evidence = []
     for component, model, score in assignments:
         local_to_source = _match_vertex_groups_unique(component.mesh, model, vg_candidates)
@@ -266,26 +265,11 @@ def mapping_from_assignments(assignments, *, vg_candidates=6):
                 raise BoneMappingError(f"{model.label}: bone index {source_id} is out of range")
             global_id = _global_id(component.meta, local_id)
             bone_name = model.bone_names[source_id]
-            by_name = claims.setdefault(global_id, {})
-            vote = by_name.setdefault(bone_name, [0, 0, 0.0])
-            vote[0] += 1
-            vote[1] += support.get(local_id, 0)
-            vote[2] = max(vote[2], score)
-        evidence.append((component.index, model.label, score, len(local_to_source)))
-    result = {}
-    for global_id, by_name in claims.items():
-        ranked = sorted(
-            ((votes[0], votes[1], votes[2], name) for name, votes in by_name.items()),
-            reverse=True,
-        )
-        if len(ranked) > 1 and ranked[0][:3] == ranked[1][:3]:
-            raise BoneMappingError(
-                f"全局编号 {global_id} 的骨骼映射无法消歧：{ranked[0][3]} 与 {ranked[1][3]} "
-                f"均为 {ranked[0][0]} 个 Component / {ranked[0][1]} 个带权顶点")
-        result[global_id] = ranked[0][3]
-    if not result:
+            rows.append((global_id, bone_name, component.source_name, support.get(local_id, 0)))
+        evidence.append((component.source_name, model.label, score, len(local_to_source)))
+    if not rows:
         raise BoneMappingError("体素匹配完成，但没有得到任何骨骼编号映射")
-    return dict(sorted(result.items())), evidence
+    return sorted(rows, key=lambda item: (item[0], item[2], item[1])), evidence
 
 
 def _candidate_mapping(component, model, vg_candidates):
