@@ -28,6 +28,10 @@ class VELO_WWMI_BoneMapSettings(bpy.types.PropertyGroup):
         name="最低相似度", default=55.0, min=1.0, max=100.0, subtype='PERCENTAGE',
         description="每个 WWMI Component 必须达到的最低体素相似度",
     )
+    rename_side_suffix: bpy.props.BoolProperty(
+        name="将骨骼重命名为.L/.R后缀", default=True,
+        description="导入骨架时仅对存在左右成对骨骼的名称添加 Blender .L/.R 后缀",
+    )
 
 
 def _selected_meshes(context):
@@ -174,7 +178,8 @@ class VELO_OT_wwmi_skeleton_import(bpy.types.Operator):
                 folder,
                 bones=bones,
                 component_collection=getattr(cfg, "component_collection", None) if cfg is not None else None,
-                mirror_mesh=bool(getattr(cfg, "mirror_mesh", False)))
+                mirror_mesh=bool(getattr(cfg, "mirror_mesh", False)),
+                rename_side_suffix=settings.rename_side_suffix)
         except Exception as exc:
             self.report({'ERROR'}, f"骨架导入失败：{exc}")
             return {'CANCELLED'}
@@ -294,22 +299,33 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
                 keys.append(f"C{match.group(1)}")
         return keys
 
-    def _pairs_for_object(self, obj, rows):
+    def _pairs_for_object(self, obj, rows, rename_side_suffix):
         component_name = self._component_name(obj)
         scoped = [row for row in rows if component_name in self._component_key(row.component_name)] if component_name else []
         candidates = scoped or rows
         pairs = {}
         collisions = set()
+        from .games.wuthering_waves.skeleton_import import side_suffix_names
+        suffixes = side_suffix_names([row.original_name for row in candidates]) if rename_side_suffix else {}
         for row in candidates:
-            key, value = ((row.original_name, row.numeric_id)
-                          if self.target == "NUMERIC" else (row.numeric_id, row.original_name))
-            previous = pairs.get(key)
-            if previous is not None and previous != value:
-                if not component_name and self.target == "NUMERIC":
-                    continue
-                collisions.add(key)
+            if self.target == "NUMERIC":
+                keys = {row.original_name, suffixes.get(row.original_name, row.original_name)}
+                for key in keys:
+                    previous = pairs.get(key)
+                    if previous is not None and previous != row.numeric_id:
+                        if not component_name:
+                            continue
+                        collisions.add(key)
+                    else:
+                        pairs[key] = row.numeric_id
             else:
-                pairs[key] = value
+                key = row.numeric_id
+                value = suffixes.get(row.original_name, row.original_name) if rename_side_suffix else row.original_name
+                previous = pairs.get(key)
+                if previous is not None and previous != value:
+                    collisions.add(key)
+                else:
+                    pairs[key] = value
         if collisions:
             preview = "、".join(sorted(collisions)[:3])
             scope = component_name or "当前网格"
@@ -378,7 +394,7 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
                 return {'CANCELLED'}
         for obj in _selected_meshes(context):
             try:
-                pairs = self._pairs_for_object(obj, rows)
+                pairs = self._pairs_for_object(obj, rows, settings.rename_side_suffix)
             except ValueError as exc:
                 self.report({'ERROR'}, str(exc))
                 return {'CANCELLED'}
@@ -462,7 +478,9 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
         row.operator("velo.wwmi_skeleton_import", icon='ARMATURE_DATA')
         layout.operator("velo.wwmi_auto_bind", icon='ARMATURE_DATA')
         if cfg is not None:
-            layout.prop(cfg, "mirror_mesh", text="镜像骨架")
+            row = layout.row(align=True)
+            row.prop(cfg, "mirror_mesh", text="镜像骨架")
+            row.prop(settings, "rename_side_suffix", text="将骨骼重命名为.L/.R后缀")
         layout.template_list("VELO_UL_wwmi_bone_map", "", settings, "rows", settings, "active_row", rows=8)
         layout.operator("velo.wwmi_bone_map_add", text="新增空行", icon='ADD')
         row = layout.row(align=True)

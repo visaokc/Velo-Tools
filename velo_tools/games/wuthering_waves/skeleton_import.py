@@ -17,6 +17,42 @@ _MESH_SCALE = 0.01
 _MIN_TAIL_LENGTH = 0.025
 
 
+def _side_name_candidates(name: str):
+    if name.endswith((".L", ".R")):
+        return ()
+    match = re.match(r"^(.*?)([_\- ]?)([LR])$", name)
+    if match and match.group(2):
+        prefix, separator, side = match.groups()
+        counterpart = prefix + separator + ("R" if side == "L" else "L")
+        return ((counterpart, prefix, side),)
+    if re.match(r"^[LR](?=[A-Z_])", name):
+        return ((("R" if name[0] == "L" else "L") + name[1:]), name[1:], name[0]),
+    match = re.match(r"^(.*?)([LR])(?=[A-Z_])(.+)$", name)
+    if match:
+        prefix, side, suffix = match.groups()
+        counterpart = prefix + ("R" if side == "L" else "L") + suffix
+        prefix_core = prefix.rstrip("_- ")
+        suffix_core = suffix.lstrip("_- ")
+        separator = "_" if prefix != prefix_core or suffix != suffix_core else ""
+        base = prefix_core + separator + suffix_core
+        return ((counterpart, base, side),)
+    return ()
+
+
+def side_suffix_names(names):
+    """Return Blender .L/.R names only when a matching opposite-side bone exists."""
+    name_set = set(names)
+    renamed = {}
+    for name in names:
+        candidates = _side_name_candidates(name)
+        if not candidates:
+            continue
+        counterpart, base, side = candidates[0]
+        if counterpart in name_set:
+            renamed[name] = f"{base}.{side}"
+    return renamed
+
+
 def _find_skeleton(folder: Path) -> tuple[UEBone, ...]:
     candidates = []
     for path in sorted(folder.rglob("*.uemodel")):
@@ -199,8 +235,8 @@ def _leaf_length(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> 
     return max(min(local, 0.08), _MIN_TAIL_LENGTH)
 
 
-def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=False, bones=None,
-                    component_collection=None):
+def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=False,
+                    rename_side_suffix=True, bones=None, component_collection=None):
     bones = tuple(bones) if bones is not None else _find_skeleton(Path(folder))
     heads = _world_heads(bones, mirror_mesh=mirror_mesh)
     arm_data = bpy.data.armatures.new(armature_name)
@@ -226,8 +262,9 @@ def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=
     for edit_bone in list(arm_data.edit_bones):
         arm_data.edit_bones.remove(edit_bone)
     created = []
+    bone_names = side_suffix_names([bone.name for bone in bones]) if rename_side_suffix else {}
     for index, bone in enumerate(bones):
-        edit = arm_data.edit_bones.new(bone.name)
+        edit = arm_data.edit_bones.new(bone_names.get(bone.name, bone.name))
         edit.head = heads[index]
         edit.tail = _bone_tail(index, bones, heads)
         created.append(edit)
