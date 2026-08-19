@@ -66,6 +66,14 @@ class _SkinMesh:
     _blend_weights: numpy.ndarray
     bone_names: tuple[str, ...]
 
+
+@dataclass(frozen=True)
+class UEBone:
+    name: str
+    parent: int
+    position: tuple[float, float, float]
+    rotation: tuple[float, float, float, float]
+
     def positions(self):
         return self._positions
 
@@ -188,6 +196,49 @@ def load_uemodel_sections(path: Path):
     if lod_name != "LOD0" or lod_size < 0 or lod_size > lod_reader.remaining():
         raise BoneMappingError(f"{path.name}: LOD0 is missing")
     return _parse_lod(lod_reader.read(lod_size), tuple(bone_names), path.name)
+
+
+def load_uemodel_skeleton(path: Path) -> tuple[UEBone, ...]:
+    """Read the named bone hierarchy and bind-pose transforms from a UEMODEL."""
+    reader = _Reader(Path(path).read_bytes())
+    if reader.read(8) != b"UEFORMAT" or reader.string() != "UEMODEL":
+        raise BoneMappingError(f"{path.name}: not a UEMODEL file")
+    reader.unpack("B")
+    reader.string()
+    if reader.unpack("?"):
+        raise BoneMappingError(f"{path.name}: compressed UEMODEL is not supported")
+    root_chunks = {name: payload for name, _count, payload in _data_chunks(reader.read(reader.remaining()))}
+    skeleton = root_chunks.get("SKELETON")
+    if skeleton is None:
+        raise BoneMappingError(f"{path.name}: SKELETON data is missing")
+    skeleton_chunks = {name: payload for name, _count, payload in _data_chunks(skeleton)}
+    bone_data = skeleton_chunks.get("BONES")
+    if bone_data is None:
+        raise BoneMappingError(f"{path.name}: BONES chunk is missing")
+    bone_reader = _Reader(bone_data)
+    # Re-read the chunk header to retain its element count.
+    skeleton_reader = _Reader(skeleton)
+    bone_count = None
+    while skeleton_reader.remaining():
+        name = skeleton_reader.string()
+        count = skeleton_reader.unpack("i")
+        size = skeleton_reader.unpack("i")
+        payload = skeleton_reader.read(size)
+        if name == "BONES":
+            bone_count = count
+            break
+    if bone_count is None:
+        raise BoneMappingError(f"{path.name}: BONES chunk is missing")
+    bones = []
+    for _ in range(bone_count):
+        name = bone_reader.string()
+        parent = bone_reader.unpack("i")
+        position = tuple(float(value) for value in bone_reader.unpack("3f"))
+        rotation = tuple(float(value) for value in bone_reader.unpack("4f"))
+        bones.append(UEBone(name, parent, position, rotation))
+    if bone_reader.remaining():
+        raise BoneMappingError(f"{path.name}: malformed BONES chunk")
+    return tuple(bones)
 
 
 def _global_id(component_meta: dict, local_id: int) -> int:

@@ -70,6 +70,27 @@ class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class VELO_OT_wwmi_skeleton_import(bpy.types.Operator):
+    bl_idname = "velo.wwmi_skeleton_import"
+    bl_label = "从模型文件夹导入骨架"
+    bl_description = "从解包模型文件夹读取 UEMODEL 骨架；存在 Component 网格时自动绑定 Armature 修改器"
+
+    def execute(self, context):
+        settings = context.scene.velo_wwmi_bone_map
+        if not settings.unpack_folder.strip():
+            self.report({'ERROR'}, "请先填写解包路径")
+            return {'CANCELLED'}
+        try:
+            from .games.wuthering_waves.skeleton_import import import_skeleton
+            arm_obj, bone_count, bound_count = import_skeleton(
+                Path(bpy.path.abspath(settings.unpack_folder)))
+        except Exception as exc:
+            self.report({'ERROR'}, f"骨架导入失败：{exc}")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"已导入 {bone_count} 根骨骼；绑定 {bound_count} 个 Component 网格")
+        return {'FINISHED'}
+
+
 class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
     bl_idname = "velo.wwmi_bone_map_toggle"
     bl_label = "切换编号显示"
@@ -195,6 +216,7 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
         match_box.prop(settings, "similarity_threshold")
         match_box.prop(settings, "voxel_size")
         layout.operator("velo.wwmi_bone_map_generate", icon='SORTBYEXT')
+        layout.operator("velo.wwmi_skeleton_import", icon='ARMATURE_DATA')
         layout.template_list("VELO_UL_wwmi_bone_map", "", settings, "rows", settings, "active_row", rows=8)
         layout.operator("velo.wwmi_bone_map_add", text="新增空行", icon='ADD')
         row = layout.row(align=True)
@@ -204,6 +226,7 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
 
 
 _classes = (VELO_WWMI_BoneMapRow, VELO_WWMI_BoneMapSettings, VELO_OT_wwmi_bone_map_generate,
+            VELO_OT_wwmi_skeleton_import,
             VELO_OT_wwmi_bone_map_toggle, VELO_UL_wwmi_bone_map, VELO_OT_wwmi_bone_map_remove,
             VELO_OT_wwmi_bone_map_add,
             VELO_PT_wwmi_bone_map)
