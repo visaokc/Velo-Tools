@@ -47,10 +47,27 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
     if children:
         return sum((heads[bones.index(child)] for child in children), Vector()) / len(children)
     parent = bones[index].parent
-    direction = head - heads[parent] if 0 <= parent < len(bones) else Vector((0.0, 0.0, 1.0))
+    direction = Vector()
+    segment = index
+    weight = 1.0
+    segment_length = 0.0
+    # Estimate the endpoint tangent from several recent chain segments so a
+    # curved chain continues along its local curvature instead of copying only
+    # the immediate parent direction.
+    while 0 <= bones[segment].parent < len(bones) and weight <= 3.0:
+        ancestor = bones[segment].parent
+        delta = heads[segment] - heads[ancestor]
+        if delta.length > 1e-5:
+            direction += delta.normalized() * weight
+            if segment == index:
+                segment_length = delta.length
+            weight += 1.0
+        segment = ancestor
+    if direction.length < 1e-5 and 0 <= parent < len(bones):
+        direction = head - heads[parent]
     if direction.length < 1e-5:
         direction = Vector((0.0, 0.0, 1.0))
-    return head + direction.normalized() * max(direction.length * 0.5, 0.01)
+    return head + direction.normalized() * max(segment_length * 0.5, 0.01)
 
 
 def _is_standard(name: str) -> bool:
