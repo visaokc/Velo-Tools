@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy
 
-from .embedded.lod.matcher import GeometryMatcher, GeometryMatcherConfig, VertexGroupsMatcher
+from .embedded.lod.matcher import GeometryMatcher, GeometryMatcherConfig, ChamferMixin
 from .embedded.lod.model import load_full_object
 
 
@@ -196,31 +196,115 @@ def _global_id(component_meta: dict, local_id: int) -> int:
     return int(value)
 
 
-def mapping_from_assignments(assignments, *, vg_candidates=3):
+def _group_clouds(mesh):
+    positions = mesh.positions()
+    indices = mesh.blend_indices().astype(numpy.int32, copy=False)
+    weights = mesh.blend_weights()
+    if weights is None:
+        weights = numpy.zeros(indices.shape, dtype=numpy.float32)
+        weights[:, 0] = 1.0
+    active = weights > 0
+    group_ids = sorted(int(value) for value in numpy.unique(indices[active]))
+    return {
+        group_id: positions[numpy.any((indices == group_id) & active, axis=1)].astype(numpy.float32)
+        for group_id in group_ids
+    }
+
+
+def _match_vertex_groups_unique(component_mesh, source_mesh, candidates_count=6):
+    """Map Component-local VGs to source bones with a one-to-one point-cloud assignment."""
+    target_clouds = _group_clouds(component_mesh)
+    source_clouds = _group_clouds(source_mesh)
+    if len(target_clouds) > len(source_clouds):
+        raise BoneMappingError(
+            f"Component has {len(target_clouds)} weighted VGs but source section has only "
+            f"{len(source_clouds)} weighted bones")
+    source_ids = list(source_clouds)
+    source_centroids = numpy.array([source_clouds[group_id].mean(axis=0) for group_id in source_ids])
+    edge_cache = {}
+
+    def edge(target_id, source_index):
+        key = (target_id, source_index)
+        if key not in edge_cache:
+            edge_cache[key] = ChamferMixin.calculate_linear_chamfer_distance(
+                target_clouds[target_id], source_clouds[source_ids[source_index]])
+        return edge_cache[key]
+
+    candidate_width = min(max(1, candidates_count), len(source_ids))
+    while True:
+        edges = []
+        for target_id, points in target_clouds.items():
+            centroid = points.mean(axis=0)
+            order = numpy.argsort(numpy.linalg.norm(source_centroids - centroid, axis=1))[:candidate_width]
+            edges.extend((edge(target_id, int(index)), target_id, int(index)) for index in order)
+        matched_targets = set()
+        matched_sources = set()
+        mapping = {}
+        for _, target_id, source_index in sorted(edges):
+            if target_id in matched_targets or source_index in matched_sources:
+                continue
+            mapping[target_id] = source_ids[source_index]
+            matched_targets.add(target_id)
+            matched_sources.add(source_index)
+        if len(mapping) == len(target_clouds):
+            return dict(sorted(mapping.items()))
+        if candidate_width == len(source_ids):
+            missing = sorted(set(target_clouds) - set(mapping))
+            raise BoneMappingError(f"无法为 Component local VG 建立一对一骨骼匹配：{missing[:8]}")
+        candidate_width = min(len(source_ids), candidate_width * 2)
+
+
+def mapping_from_assignments(assignments, *, vg_candidates=6):
     """Translate proven Component/model matches into global-id/name pairs."""
-    vg_matcher = VertexGroupsMatcher(candidates_count=vg_candidates)
-    result = {}
+    claims = {}
     evidence = []
     for component, model, score in assignments:
-        source_to_local = vg_matcher.match_vertex_groups(model, component.mesh)
-        for source_id, local_id in source_to_local.items():
+        local_to_source = _match_vertex_groups_unique(component.mesh, model, vg_candidates)
+        support = {group_id: len(points) for group_id, points in _group_clouds(component.mesh).items()}
+        for local_id, source_id in local_to_source.items():
             if source_id >= len(model.bone_names):
                 raise BoneMappingError(f"{model.label}: bone index {source_id} is out of range")
             global_id = _global_id(component.meta, local_id)
             bone_name = model.bone_names[source_id]
-            existing = result.get(global_id)
-            if existing is not None and existing != bone_name:
-                raise BoneMappingError(
-                    f"全局编号 {global_id} 同时匹配到 {existing} 与 {bone_name}")
-            result[global_id] = bone_name
-        evidence.append((component.index, model.label, score, len(source_to_local)))
+            by_name = claims.setdefault(global_id, {})
+            vote = by_name.setdefault(bone_name, [0, 0, 0.0])
+            vote[0] += 1
+            vote[1] += support.get(local_id, 0)
+            vote[2] = max(vote[2], score)
+        evidence.append((component.index, model.label, score, len(local_to_source)))
+    result = {}
+    for global_id, by_name in claims.items():
+        ranked = sorted(
+            ((votes[0], votes[1], votes[2], name) for name, votes in by_name.items()),
+            reverse=True,
+        )
+        if len(ranked) > 1 and ranked[0][:3] == ranked[1][:3]:
+            raise BoneMappingError(
+                f"全局编号 {global_id} 的骨骼映射无法消歧：{ranked[0][3]} 与 {ranked[1][3]} "
+                f"均为 {ranked[0][0]} 个 Component / {ranked[0][1]} 个带权顶点")
+        result[global_id] = ranked[0][3]
     if not result:
         raise BoneMappingError("体素匹配完成，但没有得到任何骨骼编号映射")
     return dict(sorted(result.items())), evidence
 
 
+def _candidate_mapping(component, model, vg_candidates):
+    result = {}
+    for local_id, source_id in _match_vertex_groups_unique(component.mesh, model, vg_candidates).items():
+        if source_id >= len(model.bone_names):
+            raise BoneMappingError(f"{model.label}: bone index {source_id} is out of range")
+        global_id = _global_id(component.meta, local_id)
+        bone_name = model.bone_names[source_id]
+        existing = result.get(global_id)
+        if existing is not None and existing != bone_name:
+            raise BoneMappingError(
+                f"{model.label}: global VG {global_id} maps to both {existing} and {bone_name}")
+        result[global_id] = bone_name
+    return result
+
+
 def generate_mapping(unpack_folder: Path, object_source_folder: Path, *, voxel_size=0.05,
-                     similarity_threshold=55.0, ambiguity_margin=2.0, vg_candidates=3):
+                     similarity_threshold=55.0, vg_candidates=6):
     unpack_folder = Path(unpack_folder)
     model_paths = sorted(unpack_folder.rglob("*.uemodel")) if unpack_folder.is_dir() else []
     if not model_paths:
@@ -247,7 +331,6 @@ def generate_mapping(unpack_folder: Path, object_source_folder: Path, *, voxel_s
 
     geometry = GeometryMatcher(GeometryMatcherConfig(voxel_size=voxel_size, sensitivity=0.5))
     assignments = []
-    used_sections = set()
     for component in full_object.components:
         scores = sorted(
             ((geometry.calculate_similarity(section, component.mesh), index, section)
@@ -255,21 +338,20 @@ def generate_mapping(unpack_folder: Path, object_source_folder: Path, *, voxel_s
             reverse=True, key=lambda item: item[0],
         )
         best_score, best_index, best_section = scores[0]
-        second_score = scores[1][0] if len(scores) > 1 else 0.0
         if best_score < similarity_threshold:
             raise BoneMappingError(
                 f"Component {component.index} 最佳体素匹配仅 {best_score:.2f}%（{best_section.label}）")
-        if best_score - second_score < ambiguity_margin:
-            raise BoneMappingError(
-                f"Component {component.index} 体素匹配有歧义：{best_score:.2f}% 与 {second_score:.2f}%")
-        if best_index in used_sections:
-            raise BoneMappingError(f"{best_section.label} 同时匹配多个 Component，无法建立唯一证据链")
-        used_sections.add(best_index)
-        assignments.append((component, best_section, best_score))
 
-    matched_models = {section.model_name for _, section, _ in assignments}
-    missing_models = [path.name for path in model_paths if path.name not in matched_models]
-    if missing_models:
-        raise BoneMappingError("以下 .uemodel 没有任何 section 匹配到 Component：" + ", ".join(missing_models))
+        tied = [item for item in scores if abs(best_score - item[0]) < 0.01]
+        if len(tied) > 1:
+            signatures = []
+            for score, index, section in tied:
+                signatures.append((_candidate_mapping(component, section, vg_candidates), score, index, section))
+            reference = signatures[0][0]
+            if any(signature != reference for signature, _, _, _ in signatures[1:]):
+                details = "，".join(f"{score:.2f}% {section.label}" for _, score, _, section in signatures[:3])
+                raise BoneMappingError(f"Component {component.index} 体素同分候选产生不同骨骼映射：{details}")
+            _, best_score, best_index, best_section = min(signatures, key=lambda item: item[3].label)
+        assignments.append((component, best_section, best_score))
 
     return mapping_from_assignments(assignments, vg_candidates=vg_candidates)

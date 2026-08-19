@@ -78,7 +78,21 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
         if not mapping:
             self.report({'ERROR'}, "映射表没有完整的数字编号与原始骨骼名")
             return {'CANCELLED'}
-        pairs = mapping if self.target == "ORIGINAL" else {v: k for k, v in mapping.items()}
+        if self.target == "NUMERIC":
+            reverse = {}
+            duplicates = set()
+            for numeric_id, original_name in mapping.items():
+                if original_name in reverse and reverse[original_name] != numeric_id:
+                    duplicates.add(original_name)
+                else:
+                    reverse[original_name] = numeric_id
+            if duplicates:
+                preview = "、".join(sorted(duplicates)[:3])
+                self.report({'ERROR'}, f"原始骨骼名存在多个数字编号，无法无损反向切换：{preview}")
+                return {'CANCELLED'}
+            pairs = reverse
+        else:
+            pairs = mapping
         for obj in _selected_meshes(context):
             renames = [(vg.name, pairs[vg.name]) for vg in obj.vertex_groups if vg.name in pairs and pairs[vg.name] != vg.name]
             used = {vg.name for vg in obj.vertex_groups}
