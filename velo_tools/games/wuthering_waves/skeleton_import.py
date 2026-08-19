@@ -14,6 +14,7 @@ from .bone_mapping import BoneMappingError, UEBone, load_uemodel_skeleton
 
 _COMPONENT_RE = re.compile(r"(?:^|[ _])Component (\d+(?:\.\d+)?)")
 _MESH_SCALE = 0.01
+_MIN_TAIL_LENGTH = 0.025
 
 
 def _find_skeleton(folder: Path) -> tuple[UEBone, ...]:
@@ -109,19 +110,26 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
     if children:
         child_heads = [heads[bones.index(child)] for child in children]
         if len(child_heads) == 1:
-            return child_heads[0]
+            direction = child_heads[0] - head
+            return head + direction.normalized() * max(direction.length, _MIN_TAIL_LENGTH) if direction.length > 1e-5 else head + Vector((0.0, 0.0, _MIN_TAIL_LENGTH))
         parent = bones[index].parent
         incoming = head - heads[parent] if 0 <= parent < len(bones) else Vector()
+        child_deltas = [child_head - head for child_head in child_heads]
+        longest = max((delta.length for delta in child_deltas), default=0.0)
+        usable = [delta for delta in child_deltas if delta.length >= max(_MIN_TAIL_LENGTH, longest * 0.2)]
         if incoming.length > 1e-5:
             incoming.normalize()
             aligned = [
-                (child_head, (child_head - head).normalized().dot(incoming))
-                for child_head in child_heads
-                if (child_head - head).length > 1e-5
+                (delta, delta.normalized().dot(incoming))
+                for delta in usable
             ]
             if aligned:
-                return max(aligned, key=lambda item: item[1])[0]
-        return sum(child_heads, Vector()) / len(child_heads)
+                direction = max(aligned, key=lambda item: item[1])[0]
+                return head + direction.normalized() * max(direction.length, _MIN_TAIL_LENGTH)
+        if usable:
+            direction = max(usable, key=lambda delta: delta.length)
+            return head + direction.normalized() * max(direction.length, _MIN_TAIL_LENGTH)
+        return head + Vector((0.0, 0.0, _MIN_TAIL_LENGTH))
     parent = bones[index].parent
     chain = [index]
     while len(chain) < 5:
@@ -154,7 +162,7 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
         direction = head - heads[parent]
     if direction.length < 1e-5:
         direction = Vector((0.0, 0.0, 1.0))
-    return head + direction.normalized() * max(segment_length * 0.5, 0.01)
+    return head + direction.normalized() * max(segment_length * 0.5, _MIN_TAIL_LENGTH)
 
 
 def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=False, bones=None,
