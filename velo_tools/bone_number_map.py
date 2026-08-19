@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 
@@ -31,6 +32,13 @@ class VELO_WWMI_BoneMapSettings(bpy.types.PropertyGroup):
 
 def _selected_meshes(context):
     return [o for o in context.selected_objects if o.type == "MESH"]
+
+
+_MATCHING_RESULT_NAME = "WWMI_MatchingResult.json"
+
+
+def _matching_result_path(source_folder):
+    return Path(bpy.path.abspath(source_folder)).resolve() / _MATCHING_RESULT_NAME
 
 
 class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
@@ -72,24 +80,120 @@ class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
 
 class VELO_OT_wwmi_skeleton_import(bpy.types.Operator):
     bl_idname = "velo.wwmi_skeleton_import"
-    bl_label = "从解包路径导入骨架"
-    bl_description = "从解包模型文件夹读取 UEMODEL 骨架；存在 Component 网格时自动绑定 Armature 修改器"
+    bl_label = "导入骨架"
+    bl_description = "优先从解包路径导入骨架；未填写时从对象源目录的匹配结果导入"
 
     def execute(self, context):
         settings = context.scene.velo_wwmi_bone_map
-        if not settings.unpack_folder.strip():
-            self.report({'ERROR'}, "请先填写解包路径")
-            return {'CANCELLED'}
         try:
-            from .games.wuthering_waves.skeleton_import import import_skeleton
+            from .games.wuthering_waves.skeleton_import import import_skeleton, load_saved_skeleton
             cfg = getattr(context.scene, "VTWW_settings", None)
+            source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
+            if settings.unpack_folder.strip():
+                folder = Path(bpy.path.abspath(settings.unpack_folder))
+                bones = None
+            elif source_folder.strip():
+                folder = Path(".")
+                bones = load_saved_skeleton(_matching_result_path(source_folder))
+            else:
+                raise ValueError("没有可用的解包路径或源目录匹配结果")
             arm_obj, bone_count, bound_count = import_skeleton(
-                Path(bpy.path.abspath(settings.unpack_folder)),
+                folder,
+                bones=bones,
                 mirror_mesh=bool(getattr(cfg, "mirror_mesh", False)))
         except Exception as exc:
             self.report({'ERROR'}, f"骨架导入失败：{exc}")
             return {'CANCELLED'}
         self.report({'INFO'}, f"已导入 {bone_count} 根骨骼；绑定 {bound_count} 个 Component 网格")
+        return {'FINISHED'}
+
+
+class VELO_OT_wwmi_bone_map_load_result(bpy.types.Operator):
+    bl_idname = "velo.wwmi_bone_map_load_result"
+    bl_label = "从源目录载入映射表"
+    bl_description = "从对象源目录中的 WWMI_MatchingResult.json 恢复映射表"
+
+    def execute(self, context):
+        settings = context.scene.velo_wwmi_bone_map
+        cfg = getattr(context.scene, "VTWW_settings", None)
+        source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
+        if not source_folder.strip():
+            self.report({'ERROR'}, "请先填写对象源目录")
+            return {'CANCELLED'}
+        try:
+            payload = json.loads(_matching_result_path(source_folder).read_text(encoding="utf-8"))
+            records = payload["mapping"]
+            if not isinstance(records, list) or not records:
+                raise ValueError("映射记录为空")
+            restored = []
+            for record in records:
+                restored.append((str(record["numeric_id"]), str(record["original_name"]),
+                                 str(record.get("component_name", ""))))
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            self.report({'ERROR'}, f"载入匹配结果失败：{exc}")
+            return {'CANCELLED'}
+        settings.rows.clear()
+        for numeric_id, original_name, component_name in restored:
+            row = settings.rows.add()
+            row.numeric_id = numeric_id
+            row.original_name = original_name
+            row.component_name = component_name
+        settings.active_row = 0
+        settings.show_original = False
+        self.report({'INFO'}, f"已从源目录载入 {len(restored)} 行映射")
+        return {'FINISHED'}
+
+
+class VELO_OT_wwmi_bone_map_save_result(bpy.types.Operator):
+    bl_idname = "velo.wwmi_bone_map_save_result"
+    bl_label = "将匹配结果保存至源目录"
+    bl_description = "将映射表和解包骨架快照保存到对象源目录"
+
+    def execute(self, context):
+        settings = context.scene.velo_wwmi_bone_map
+        cfg = getattr(context.scene, "VTWW_settings", None)
+        source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
+        if not source_folder.strip():
+            self.report({'ERROR'}, "请先填写对象源目录")
+            return {'CANCELLED'}
+        rows = [row for row in settings.rows if row.numeric_id and row.original_name]
+        if not rows:
+            self.report({'ERROR'}, "映射表没有可保存的完整记录")
+            return {'CANCELLED'}
+        if not settings.unpack_folder.strip():
+            self.report({'ERROR'}, "保存匹配结果需要填写解包路径，以读取骨架快照")
+            return {'CANCELLED'}
+        try:
+            from .games.wuthering_waves.skeleton_import import _find_skeleton
+            bones = _find_skeleton(Path(bpy.path.abspath(settings.unpack_folder)))
+            target = _matching_result_path(source_folder)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "format": "Velo WWMI matching result",
+                "version": 1,
+                "mapping": [
+                    {
+                        "numeric_id": row.numeric_id,
+                        "original_name": row.original_name,
+                        "component_name": row.component_name,
+                    }
+                    for row in rows
+                ],
+                "skeleton": [
+                    {
+                        "name": bone.name,
+                        "parent": bone.parent,
+                        "position": list(bone.position),
+                        "rotation": list(bone.rotation),
+                    }
+                    for bone in bones
+                ],
+            }
+            target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        except Exception as exc:
+            self.report({'ERROR'}, f"保存匹配结果失败：{exc}")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"已保存 {len(rows)} 行映射和 {len(bones)} 根骨骼至源目录")
         return {'FINISHED'}
 
 
@@ -276,6 +380,9 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
         match_box = layout.box()
         match_box.prop(settings, "similarity_threshold")
         match_box.prop(settings, "voxel_size")
+        row = layout.row(align=True)
+        row.operator("velo.wwmi_bone_map_load_result", icon='IMPORT')
+        row.operator("velo.wwmi_bone_map_save_result", icon='EXPORT')
         layout.operator("velo.wwmi_bone_map_generate", icon='SORTBYEXT')
         layout.operator("velo.wwmi_skeleton_import", icon='ARMATURE_DATA')
         if cfg is not None:
@@ -289,7 +396,8 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
 
 
 _classes = (VELO_WWMI_BoneMapRow, VELO_WWMI_BoneMapSettings, VELO_OT_wwmi_bone_map_generate,
-            VELO_OT_wwmi_skeleton_import,
+            VELO_OT_wwmi_skeleton_import, VELO_OT_wwmi_bone_map_load_result,
+            VELO_OT_wwmi_bone_map_save_result,
             VELO_OT_wwmi_bone_map_toggle, VELO_UL_wwmi_bone_map, VELO_OT_wwmi_bone_map_remove,
             VELO_OT_wwmi_bone_map_add,
             VELO_PT_wwmi_bone_map)

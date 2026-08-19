@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import json
 from pathlib import Path
 
 import bpy
@@ -30,6 +31,44 @@ def _find_skeleton(folder: Path) -> tuple[UEBone, ...]:
     return candidates[0][2]
 
 
+def _collection_contains(collection, obj):
+    if collection.objects.get(obj.name) is not None:
+        return True
+    return any(_collection_contains(child, obj) for child in collection.children)
+
+
+def _object_root_collection(scene, obj):
+    return next(
+        (collection for collection in scene.collection.children
+         if _collection_contains(collection, obj)),
+        None,
+    )
+
+
+def load_saved_skeleton(path: Path) -> tuple[UEBone, ...]:
+    """Load the skeleton snapshot stored in a matching-result JSON file."""
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        records = payload["skeleton"]
+        bones = tuple(
+            UEBone(
+                str(record["name"]),
+                int(record["parent"]),
+                tuple(float(value) for value in record["position"]),
+                tuple(float(value) for value in record["rotation"]),
+            )
+            for record in records
+        )
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise BoneMappingError(f"匹配结果文件中的骨架数据无效：{exc}") from exc
+    if not bones:
+        raise BoneMappingError("匹配结果文件不包含骨架")
+    for index, bone in enumerate(bones):
+        if bone.parent >= index or bone.parent < -1:
+            raise BoneMappingError(f"匹配结果文件中的骨架父索引无效：{bone.name}")
+    return bones
+
+
 def _world_heads(bones: tuple[UEBone, ...], *, mirror_mesh=False) -> list[Vector]:
     heads = [None] * len(bones)
     rotations = [None] * len(bones)
@@ -55,10 +94,24 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
     if bones[index].name == "Bip001":
         return head + Vector((0.0, 0.0, 0.1))
     if children:
-        return sum((heads[bones.index(child)] for child in children), Vector()) / len(children)
+        child_heads = [heads[bones.index(child)] for child in children]
+        if len(child_heads) == 1:
+            return child_heads[0]
+        parent = bones[index].parent
+        incoming = head - heads[parent] if 0 <= parent < len(bones) else Vector()
+        if incoming.length > 1e-5:
+            incoming.normalize()
+            aligned = [
+                (child_head, (child_head - head).normalized().dot(incoming))
+                for child_head in child_heads
+                if (child_head - head).length > 1e-5
+            ]
+            if aligned:
+                return max(aligned, key=lambda item: item[1])[0]
+        return sum(child_heads, Vector()) / len(child_heads)
     parent = bones[index].parent
     chain = [index]
-    while len(chain) < 4:
+    while len(chain) < 5:
         parent_index = bones[chain[-1]].parent
         if not 0 <= parent_index < len(bones):
             break
@@ -66,15 +119,24 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
     segment = heads[chain[0]] - heads[chain[1]] if len(chain) > 1 else Vector()
     segment_length = segment.length
     direction = segment.copy()
-    if len(chain) >= 3:
-        previous = heads[chain[1]] - heads[chain[2]]
-        # The endpoint derivative of a quadratic fitted through the last three
-        # heads. This continues a curved chain rather than averaging it back
-        # toward an older direction.
-        direction = 1.5 * segment - 0.5 * previous
-    if len(chain) >= 4:
-        older = heads[chain[2]] - heads[chain[3]]
-        direction += 0.25 * (segment - 2.0 * previous + older)
+    if segment_length > 1e-5:
+        base_direction = segment.normalized()
+        smooth_segments = [segment]
+        for current, parent_index in zip(chain[1:], chain[2:]):
+            candidate = heads[current] - heads[parent_index]
+            if candidate.length < 1e-5:
+                break
+            # Stop at a branch-like turn; a distant auxiliary chain must not
+            # pull a leaf tail sideways.
+            if base_direction.dot(candidate.normalized()) < 0.5:
+                break
+            smooth_segments.append(candidate)
+            base_direction = candidate.normalized()
+        direction = sum(
+            (segment.normalized() * (len(smooth_segments) - offset)
+             for offset, segment in enumerate(smooth_segments)),
+            Vector(),
+        )
     if direction.length < 1e-5 and 0 <= parent < len(bones):
         direction = head - heads[parent]
     if direction.length < 1e-5:
@@ -82,15 +144,26 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
     return head + direction.normalized() * max(segment_length * 0.5, 0.01)
 
 
-def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=False):
-    bones = _find_skeleton(Path(folder))
+def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=False, bones=None):
+    bones = tuple(bones) if bones is not None else _find_skeleton(Path(folder))
     heads = _world_heads(bones, mirror_mesh=mirror_mesh)
-    arm_data = bpy.data.armatures.get(armature_name) or bpy.data.armatures.new(armature_name)
-    arm_obj = bpy.data.objects.get(armature_name)
-    if arm_obj is None or arm_obj.type != "ARMATURE":
-        arm_obj = bpy.data.objects.new(armature_name, arm_data)
-        bpy.context.collection.objects.link(arm_obj)
+    arm_data = bpy.data.armatures.new(armature_name)
+    arm_obj = bpy.data.objects.new(armature_name, arm_data)
+    skeleton_collection = bpy.context.scene.collection.children.get("Skeleton")
+    if skeleton_collection is None:
+        skeleton_collection = bpy.data.collections.new("Skeleton")
+        bpy.context.scene.collection.children.link(skeleton_collection)
+    skeleton_collection.objects.link(arm_obj)
     arm_obj.show_in_front = True
+    selected_component_meshes = [
+        obj for obj in bpy.context.selected_objects
+        if obj.type == "MESH" and _COMPONENT_RE.search(obj.name)
+    ]
+    source_roots = {
+        root for root in (_object_root_collection(bpy.context.scene, obj)
+                          for obj in selected_component_meshes)
+        if root is not None and root.name != "Skeleton"
+    }
     for obj in bpy.context.selected_objects:
         obj.select_set(False)
     bpy.context.view_layer.objects.active = arm_obj
@@ -115,6 +188,10 @@ def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=
     bound = 0
     for obj in bpy.context.scene.objects:
         if obj.type != "MESH" or not _COMPONENT_RE.search(obj.name):
+            continue
+        if source_roots and _object_root_collection(bpy.context.scene, obj) not in source_roots:
+            continue
+        if not source_roots:
             continue
         modifier = next((item for item in obj.modifiers if item.type == 'ARMATURE' and item.name == 'WWMI Skeleton'), None)
         if modifier is None:
