@@ -157,11 +157,30 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
         direction = head - heads[parent]
     if direction.length < 1e-5:
         direction = Vector((0.0, 0.0, 1.0))
-    parent_length = 0.0
-    if 0 <= parent < len(bones):
-        parent_tail = _bone_tail(parent, bones, heads)
-        parent_length = (parent_tail - heads[parent]).length
-    return head + direction.normalized() * max(parent_length, _MIN_TAIL_LENGTH)
+    length = _leaf_length(index, bones, heads)
+    return head + direction.normalized() * length
+
+
+def _leaf_length(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> float:
+    """Estimate leaf display length from nearby bones, not a distant ancestor."""
+    bone = bones[index]
+    parent = bone.parent
+    siblings = [
+        (heads[other] - heads[index]).length
+        for other, candidate in enumerate(bones)
+        if other != index and candidate.parent == parent
+        and (heads[other] - heads[index]).length > 1e-5
+    ]
+    if siblings:
+        siblings.sort()
+        local = siblings[len(siblings) // 2] * 0.5
+    elif 0 <= parent < len(bones):
+        local = (heads[index] - heads[parent]).length * 0.35
+    else:
+        local = _MIN_TAIL_LENGTH
+    if bone.name.startswith(("Facial_", "Face_", "Eye", "Brow", "Mouth", "Tongue")):
+        local = min(local, 0.035)
+    return max(min(local, 0.08), _MIN_TAIL_LENGTH)
 
 
 def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=False, bones=None,

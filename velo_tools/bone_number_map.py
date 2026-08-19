@@ -34,6 +34,12 @@ def _selected_meshes(context):
     return [o for o in context.selected_objects if o.type == "MESH"]
 
 
+def _collection_contains(collection, obj):
+    return collection.objects.get(obj.name) is not None or any(
+        _collection_contains(child, obj) for child in collection.children
+    )
+
+
 _MATCHING_RESULT_NAME = "WWMI_MatchingResult.json"
 
 
@@ -53,7 +59,7 @@ def _load_hierarchy_bones(settings, source_folder):
 
 class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
     bl_idname = "velo.wwmi_bone_map_generate"
-    bl_label = "自动生成映射表"
+    bl_label = "生成映射表"
     bl_description = "体素匹配解包目录内全部 .uemodel section 与 WWMI Component，再生成全局编号到原始骨骼名的映射"
 
     def execute(self, context):
@@ -85,6 +91,62 @@ class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
             row.component_name = component_name
         settings.show_original = False
         self.report({'INFO'}, f"已由 {len(evidence)} 个 Component 的体素匹配生成 {len(mapping)} 行")
+        return {'FINISHED'}
+
+
+class VELO_OT_wwmi_auto_bind(bpy.types.Operator):
+    bl_idname = "velo.wwmi_auto_bind"
+    bl_label = "一键为Mod网格绑骨"
+    bl_description = "生成映射、为当前 WWMI 组件集合改名并导入骨架"
+
+    def execute(self, context):
+        settings = context.scene.velo_wwmi_bone_map
+        cfg = getattr(context.scene, "VTWW_settings", None)
+        source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
+        if not source_folder.strip():
+            self.report({'ERROR'}, "请先填写对象源目录")
+            return {'CANCELLED'}
+        result_exists = _matching_result_path(source_folder).is_file()
+        if not result_exists and not settings.unpack_folder.strip():
+            self.report({'ERROR'}, "源目录没有匹配结果，请先填写解包路径")
+            return {'CANCELLED'}
+        component_collection = getattr(cfg, "component_collection", None) if cfg is not None else None
+        targets = [
+            obj for obj in context.scene.objects
+            if obj.type == 'MESH' and component_collection is not None
+            and _collection_contains(component_collection, obj)
+        ]
+        if component_collection is None or not targets:
+            self.report({'ERROR'}, "请先在 WWMI 导出模式中指定有网格的组件集合")
+            return {'CANCELLED'}
+        previous = [(obj, obj.select_get()) for obj in context.scene.objects]
+        active = context.view_layer.objects.active
+        try:
+            if not result_exists:
+                if bpy.ops.velo.wwmi_bone_map_generate() != {'FINISHED'}:
+                    return {'CANCELLED'}
+            elif not settings.rows:
+                if bpy.ops.velo.wwmi_bone_map_load_result() != {'FINISHED'}:
+                    return {'CANCELLED'}
+            for obj, selected in previous:
+                obj.select_set(False)
+            for obj in targets:
+                obj.select_set(True)
+            context.view_layer.objects.active = targets[0]
+            toggle = VELO_OT_wwmi_bone_map_toggle()
+            toggle.target = 'ORIGINAL'
+            result = toggle.execute(context)
+            if result != {'FINISHED'}:
+                return result
+            result = bpy.ops.velo.wwmi_skeleton_import()
+            if result != {'FINISHED'}:
+                return result
+        finally:
+            for obj, selected in previous:
+                if obj.name in bpy.context.scene.objects:
+                    obj.select_set(selected)
+            context.view_layer.objects.active = active
+        self.report({'INFO'}, f"已完成 {len(targets)} 个 Mod 网格的映射改名与骨架绑定")
         return {'FINISHED'}
 
 
@@ -397,8 +459,10 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
         row = layout.row(align=True)
         row.operator("velo.wwmi_bone_map_load_result", icon='IMPORT')
         row.operator("velo.wwmi_bone_map_save_result", icon='EXPORT')
-        layout.operator("velo.wwmi_bone_map_generate", icon='SORTBYEXT')
-        layout.operator("velo.wwmi_skeleton_import", icon='ARMATURE_DATA')
+        row = layout.row(align=True)
+        row.operator("velo.wwmi_bone_map_generate", icon='SORTBYEXT')
+        row.operator("velo.wwmi_skeleton_import", icon='ARMATURE_DATA')
+        layout.operator("velo.wwmi_auto_bind", icon='ARMATURE_DATA')
         if cfg is not None:
             layout.prop(cfg, "mirror_mesh", text="镜像骨架")
         layout.template_list("VELO_UL_wwmi_bone_map", "", settings, "rows", settings, "active_row", rows=8)
@@ -410,6 +474,7 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
 
 
 _classes = (VELO_WWMI_BoneMapRow, VELO_WWMI_BoneMapSettings, VELO_OT_wwmi_bone_map_generate,
+            VELO_OT_wwmi_auto_bind,
             VELO_OT_wwmi_skeleton_import, VELO_OT_wwmi_bone_map_load_result,
             VELO_OT_wwmi_bone_map_save_result,
             VELO_OT_wwmi_bone_map_toggle, VELO_UL_wwmi_bone_map, VELO_OT_wwmi_bone_map_remove,
