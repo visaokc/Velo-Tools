@@ -124,28 +124,7 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
     if bones[index].name == "Bip001":
         return head + Vector((0.0, 0.0, 0.1))
     if children:
-        child_heads = [heads[bones.index(child)] for child in children]
-        if len(child_heads) == 1:
-            direction = child_heads[0] - head
-            return head + direction.normalized() * max(direction.length, _MIN_TAIL_LENGTH) if direction.length > 1e-5 else head + Vector((0.0, 0.0, _MIN_TAIL_LENGTH))
-        parent = bones[index].parent
-        incoming = head - heads[parent] if 0 <= parent < len(bones) else Vector()
-        child_deltas = [child_head - head for child_head in child_heads]
-        longest = max((delta.length for delta in child_deltas), default=0.0)
-        usable = [delta for delta in child_deltas if delta.length >= max(_MIN_TAIL_LENGTH, longest * 0.2)]
-        if incoming.length > 1e-5:
-            incoming.normalize()
-            aligned = [
-                (delta, delta.normalized().dot(incoming))
-                for delta in usable
-            ]
-            if aligned:
-                direction = max(aligned, key=lambda item: item[1])[0]
-                return head + direction.normalized() * max(direction.length, _MIN_TAIL_LENGTH)
-        if usable:
-            direction = max(usable, key=lambda delta: delta.length)
-            return head + direction.normalized() * max(direction.length, _MIN_TAIL_LENGTH)
-        return head + Vector((0.0, 0.0, _MIN_TAIL_LENGTH))
+        return sum((heads[bones.index(child)] for child in children), Vector()) / len(children)
     parent = bones[index].parent
     chain = [index]
     while len(chain) < 5:
