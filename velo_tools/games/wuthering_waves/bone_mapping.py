@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import re
 import struct
@@ -197,7 +198,7 @@ def _global_id(component_meta: dict, local_id: int) -> int:
     return int(value)
 
 
-def _group_clouds(mesh):
+def _group_clouds(mesh, max_points=128):
     positions = mesh.positions()
     indices = mesh.blend_indices().astype(numpy.int32, copy=False)
     weights = mesh.blend_weights()
@@ -206,10 +207,14 @@ def _group_clouds(mesh):
         weights[:, 0] = 1.0
     active = weights > 0
     group_ids = sorted(int(value) for value in numpy.unique(indices[active]))
-    return {
-        group_id: positions[numpy.any((indices == group_id) & active, axis=1)].astype(numpy.float32)
-        for group_id in group_ids
-    }
+    clouds = {}
+    for group_id in group_ids:
+        points = positions[numpy.any((indices == group_id) & active, axis=1)].astype(numpy.float32)
+        if len(points) > max_points:
+            keep = numpy.linspace(0, len(points) - 1, max_points, dtype=numpy.int64)
+            points = points[keep]
+        clouds[group_id] = points
+    return clouds
 
 
 def _match_vertex_groups_unique(component_mesh, source_mesh, candidates_count=6):
@@ -322,6 +327,17 @@ def _candidate_mapping(component, model, vg_candidates):
     return result
 
 
+def _voxel_overlap_score(points_a, points_b):
+    """Cheap occupancy overlap used only to rank exact Chamfer candidates."""
+    # The matcher normalizes geometry to a unit bounding box; a coarse grid is
+    # sufficient for ranking and avoids expensive nearest-point calculations.
+    voxels_a = {tuple(row) for row in numpy.floor(points_a * 64.0).astype(numpy.int64)}
+    voxels_b = {tuple(row) for row in numpy.floor(points_b * 64.0).astype(numpy.int64)}
+    if not voxels_a or not voxels_b:
+        return 0.0
+    return len(voxels_a & voxels_b) / max(len(voxels_a), len(voxels_b))
+
+
 def generate_mapping(unpack_folder: Path, object_source_folder: Path, *, voxel_size=0.05,
                      similarity_threshold=55.0, vg_candidates=6):
     unpack_folder = Path(unpack_folder)
@@ -349,13 +365,38 @@ def generate_mapping(unpack_folder: Path, object_source_folder: Path, *, voxel_s
         raise BoneMappingError(f"对象源目录读取失败：{exc}") from exc
 
     geometry = GeometryMatcher(GeometryMatcherConfig(voxel_size=voxel_size, sensitivity=0.5))
+    unique_sections = []
+    seen_signatures = set()
+    for section in sections:
+        points = geometry.voxel_sample_mesh(section, voxel_size=voxel_size)
+        signature = hashlib.sha1(points.tobytes()).digest()
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        unique_sections.append(section)
+    sections = unique_sections
+    section_points = {id(section): geometry.voxel_sample_mesh(section, voxel_size=voxel_size)
+                      for section in sections}
     assignments = []
     for component in full_object.components:
+        component_points = geometry.voxel_sample_mesh(component.mesh, voxel_size=voxel_size)
+        ranked = sorted(
+            ((- _voxel_overlap_score(component_points, section_points[id(section)]), index, section)
+             for index, section in enumerate(sections)),
+            key=lambda item: (item[0], item[1]),
+        )
+        candidate_indices = {item[1] for item in ranked[:min(4, len(ranked))]}
         scores = sorted(
             ((geometry.calculate_similarity(section, component.mesh), index, section)
-             for index, section in enumerate(sections)),
+             for index, section in enumerate(sections) if index in candidate_indices),
             reverse=True, key=lambda item: item[0],
         )
+        if scores[0][0] < similarity_threshold and len(candidate_indices) < len(sections):
+            scores = sorted(
+                ((geometry.calculate_similarity(section, component.mesh), index, section)
+                 for index, section in enumerate(sections)),
+                reverse=True, key=lambda item: item[0],
+            )
         best_score, best_index, best_section = scores[0]
         if best_score < similarity_threshold:
             raise BoneMappingError(

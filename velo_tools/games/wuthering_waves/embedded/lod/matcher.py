@@ -25,6 +25,7 @@ from enum import Enum
 from operator import itemgetter
 
 
+
 class LODMatcherError(Exception):
     pass
 
@@ -174,6 +175,7 @@ class GeometryMatcherConfig:
     sensitivity: float = 0.5
     voxel_size: float = 0.05
     samples_count: int = 5000
+    voxel_points_limit: int = 512
 
 
 @dataclass
@@ -309,6 +311,10 @@ class GeometryMatcher(ChamferMixin):
         # Unique voxels
         _, unique_idx = numpy.unique(vox, axis=0, return_index=True)
         sampled_points = tri_centers[unique_idx]
+        if len(sampled_points) > self.cfg.voxel_points_limit:
+            keep = numpy.linspace(0, len(sampled_points) - 1,
+                                  self.cfg.voxel_points_limit, dtype=numpy.int64)
+            sampled_points = sampled_points[keep]
 
         return sampled_points
 
