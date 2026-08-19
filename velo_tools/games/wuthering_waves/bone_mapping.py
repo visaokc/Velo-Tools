@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -254,7 +255,7 @@ def _match_vertex_groups_unique(component_mesh, source_mesh, candidates_count=6)
         candidate_width = min(len(source_ids), candidate_width * 2)
 
 def mapping_from_assignments(assignments, *, vg_candidates=6):
-    """Keep every proven global-id/name occurrence with its source Component."""
+    """Merge repeated global-id/name occurrences while retaining source Components."""
     rows = []
     evidence = []
     for component, model, score in assignments:
@@ -269,7 +270,41 @@ def mapping_from_assignments(assignments, *, vg_candidates=6):
         evidence.append((component.source_name, model.label, score, len(local_to_source)))
     if not rows:
         raise BoneMappingError("体素匹配完成，但没有得到任何骨骼编号映射")
-    return sorted(rows, key=lambda item: (item[0], item[2], item[1])), evidence
+    merged = {}
+    for global_id, bone_name, component_name, support in rows:
+        key = (global_id, bone_name)
+        current = merged.setdefault(key, [set(), 0])
+        current[0].add(component_name)
+        current[1] += support
+    result = [
+        (global_id, bone_name, _format_component_sources(component_names), support)
+        for (global_id, bone_name), (component_names, support) in merged.items()
+    ]
+    return sorted(result, key=lambda item: (item[0], item[2], item[1])), evidence
+
+
+def _format_component_sources(names):
+    """Format integer Component sources as ranges, retaining dotted suffixes."""
+    values = []
+    for name in names:
+        match = re.search(r'(?:Component\s+|C)(\d+)(\.\d+)?$', name)
+        if not match:
+            values.append((None, name))
+        elif match.group(2):
+            values.append((None, f"C{match.group(1)}{match.group(2)}"))
+        else:
+            values.append((int(match.group(1)), None))
+    integer_ids = sorted(value for value, _ in values if value is not None)
+    tokens = [value for _, value in values if value is not None]
+    index = 0
+    while index < len(integer_ids):
+        start = end = integer_ids[index]
+        while index + 1 < len(integer_ids) and integer_ids[index + 1] == end + 1:
+            index += 1
+            end = integer_ids[index]
+        tokens.append(f"C{start}" if start == end else f"C{start}-C{end}")
+        index += 1
+    return ",".join(sorted(tokens, key=lambda token: (int(re.search(r'\d+', token).group()), token)))
 
 
 def _candidate_mapping(component, model, vg_candidates):

@@ -179,13 +179,23 @@ class GeometryMatcherConfig:
 @dataclass
 class GeometryMatcher(ChamferMixin):
     cfg: GeometryMatcherConfig
+    _voxel_cache: dict = field(default_factory=dict, init=False, repr=False)
+    _similarity_cache: dict = field(default_factory=dict, init=False, repr=False)
 
     def calculate_similarity(self, mesh_a, mesh_b) -> float:
+        cache_key = (id(mesh_a), id(mesh_b), self.cfg.method, self.cfg.voxel_size,
+                     self.cfg.sensitivity, self.cfg.samples_count)
+        cached = self._similarity_cache.get(cache_key)
+        if cached is not None:
+            return cached
         if self.cfg.method == GeometryMatcherMethod.Voxel:
-            return self.calculate_similarity_voxel(mesh_a, mesh_b)
-        if self.cfg.method == GeometryMatcherMethod.PointCloud:
-            return self.calculate_similarity_point_cloud(mesh_a, mesh_b)
-        raise ValueError(f'Unknown geometry matching method {self.cfg.method}!')
+            similarity = self.calculate_similarity_voxel(mesh_a, mesh_b)
+        elif self.cfg.method == GeometryMatcherMethod.PointCloud:
+            similarity = self.calculate_similarity_point_cloud(mesh_a, mesh_b)
+        else:
+            raise ValueError(f'Unknown geometry matching method {self.cfg.method}!')
+        self._similarity_cache[cache_key] = similarity
+        return similarity
 
     def calculate_similarity_point_cloud(self, mesh_a, mesh_b) -> float:
         """Calculates similarity between Mesh A and Mesh B.
@@ -235,8 +245,8 @@ class GeometryMatcher(ChamferMixin):
 
     def calculate_similarity_voxel(self, mesh_a, mesh_b):
 
-        points_a = self.voxel_sample_mesh(mesh_a, voxel_size=self.cfg.voxel_size)
-        points_b = self.voxel_sample_mesh(mesh_b, voxel_size=self.cfg.voxel_size)
+        points_a = self._voxel_points(mesh_a)
+        points_b = self._voxel_points(mesh_b)
 
         if len(points_a) == 0 or len(points_b) == 0:
             return 0.0
@@ -263,6 +273,14 @@ class GeometryMatcher(ChamferMixin):
         similarity *= (0.7 + 0.3 * coverage)
 
         return similarity * 100.0
+
+    def _voxel_points(self, mesh):
+        key = (id(mesh), self.cfg.voxel_size)
+        points = self._voxel_cache.get(key)
+        if points is None:
+            points = self.voxel_sample_mesh(mesh, voxel_size=self.cfg.voxel_size)
+            self._voxel_cache[key] = points
+        return points
 
     def voxel_sample_mesh(self, mesh, voxel_size=0.05):
         """

@@ -78,11 +78,24 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
     @staticmethod
     def _component_name(obj):
         match = re.search(r'Component\s+(\d+(?:\.\d+)?)', obj.name)
-        return f"Component {match.group(1)}" if match else ""
+        return f"C{match.group(1)}" if match else ""
+
+    @staticmethod
+    def _component_key(value):
+        keys = []
+        for token in re.split(r'\s*,\s*', value or ""):
+            range_match = re.fullmatch(r'C(\d+)-C(\d+)', token.strip())
+            if range_match:
+                keys.extend(f"C{index}" for index in range(int(range_match.group(1)), int(range_match.group(2)) + 1))
+                continue
+            match = re.fullmatch(r'C(\d+(?:\.\d+)?)', token.strip())
+            if match:
+                keys.append(f"C{match.group(1)}")
+        return keys
 
     def _pairs_for_object(self, obj, rows):
         component_name = self._component_name(obj)
-        scoped = [row for row in rows if row.component_name == component_name] if component_name else []
+        scoped = [row for row in rows if component_name in self._component_key(row.component_name)] if component_name else []
         candidates = scoped or rows
         pairs = {}
         collisions = set()
@@ -134,9 +147,13 @@ class VELO_UL_wwmi_bone_map(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
         row.prop(item, "numeric_id", text="")
-        row.label(text="→")
+        arrow = row.row()
+        arrow.ui_units_x = 1.6
+        arrow.alignment = 'CENTER'
+        arrow.label(text="→")
         row.prop(item, "original_name", text="")
-        row.label(text=item.component_name or "-")
+        source_keys = VELO_OT_wwmi_bone_map_toggle._component_key(item.component_name)
+        row.label(text=item.component_name if source_keys else "-")
         op = row.operator("velo.wwmi_bone_map_remove", text="", icon='REMOVE')
         op.index = index
 
