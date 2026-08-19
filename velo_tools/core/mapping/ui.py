@@ -39,7 +39,7 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = 'Velo Tools'
     bl_parent_id = 'VELO_PT_main'
-    bl_order = 1
+    bl_order = 2
 
     @classmethod
     def poll(cls, context):
