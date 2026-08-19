@@ -41,6 +41,16 @@ def _matching_result_path(source_folder):
     return Path(bpy.path.abspath(source_folder)).resolve() / _MATCHING_RESULT_NAME
 
 
+def _load_hierarchy_bones(settings, source_folder):
+    from .games.wuthering_waves.skeleton_import import _find_skeleton, load_saved_skeleton
+
+    if settings.unpack_folder.strip():
+        return _find_skeleton(Path(bpy.path.abspath(settings.unpack_folder)))
+    if source_folder and source_folder.strip():
+        return load_saved_skeleton(_matching_result_path(source_folder))
+    raise ValueError("按骨骼层级重排需要解包路径，或对象源目录中的匹配结果")
+
+
 class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
     bl_idname = "velo.wwmi_bone_map_generate"
     bl_label = "自动生成映射表"
@@ -93,13 +103,17 @@ class VELO_OT_wwmi_skeleton_import(bpy.types.Operator):
                 folder = Path(bpy.path.abspath(settings.unpack_folder))
                 bones = None
             elif source_folder.strip():
+                result_path = _matching_result_path(source_folder)
+                if not result_path.is_file():
+                    raise ValueError(f"源目录中找不到匹配结果：{result_path.name}")
                 folder = Path(".")
-                bones = load_saved_skeleton(_matching_result_path(source_folder))
+                bones = load_saved_skeleton(result_path)
             else:
                 raise ValueError("没有可用的解包路径或源目录匹配结果")
             arm_obj, bone_count, bound_count = import_skeleton(
                 folder,
                 bones=bones,
+                component_collection=getattr(cfg, "component_collection", None) if cfg is not None else None,
                 mirror_mesh=bool(getattr(cfg, "mirror_mesh", False)))
         except Exception as exc:
             self.report({'ERROR'}, f"骨架导入失败：{exc}")
@@ -250,10 +264,8 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
             return (1, row.numeric_id)
 
     @staticmethod
-    def _hierarchy_sort_key(rows, unpack_folder):
-        from .games.wuthering_waves.skeleton_import import _find_skeleton
-
-        bones = _find_skeleton(Path(bpy.path.abspath(unpack_folder)))
+    def _hierarchy_sort_key(rows, settings, source_folder):
+        bones = _load_hierarchy_bones(settings, source_folder)
         bone_order = {bone.name: index for index, bone in enumerate(bones)}
         hierarchy_keys = {}
         for index, bone in enumerate(bones):
@@ -275,9 +287,9 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
         if self.target == 'NUMERIC':
             ordered = sorted(rows, key=self._numeric_sort_key)
         else:
-            if not settings.unpack_folder.strip():
-                raise ValueError("按骨骼层级重排需要填写解包路径")
-            ordered = self._hierarchy_sort_key(rows, settings.unpack_folder)
+            cfg = getattr(bpy.context.scene, "VTWW_settings", None)
+            source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
+            ordered = self._hierarchy_sort_key(rows, settings, source_folder)
         if rows == ordered:
             return
         active = settings.active_row
@@ -298,7 +310,9 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
             return {'CANCELLED'}
         if self.target == 'ORIGINAL':
             try:
-                self._hierarchy_sort_key(list(settings.rows), settings.unpack_folder)
+                cfg = getattr(context.scene, "VTWW_settings", None)
+                source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
+                self._hierarchy_sort_key(list(settings.rows), settings, source_folder)
             except Exception as exc:
                 self.report({'ERROR'}, f"映射表重排失败：{exc}")
                 return {'CANCELLED'}

@@ -45,6 +45,19 @@ def _object_root_collection(scene, obj):
     )
 
 
+def _collection_has_content(collection):
+    return bool(collection.objects) or any(_collection_has_content(child) for child in collection.children)
+
+
+def _skeleton_collection(scene, preferred=None):
+    target = preferred if preferred is not None and _collection_has_content(preferred) else scene.collection
+    skeleton = target.children.get("Skeleton")
+    if skeleton is None:
+        skeleton = bpy.data.collections.new("Skeleton")
+        target.children.link(skeleton)
+    return skeleton
+
+
 def load_saved_skeleton(path: Path) -> tuple[UEBone, ...]:
     """Load the skeleton snapshot stored in a matching-result JSON file."""
     try:
@@ -144,15 +157,13 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
     return head + direction.normalized() * max(segment_length * 0.5, 0.01)
 
 
-def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=False, bones=None):
+def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=False, bones=None,
+                    component_collection=None):
     bones = tuple(bones) if bones is not None else _find_skeleton(Path(folder))
     heads = _world_heads(bones, mirror_mesh=mirror_mesh)
     arm_data = bpy.data.armatures.new(armature_name)
     arm_obj = bpy.data.objects.new(armature_name, arm_data)
-    skeleton_collection = bpy.context.scene.collection.children.get("Skeleton")
-    if skeleton_collection is None:
-        skeleton_collection = bpy.data.collections.new("Skeleton")
-        bpy.context.scene.collection.children.link(skeleton_collection)
+    skeleton_collection = _skeleton_collection(bpy.context.scene, component_collection)
     skeleton_collection.objects.link(arm_obj)
     arm_obj.show_in_front = True
     selected_component_meshes = [
@@ -164,6 +175,7 @@ def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=
                           for obj in selected_component_meshes)
         if root is not None and root.name != "Skeleton"
     }
+    binding_root = component_collection if component_collection is not None and _collection_has_content(component_collection) else None
     for obj in bpy.context.selected_objects:
         obj.select_set(False)
     bpy.context.view_layer.objects.active = arm_obj
@@ -189,9 +201,13 @@ def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=
     for obj in bpy.context.scene.objects:
         if obj.type != "MESH" or not _COMPONENT_RE.search(obj.name):
             continue
-        if source_roots and _object_root_collection(bpy.context.scene, obj) not in source_roots:
-            continue
-        if not source_roots:
+        if binding_root is not None:
+            if not any(_collection_contains(collection, obj) for collection in (binding_root,)):
+                continue
+        elif source_roots:
+            if _object_root_collection(bpy.context.scene, obj) not in source_roots:
+                continue
+        else:
             continue
         modifier = next((item for item in obj.modifiers if item.type == 'ARMATURE' and item.name == 'WWMI Skeleton'), None)
         if modifier is None:
