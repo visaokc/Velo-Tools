@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import bpy
@@ -18,65 +17,53 @@ class VELO_WWMI_BoneMapSettings(bpy.types.PropertyGroup):
     rows: bpy.props.CollectionProperty(type=VELO_WWMI_BoneMapRow)
     active_row: bpy.props.IntProperty(default=0)
     show_original: bpy.props.BoolProperty(name="当前显示原始名", default=False)
+    voxel_size: bpy.props.FloatProperty(
+        name="体素大小", default=0.05, min=0.005, max=0.2, precision=3,
+        description="几何匹配使用的归一化体素大小",
+    )
+    similarity_threshold: bpy.props.FloatProperty(
+        name="最低相似度", default=55.0, min=1.0, max=100.0, subtype='PERCENTAGE',
+        description="每个 WWMI Component 必须达到的最低体素相似度",
+    )
 
 
 def _selected_meshes(context):
     return [o for o in context.selected_objects if o.type == "MESH"]
 
 
-def _numeric_groups(objects):
-    ids = set()
-    for obj in objects:
-        for vg in obj.vertex_groups:
-            if vg.name.isdigit():
-                ids.add(int(vg.name))
-    return sorted(ids)
-
-
-def _json_names(root: Path):
-    """Best-effort JSON reader; binary .uemodel parsing is intentionally not guessed."""
-    names = {}
-    if not root.is_dir():
-        return names
-    for path in root.rglob("*.json"):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        def visit(value):
-            if isinstance(value, dict):
-                bid = value.get("id", value.get("bone_id", value.get("BoneIndex")))
-                name = value.get("name", value.get("bone_name", value.get("BoneName")))
-                if isinstance(bid, int) and isinstance(name, str) and name:
-                    names.setdefault(bid, name)
-                for child in value.values():
-                    visit(child)
-            elif isinstance(value, list):
-                for child in value:
-                    visit(child)
-        visit(data)
-    return names
-
-
 class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
     bl_idname = "velo.wwmi_bone_map_generate"
     bl_label = "自动生成映射表"
-    bl_description = "汇总当前选中网格的数字顶点组，并尝试读取解包目录中的 JSON 骨骼名"
+    bl_description = "体素匹配解包目录内全部 .uemodel section 与 WWMI Component，再生成全局编号到原始骨骼名的映射"
 
     def execute(self, context):
         settings = context.scene.velo_wwmi_bone_map
-        objects = _selected_meshes(context)
-        if not objects:
-            self.report({'ERROR'}, "请先选择至少一个网格对象")
+        cfg = getattr(context.scene, "VTWW_settings", None)
+        source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
+        if not settings.unpack_folder.strip():
+            self.report({'ERROR'}, "请先填写解包路径")
+            return {'CANCELLED'}
+        if not source_folder.strip():
+            self.report({'ERROR'}, "请先填写 WWMI 对象源目录")
+            return {'CANCELLED'}
+        from .games.wuthering_waves.bone_mapping import BoneMappingError, generate_mapping
+        try:
+            mapping, evidence = generate_mapping(
+                Path(bpy.path.abspath(settings.unpack_folder)),
+                Path(bpy.path.abspath(source_folder)),
+                voxel_size=settings.voxel_size,
+                similarity_threshold=settings.similarity_threshold,
+            )
+        except BoneMappingError as exc:
+            self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
         settings.rows.clear()
-        names = _json_names(Path(bpy.path.abspath(settings.unpack_folder)))
-        for number in _numeric_groups(objects):
+        for number, bone_name in mapping.items():
             row = settings.rows.add()
             row.numeric_id = str(number)
-            row.original_name = names.get(number, "")
+            row.original_name = bone_name
         settings.show_original = False
-        self.report({'INFO'}, f"已生成 {len(settings.rows)} 行（来源为当前选中的 {len(objects)} 个网格）")
+        self.report({'INFO'}, f"已由 {len(evidence)} 个 Component 的体素匹配生成 {len(mapping)} 行")
         return {'FINISHED'}
 
 
@@ -152,6 +139,9 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
         cfg = getattr(context.scene, "VTWW_settings", None)
         if cfg is not None:
             layout.prop(cfg, "object_source_folder", text="对象源目录")
+        match_box = layout.box()
+        match_box.prop(settings, "similarity_threshold")
+        match_box.prop(settings, "voxel_size")
         layout.operator("velo.wwmi_bone_map_generate", icon='SORTBYEXT')
         layout.template_list("VELO_UL_wwmi_bone_map", "", settings, "rows", settings, "active_row", rows=8)
         layout.operator("velo.wwmi_bone_map_add", text="新增空行", icon='ADD')
