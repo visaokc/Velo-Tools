@@ -165,21 +165,37 @@ def _leaf_length(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> 
     """Estimate leaf display length from nearby bones, not a distant ancestor."""
     bone = bones[index]
     parent = bone.parent
-    siblings = [
-        (heads[other] - heads[index]).length
-        for other, candidate in enumerate(bones)
-        if other != index and candidate.parent == parent
-        and (heads[other] - heads[index]).length > 1e-5
-    ]
-    if siblings:
-        siblings.sort()
-        local = siblings[len(siblings) // 2] * 0.5
-    elif 0 <= parent < len(bones):
-        local = (heads[index] - heads[parent]).length * 0.35
+    parent_children = [
+        candidate for candidate in bones if candidate.parent == parent
+    ] if 0 <= parent < len(bones) else []
+    facial = bone.name.startswith(("Facial_", "Face_", "Eye", "Brow", "Mouth", "Tongue"))
+    if len(parent_children) == 1:
+        parent_tail = _bone_tail(parent, bones, heads)
+        parent_length = (parent_tail - heads[parent]).length
+        if parent_length > 1e-5:
+            local = parent_length
+        else:
+            local = _MIN_TAIL_LENGTH
     else:
-        local = _MIN_TAIL_LENGTH
-    if bone.name.startswith(("Facial_", "Face_", "Eye", "Brow", "Mouth", "Tongue")):
+        local = None
+    if local is None:
+        siblings = [
+            (heads[other] - heads[index]).length
+            for other, candidate in enumerate(bones)
+            if other != index and candidate.parent == parent
+            and (heads[other] - heads[index]).length > 1e-5
+        ]
+        if siblings:
+            siblings.sort()
+            local = siblings[len(siblings) // 2] * 0.5
+        elif 0 <= parent < len(bones):
+            local = (heads[index] - heads[parent]).length * 0.35
+        else:
+            local = _MIN_TAIL_LENGTH
+    if facial:
         local = min(local, 0.035)
+    elif len(parent_children) == 1:
+        return max(local, _MIN_TAIL_LENGTH)
     return max(min(local, 0.08), _MIN_TAIL_LENGTH)
 
 
