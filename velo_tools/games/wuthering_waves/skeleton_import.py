@@ -13,6 +13,7 @@ from .bone_mapping import BoneMappingError, UEBone, load_uemodel_skeleton
 
 _COMPONENT_RE = re.compile(r"(?:^|[ _])Component (\d+(?:\.\d+)?)")
 _STANDARD_RE = re.compile(r"^(?:Bip001|Bone_(?:Chest|Spine|Neck|Head|Shoulder|Arm|Forearm|Hand|Thigh|Calf|Foot|Pelvis))")
+_MESH_SCALE = 0.01
 
 
 def _find_skeleton(folder: Path) -> tuple[UEBone, ...]:
@@ -42,12 +43,17 @@ def _world_heads(bones: tuple[UEBone, ...]) -> list[Vector]:
         else:
             heads[index] = local
             rotations[index] = local_rotation
-    return heads
+    # Match the WWMI mesh import's mesh_scale=0.01 and mesh_rotation=(0, 0, 180).
+    return [Vector((-head.x * _MESH_SCALE, -head.y * _MESH_SCALE, head.z * _MESH_SCALE)) for head in heads]
 
 
 def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Vector:
     children = [child for child in bones if child.parent == index]
     head = heads[index]
+    if bones[index].name == "Root":
+        return head + Vector((0.0, 0.0, 0.5))
+    if bones[index].name == "Bip001":
+        return head + Vector((0.0, 0.0, 0.1))
     if children:
         return sum((heads[bones.index(child)] for child in children), Vector()) / len(children)
     parent = bones[index].parent
