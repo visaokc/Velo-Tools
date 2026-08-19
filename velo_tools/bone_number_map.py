@@ -133,9 +133,7 @@ class VELO_OT_wwmi_auto_bind(bpy.types.Operator):
             for obj in targets:
                 obj.select_set(True)
             context.view_layer.objects.active = targets[0]
-            toggle = VELO_OT_wwmi_bone_map_toggle()
-            toggle.target = 'ORIGINAL'
-            result = toggle.execute(context)
+            result = bpy.ops.velo.wwmi_bone_map_toggle(target='ORIGINAL')
             if result != {'FINISHED'}:
                 return result
             result = bpy.ops.velo.wwmi_skeleton_import()
