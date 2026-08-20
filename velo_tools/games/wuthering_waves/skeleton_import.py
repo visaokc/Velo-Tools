@@ -160,7 +160,8 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
     if bones[index].name == "Bip001":
         return head + Vector((0.0, 0.0, 0.1))
     if children:
-        child_heads = [heads[bones.index(child)] for child in children]
+        child_entries = [(child, heads[bones.index(child)]) for child in children]
+        child_heads = [point for _child, point in child_entries]
         distances = sorted((point - head).length for point in child_heads)
         if len(distances) >= 3:
             median = distances[len(distances) // 2]
@@ -168,12 +169,31 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
             mad = deviations[len(deviations) // 2]
             cutoff = median + 3.0 * max(mad, median * 0.5)
             clustered = [
-                point for point in child_heads
+                (child, point) for child, point in child_entries
                 if (point - head).length <= cutoff
             ]
             if len(clustered) >= 2 and len(clustered) < len(child_heads):
-                target = sum(clustered, Vector()) / len(clustered)
-                direction = target - head
+                continuations = []
+                for child, child_head in clustered:
+                    child_index = bones.index(child)
+                    grandchildren = [
+                        heads[other] for other, candidate in enumerate(bones)
+                        if candidate.parent == child_index
+                    ]
+                    if grandchildren:
+                        target = sum(grandchildren, Vector()) / len(grandchildren)
+                        continuation = target - child_head
+                        if continuation.length > 1e-5:
+                            continuations.append(continuation.normalized())
+                direction = Vector()
+                if len(continuations) >= 2:
+                    combined = sum(continuations, Vector())
+                    coherence = combined.length / len(continuations)
+                    if coherence >= 0.85:
+                        direction = combined
+                if direction.length <= 1e-5:
+                    target = sum((point for _child, point in clustered), Vector()) / len(clustered)
+                    direction = target - head
                 if direction.length > 1e-5:
                     length = max(_MIN_TAIL_LENGTH, min(0.08, median * 2.5))
                     return head + direction.normalized() * length
