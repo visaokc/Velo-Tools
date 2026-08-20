@@ -159,22 +159,25 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
         return head + Vector((0.0, 0.0, 0.5))
     if bones[index].name == "Bip001":
         return head + Vector((0.0, 0.0, 0.1))
-    if "Hand" in bones[index].name:
-        finger_children = [
-            child for child in children
-            if "Finger" in child.name and "Weapon" not in child.name
-        ]
-        if finger_children:
-            finger_heads = [heads[bones.index(child)] for child in finger_children]
-            target = sum(finger_heads, Vector()) / len(finger_heads)
-            direction = target - head
-            if direction.length > 1e-5:
-                distances = sorted((point - head).length for point in finger_heads)
-                median = distances[len(distances) // 2]
-                length = max(_MIN_TAIL_LENGTH, min(0.06, median * 2.5))
-                return head + direction.normalized() * length
     if children:
-        return sum((heads[bones.index(child)] for child in children), Vector()) / len(children)
+        child_heads = [heads[bones.index(child)] for child in children]
+        distances = sorted((point - head).length for point in child_heads)
+        if len(distances) >= 3:
+            median = distances[len(distances) // 2]
+            deviations = sorted(abs(distance - median) for distance in distances)
+            mad = deviations[len(deviations) // 2]
+            cutoff = median + 3.0 * max(mad, median * 0.5)
+            clustered = [
+                point for point in child_heads
+                if (point - head).length <= cutoff
+            ]
+            if len(clustered) >= 2 and len(clustered) < len(child_heads):
+                target = sum(clustered, Vector()) / len(clustered)
+                direction = target - head
+                if direction.length > 1e-5:
+                    length = max(_MIN_TAIL_LENGTH, min(0.08, median * 2.5))
+                    return head + direction.normalized() * length
+        return sum(child_heads, Vector()) / len(child_heads)
     parent = bones[index].parent
     chain = [index]
     while len(chain) < 5:
