@@ -303,6 +303,7 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
         component_name = self._component_name(obj)
         scoped = [row for row in rows if component_name in self._component_key(row.component_name)] if component_name else []
         candidates = scoped or rows
+        active_names = {group.name for group in obj.vertex_groups}
         pairs = {}
         collisions = set()
         from .games.wuthering_waves.skeleton_import import side_suffix_names
@@ -323,7 +324,8 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
                 value = suffixes.get(row.original_name, row.original_name) if rename_side_suffix else row.original_name
                 previous = pairs.get(key)
                 if previous is not None and previous != value:
-                    collisions.add(key)
+                    if key in active_names:
+                        collisions.add(key)
                 else:
                     pairs[key] = value
         if collisions:

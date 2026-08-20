@@ -53,6 +53,27 @@ def side_suffix_names(names):
     return renamed
 
 
+def _chain_family(name: str) -> tuple[str, ...]:
+    """Extract a stable semantic family without relying on asset-specific names."""
+    base = re.sub(r"\.(?:L|R)$", "", name)
+    prefix = re.split(r"\d", base, maxsplit=1)[0]
+    tokens = [
+        token.casefold() for token in re.split(r"[_\- ]+", prefix)
+        if token and token.upper() not in {"L", "R", "M"}
+    ]
+    if tokens:
+        return tuple(tokens[:2])
+    return (base.casefold(),)
+
+
+def _has_cross_family_unique_child(index: int, bones: tuple[UEBone, ...]) -> bool:
+    children = [child for child in bones if child.parent == index]
+    return (
+        len(children) == 1
+        and _chain_family(bones[index].name) != _chain_family(children[0].name)
+    )
+
+
 def _find_skeleton(folder: Path) -> tuple[UEBone, ...]:
     candidates = []
     for path in sorted(folder.rglob("*.uemodel")):
@@ -159,7 +180,7 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
         return head + Vector((0.0, 0.0, 0.5))
     if bones[index].name == "Bip001":
         return head + Vector((0.0, 0.0, 0.1))
-    if children:
+    if children and not _has_cross_family_unique_child(index, bones):
         child_entries = [(child, heads[bones.index(child)]) for child in children]
         child_heads = [point for _child, point in child_entries]
         distances = sorted((point - head).length for point in child_heads)
@@ -242,6 +263,43 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
     return head + direction.normalized() * length
 
 
+def _symmetrize_cross_family_tails(
+        bones: tuple[UEBone, ...], heads: list[Vector], tails: list[Vector]) -> None:
+    """Mirror attachment-like display tails while preserving the hierarchy."""
+    renamed = side_suffix_names([bone.name for bone in bones])
+    pairs = {}
+    for index, bone in enumerate(bones):
+        normalized = renamed.get(bone.name, "")
+        if normalized.endswith((".L", ".R")):
+            pairs.setdefault(normalized[:-2], {})[normalized[-1]] = index
+    for sides in pairs.values():
+        if "L" not in sides or "R" not in sides:
+            continue
+        left = sides["L"]
+        right = sides["R"]
+        left_attachment = _has_cross_family_unique_child(left, bones)
+        right_attachment = _has_cross_family_unique_child(right, bones)
+        if not left_attachment and not right_attachment:
+            continue
+        left_delta = tails[left] - heads[left]
+        right_delta = tails[right] - heads[right]
+        if left_delta.length <= 1e-5 or right_delta.length <= 1e-5:
+            continue
+        mirrored_right = Vector((-right_delta.x, right_delta.y, right_delta.z))
+        if left_attachment and not right_attachment:
+            direction = mirrored_right.normalized()
+            length = right_delta.length
+        elif right_attachment and not left_attachment:
+            direction = left_delta.normalized()
+            length = left_delta.length
+        else:
+            combined = left_delta.normalized() + mirrored_right.normalized()
+            direction = combined.normalized() if combined.length > 1e-5 else left_delta.normalized()
+            length = (left_delta.length + right_delta.length) * 0.5
+        tails[left] = heads[left] + direction * length
+        tails[right] = heads[right] + Vector((-direction.x, direction.y, direction.z)) * length
+
+
 def _leaf_length(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> float:
     """Estimate leaf display length from nearby bones, not a distant ancestor."""
     bone = bones[index]
@@ -308,10 +366,12 @@ def import_skeleton(folder: Path, *, armature_name="WWMI Skeleton", mirror_mesh=
         arm_data.edit_bones.remove(edit_bone)
     created = []
     bone_names = side_suffix_names([bone.name for bone in bones]) if rename_side_suffix else {}
+    tails = [_bone_tail(index, bones, heads) for index in range(len(bones))]
+    _symmetrize_cross_family_tails(bones, heads, tails)
     for index, bone in enumerate(bones):
         edit = arm_data.edit_bones.new(bone_names.get(bone.name, bone.name))
         edit.head = heads[index]
-        edit.tail = _bone_tail(index, bones, heads)
+        edit.tail = tails[index]
         created.append(edit)
     for index, bone in enumerate(bones):
         if 0 <= bone.parent < len(created):
