@@ -173,6 +173,14 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
                 if (point - head).length <= cutoff
             ]
             if len(clustered) >= 2 and len(clustered) < len(child_heads):
+                excluded = [
+                    (point - head).normalized() for _child, point in child_entries
+                    if (point - head).length > cutoff
+                ]
+                if len(excluded) >= 2:
+                    excluded_coherence = sum(excluded, Vector()).length / len(excluded)
+                    if excluded_coherence >= 0.85:
+                        return sum(child_heads, Vector()) / len(child_heads)
                 continuations = []
                 for child, child_head in clustered:
                     child_index = bones.index(child)

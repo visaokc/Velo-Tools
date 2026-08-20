@@ -268,8 +268,8 @@ def _group_clouds(mesh, max_points=128):
     return clouds
 
 
-def _match_vertex_groups_unique(component_mesh, source_mesh, candidates_count=6):
-    """Map Component-local VGs to source bones with a one-to-one point-cloud assignment."""
+def _match_vertex_groups_unique_with_cost(component_mesh, source_mesh, candidates_count=6):
+    """Map local VGs to source bones and return their mean point-cloud error."""
     target_clouds = _group_clouds(component_mesh)
     source_clouds = _group_clouds(source_mesh)
     if len(target_clouds) > len(source_clouds):
@@ -297,18 +297,27 @@ def _match_vertex_groups_unique(component_mesh, source_mesh, candidates_count=6)
         matched_targets = set()
         matched_sources = set()
         mapping = {}
-        for _, target_id, source_index in sorted(edges):
+        matched_costs = []
+        for cost, target_id, source_index in sorted(edges):
             if target_id in matched_targets or source_index in matched_sources:
                 continue
             mapping[target_id] = source_ids[source_index]
+            matched_costs.append(cost)
             matched_targets.add(target_id)
             matched_sources.add(source_index)
         if len(mapping) == len(target_clouds):
-            return dict(sorted(mapping.items()))
+            return dict(sorted(mapping.items())), float(numpy.mean(matched_costs))
         if candidate_width == len(source_ids):
             missing = sorted(set(target_clouds) - set(mapping))
             raise BoneMappingError(f"无法为 Component local VG 建立一对一骨骼匹配：{missing[:8]}")
         candidate_width = min(len(source_ids), candidate_width * 2)
+
+
+def _match_vertex_groups_unique(component_mesh, source_mesh, candidates_count=6):
+    """Map Component-local VGs to source bones with a one-to-one assignment."""
+    mapping, _cost = _match_vertex_groups_unique_with_cost(
+        component_mesh, source_mesh, candidates_count)
+    return mapping
 
 def mapping_from_assignments(assignments, *, vg_candidates=6):
     """Merge repeated global-id/name occurrences while retaining source Components."""
@@ -363,32 +372,6 @@ def _format_component_sources(names):
     return ",".join(sorted(tokens, key=lambda token: (int(re.search(r'\d+', token).group()), token)))
 
 
-def _candidate_mapping(component, model, vg_candidates):
-    result = {}
-    for local_id, source_id in _match_vertex_groups_unique(component.mesh, model, vg_candidates).items():
-        if source_id >= len(model.bone_names):
-            raise BoneMappingError(f"{model.label}: bone index {source_id} is out of range")
-        global_id = _global_id(component.meta, local_id)
-        bone_name = model.bone_names[source_id]
-        existing = result.get(global_id)
-        if existing is not None and existing != bone_name:
-            raise BoneMappingError(
-                f"{model.label}: global VG {global_id} maps to both {existing} and {bone_name}")
-        result[global_id] = bone_name
-    return result
-
-
-def _voxel_overlap_score(points_a, points_b):
-    """Cheap occupancy overlap used only to rank exact Chamfer candidates."""
-    # The matcher normalizes geometry to a unit bounding box; a coarse grid is
-    # sufficient for ranking and avoids expensive nearest-point calculations.
-    voxels_a = {tuple(row) for row in numpy.floor(points_a * 64.0).astype(numpy.int64)}
-    voxels_b = {tuple(row) for row in numpy.floor(points_b * 64.0).astype(numpy.int64)}
-    if not voxels_a or not voxels_b:
-        return 0.0
-    return len(voxels_a & voxels_b) / max(len(voxels_a), len(voxels_b))
-
-
 def generate_mapping(unpack_folder: Path, object_source_folder: Path, *, voxel_size=0.05,
                      similarity_threshold=55.0, vg_candidates=6):
     unpack_folder = Path(unpack_folder)
@@ -420,49 +403,61 @@ def generate_mapping(unpack_folder: Path, object_source_folder: Path, *, voxel_s
     seen_signatures = set()
     for section in sections:
         points = geometry.voxel_sample_mesh(section, voxel_size=voxel_size)
-        signature = hashlib.sha1(points.tobytes()).digest()
+        signature = hashlib.sha1(
+            points.tobytes()
+            + section.blend_indices().tobytes()
+            + section.blend_weights().tobytes()
+        ).digest()
         if signature in seen_signatures:
             continue
         seen_signatures.add(signature)
         unique_sections.append(section)
     sections = unique_sections
-    section_points = {id(section): geometry.voxel_sample_mesh(section, voxel_size=voxel_size)
-                      for section in sections}
     assignments = []
     for component in full_object.components:
-        component_points = geometry.voxel_sample_mesh(component.mesh, voxel_size=voxel_size)
-        ranked = sorted(
-            ((- _voxel_overlap_score(component_points, section_points[id(section)]), index, section)
-             for index, section in enumerate(sections)),
-            key=lambda item: (item[0], item[1]),
-        )
-        candidate_indices = {item[1] for item in ranked[:min(4, len(ranked))]}
         scores = sorted(
             ((geometry.calculate_similarity(section, component.mesh), index, section)
-             for index, section in enumerate(sections) if index in candidate_indices),
+             for index, section in enumerate(sections)),
             reverse=True, key=lambda item: item[0],
         )
-        if scores[0][0] < similarity_threshold and len(candidate_indices) < len(sections):
-            scores = sorted(
-                ((geometry.calculate_similarity(section, component.mesh), index, section)
-                 for index, section in enumerate(sections)),
-                reverse=True, key=lambda item: item[0],
-            )
         best_score, best_index, best_section = scores[0]
         if best_score < similarity_threshold:
             raise BoneMappingError(
                 f"Component {component.index} 最佳体素匹配仅 {best_score:.2f}%（{best_section.label}）")
 
-        tied = [item for item in scores if abs(best_score - item[0]) < 0.01]
-        if len(tied) > 1:
-            signatures = []
-            for score, index, section in tied:
-                signatures.append((_candidate_mapping(component, section, vg_candidates), score, index, section))
-            reference = signatures[0][0]
-            if any(signature != reference for signature, _, _, _ in signatures[1:]):
-                details = "，".join(f"{score:.2f}% {section.label}" for _, score, _, section in signatures[:3])
-                raise BoneMappingError(f"Component {component.index} 体素同分候选产生不同骨骼映射：{details}")
-            _, best_score, best_index, best_section = min(signatures, key=lambda item: item[3].label)
+        viable = [item for item in scores if item[0] >= similarity_threshold]
+        skin_candidates = []
+        first_compatible = None
+        for score, index, section in viable:
+            try:
+                mapping, skin_cost = _match_vertex_groups_unique_with_cost(
+                    component.mesh, section, vg_candidates)
+            except BoneMappingError:
+                continue
+            first_compatible = (skin_cost, -score, section.label, mapping, score, index, section)
+            skin_candidates.append(first_compatible)
+            break
+        if first_compatible is not None and first_compatible[0] > 0.001:
+            for score, index, section in viable:
+                if index == first_compatible[5]:
+                    continue
+                try:
+                    mapping, skin_cost = _match_vertex_groups_unique_with_cost(
+                        component.mesh, section, vg_candidates)
+                except BoneMappingError:
+                    continue
+                skin_candidates.append((skin_cost, -score, section.label, mapping, score, index, section))
+        if not skin_candidates:
+            raise BoneMappingError(
+                f"Component {component.index} 没有骨骼通道兼容的 section 候选")
+        skin_candidates.sort(key=lambda item: item[:3])
+        best_cost, _negative_score, _label, best_mapping, best_score, best_index, best_section = skin_candidates[0]
+        tied = [item for item in skin_candidates if abs(item[0] - best_cost) < 1e-6]
+        if any(item[3] != best_mapping for item in tied[1:]):
+            details = "，".join(
+                f"skin={item[0]:.6f} geometry={item[4]:.2f}% {item[6].label}"
+                for item in tied[:3])
+            raise BoneMappingError(f"Component {component.index} 蒙皮同分候选产生不同骨骼映射：{details}")
         assignments.append((component, best_section, best_score))
 
     return mapping_from_assignments(assignments, vg_candidates=vg_candidates)
