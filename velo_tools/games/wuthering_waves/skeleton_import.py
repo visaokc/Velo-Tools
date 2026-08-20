@@ -74,6 +74,32 @@ def _has_cross_family_unique_child(index: int, bones: tuple[UEBone, ...]) -> boo
     )
 
 
+def _numbered_chain_identity(name: str) -> tuple[str, int, str]:
+    """Return the semantic stem, trailing sequence number, and side marker."""
+    side = ""
+    side_match = re.search(r"(?:\.|_|-| )([LRM])$", name)
+    if side_match:
+        side = side_match.group(1)
+        name = name[:side_match.start()]
+    sequence_match = re.fullmatch(r"(.*\D)(\d+)", name)
+    if sequence_match:
+        return sequence_match.group(1).casefold(), int(sequence_match.group(2)), side
+    return name.casefold(), 0, side
+
+
+def _numbered_chain_child(index: int, bones: tuple[UEBone, ...]):
+    """Find one unambiguous next numbered segment among multiple children."""
+    children = [child for child in bones if child.parent == index]
+    if len(children) < 2:
+        return None
+    stem, sequence, side = _numbered_chain_identity(bones[index].name)
+    matches = [
+        child for child in children
+        if _numbered_chain_identity(child.name) == (stem, sequence + 1, side)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _find_skeleton(folder: Path) -> tuple[UEBone, ...]:
     candidates = []
     for path in sorted(folder.rglob("*.uemodel")):
@@ -180,6 +206,9 @@ def _bone_tail(index: int, bones: tuple[UEBone, ...], heads: list[Vector]) -> Ve
         return head + Vector((0.0, 0.0, 0.5))
     if bones[index].name == "Bip001":
         return head + Vector((0.0, 0.0, 0.1))
+    numbered_child = _numbered_chain_child(index, bones)
+    if numbered_child is not None:
+        return heads[bones.index(numbered_child)]
     if children and not _has_cross_family_unique_child(index, bones):
         child_entries = [(child, heads[bones.index(child)]) for child in children]
         child_heads = [point for _child, point in child_entries]
