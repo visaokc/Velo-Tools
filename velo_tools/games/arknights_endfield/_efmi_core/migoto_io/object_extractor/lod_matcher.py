@@ -1,5 +1,6 @@
 import time
 import re
+import numpy
 
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -22,6 +23,267 @@ class ComponentLowSimilarityError(LODMatcherError):
     pass
 
 
+class HungarianSolver:
+    """Solve a dense linear assignment problem using the Hungarian algorithm.
+
+    The solver minimizes the total cost of a rectangular cost matrix.
+
+    Every row is assigned to a distinct column. If the input has more rows
+    than columns, the matrix is transposed internally, so the returned
+    assignment always contains ``min(rows, columns)`` pairs.
+
+    Non-finite costs (NaN and +/-inf) represent forbidden assignments.
+    A ValueError is raised when a complete assignment of the smaller dimension is not possible.
+
+    Complexity:
+        Time:  O(n^2 * m), where n <= m.
+               O(n^3) for square matrices.
+        Space: O(n + m) auxiliary space, excluding the cost matrix.
+    """
+
+    def __init__(self, cost: numpy.ndarray) -> None:
+        cost = numpy.asarray(cost, dtype=numpy.float64)
+
+        if cost.ndim != 2:
+            raise ValueError("cost must be a 2D matrix")
+
+        self._transposed = cost.shape[0] > cost.shape[1]
+        self._cost = cost.T.copy() if self._transposed else cost.copy()
+
+    @classmethod
+    def maximize(cls, weights: numpy.ndarray) -> "HungarianSolver":
+        """Create a solver for a maximum-weight assignment.
+
+        Args:
+            weights:
+                A 2D array where ``weights[i, j]`` is the score for assigning row ``i`` to column ``j``.
+                Non-finite values (NaN and +/-inf) represent forbidden assignments.
+
+        Returns:
+            A ``HungarianSolver`` configured to maximize the total weight.
+
+        Raises:
+            ValueError:
+                If ``weights`` is not two-dimensional.
+
+        Notes:
+            The Hungarian algorithm is implemented as a minimization algorithm.
+            Maximization is therefore converted to minimization using:
+
+                cost = max(weight) - weight
+
+            where ``max(weight)`` is taken over finite entries only.
+
+            This transformation preserves the optimal assignment because
+            every feasible edge is shifted by the same constant.
+            Forbidden edges remain infinite and are never considered by the algorithm.
+
+            The returned solver is executed by calling ``solve()``:
+
+                HungarianSolver.maximize(weights).solve()
+        """
+        weights = numpy.asarray(weights, dtype=numpy.float64)
+
+        if weights.ndim != 2:
+            raise ValueError("weights must be a 2D matrix")
+
+        if weights.size == 0:
+            return cls(weights)
+
+        finite = numpy.isfinite(weights)
+        max_weight = weights[finite].max()
+
+        cost = numpy.full_like(weights, numpy.inf)
+        cost[finite] = max_weight - weights[finite]
+
+        return cls(cost)
+
+    def solve(self) -> list[tuple[int, int]]:
+        """Return a minimum-cost assignment.
+
+        Returns:
+            A list of ``(row, column)`` pairs using the indices of the original input matrix.
+
+        Raises:
+            ValueError:
+                If no complete assignment exists.
+
+        Notes:
+            For an ``r x c`` matrix, the returned assignment contains
+            ``min(r, c)`` pairs. If ``r > c``, exactly ``c`` rows are assigned.
+        """
+        if self._cost.size == 0:
+            return []
+
+        n_rows, n_columns = self._cost.shape
+
+        # The implementation assumes n_rows <= n_columns. This invariant is
+        # established by transposing the matrix in __init__ when necessary.
+        assert n_rows <= n_columns
+
+        row_potential = numpy.zeros(n_rows + 1)
+        column_potential = numpy.zeros(n_columns + 1)
+
+        # column_to_row[j] is the row currently matched to column j.
+        # Index 0 is a sentinel used by the augmenting-path algorithm.
+        column_to_row = numpy.zeros(n_columns + 1, dtype=numpy.int32)
+
+        # predecessor[j] stores the previous column on the augmenting path ending at column j.
+        predecessor = numpy.zeros(n_columns + 1, dtype=numpy.int32)
+
+        for row in range(1, n_rows + 1):
+            self._augment(
+                row=row,
+                row_potential=row_potential,
+                column_potential=column_potential,
+                column_to_row=column_to_row,
+                predecessor=predecessor,
+            )
+
+        return self._restore_assignment(column_to_row)
+
+    def _augment(
+        self,
+        *,
+        row: int,
+        row_potential: numpy.ndarray,
+        column_potential: numpy.ndarray,
+        column_to_row: numpy.ndarray,
+        predecessor: numpy.ndarray,
+    ) -> None:
+        """Augment the current matching by one row.
+
+        This is the shortest augmenting-path formulation of the Hungarian algorithm.
+        The dual potentials maintain non-negative reduced costs.
+        Each iteration expands the alternating tree until it reaches an unmatched column.
+        """
+        n_columns = self._cost.shape[1]
+
+        column_to_row[0] = row
+
+        # min_reduced_cost[j] is the smallest reduced cost currently known
+        # for reaching column j from the alternating tree.
+        min_reduced_cost = numpy.full(n_columns + 1, numpy.inf)
+
+        # Columns already included in the current alternating tree.
+        used = numpy.zeros(n_columns + 1, dtype=bool)
+
+        current_column = 0
+
+        while True:
+            used[current_column] = True
+            current_row = column_to_row[current_column]
+
+            delta = numpy.inf
+            next_column = 0
+
+            for column in range(1, n_columns + 1):
+                if used[column]:
+                    continue
+
+                reduced_cost = self._reduced_cost(
+                    row=current_row,
+                    column=column,
+                    row_potential=row_potential,
+                    column_potential=column_potential,
+                )
+
+                if reduced_cost < min_reduced_cost[column]:
+                    min_reduced_cost[column] = reduced_cost
+                    predecessor[column] = current_column
+
+                if min_reduced_cost[column] < delta:
+                    delta = min_reduced_cost[column]
+                    next_column = column
+
+            # No finite reduced-cost edge remains. Therefore the current
+            # partial matching cannot be augmented to a complete matching.
+            if not numpy.isfinite(delta):
+                raise ValueError(
+                    "no complete feasible assignment exists"
+                )
+
+            # Update the dual variables for the alternating tree. This keeps
+            # reduced costs non-negative and makes the selected next edge tight, allowing the tree to grow.
+            for column in range(n_columns + 1):
+                if used[column]:
+                    row_potential[column_to_row[column]] += delta
+                    column_potential[column] -= delta
+                else:
+                    min_reduced_cost[column] -= delta
+
+            current_column = next_column
+
+            # An unmatched column terminates the augmenting path.
+            if column_to_row[current_column] == 0:
+                break
+
+        # Flip the matching along the discovered alternating path.
+        while True:
+            previous_column = predecessor[current_column]
+
+            column_to_row[current_column] = (
+                column_to_row[previous_column]
+            )
+
+            current_column = previous_column
+
+            if current_column == 0:
+                break
+
+    def _reduced_cost(
+        self,
+        *,
+        row: int,
+        column: int,
+        row_potential: numpy.ndarray,
+        column_potential: numpy.ndarray,
+    ) -> float:
+        """Return the reduced cost of an edge.
+
+        Non-finite input costs are treated as forbidden edges and therefore have infinite reduced cost.
+        """
+        cost = self._cost[row - 1, column - 1]
+
+        if not numpy.isfinite(cost):
+            return numpy.inf
+
+        return (
+            cost
+            - row_potential[row]
+            - column_potential[column]
+        )
+
+    def _restore_assignment(
+        self,
+        column_to_row: numpy.ndarray,
+    ) -> list[tuple[int, int]]:
+        """Convert the internal matching back to original coordinates."""
+        assignments: list[tuple[int, int]] = []
+
+        for internal_column in range(1, len(column_to_row)):
+            internal_row = column_to_row[internal_column]
+
+            if internal_row == 0:
+                continue
+
+            row = internal_row - 1
+            column = internal_column - 1
+
+            if self._transposed:
+                # The internal matrix is cost.T, so swap the coordinates
+                # when converting back to the caller's coordinate system.
+                assignments.append((column, row))
+            else:
+                assignments.append((row, column))
+
+        # The algorithm naturally produces assignments in column order.
+        # Return them in row order for a deterministic public API.
+        assignments.sort()
+
+        return assignments
+
+
 @dataclass
 class SimilarityGraph:
 
@@ -36,6 +298,53 @@ class SimilarityGraph:
             total_similarity += similarity
         weighted_similarity = total_similarity / len(self.data)
         return weighted_similarity
+
+    def find_optimal_matching(
+        self,
+        min_similarity: float = 0.0,
+    ) -> "SimilarityGraph":
+        """
+        Find the globally optimal one-to-one component matching by maximizing total similarity.
+
+        Components with no feasible match, or whose similarity is below `min_similarity`, remain unmatched.
+        """
+        rows = list(self.data)
+        columns = list({
+            candidate
+            for similarities in self.data.values()
+            for candidate in similarities
+        })
+
+        if not rows or not columns:
+            return SimilarityGraph({})
+
+        column_indices = {component: i for i, component in enumerate(columns)}
+
+        # Real edges below the threshold are forbidden.
+        weights = numpy.full(
+            (len(rows), len(columns) + len(rows)),
+            min_similarity,
+            dtype=numpy.float64,
+        )
+
+        weights[:, :len(columns)] = -numpy.inf
+
+        for row_index, component in enumerate(rows):
+            for candidate, similarity in self.data[component].items():
+                if similarity >= min_similarity:
+                    weights[row_index, column_indices[candidate]] = similarity
+
+        assignments = HungarianSolver.maximize(weights).solve()
+
+        matched_data = {
+            rows[row_index]: {
+                columns[column_index]: float(weights[row_index, column_index])
+            }
+            for row_index, column_index in assignments
+            if column_index < len(columns)
+        }
+
+        return SimilarityGraph(matched_data)
 
     def verify_endmin_similarity_graph(self):
         endmin_lod1_to_full_map = {
@@ -88,27 +397,39 @@ class LODMatcher:
         full_object: MigotoObject,
         lod_candidate_objects: list[MigotoObject],
     ) -> tuple[MigotoObject, dict[MigotoComponent, tuple[MigotoComponent, dict[int, int] | None]]]:
+
+        print(f"Searching for matching LoD object among {len(lod_candidate_objects)} candidates...")
+
         t = time.time()
 
         lod_object_candidates = self.prefilter_lod_object_candidates(full_object, lod_candidate_objects)
 
         lod_object, hash_matched_components = self.find_lod_object_by_hash(full_object, lod_object_candidates)
 
-        if lod_object is None:
+        if lod_object is not None:
+            print(f"Found matching LoD object by shared component hashes: {lod_object.id}")
+        else:
             lod_object, object_similarity, similarity_graph = self.find_lod_object_by_similarity(full_object, lod_object_candidates)
             if object_similarity < self.object_similarity_threshold:
                 raise ObjectLowSimilarityError(f"Best matching LoD for object {full_object.id} has {object_similarity:.2f}% similarity!")
-        else:
-            similarity_graph = self.match_components_by_similarity(full_object, lod_object, hash_matched_components)
+            print(f"Found matching LoD object by geometrical similarity: {lod_object.id} ({object_similarity:.2f}%)")
 
         # similarity_graph.verify_endmin_similarity_graph()
+
+        print(
+            f"Matching {len(lod_object.components)} LoD object components "
+            f"agaisnt {len(full_object.components)} full object components..."
+        )
+
+        if lod_object is not None:
+            similarity_graph = self.match_components_by_similarity(full_object, lod_object, hash_matched_components)
 
         geo_matched_components = self.get_best_matching_components(similarity_graph)
 
         matched_components: dict[MigotoComponent, MigotoComponent] = (
             hash_matched_components | geo_matched_components
         )
-            
+
         for lod_component in lod_object.components:
             if lod_component.metadata.mesh_name.startswith("Skipped"):
                 continue
@@ -165,7 +486,7 @@ class LODMatcher:
                     continue
 
             candidates.append(lod_object)
-            
+
         return candidates
 
     def remap_vertex_groups(
@@ -334,7 +655,7 @@ class LODMatcher:
         similarity_graph = self.calculate_similarity_graph(full_components, lod_components)
 
         return similarity_graph
-    
+
     def make_matched_mesh_name(self, full_component: MigotoComponent, lod_component: MigotoComponent, similarity: float | str) -> str:
         match_type = f"{similarity:.2f}%" if isinstance(similarity, float) else similarity
         mesh_name = f"{full_component.metadata.mesh_name} full={full_component.metadata.ib_hash} lod={lod_component.metadata.ib_hash} match={match_type}"
@@ -347,22 +668,47 @@ class LODMatcher:
             mesh_name += f" (simplified mesh and skeleton)"
         return mesh_name
 
-    def get_best_matching_components(self, similarity_graph: SimilarityGraph) -> dict[MigotoComponent, MigotoComponent]:
+    def get_best_matching_components(
+        self,
+        similarity_graph: SimilarityGraph,
+    ) -> dict[MigotoComponent, MigotoComponent]:
+
+        # Find the globally optimal one-to-one assignment.
+        matched_graph = similarity_graph.find_optimal_matching(min_similarity=0.0
+            # min_similarity=self.object_similarity_threshold
+            # if self.skip_components_below_similarity_threshold
+            # else 0.0
+        )
+
         result = {}
-        for lod_component, similarities in similarity_graph.data.items():
-            full_component, similarity = next(iter(similarities.items()))
+
+        for lod, similarities in matched_graph.data.items():
+
+            if not similarities:
+                continue
+
+            # maximum_weight_matching guarantees at most one match per LoD.
+            full, similarity = next(iter(similarities.items()))
 
             if similarity < self.object_similarity_threshold:
                 if self.skip_components_below_similarity_threshold:
-                    print(f"Skipped match by geometry below {self.object_similarity_threshold:.2f}% threshold (mesh similarity: {similarity:.2f}%): {full_component.__repr__()} == {lod_component.__repr__()} ")
-                    lod_component.metadata.mesh_name = f"Skipped Component ib={lod_component.metadata.ib_hash} (mesh similarity {similarity:.2f}% is below configured {self.object_similarity_threshold:.2f}% threshold)"
+                    print(
+                        f"Skipped match by geometry below {self.object_similarity_threshold:.2f}% threshold "
+                        f"(mesh similarity: {similarity:.2f}%): {full.__repr__()} == {lod.__repr__()}"
+                    )
+                    lod.metadata.mesh_name = (
+                        f"Skipped Component ib={lod.metadata.ib_hash} (mesh similarity {similarity:.2f}% "
+                        f"is below configured {self.object_similarity_threshold:.2f}% threshold)"
+                    )
                     continue
-                raise ComponentLowSimilarityError(f"Best matching LoD for {full_component.metadata.mesh_name} has {similarity:.2f}% similarity!")
-            
-            lod_component.metadata.mesh_name = self.make_matched_mesh_name(full_component, lod_component, similarity)
-            
-            result[lod_component] = full_component
 
-            print(f"Match by geometry (mesh similarity: {similarity:.2f}%): {full_component.__repr__()} == {lod_component.__repr__()} ")
+                raise ComponentLowSimilarityError(
+                    f"Best matching LoD for {full.metadata.mesh_name} has {similarity:.2f}% similarity!"
+                )
+
+            lod.metadata.mesh_name = self.make_matched_mesh_name(full, lod, similarity)
+            result[lod] = full
+
+            print(f"Match by geometry (mesh similarity: {similarity:.2f}%): {full.__repr__()} == {lod.__repr__()}")
 
         return result

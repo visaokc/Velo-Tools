@@ -36,7 +36,7 @@ class VTEF_Settings(bpy.types.PropertyGroup):
         name = "Index Data Cache",
         default = ""
     ) # type: ignore
-    
+
     vertex_ids_cached_collection: PointerProperty(
         name="Loop Data Cached Components",
         type=bpy.types.Collection,
@@ -142,13 +142,25 @@ class VTEF_Settings(bpy.types.PropertyGroup):
 
     skip_draw_resource_hashes_enabled: BoolProperty(
         name="Components Filtering: Blacklisted Hashes",
-        description="Skip components with any of listed hashes when extracting an object (separators: `,` `;` ` `). Useful when extarcting full model from open world dump to separate it from few LoD 1 components.",
+        description="Skip components with any of listed hashes when extracting an object (separators: `,` `;` ` `). Useful when extracting full model from open world dump to separate it from few LoD 1 components.",
         default=False,
     ) # type: ignore
 
     skip_draw_resource_hashes: StringProperty(
         name="",
-        description="Skip components with any of listed hashes when extracting an object (separators: `,` `;` ` `). Useful when extarcting full model from open world dump to separate it from few LoD 1 components.",
+        description="Skip components with any of listed hashes when extracting an object (separators: `,` `;` ` `). Useful when extracting full model from open world dump to separate it from few LoD 1 components.",
+        default="",
+    ) # type: ignore
+
+    bones_deduping_skip_hashes_enabled: BoolProperty(
+        name="Bones Deduping: Blacklisted Hashes",
+        description="Prevent mapping bones of other components to components with any of listed hashes when building unique bones list for Merged Skeleton (IB/VB/texture etc, separators: `,` `;` ` `). Useful when some components aren't always rendered (e.g. Liino's rocket boots).",
+        default=False,
+    ) # type: ignore
+
+    bones_deduping_skip_hashes: StringProperty(
+        name="",
+        description="Prevent mapping bones of other components to components with any of listed hashes when building unique bones list for Merged Skeleton (IB/VB/texture etc, separators: `,` `;` ` `). Useful when some components aren't always rendered (e.g. Liino's rocket boots).",
         default="",
     ) # type: ignore
 
@@ -214,12 +226,18 @@ class VTEF_Settings(bpy.types.PropertyGroup):
             ('MERGED', 'Merged', 'Imported mesh will have unified list of Vertex Groups, allowing to weight any vertex of any component to any bone. Mod Upsides: easy to weight, custom skeleton scale support, advanced weighting support (i.e. long hair to cape). Mod Downsides: model will be updated with 1 frame delay, mod will pause while there are more than one of same modded object on screen. Suggested usage: new modders, character or echo mods with complex weights.'),
             ('COMPONENT', 'Per-Component', 'Imported mesh will have its Vertex Groups split into per component lists, restricting weighting of any vertex only to its parent component. Mod Upsides: no 1-frame delay for model updates, minor performance gain. Mod downsides: hard to weight, very limited weighting options, no custom skeleton scale support. Suggested usage: weapon mods and simple retextures.'),
         ],
-        default=1,
+        default=0,
     ) # type: ignore
 
     skip_empty_vertex_groups: BoolProperty(
         name="Skip Empty Vertex Groups",
         description="Automatically remove zero-weight Vertex Groups from imported components. This way VG list of each component will contain only actually used VGs",
+        default=True,
+    ) # type: ignore
+
+    dedupe_bones: BoolProperty(
+        name="Dedupe Vertex Groups",
+        description="Remap duplicate VGs to a shared VG for each unique bone. \n\nWarning! May cause glitches when the source component LOD does not contain equivalent geometry, as automated LOD VG mapping selects the most similar available geometry rather than an exact match.",
         default=True,
     ) # type: ignore
 
@@ -255,7 +273,7 @@ class VTEF_Settings(bpy.types.PropertyGroup):
         description="Import matched LoDs in Blender to manually check what automated system selected",
         default=False,
     ) # type: ignore
-    
+
     lod_frame_dump_folder: StringProperty(
         name="LOD Frame Dump",
         description="Frame dump files directory. To properly dump LOD make sure that model isn't active character (or isn't equipped by them)",
@@ -387,12 +405,12 @@ class VTEF_Settings(bpy.types.PropertyGroup):
     ########################################
     # Mod Export
     ########################################
-    
+
     # General
 
     component_collection: PointerProperty(
         name="Components",
-        description="Collection with EFMI object's components named like `Component 0` or `Component_1 RedHat` or `Dat Gas cOmPoNENT- 3 OMG` (lookup RegEx: r'.*component[_ -]*(\d+).*')",
+        description="Collection with EFMI object's components named like `Component 0` or `Component_1 RedHat` or `Dat Gas cOmPoNENT- 3 OMG` (lookup RegEx: r'.*component[_ -]*(\\d+).*')",
         type=bpy.types.Collection,
         update=lambda self, context: self.on_update_clear_error('component_collection'),
         # default=False
@@ -439,7 +457,7 @@ class VTEF_Settings(bpy.types.PropertyGroup):
         description="Add comments to INI code, useful if you want to get better idea how it works",
         default=False,
     ) # type: ignore
-    
+
     ignore_nested_collections: BoolProperty(
         name="Ignore Nested Collections",
         description="If enabled, objects inside nested collections inside Components collection won't be exported",
@@ -451,13 +469,13 @@ class VTEF_Settings(bpy.types.PropertyGroup):
         description="If enabled, objects from hidden nested collections inside Components collection won't be exported",
         default=True,
     ) # type: ignore
-    
+
     ignore_hidden_objects: BoolProperty(
         name="Ignore Hidden Objects",
         description="If enabled, hidden objects inside Components collection won't be exported",
         default=False,
     ) # type: ignore
-    
+
     ignore_muted_shape_keys: BoolProperty(
         name="Ignore Muted Shape Keys",
         description="If enabled, muted (unchecked) shape keys won't be exported",
@@ -471,29 +489,48 @@ class VTEF_Settings(bpy.types.PropertyGroup):
         description="Enable mod export with no LOD data in Metadata.json. Mod will fail to load properly in open world",
         default=False,
     ) # type: ignore
-    
+
     add_missing_vertex_groups: BoolProperty(
         name="Add Missing Vertex Groups",
         description="Fill gaps in Vertex Groups list based on VG names (i.e. add group '1' between '0' and '2' if it's missing)",
         default=True,
     ) # type: ignore
-    
+
     fill_missing_mesh_data: BoolProperty(
         name="Fill Missing Mesh Data",
         description="Automatically generate missing COLOR (black) and TEXCOORD.xy (empty UV)",
         default=True,
     ) # type: ignore
 
-    unrestricted_custom_shape_keys: BoolProperty(
-        name="Unrestricted Custom Shape Keys",
-        description="Allows to use Custom Shape Keys for components that don't have them by default. Generates extra mod.ini logic",
-        default=False,
+    max_instance_count: IntProperty(
+        name="Max Instance Count",
+        description="Max number of duplicates of this object supported by merged skeleton. Each instance has upfront VRAM cost of 96 bytes per VG and slightly increases CPU data access latency.",
+        default=8,
+        min=2,
+        max=32,
+    ) # type: ignore
+
+    use_spatial_identification: BoolProperty(
+        name="Use Spatial Identification",
+        description="Verify component ownership based on position. Helps avoid modifying components shared between objects, such as shadow meshes. Only supported for weighted objects.",
+        default=True,
+    ) # type: ignore
+
+    spatial_identification_threshold: IntProperty(
+        name="Spatial Identification Threshold",
+        description="Number of components that must appear in draw calls before new spatial identity will be treated as this object. Must be higher than number of non-unique meshes (e.g. shadow meshes) and lower or equal to number of LoD0 meshes used in LoD1+.",
+        default=3,
+        min=1,
+        max=8,
     ) # type: ignore
 
     skeleton_scale: FloatProperty(
         name="Skeleton Scale",
         description="Scales model in-game (default is 1.0). Not supported for Per-Component Skeleton",
         default=1.0,
+        min=0.01,
+        max=100.0,
+        precision=2,
     ) # type: ignore
 
     partial_export: BoolProperty(

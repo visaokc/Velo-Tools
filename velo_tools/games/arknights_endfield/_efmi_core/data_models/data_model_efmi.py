@@ -10,24 +10,6 @@ from ..migoto_io.data_model.data_model import DataModel
 
 
 class DataModelEFMI(DataModel):
-    buffers_format: dict[str, BufferLayout] = {
-        'Index': BufferLayout([
-            BufferSemantic(AbstractSemantic(Semantic.Index), DXGIFormat.R16_UINT, stride=6),
-        ]),
-        'Position': BufferLayout([
-            BufferSemantic(AbstractSemantic(Semantic.Position, 0), DXGIFormat.R32G32B32_FLOAT),
-            BufferSemantic(AbstractSemantic(Semantic.EncodedData, 0), DXGIFormat.R32_UINT),
-        ]),
-        'TexCoord': BufferLayout([
-            BufferSemantic(AbstractSemantic(Semantic.TexCoord, 0), DXGIFormat.R32G32_FLOAT),
-            BufferSemantic(AbstractSemantic(Semantic.Color, 0), DXGIFormat.R8G8B8A8_SNORM),
-        ]),
-        'Blend': BufferLayout([
-            BufferSemantic(AbstractSemantic(Semantic.Blendweights, 0), DXGIFormat.R16_UNORM, stride=8),
-            BufferSemantic(AbstractSemantic(Semantic.Blendindices, 0), DXGIFormat.R8_UINT, stride=4),
-        ]),
-    }
-
     def __init__(self):
         # self.flip_winding = True
         self.flip_bitangent_sign = True
@@ -45,12 +27,11 @@ class DataModelEFMI(DataModel):
             # Reshape flat array [[0,0,0],[0,0,0]] to [[0,0,0,1],[0,0,0,1]]
             AbstractSemantic(Semantic.Tangent, 0): [lambda data: self.converter_resize_second_dim(data, 4, fill=1)],
         }
-        self.last_export_vertex_ids = None
-    
+
     def set_data(
-        self, 
-        obj: bpy.types.Mesh, 
-        mesh: bpy.types.Mesh, 
+        self,
+        obj: bpy.types.Mesh,
+        mesh: bpy.types.Mesh,
         index_buffer: NumpyBuffer,
         vertex_buffer: NumpyBuffer,
         vg_remap: numpy.ndarray | None,
@@ -70,8 +51,8 @@ class DataModelEFMI(DataModel):
                 decoded_normals = self.converter_rotate_vector(decoded_normals, mesh_rotation)
             except Exception as e:
                 raise e
-            
-        # Execute real set_data from super class  
+
+        # Execute real set_data from super class
         vertex_ids = super().set_data(obj, mesh, index_buffer, vertex_buffer, vg_remap, mirror_mesh, mesh_scale, mesh_rotation)
 
         if encoded_data is not None:
@@ -97,45 +78,22 @@ class DataModelEFMI(DataModel):
                 self.data_importer.import_attribute(mesh, BufferSemantic(AbstractSemantic(Semantic.Attribute), DXGIFormat.R32_FLOAT).get_name(), data)
 
     def get_data(
-            self, 
-            context: bpy.types.Context, 
-            collection: bpy.types.Collection, 
-            obj: bpy.types.Object, 
-            excluded_buffers: list[str],
-            buffers_format: dict[str, BufferLayout] | None = None,
-            mirror_mesh: bool = False,
-            mesh_scale: float = 1.0,
-            mesh_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
-            object_index_layout: list[int] | None = None,
-            vertex_group_remap: numpy.ndarray | None = None
-        ) -> tuple[dict[str, NumpyBuffer], int]:
+        self,
+        context: bpy.types.Context,
+        collection: bpy.types.Collection,
+        obj: bpy.types.Object,
+        excluded_buffers: list[str],
+        buffers_format: dict[str, BufferLayout] | None = None,
+        mirror_mesh: bool = False,
+        mesh_scale: float = 1.0,
+        mesh_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        min_ib_byte_width: int = 2,
+        min_vg_byte_width: int = 1,
+        max_vg_byte_width: int = 0,
+    ) -> tuple[dict[str, NumpyBuffer], numpy.ndarray]:
 
         if buffers_format is None:
             buffers_format = self.buffers_format
-
-        build_blend_remaps = object_index_layout is not None and 'Blend' not in excluded_buffers
-
-        # Request 16-bit VG ids for Blend Remap system
-        if build_blend_remaps:
-            # Number of VGs per vertex may vary based on buffers_format, we should respect it
-            blend_layout = buffers_format.get('Blend')
-            if blend_layout is None:
-                # EFMI component exports name the same layout ComponentN_VB2;
-                # true MergedSkeleton exports can exceed the 8-bit VG range and
-                # still need the remap path without inventing a second buffer key.
-                blend_layout = next(
-                    (
-                        layout for layout in buffers_format.values()
-                        if layout.get_element(AbstractSemantic(Semantic.Blendindices, 0)) is not None
-                    ),
-                    None,
-                )
-            if blend_layout is None:
-                raise KeyError('Blend')
-            num_vgs = blend_layout.get_element(AbstractSemantic(Semantic.Blendindices, 0)).get_num_values()
-            buffers_format['BlendRemapVertexVG'] = BufferLayout([
-                BufferSemantic(AbstractSemantic(Semantic.Blendindices, 1), DXGIFormat.R16_UINT, stride=num_vgs*2),
-            ])
 
         # Request TBN data (tangents, bitangent signs and normals) signs for encoding
         buffers_format['TBN'] = BufferLayout([
@@ -148,39 +106,28 @@ class DataModelEFMI(DataModel):
         index_data, vertex_buffer = self.export_data(
             context=context,
             collection=collection,
+            obj=obj,
             mesh=obj.evaluated_get(context.evaluated_depsgraph_get()).to_mesh(),
             excluded_buffers=excluded_buffers,
             buffers_format=buffers_format,
             mirror_mesh=mirror_mesh,
             mesh_scale=mesh_scale,
             mesh_rotation=mesh_rotation,
-            cache_index_data=build_blend_remaps,
+            cache_index_data=False,
+            min_ib_byte_width=min_ib_byte_width,
+            min_vg_byte_width=min_vg_byte_width,
+            max_vg_byte_width=max_vg_byte_width,
         )
-
-        if vertex_group_remap is not None:
-            blend_indices = vertex_buffer.get_field(AbstractSemantic(Semantic.Blendindices, 0))
-            mapped_indices = vertex_group_remap[blend_indices]
-            blend_weights = vertex_buffer.get_field(AbstractSemantic(Semantic.Blendweights, 0))
-            weighted = blend_weights > 0 if blend_weights is not None else numpy.ones_like(mapped_indices, dtype=bool)
-            if numpy.any((mapped_indices < 0) & weighted):
-                raise ValueError('MergedSkeleton VB2 contains weighted global vertex groups outside the Component palette')
-            vertex_buffer.set_field(
-                AbstractSemantic(Semantic.Blendindices, 0),
-                numpy.maximum(mapped_indices, 0).astype(numpy.uint32),
-            )
 
         # Remove TBN, we don't want to export it as buffer
         del buffers_format['TBN']
 
-        self.last_export_vertex_ids = None
         vertex_ids = vertex_buffer.get_field(AbstractSemantic(Semantic.VertexId))
-        if vertex_ids is not None:
-            self.last_export_vertex_ids = numpy.asarray(vertex_ids).copy()
 
         # tangents = vertex_buffer.get_field(AbstractSemantic(Semantic.Tangent, 0))
         # if tangents is not None:
         #     tangents[:, 3] = vertex_buffer.get_field(AbstractSemantic(Semantic.BitangentSign, 1))
-                
+
         if vertex_buffer.get_field(AbstractSemantic(Semantic.EncodedData, 0)) is not None:
             # Fill ENCODEDDATA0 field (encoded TBN)
             tangents = vertex_buffer.get_field(AbstractSemantic(Semantic.Tangent, 1))
@@ -198,7 +145,7 @@ class DataModelEFMI(DataModel):
         # # DEBUG: Tangents encoder test (write result to new vertex attribute)
         # def test_tangents_encoder(tangents, normals):
         #     data = self.encode_tangents(tangents, normals)
-            
+
         #     negatives = numpy.where(data < 0, data, 0)
         #     positives = numpy.where(data > 0, data, 0)
 
@@ -220,18 +167,10 @@ class DataModelEFMI(DataModel):
         # vertex_buffer.set_field(AbstractSemantic(Semantic.Color), color0)
 
         # Assemble data into requested buffers
-        buffers = self.build_buffers(index_data, vertex_buffer, excluded_buffers, buffers_format)
+        buffers = self.build_buffers(context, index_data, vertex_buffer, excluded_buffers, buffers_format)
 
-        if build_blend_remaps:
-            blend_buffer = buffers.get('Blend', None)
-            if blend_buffer is not None:
-                index_buffer = buffers.get('Index', None)
-                vg_buffer = buffers.get('BlendRemapVertexVG', None)
-                blend_remaps = self.build_blend_remap(context, object_index_layout, index_buffer, blend_buffer, vg_buffer)
-                buffers.update(blend_remaps)
+        return buffers, vertex_ids
 
-        return buffers, len(vertex_ids)
-    
     def decode_tbn_data_10_10_10_2(self, data: numpy.ndarray, debug: bool = False) -> numpy.ndarray:
         """
         Unpacks normals, encoded tangents and bitangent signs from R10G10B10A2_UINT
@@ -270,7 +209,7 @@ class DataModelEFMI(DataModel):
 
         R_norm = numpy.linalg.norm(R, axis=1, keepdims=True)
         small_mask = R_norm[:,0] < 1e-6
-        
+
         # Build perpendicular vector for degenerate cases
         if numpy.any(small_mask):
             helper = numpy.where(numpy.abs(normals[:,0:1]) < 0.9, numpy.array([1.0,0.0,0.0]), numpy.array([0.0,1.0,0.0]))
@@ -363,7 +302,7 @@ class DataModelEFMI(DataModel):
         u_t = cos_theta / denom
         t = (1.0 - u_t) / 2.0
         t = 1 - t
-                
+
         # Sign of sin (treat zero as positive)
         s = numpy.where(sin_theta == 0.0, 1.0, numpy.sign(sin_theta))
         t = numpy.copysign(t, s)
@@ -397,7 +336,7 @@ class DataModelEFMI(DataModel):
 
         # Make array of `1` flags to mark data as "packed" for shaders to be aware
         packed_flags = numpy.ones(len(bitangent_signs))
-        
+
         # Make array of `0` and `1` flags out of array of bitangent signs (consiting of -1 and 1)
         sign_flags = (bitangent_signs + 1) * 0.5
 
@@ -406,97 +345,3 @@ class DataModelEFMI(DataModel):
         encoded = self.converter_encode_10_10_10_2(data)
 
         return encoded
-
-    def build_blend_remap(
-        self,
-        context: bpy.types.Context,
-        index_layout: list[int],
-        index_buffer: NumpyBuffer,
-        blend_buffer: NumpyBuffer,
-        vg_buffer: NumpyBuffer,
-    ) -> dict[str, NumpyBuffer]:
-        
-        start_time = time.time()
-
-        remapped_vgs_counts = []
-
-        if context.scene.VTEF_settings.index_data_cache:
-            # Partial export is enabled and index buffer cache exists, lets load it
-            index_data = numpy.array(json.loads(context.scene.VTEF_settings.index_data_cache)).ravel()
-        else:
-            if index_buffer is None:
-                raise ValueError(f'Failed to build blend remap: `Index` buffer does not exist!')
-            index_data = index_buffer.get_field(0).ravel()
-
-        vg_ids = vg_buffer.get_field(vg_buffer.layout.get_element(AbstractSemantic(Semantic.Blendindices, 1)))
-        vg_weights = blend_buffer.get_field(blend_buffer.layout.get_element(AbstractSemantic(Semantic.Blendweights, 0)))
-        
-        blend_remap_forward = numpy.empty(0, dtype=numpy.uint16)
-        blend_remap_reverse = numpy.empty(0, dtype=numpy.uint16)
-
-        index_offset = 0
-        for index_count in index_layout:
-            # Skip remapping the component if its custom mesh is empty
-            if index_count == 0:
-                remapped_vgs_counts.append(0)
-                continue
-    
-            # Extract a segment of Index Buffer for the component (index_count number of indices starting from index_offset)
-            vertex_ids = index_data[index_offset:index_offset+index_count]
-            # Remove duplicate vertex ids (since multiple indices may reference the same vertex)
-            vertex_ids = numpy.unique(vertex_ids)
-
-            # Get VG ids used to weight vertices used in the component
-            obj_vg_ids = vg_ids[vertex_ids].flatten()
-            
-            # Skip remapping the component if it references VG ids below 256 only
-            if numpy.max(obj_vg_ids) < 256:
-                index_offset += index_count
-                remapped_vgs_counts.append(0)
-                continue
-
-            # Get weights for vertices referenced by the component
-            obj_vg_weights = vg_weights[vertex_ids].flatten()
-            # Get indices of non-zero weights (to skip remapping VG ids that are listed but not actually used)
-            non_zero_idx = numpy.nonzero(obj_vg_weights > 0)[0]
-
-            obj_vg_ids = obj_vg_ids[non_zero_idx]
-            obj_vg_ids = numpy.unique(obj_vg_ids)
-
-            if numpy.max(obj_vg_ids) < 256:
-                index_offset += index_count
-                remapped_vgs_counts.append(0)
-                continue
-            
-            remapped_vgs_counts.append(len(obj_vg_ids))
-
-            forward = numpy.zeros(512, dtype=numpy.uint16)
-            forward[numpy.arange(len(obj_vg_ids))] = obj_vg_ids
-
-            reverse = numpy.zeros(512, dtype=numpy.uint16)
-            reverse[obj_vg_ids] = numpy.arange(len(obj_vg_ids))
-
-            blend_remap_forward = numpy.concatenate((blend_remap_forward, forward), axis=0)
-            blend_remap_reverse = numpy.concatenate((blend_remap_reverse, reverse), axis=0)
-
-            index_offset += index_count
-
-        buffers = {}
-
-        buffers['BlendRemapForward'] = NumpyBuffer(BufferLayout([
-            BufferSemantic(AbstractSemantic(Semantic.RawData, 0), DXGIFormat.R16_UINT),
-        ]))
-        buffers['BlendRemapReverse'] = NumpyBuffer(BufferLayout([
-            BufferSemantic(AbstractSemantic(Semantic.RawData, 1), DXGIFormat.R16_UINT),
-        ]))
-        buffers['BlendRemapLayout'] = NumpyBuffer(BufferLayout([
-            BufferSemantic(AbstractSemantic(Semantic.RawData, 2), DXGIFormat.R32_UINT),
-        ]))
-
-        buffers['BlendRemapForward'].set_data(blend_remap_forward)
-        buffers['BlendRemapReverse'].set_data(blend_remap_reverse)
-        buffers['BlendRemapLayout'].set_data(numpy.array(remapped_vgs_counts))
-
-        print(f'Blend remap time: {time.time() - start_time :.3f}s ({int(len(blend_remap_forward) / 512)} remaps)')
-
-        return buffers

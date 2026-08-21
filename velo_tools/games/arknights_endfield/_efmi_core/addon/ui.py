@@ -29,7 +29,7 @@ def add_row_with_error_handler(layout, cfg, setting_names):
         layout.alert = True
         row = layout.row()
         error_lines = cfg.last_error_text.split('\n')
-        
+
         if len(error_lines) == 1:
             error_row = layout.row()
             error_row.alignment = 'CENTER'
@@ -40,7 +40,7 @@ def add_row_with_error_handler(layout, cfg, setting_names):
             for line in error_lines[1:]:
                 if not line.strip():
                     continue
-                error_box.label(text=line, icon='BLANK1') 
+                error_box.label(text=line, icon='BLANK1')
         layout.alert = False
         return row
 
@@ -110,24 +110,24 @@ class VTEF_PT_SIDEBAR(bpy.types.Panel):
         layout.row().operator(VTEF_FillGapsInVertexGroups.bl_idname)
 
         layout.label(text='Multi Sculpt (cross-object):')
-        
+
         layout.row().operator(VTEF_CreateMergedObject.bl_idname)
         layout.row().operator(VTEF_ApplyMergedObjectSculpt.bl_idname)
         layout.row().operator(VTEF_ApplyMergedObjectSculptWithShapekeys.bl_idname)
 
         layout.label(text='Utility:')
-        
+
         layout.row().operator(VTEF_FillMissingMeshData.bl_idname)
         layout.row().operator(VTEF_ApplyModifierForObjectWithShapeKeysOperator.bl_idname)
         layout.row().operator(VTEF_ConvertVertexColors.bl_idname)
-        
+
 
     def draw_menu_export_mod(self, context):
         cfg = context.scene.VTEF_settings
         layout = self.layout
-        
+
         layout.row()
-        
+
         row = add_row_with_error_handler(layout, cfg, 'component_collection')
         row.prop(cfg, 'component_collection')
 
@@ -136,8 +136,9 @@ class VTEF_PT_SIDEBAR(bpy.types.Panel):
 
         row = add_row_with_error_handler(layout, cfg, 'mod_output_folder')
         row.prop(cfg, 'mod_output_folder')
-        
-        # layout.row().prop(cfg, 'mod_skeleton_type')
+
+        row = add_row_with_error_handler(layout, cfg, 'mod_skeleton_type')
+        row.prop(cfg, 'mod_skeleton_type')
 
         if not cfg.partial_export:
 
@@ -153,7 +154,7 @@ class VTEF_PT_SIDEBAR(bpy.types.Panel):
             grid.prop(cfg, 'write_ini')
             if cfg.write_ini:
                 grid.prop(cfg, 'comment_ini')
-                    
+
             layout.row()
             layout.row()
 
@@ -162,7 +163,7 @@ class VTEF_PT_SIDEBAR(bpy.types.Panel):
                 row.prop(cfg, 'ignore_nested_collections')
                 if not cfg.ignore_nested_collections:
                     row.prop(cfg, 'ignore_hidden_collections')
-                
+
             layout.row().prop(cfg, 'ignore_hidden_objects')
             layout.row().prop(cfg, 'ignore_muted_shape_keys')
 
@@ -170,16 +171,20 @@ class VTEF_PT_SIDEBAR(bpy.types.Panel):
     def draw_menu_import_object(self, context):
         cfg = context.scene.VTEF_settings
         layout = self.layout
-        
+
         layout.row()
 
         row = add_row_with_error_handler(layout, cfg, 'object_source_folder')
         row.prop(cfg, 'object_source_folder')
 
         layout.row().prop(cfg, 'color_storage')
-        # layout.row().prop(cfg, 'import_skeleton_type')
-        # if cfg.import_skeleton_type == 'MERGED':
-        #     layout.row().prop(cfg, 'skip_empty_vertex_groups')
+
+        row = add_row_with_error_handler(layout, cfg, 'import_skeleton_type')
+        row.prop(cfg, 'import_skeleton_type')
+
+        if cfg.import_skeleton_type == 'MERGED':
+            layout.row().prop(cfg, 'skip_empty_vertex_groups')
+            layout.row().prop(cfg, 'dedupe_bones')
         layout.row().prop(cfg, 'mirror_mesh')
 
         layout.row()
@@ -189,7 +194,7 @@ class VTEF_PT_SIDEBAR(bpy.types.Panel):
     def draw_menu_extract_frame_data(self, context):
         cfg = context.scene.VTEF_settings
         layout = self.layout
-        
+
         layout.row()
 
         row = add_row_with_error_handler(layout, cfg, 'frame_dump_folder')
@@ -198,7 +203,7 @@ class VTEF_PT_SIDEBAR(bpy.types.Panel):
         layout.row().prop(cfg, 'extract_output_folder')
 
         layout.row()
-        
+
         layout.row().prop(cfg, 'import_extracted_objects')
         layout.row().prop(cfg, 'tolerate_extraction_errors')
         layout.row().prop(cfg, 'verbose_logging')
@@ -233,8 +238,14 @@ class VTEF_PT_SIDEBAR(bpy.types.Panel):
         sub.enabled = cfg.skip_draw_resource_hashes_enabled
         sub.prop(cfg, "skip_draw_resource_hashes")
 
+        row = layout.row(align=True)
+        row.prop(cfg, "bones_deduping_skip_hashes_enabled",)
+        sub = row.row()
+        sub.enabled = cfg.bones_deduping_skip_hashes_enabled
+        sub.prop(cfg, "bones_deduping_skip_hashes")
+
         layout.row()
-            
+
         row = layout.row(align=True)
         row.prop(cfg, "skip_small_textures",)
         sub = row.row()
@@ -252,7 +263,7 @@ class VTEF_PT_SIDEBAR(bpy.types.Panel):
     def draw_menu_EXTRACT_LOD_DATA(self, context):
         cfg = context.scene.VTEF_settings
         layout = self.layout
-        
+
         layout.row()
 
         row = add_row_with_error_handler(layout, cfg, 'lod_frame_dump_folder')
@@ -262,7 +273,7 @@ class VTEF_PT_SIDEBAR(bpy.types.Panel):
         row.prop(cfg, 'object_source_folder')
 
         layout.row()
-        
+
         layout.row().prop(cfg, 'tolerate_extraction_errors')
         layout.row().prop(cfg, 'verbose_logging')
 
@@ -289,7 +300,7 @@ class VTEF_PT_SIDEBAR(bpy.types.Panel):
         sub.prop(cfg, "skip_object_resource_hashes")
 
         layout.row()
-        
+
         row = layout.row(align=True)
         row.prop(cfg, "skip_component_below_vertex_count_enabled",)
         sub = row.row()
@@ -342,14 +353,14 @@ class VTEF_PT_SidePanelAdvancedLodsExtraction(bpy.types.Panel):
 
         layout.row().prop(cfg, 'geo_matcher_method')
         layout.row().prop(cfg, 'geo_matcher_sensivity')
-        
+
         if cfg.geo_matcher_method == 'VOXEL':
             layout.row().prop(cfg, 'geo_matcher_voxel_size')
         elif cfg.geo_matcher_method == 'POINT_CLOUD':
             layout.row().prop(cfg, 'geo_matcher_sample_size')
 
         layout.row()
-        
+
         if cfg.geo_matcher_method == 'VOXEL':
             layout.row().prop(cfg, 'geo_matcher_prefilter_voxel_size')
         elif cfg.geo_matcher_method == 'POINT_CLOUD':
@@ -373,7 +384,7 @@ class VTEF_PT_SidePanelLodsExtractionFooter(bpy.types.Panel):
     def poll(cls, context):
         cfg = context.scene.VTEF_settings
         return cfg.tool_mode == 'EXTRACT_LOD_DATA'
-    
+
     def draw(self, context):
         layout = self.layout
         layout.row().operator(VTEF_ImportLODData.bl_idname)
@@ -431,8 +442,10 @@ class VTEF_PT_SidePanelAdvancedExport(bpy.types.Panel):
             layout.row().prop(cfg, 'add_missing_vertex_groups')
             layout.row().prop(cfg, 'fill_missing_mesh_data')
             layout.row().prop(cfg, 'allow_export_without_lods')
-            # layout.row().prop(cfg, 'unrestricted_custom_shape_keys')
-            if cfg.mod_skeleton_type in {'MERGED', 'MERGED_SKELETON'}:
+            layout.row().prop(cfg, 'use_spatial_identification')
+            layout.row().prop(cfg, 'spatial_identification_threshold')
+            if cfg.mod_skeleton_type == 'MERGED':
+                layout.row().prop(cfg, 'max_instance_count')
                 layout.row().prop(cfg, 'skeleton_scale')
 
         # layout.row().prop(cfg, 'partial_export')
@@ -476,11 +489,11 @@ class VTEF_PT_SidePanelIniTemplate(bpy.types.Panel):
     def poll(cls, context):
         cfg = context.scene.VTEF_settings
         return cfg.tool_mode == 'EXPORT_MOD' and not cfg.partial_export
-    
+
     def draw(self, context):
         layout = self.layout
         cfg = context.scene.VTEF_settings
-    
+
         row = add_row_with_error_handler(layout, cfg, ['use_custom_template', 'custom_template_source'])
 
         split = row.split(factor=0.5)
@@ -490,7 +503,7 @@ class VTEF_PT_SidePanelIniTemplate(bpy.types.Panel):
 
         col_left = split.column()
         col_left.prop(cfg, 'custom_template_source')
-        
+
         if cfg.custom_template_source == 'INTERNAL':
             layout.row().operator(VTEF_OpenIniTemplateEditor.bl_idname)
 
@@ -503,7 +516,7 @@ class VTEF_PT_SidePanelIniTemplate(bpy.types.Panel):
 
             col_left = split.column()
             col_left.operator(VTEF_OpenIniTemplateEditor.bl_idname)
-            
+
             col_right = split.column()
             if cfg.custom_template_live_update:
                 col_right.operator(VTEF_IniTemplateEditor_ToggleLiveUpdates.bl_idname, text="Stop Ini Updates")
@@ -525,7 +538,7 @@ class VTEF_PT_SidePanelExportFooter(bpy.types.Panel):
     def poll(cls, context):
         cfg = context.scene.VTEF_settings
         return cfg.tool_mode == 'EXPORT_MOD'
-    
+
     def draw(self, context):
         layout = self.layout
         cfg = context.scene.VTEF_settings
@@ -553,12 +566,12 @@ class VTEF_Import(bpy.types.Operator):
             clear_error(cfg)
 
             cfg.mod_skeleton_type = cfg.import_skeleton_type
-            
+
             blender_import(self, context, cfg)
 
         except ConfigError as e:
             self.report({'ERROR'}, str(e))
-        
+
         return {'FINISHED'}
 
 
@@ -599,9 +612,9 @@ class VTEF_Export(bpy.types.Operator):
                 exclude_buffers.append('ShapeKeyOffset')
                 exclude_buffers.append('ShapeKeyVertexId')
                 exclude_buffers.append('ShapeKeyVertexOffset')
-                
+
             return exclude_buffers
-    
+
         else:
 
             return []
@@ -615,10 +628,10 @@ class VTEF_Export(bpy.types.Operator):
             excluded_buffers = self.get_excluded_buffers(context)
 
             blender_export(self, context, cfg, excluded_buffers)
-            
+
         except ConfigError as e:
             self.report({'ERROR'}, str(e))
-            
+
         return {'FINISHED'}
 
 
@@ -637,7 +650,7 @@ class VTEF_ExtractFrameData(bpy.types.Operator):
             clear_error(cfg)
 
             output = extract_frame_data(context, cfg)
-            
+
             # objects_missing_shapekeys = []
             # for object_hash, object_data in output.objects.items():
             #     if object_data.shapekeys.offsets_hash and not object_data.shapekeys.shapekey_offsets:
@@ -648,10 +661,10 @@ class VTEF_ExtractFrameData(bpy.types.Operator):
             #         Frame dump is missing shapekeys data!
             #         Try to make another dump with ongoing facial animation.
             #     """).strip())
-            
+
         except ConfigError as e:
             self.report({'ERROR'}, str(e))
-            
+
         return {'FINISHED'}
 
 
@@ -670,7 +683,7 @@ class VTEF_ImportLODData(bpy.types.Operator):
             clear_error(cfg)
 
             output = extract_frame_data(context, cfg, extract_lods=True)
-            
+
             # objects_missing_shapekeys = []
             # for object_hash, object_data in output.objects.items():
             #     if object_data.shapekeys.offsets_hash and not object_data.shapekeys.shapekey_offsets:
@@ -682,10 +695,10 @@ class VTEF_ImportLODData(bpy.types.Operator):
             #         Frame dump is missing shapekeys data!
             #         Try to make another dump with ongoing facial animation.
             #     """).strip())
-            
+
         except ConfigError as e:
             self.report({'ERROR'}, str(e))
-            
+
         return {'FINISHED'}
 
 
@@ -713,14 +726,14 @@ class VTEF_OpenIniTemplateEditor(bpy.types.Operator):
             text = bpy.data.texts[text_name]
         else:
             text = bpy.data.texts.new(text_name)
-        
+
         if not text.as_string().strip():
             text.clear()
             text.write(IniMaker.get_default_template(context, cfg, remove_code_comments=True))
             text.cursor_set(0)
 
         new_window = bpy.ops.wm.window_new()
-        
+
         new_window_context = bpy.context.window_manager.windows[-1]
 
         # Switch the area to TEXT_EDITOR and assign the text
@@ -737,7 +750,7 @@ class VTEF_OpenIniTemplateEditor(bpy.types.Operator):
                 if region.type == 'UI':
                     bpy.ops.wm.context_toggle(data_path="space_data.show_region_ui")
                     break
-        
+
         return {'FINISHED'}
 
 
@@ -755,7 +768,7 @@ class VTEF_IniTemplateEditor_ToggleLiveUpdates(bpy.types.Operator):
             cfg.custom_template_live_update = True
             bpy.ops.vtef.export_mod()
         return {'FINISHED'}
-    
+
     @classmethod
     def poll(cls, context):
         cfg = context.scene.VTEF_settings
@@ -769,23 +782,23 @@ class VTEF_IniTemplateEditor_Reset(bpy.types.Operator):
 
     def execute(self, context):
         cfg = context.scene.VTEF_settings
-        
+
         text_name = "CustomIniTemplate"
 
         if text_name in bpy.data.texts:
             text = bpy.data.texts[text_name]
         else:
             text = bpy.data.texts.new(text_name)
-        
+
         text.clear()
         text.write(IniMaker.get_default_template(context, cfg, remove_code_comments=True))
         text.cursor_set(0)
 
         return {'FINISHED'}
-    
+
     def invoke(self, context, event):
         return context.window_manager.invoke_confirm(self, event)
-    
+
 
 class VTEF_PT_TEXT_EDITOR_IniTemplate(bpy.types.Panel):
     bl_label = "Ini Template - EFMI Tools"
@@ -796,7 +809,7 @@ class VTEF_PT_TEXT_EDITOR_IniTemplate(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         cfg = context.scene.VTEF_settings
-        
+
         if cfg.custom_template_live_update:
             layout.operator(VTEF_IniTemplateEditor_ToggleLiveUpdates.bl_idname, text="Stop Ini Updates")
         else:
@@ -855,4 +868,4 @@ class DebugPanel(bpy.types.Panel):
         layout.row().prop(cfg, 'remove_temp_object')
         layout.row().prop(cfg, 'export_on_reload')
         layout.row().prop(cfg, 'import_tangent_data_to_attribute')
-        
+

@@ -146,7 +146,7 @@ def _collect_export_component_ids(context, cfg):
 
 def _validate_merged_export_preconditions(context, settings_attr: str):
     cfg = getattr(context.scene, settings_attr, None)
-    if cfg is None or getattr(cfg, "mod_skeleton_type", None) != 'MERGED':
+    if cfg is None or getattr(cfg, "mod_skeleton_type", None) != "MERGED":
         return None
 
     export_component_ids = _collect_export_component_ids(context, cfg)
@@ -158,64 +158,41 @@ def _validate_merged_export_preconditions(context, settings_attr: str):
         return None
 
     source_path = Path(bpy.path.abspath(source_folder))
-    metadata_path = source_path / 'Metadata.json'
-    vgmap_path = source_path / 'VertexGroupMap.json'
+    metadata_path = source_path / "Metadata.json"
     if not metadata_path.is_file():
         return None
 
     try:
-        payload = json.loads(metadata_path.read_text(encoding='utf-8'))
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     except Exception:
         return None
 
-    try:
-        vg_payload = json.loads(vgmap_path.read_text(encoding='utf-8'))
-    except FileNotFoundError:
-        labels = ', '.join(f'C{component_id}' for component_id in export_component_ids)
+    format_version = int(payload.get("format_version") or 0)
+    if format_version < 4:
         return (
-            f"\u5f53\u524d\u5bfc\u51fa\u6a21\u5f0f\u4e3a Merged\uff0c\u4f46\u6e90\u6587\u4ef6\u5939\u7f3a\u5c11 VertexGroupMap.json\uff0c\u65e0\u6cd5\u6821\u9a8c {labels} \u7684\u7edf\u4e00\u9876\u70b9\u7ec4\u6620\u5c04\u3002"
-            "\u8bf7\u91cd\u65b0\u63d0\u53d6\u3001\u6267\u884c\u663e\u5f0f\u65e7 Metadata \u8f6c\u6362\uff0c\u6216\u6539\u7528 Per-Component \u5bfc\u51fa\u3002"
-        )
-    except Exception as exc:
-        return f"\u8bfb\u53d6 VertexGroupMap.json \u5931\u8d25\uff1a{exc}"
-
-    components = payload.get('components') or []
-    vg_components = vg_payload.get('components') or []
-    if len(vg_components) != len(components):
-        return (
-            f"VertexGroupMap.json \u7684\u7ec4\u4ef6\u6570\u91cf ({len(vg_components)}) \u4e0e Metadata.json ({len(components)}) \u4e0d\u4e00\u81f4\u3002"
-            "\u8bf7\u91cd\u65b0\u751f\u6210 VertexGroupMap.json\u3002"
+            f"\u5f53\u524d\u5bfc\u51fa\u6a21\u5f0f\u4e3a Merged\uff0c\u4f46\u6e90\u6587\u4ef6\u5939\u4f7f\u7528\u65e7 Metadata v{format_version}\u3002"
+            "\u8bf7\u7528 EFMI Tools v0.6.2+ \u91cd\u65b0\u63d0\u53d6 Metadata v4\uff0c\u6216\u6539\u7528 Per-Component \u5bfc\u51fa\u3002"
         )
 
-    try:
-        from ...games.arknights_endfield import cpuposed_compat as _cpuposed_compat
-
-        invalid_components = _cpuposed_compat.empty_vgmap_components_requiring_geometry(
-            components,
-            vg_components,
-            export_component_ids,
-        )
-    except Exception:
-        invalid_components = []
-        for component_id in export_component_ids:
-            if component_id < 0 or component_id >= len(vg_components):
-                continue
-            component = vg_components[component_id] or {}
-            vg_map = component.get('vg_map') if isinstance(component, dict) else None
-            metadata_component = components[component_id] if component_id < len(components) else {}
-            cpu_posed = bool(metadata_component.get('cpu_posed', False)) if isinstance(metadata_component, dict) else False
-            if not vg_map and not cpu_posed:
-                invalid_components.append(component_id)
+    components = payload.get("components") or []
+    invalid_components = []
+    for component_id in export_component_ids:
+        if component_id < 0 or component_id >= len(components):
+            continue
+        component = components[component_id] or {}
+        vg_map = component.get("vg_map") if isinstance(component, dict) else None
+        cpu_posed = bool(component.get("cpu_posed", False)) if isinstance(component, dict) else False
+        if not vg_map and not cpu_posed:
+            invalid_components.append(component_id)
 
     if not invalid_components:
         return None
 
-    labels = ', '.join(f'C{component_id}' for component_id in invalid_components)
+    labels = ", ".join(f"C{component_id}" for component_id in invalid_components)
     return (
-        f"\u5f53\u524d\u5bfc\u51fa\u6a21\u5f0f\u4e3a Merged\uff0c\u4f46\u6e90\u6587\u4ef6\u5939 VertexGroupMap.json \u4e2d {labels} \u7684 vg_map \u4e3a\u7a7a\u3002"
-        "\u8bf7\u91cd\u65b0\u751f\u6210 VertexGroupMap.json\uff0c\u6216\u6539\u7528 Per-Component \u5bfc\u51fa\u3002"
+        f"\u5f53\u524d\u5bfc\u51fa\u6a21\u5f0f\u4e3a Merged\uff0c\u4f46 Metadata v4 \u4e2d {labels} \u7684 vg_map \u4e3a\u7a7a\u3002"
+        "\u8bf7\u7528 EFMI Tools v0.6.2+ \u91cd\u65b0\u63d0\u53d6\uff0c\u6216\u6539\u7528 Per-Component \u5bfc\u51fa\u3002"
     )
-
 
 def _get_export_state(context, settings_attr: str):
     """Build the swap state: returning None means no processing is needed."""
@@ -323,10 +300,8 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
     def patched(self, context):
         state = None
         mesh_state = None
-        # The VertexGroupMap.json merged-export precondition is EFMI-specific: EFMI's Merged mode
-        # back-translates unified VGs to per-component ids via VertexGroupMap.json. WWMI's native
-        # Merged export reads vg_map straight from Metadata.json and needs no VertexGroupMap.json,
-        # so skip this gate for WWMI (otherwise WWMI Merged export is blocked outright).
+        # EFMI v0.6.2 Merged export requires Metadata v4 component vg_map data.
+        # WWMI validates its own Metadata contract, so this gate is EFMI-only.
         validation_error = (None if adapter_key == "WWMI"
                             else _validate_merged_export_preconditions(context, settings_attr))
         if validation_error:

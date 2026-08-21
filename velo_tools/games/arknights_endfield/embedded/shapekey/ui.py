@@ -296,11 +296,6 @@ def _draw_shapekey_row(layout, context):
     if not settings.enabled:
         return
 
-    # Sub-option (indented under the main toggle).
-    sub = layout.row()
-    sub.separator()
-    sub.prop(settings, "merge_buffers")
-
     # ----------- detector box (collapsible, modeled on the CrossIB sub-feature) -----------
     cfg = getattr(context.scene, "VTEF_settings", None)
     coll = getattr(cfg, "component_collection", None) if cfg is not None else None
@@ -426,7 +421,7 @@ def _make_patched_draw(orig_draw):
                 traceback.print_exc()
             # ─── injection end ───
             layout.row().prop(cfg, 'allow_export_without_lods')
-            if cfg.mod_skeleton_type in {'MERGED', 'MERGED_SKELETON'}:
+            if cfg.mod_skeleton_type == 'MERGED':
                 layout.row().prop(cfg, 'skeleton_scale')
     return patched_draw
 

@@ -2,26 +2,27 @@ import time
 import shutil
 
 from dataclasses import asdict
+from textwrap import dedent
 
 from ..addon.exceptions import ConfigError
 
 from ..migoto_io.blender_interface.utility import *
 from ..migoto_io.blender_tools.meshes import *
-from ..migoto_io.data_model.byte_buffer import NumpyBuffer, BufferLayout, BufferSemantic, Semantic, AbstractSemantic
+
 from ..migoto_io.data_model.dxgi_format import DXGIFormat
+from ..migoto_io.data_model.byte_buffer import NumpyBuffer, BufferLayout, BufferSemantic, AbstractSemantic, Semantic
 from ..migoto_io.data_model.data_model import DataModel
 from ..migoto_io.migoto_model.migoto_format import MigotoFmt
+from ..migoto_io.migoto_model.migoto_mesh import WeightingType
 
 from ..migoto_io.object_extractor.migoto_object.metadata_format import read_metadata, ExtractedObject, ExtractedObjectBuffer, EnumEncoder
 
-from .object_merger import ObjectMerger, SkeletonType, MergedObject, MergedObjectShapeKeys
+from .object_merger import ObjectMerger, SkeletonType, MergedObject, MergedObjectComponent, MergedObjectShapeKeys, MergedObjectShapeKeysBatch
 from .metadata_collector import Version, ModInfo
 from .texture_collector import Texture, get_textures
 from .ini_maker import IniMaker
 
 from ..data_models.data_model_efmi import DataModelEFMI
-from ... import vgmap as velo_vgmap
-from ... import merged_runtime as velo_merged_runtime
 
 class Fatal(Exception): pass
 
@@ -38,15 +39,18 @@ class ObjectMergerEFMI(ObjectMerger):
 
     @staticmethod
     def fill_missing_data(objects):
-        for object in objects:
-            mesh = object.data
-            # Fill missing COLOR
-            if not mesh.attributes.get('COLOR', None):
-                data = numpy.zeros((len(mesh.loops), 4), dtype=numpy.float32)
-                create_color_attribute(mesh, 'COLOR', data)
-            # Fill missing TEXCOORD.xy
-            if not mesh.uv_layers.get('TEXCOORD.xy'):
-                create_uv_layer(mesh, 'TEXCOORD.xy')
+        try:
+            for object in objects:
+                mesh = object.data
+                # Fill missing COLOR
+                if not mesh.attributes.get('COLOR', None):
+                    data = numpy.zeros((len(mesh.loops), 4), dtype=numpy.float32)
+                    create_color_attribute(mesh, 'COLOR', data)
+                # Fill missing TEXCOORD.xy
+                if not mesh.uv_layers.get('TEXCOORD.xy'):
+                    create_uv_layer(mesh, 'TEXCOORD.xy')
+        except Exception as e:
+            raise ValueError(f"Failed to fill missing data for temp object `{object.name}`: {str(e)}")
 
 
 # TODO: Add support of export of unhandled semantics from vertex attributes
@@ -73,11 +77,9 @@ class ModExporter:
 
         self.buffers = {}
         self.textures =  []
-        self._runtime_merged = False
-        self.merged_runtime_plan = None
 
     def export_mod(self):
-    
+
         self.verify_config()
 
         start_time = time.time()
@@ -93,7 +95,22 @@ class ModExporter:
             raise ConfigError('object_source_folder', 'Specified folder is missing Metadata.json!')
         except Exception as e:
             raise ConfigError('object_source_folder', f'Failed to load Metadata.json:\n{e}')
-            
+
+        if self.cfg.mod_skeleton_type == 'MERGED':
+            if self.extracted_object.format_version < 4:
+                raise ConfigError('object_source_folder', f"""
+                    Specified sources folder uses old data format `v{self.extracted_object.format_version}`!
+                    This format is missing data required for Merged Skeleton.
+                    Please extract object again from a new frame dump.
+                """)
+
+            if self.extracted_object.weigthing_type != WeightingType.Explicit:
+                raise ConfigError('mod_skeleton_type', f"""
+                    Specified sources folder contains object {'without' if self.extracted_object.weigthing_type == WeightingType.NoWeights else 'with implicit'} weights!
+                    Merged Skeleton makes sense only for object with explicit weights.
+                    Please use Per-Component Skeleton instead.
+                """)
+
         if self.extracted_object.format_version < 3:
             raise ConfigError('object_source_folder', f"""
                 Specified sources folder uses outdated data format `v{self.extracted_object.format_version}`!
@@ -101,36 +118,6 @@ class ModExporter:
                 Please extract data again from a new frame dump.
             """)
 
-        self._vg_names_are_global = self.cfg.mod_skeleton_type in {'MERGED', 'MERGED_SKELETON'}
-        if self._vg_names_are_global:
-            try:
-                vertex_group_map = velo_vgmap.load_for_metadata(self.object_source_folder, self.extracted_object)
-                velo_vgmap.apply_to_metadata(self.extracted_object, vertex_group_map)
-            except velo_vgmap.VertexGroupMapError as exc:
-                raise ConfigError('object_source_folder', str(exc))
-
-            cpu_components = [
-                idx for idx, component in enumerate(self.extracted_object.components)
-                if getattr(component, 'cpu_posed', False)
-            ]
-            if cpu_components:
-                raise ConfigError(
-                    'object_source_folder',
-                    (
-                        'CPU-posed 组件只支持贴图/INI 修改，不能参与 Merged 几何导出、CrossIB 或 ShapeKey：'
-                        + ', '.join(f'Component {idx}' for idx in cpu_components)
-                    ),
-                )
-            if self.cfg.mod_skeleton_type == 'MERGED_SKELETON':
-                try:
-                    self.merged_runtime_plan = velo_merged_runtime.build_plan(
-                        self.extracted_object,
-                        vertex_group_map,
-                    )
-                except velo_merged_runtime.MergedRuntimeError as exc:
-                    raise ConfigError('object_source_folder', str(exc)) from exc
-                self._runtime_merged = True
-        
         lods_count = sum([len(component.lods) for component in self.extracted_object.components])
         if lods_count == 0 and not self.cfg.allow_export_without_lods:
             raise ConfigError('object_source_folder', """
@@ -139,9 +126,12 @@ class ModExporter:
                 Switch toolkit to "Extract LoDs From Dump" mode and feed it with open world dump.
                 Please do note that to dump character LODs correctly you should switch to another character and take a few steps back.
             """)
-        
-        # Keep the legacy Merged authoring path separate from the v1.4 runtime path.
-        self.skeleton_type = SkeletonType.Merged if self._runtime_merged else SkeletonType.PerComponent
+
+        if self.cfg.mod_skeleton_type == 'MERGED':
+            self.skeleton_type = SkeletonType.Merged
+            self.cfg.use_spatial_identification = True
+        else:
+            self.skeleton_type = SkeletonType.PerComponent
 
         self.merged_object = MergedObject(
             object=None,
@@ -163,8 +153,11 @@ class ModExporter:
                 raise e
             except Exception as e:
                 raise ConfigError('component_collection', f'Failed to create merged object from collection:\n{e}')
-            
-            self.merged_object.components += merged_object.components
+
+            assert len(merged_object.components) == 1
+            merged_component = merged_object.components[0]
+
+            self.merged_object.components.append(merged_component)
 
             try:
                 self.build_data_buffers(merged_object, component_id)
@@ -177,7 +170,12 @@ class ModExporter:
 
             self.merged_object.index_count += merged_object.index_count
             self.merged_object.vertex_count += merged_object.vertex_count
-            # self.merged_object.shapekeys.vertex_count += merged_object.shapekeys.vertex_count
+
+            if merged_component.shapekeys.vertex_count > 0:
+                self.merged_object.shapekeys.max_lod_position_count = max(self.merged_object.shapekeys.max_lod_position_count, merged_component.shapekeys.lod_position_count)
+                self.merged_object.shapekeys.max_batches_count = max(self.merged_object.shapekeys.max_batches_count, len(merged_component.shapekeys.batches))
+                self.merged_object.shapekeys.max_vertex_count = max(self.merged_object.shapekeys.max_vertex_count, merged_component.vertex_count)
+                self.merged_object.shapekeys.shapekeyed_components_count += 1
 
         if not self.cfg.partial_export:
             self.textures = get_textures(self.object_source_folder, [])
@@ -198,7 +196,7 @@ class ModExporter:
             self.write_files()
         except Exception as e:
             raise ConfigError('mod_output_folder', f'Failed to write files to mod folder:\n{e}')
-            
+
         self.buffers = {}
         self.textures = []
 
@@ -226,15 +224,6 @@ class ModExporter:
             fill_missing_mesh_data=self.cfg.fill_missing_mesh_data,
             add_missing_vertex_groups=self.cfg.add_missing_vertex_groups,
             allow_empty_components=True,
-            vg_names_are_global=(
-                getattr(self, '_vg_names_are_global', False)
-            ),
-            global_vg_count=(
-                self.merged_runtime_plan.bones_count
-                if getattr(self, '_runtime_merged', False) and self.merged_runtime_plan is not None
-                else None
-            ),
-            preserve_global_vgs=getattr(self, '_runtime_merged', False),
         )
         print(f'Merged object build time: {time.time() - start_time :.3f}s ({self.merged_object.vertex_count} vertices, {self.merged_object.index_count} indices)')
         return object_merger.merged_object
@@ -260,18 +249,77 @@ class ModExporter:
 
             indices = vb2.get_field(Semantic.Blendindices)
             vg_count = int(indices.max()) + 1
-            
+
             remap = numpy.array([lod_mesh.vg_map.get(str(vg_id), vg_id) for vg_id in range(vg_count)])
 
-            vb2_remapped = NumpyBuffer(layout=vb2.layout, size=len(vb2.data))
+            if self.skeleton_type == SkeletonType.PerComponent:
 
-            vb2_remapped.set_field(Semantic.Blendindices, remap[indices])
+                vb2_remapped = NumpyBuffer(layout=vb2.layout, size=len(vb2.data))
 
-            weights = vb2.get_field(Semantic.Blendweights)
-            if weights is not None:
-                vb2_remapped.set_field(Semantic.Blendweights, weights)
+                vb2_remapped.set_field(Semantic.Blendindices, remap[indices])
 
-            self.buffers[f'Component{component_id}_VB2_LOD{lod_level}'] = vb2_remapped
+                weights = vb2.get_field(Semantic.Blendweights)
+                if weights is not None:
+                    vb2_remapped.set_field(Semantic.Blendweights, weights)
+
+                self.buffers[f'Component{component_id}_VB2_LOD{lod_level}'] = vb2_remapped
+
+    def build_lod_vg_remaps(self, component_id: int):
+        # Add LoD blend remap tables to export buffers.
+        # They are used by bone data importer CS to drive merged skeleton by LoDs.
+
+        component = self.extracted_object.components[component_id]
+
+        lod_meshes = component.lods
+        if not lod_meshes:
+            return
+
+        for lod_id, lod_mesh in enumerate(lod_meshes):
+            if not lod_mesh.vg_map or not component.vg_count:
+                continue
+
+            lod_level = lod_id + 1
+
+            remap = numpy.array([lod_mesh.vg_map.get(str(vg_id), vg_id) for vg_id in range(component.vg_count)])
+
+            layout = BufferLayout([
+                BufferSemantic(AbstractSemantic(Semantic.RawData, 31), DXGIFormat.R16_UINT),
+            ])
+
+            vb2_remap = NumpyBuffer(layout=layout, size=len(remap))
+            vb2_remap.set_field(AbstractSemantic(Semantic.RawData, 31), remap)
+
+            self.buffers[f'Component{component_id}_VB2_LOD{lod_level}_BlendRemap'] = vb2_remap
+
+    def build_shapekey_buffers(self, data_model: DataModelEFMI, vertex_ids: numpy.ndarray, merged_object: MergedObject, component_id: int):
+        assert len(merged_object.components) == 1
+        component = merged_object.components[0]
+
+        shapekey_batches, shapekey_data, shapekey_buffers = data_model.get_shapekeys(
+            obj=merged_object.object,
+            vertex_ids=vertex_ids,
+            mirror_mesh=self.cfg.mirror_mesh,
+            mesh_scale=1.0,
+            mesh_rotation=self.extracted_object.rotation.to_tuple()
+        )
+
+        if not shapekey_batches:
+            return
+
+        for buffer_name, buffer in shapekey_buffers.items():
+            self.buffers[f'Component{component_id}_{buffer_name}'] = buffer
+
+        extracted_component = self.extracted_object.components[component_id]
+        for lod in extracted_component.lods:
+            if "VB0" in lod.vb_formats:
+                component.shapekeys.lod_position_count += 1
+
+        for batch in shapekey_batches:
+            component.shapekeys.batches.append(MergedObjectShapeKeysBatch(
+                vertex_offset=batch.vertex_offset,
+                vertex_count=batch.vertex_count,
+            ))
+            component.shapekeys.vertex_count += batch.vertex_count
 
     def build_data_buffers(self, merged_object: MergedObject, component_id = -1):
         start_time = time.time()
@@ -284,16 +332,6 @@ class ModExporter:
             for buffer_name, buffer_layout in self.extracted_object.export_format.items():
                 buffers_format[buffer_name] = buffer_layout.to_layout()
 
-        index_layout = None
-        if (
-            not self._runtime_merged
-            and merged_object.object is not None
-            and len(merged_object.object.vertex_groups) > 256
-        ):
-            index_layout = []
-            for component in merged_object.components:
-                index_layout.append(component.index_count)
-
         fmt_path = self.object_source_folder / f'Component {component_id}.fmt'
         with open(fmt_path, 'r') as fmt:
             migoto_fmt = MigotoFmt(fmt)
@@ -305,19 +343,6 @@ class ModExporter:
                     buffers_format[buffer_name] = layout
                 layout.add_element(BufferSemantic(buffer_semantic.abstract, buffer_semantic.format))
 
-            if self._runtime_merged and f'Component{component_id}_VB2' in buffers_format:
-                # Merged authoring can address global VGs above the source
-                # R8 component palette. Keep the official local-index data
-                # path, but widen BlendIndices before buffer serialization.
-                blend_indices = buffers_format[f'Component{component_id}_VB2'].get_element(
-                    AbstractSemantic(Semantic.Blendindices, 0)
-                )
-                if blend_indices is not None:
-                    blend_indices.format = DXGIFormat.R16G16B16A16_UINT
-                    blend_indices.stride = 8
-                    buffers_format[f'Component{component_id}_VB2'].fill_stride()
-                    buffers_format[f'Component{component_id}_VB2'].fill_offsets()
-
         extracted_component = self.extracted_object.components[component_id]
         for lod_id, lod in enumerate(extracted_component.lods):
             if not lod.vb_formats:
@@ -325,57 +350,36 @@ class ModExporter:
             lod_level = lod_id + 1
             for vb_name, vb_format in lod.vb_formats.items():
                 buffers_format[f"Component{component_id}_{vb_name}_LOD{lod_level}"] = vb_format.to_layout()
-            
+
         if merged_object.object is not None:
 
-            buffers, vertex_count = data_model.get_data(
-                context=self.context, 
-                collection=self.cfg.component_collection, 
-                obj=merged_object.object, 
+            buffers, vertex_ids = data_model.get_data(
+                context=self.context,
+                collection=self.cfg.component_collection,
+                obj=merged_object.object,
                 excluded_buffers=self.excluded_buffers,
                 buffers_format=buffers_format,
                 mirror_mesh=self.cfg.mirror_mesh,
                 mesh_rotation=self.extracted_object.rotation.to_tuple(),
-                object_index_layout=index_layout,
-                vertex_group_remap=(
-                    self._component_global_to_local_remap(component_id)
-                    if self._runtime_merged else None
-                ),
+                min_vg_byte_width=2 if self.skeleton_type == SkeletonType.Merged else 1,
+                max_vg_byte_width=2 if self.skeleton_type == SkeletonType.Merged else 0
             )
-            
+
+            vertex_count = len(vertex_ids)
+
             self.buffers.update(buffers)
 
-            if not self._runtime_merged:
-                self.build_lod_buffers(component_id)
+            self.build_lod_buffers(component_id)
+
+            self.build_shapekey_buffers(data_model, vertex_ids, merged_object, component_id)
 
             merged_object.vertex_count = vertex_count
-            merged_object.shapekeys.vertex_count = len(self.buffers.get('ShapeKeyVertexId', []))
 
-            remapped_vgs_counts = self.buffers.pop('BlendRemapLayout', None)
-            if remapped_vgs_counts is not None:
-                remap_id = 0
-                for component_id, vg_count in enumerate(remapped_vgs_counts.data.tolist()):
-                    if vg_count == 0:
-                        continue
-                    component = merged_object.components[component_id]
-                    if vg_count > 256:            
-                        raise ConfigError('component_collection', f'Component{component_id} 256 VG limit exceeded!\n'
-                                        f'Currently it consists of {len(component.objects)} object(s) using total of {vg_count} VGs with non-zero weights.\n'
-                                        f'Please reduce the number of non-empty VGs or split objects between different components.')
-                    component.blend_remap_id = remap_id
-                    component.blend_remap_vg_count = vg_count
-                    remap_id += 1
-                merged_object.blend_remap_count = remap_id
+        if self.skeleton_type == SkeletonType.Merged:
+            self.build_lod_vg_remaps(component_id)
 
         print(f'Total mesh data collection time: {time.time() - start_time :.3f}s')
 
-    def _component_global_to_local_remap(self, component_id: int) -> numpy.ndarray:
-        plan = self.merged_runtime_plan.components[component_id]
-        remap = numpy.full(self.merged_runtime_plan.bones_count, -1, dtype=numpy.int32)
-        for local_id, global_id in enumerate(plan.global_by_local):
-            remap[global_id] = local_id
-        return remap
-    
     def build_mod_ini(self):
         start_time = time.time()
 
@@ -384,11 +388,7 @@ class ModExporter:
             scene=self.context.scene,
             mod_info=ModInfo(
                 efmi_tools_version=Version(self.cfg.efmi_tools_version),
-                required_efmi_version=Version(
-                    '.'.join(str(value) for value in velo_merged_runtime.effective_required_version(self.cfg.required_efmi_version))
-                    if self._runtime_merged
-                    else self.cfg.required_efmi_version
-                ),
+                required_efmi_version=Version(self.cfg.required_efmi_version),
                 mod_name=self.cfg.mod_name,
                 mod_author=self.cfg.mod_author,
                 mod_desc=self.cfg.mod_desc,
@@ -400,33 +400,14 @@ class ModExporter:
             buffers=self.buffers,
             textures=self.textures,
             comment_code=self.cfg.comment_ini,
-            skeleton_scale=self.cfg.skeleton_scale,
-            unrestricted_custom_shape_keys=self.cfg.unrestricted_custom_shape_keys,
-            merged_runtime_plan=self.merged_runtime_plan,
         )
 
         self.ini = ini_maker
 
-        template_skeleton_type = None
-        if self.cfg.mod_skeleton_type == 'MERGED' and self.skeleton_type == SkeletonType.PerComponent:
-            # Velo's Merged mode is an authoring-side global-VG convention.
-            # The runtime output is still EFMI 0.4.3's ALPHA-7 per-component
-            # stack, because upstream merged.ini.j2 is an unimplemented stub.
-            template_skeleton_type = self.cfg.mod_skeleton_type
-            self.cfg.mod_skeleton_type = 'COMPONENT'
-
         if self.cfg.custom_template_live_update:
-            try:
-                self.ini.start_live_write(self.context, self.cfg)
-            finally:
-                if template_skeleton_type is not None:
-                    self.cfg.mod_skeleton_type = template_skeleton_type
+            self.ini.start_live_write(self.context, self.cfg)
         else:
-            try:
-                self.ini.build_from_template(self.context, self.cfg, with_checksum=True)
-            finally:
-                if template_skeleton_type is not None:
-                    self.cfg.mod_skeleton_type = template_skeleton_type
+            self.ini.build_from_template(self.context, self.cfg, with_checksum=True)
 
         print(f'Total mod ini build time: {time.time() - start_time :.3f}s')
 
@@ -464,7 +445,7 @@ class ModExporter:
             if self.cfg.write_ini:
                 self.ini.write(ini_path=self.mod_output_folder / 'mod.ini')
                 # self.ini.write(ini_path=self.mod_output_folder / 'mod_old.ini', ini_string=self.ini.build_old())
-                
+
         print(f'Disk write time: {time.time() - start_time :.3f}s')
 
     def compare_outputs(self, old_path: Path, new_path: Path):
@@ -477,7 +458,7 @@ class ModExporter:
             print(f'Comparing {buffer_name}.buf buffers...')
 
             with open(old_path / (buffer_name + '.buf'), 'rb') as f1, open(new_path / (buffer_name + '.buf'), 'rb') as f2:
-                
+
                 old_buffer = NumpyBuffer(layout)
                 old_buffer.import_raw_data(f1.read())
 

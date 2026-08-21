@@ -11,7 +11,7 @@ IMPORT_SKELETON_ITEMS = [
     (
         "MERGED",
         "Merged（统一顶点组）",
-        "导入时把组件局部顶点组重命名为跨组件统一骨骼编号。缺少 VertexGroupMap.json 时会报错。",
+        "使用 Metadata v4 中由骨骼矩阵生成的跨组件统一编号导入；可选择合并重复骨骼。",
     ),
     (
         "COMPONENT",
@@ -23,18 +23,13 @@ IMPORT_SKELETON_ITEMS = [
 MOD_SKELETON_ITEMS = [
     (
         "MERGED",
-        "Merged（统一顶点组）",
-        "按统一顶点组编辑并导出；需要 VertexGroupMap.json。",
+        "Merged（官方合并骨架）",
+        "使用 EFMI v1.4.1 Merged Skeleton 运行时导出，支持跨组件权重、骨架缩放与多实例。",
     ),
     (
         "COMPONENT",
         "Per-Component（部件独立）",
         "按组件局部顶点组编号导出。",
-    ),
-    (
-        "MERGED_SKELETON",
-        "Merged（骨架合并）",
-        "使用 EFMI v1.4.0+ 官方运行时骨架合并；需要匹配的 VertexGroupMap.json 和 LOD 映射。",
     ),
 ]
 
@@ -59,8 +54,9 @@ VTEF_PROPERTY_TEXTS = {
     "skip_jpg_textures": ("贴图过滤：跳过 .jpg", "跳过 .jpg 贴图；这类文件通常是渐变图或遮罩。"),
     "object_source_folder": ("对象源目录", "包含组件 .fmt/.ib/.vb、Metadata.json、TextureUsage.json 的 EFMI 对象目录。"),
     "color_storage": ("顶点色", "控制导入时如何保存和显示 COLOR 顶点色数据。"),
-    "import_skeleton_type": ("骨架", "顶点组命名方式。Merged 需要同目录 VertexGroupMap.json；Per-Component 使用各组件局部编号。"),
+    "import_skeleton_type": ("骨架", "顶点组命名方式。Merged 使用 Metadata v4 内置 vg_map；Per-Component 使用各组件局部编号。"),
     "skip_empty_vertex_groups": ("跳过空顶点组", "导入 Merged 对象时自动移除没有任何权重的顶点组。"),
+    "dedupe_bones": ("合并重复骨骼", "把矩阵完全相同的骨骼重映射到同一统一顶点组。LOD 几何不等价时应关闭。"),
     "mirror_mesh": ("镜像网格", "自动镜像网格以匹配游戏内左右方向；直接修改网格数据，不改变物体 Transform 的 Scale X。"),
     "lod_frame_dump_folder": ("LOD Frame Dump 目录", "存放开放世界 LOD Frame Dump 的目录；需要包含 log.txt。"),
     "allow_lod_overwrite": ("允许覆盖 LOD 数据", "允许在 LOD 对象名或顶点数冲突时替换 Metadata.json 中已有的组件 LOD 数据。"),
@@ -82,7 +78,7 @@ VTEF_PROPERTY_TEXTS = {
     "vg_matcher_candidates_count": ("顶点组匹配候选数", "按顶点组重心距离预选的候选数量。"),
     "component_collection": ("组件集合", "包含 Component 0、Component_1 等 EFMI 组件对象的 Blender 集合。"),
     "mod_output_folder": ("Mod 输出目录", "写入 mod.ini、Meshes 和 Textures 的 Mod 目录。"),
-    "mod_skeleton_type": ("骨架", "选择运行时骨架策略。统一顶点组模式会回译为部件局部编号；骨架合并模式需要 EFMI v1.4.0+。"),
+    "mod_skeleton_type": ("骨架", "选择 EFMI v1.4.1 Merged Skeleton 或 Per-Component 运行时策略。"),
     "apply_all_modifiers": ("应用所有修改器", "导出时在临时副本上应用所有可见修改器。"),
     "copy_textures": ("复制贴图", "导出时把引用的贴图文件复制到 Mod 输出目录。"),
     "write_ini": ("写出 mod.ini", "导出时在输出目录写入新的 mod.ini。"),
@@ -94,6 +90,9 @@ VTEF_PROPERTY_TEXTS = {
     "allow_export_without_lods": ("允许无 LOD 导出", "允许 Metadata.json 没有 LOD 数据时仍导出；开放世界中可能无法正确加载。"),
     "add_missing_vertex_groups": ("补齐缺失顶点组", "按顶点组编号补齐中间缺失项，例如存在 0 和 2 时补 1。"),
     "fill_missing_mesh_data": ("补齐缺失网格数据", "自动生成缺失的 COLOR 黑色顶点色和空 TEXCOORD.xy。"),
+    "max_instance_count": ("最大实例数", "Merged Skeleton 支持的同对象实例上限；每个实例会按统一骨骼数预留 VRAM。"),
+    "use_spatial_identification": ("空间身份识别", "用位置验证组件归属，避免误改多个对象共享的阴影等组件；仅支持带权重对象。"),
+    "spatial_identification_threshold": ("空间识别组件阈值", "形成新空间身份前必须出现的组件数量；应高于非唯一网格数且不高于 LOD1+ 中使用的 LOD0 网格数。"),
     "skeleton_scale": ("骨架缩放", "在游戏中缩放模型；Per-Component 骨架不支持。"),
     "partial_export": ("部分导出", "高级用途：只导出选定 buffer，跳过 INI 生成和资源复制。"),
     "export_index": ("Index Buffer", "导出索引 buffer，保存顶点与面的关联。"),
@@ -113,7 +112,7 @@ VTEF_PROPERTY_TEXTS = {
     "custom_template_source": ("模板存储", "选择自定义 INI 模板的存储位置。"),
     "custom_template_path": ("模板文件", "外部 mod.ini 模板文件路径。新建模板时可先从内置编辑器复制默认内容。"),
     "use_ini_toggles": ("使用 INI 开关", "把配置好的 INI 开关逻辑写入 mod.ini。"),
-    "generate_vertex_group_map": ("生成 VertexGroupMap.json", "提取对象时生成 Velo 的统一顶点组映射 sidecar。该文件只服务 Merged 导入/导出，不替代 EFMI 的 LOD 映射。"),
+    "generate_vertex_group_map": ("生成 VertexGroupMap.json", "把 EFMI Metadata v4 的官方统一顶点组映射 vg_map 镜像为兼容 sidecar，供旧版 Velo 工程与外部工具读取。"),
     "import_as_component_collections": ("按组件创建子集合", "导入模型时在对象父集合下创建 C0/C1/... 子集合；关闭后沿用上游 EFMI 的单集合导入。"),
     "extract_components_filter": ("组件过滤", "可选组件范围，例如 0-8 或 0,1,5-7。过滤后输出仍连续编号为 Component 0..N。"),
     "import_texture": ("导入贴图", "导入模型后依据 TextureUsage.json 给网格指定源目录内的 .dds 贴图。"),
@@ -247,7 +246,7 @@ SHAPEKEY_PROPERTY_TEXTS = {
     "ShapeKeySettings": {
         "enabled": (
             "导出自定义 ShapeKey",
-            "启用后，命名为 Deform <编号> <名称> 的 ShapeKey 会被烘焙为按槽位存储的位置差值，并随 Mod 导出。",
+            "启用后，为 EFMI v0.6.2 官方 ShapeKey 导出添加持久控制变量；位置差值与运行时处理由官方核心负责。",
         ),
         "merge_buffers": (
             "合并 Buffer 文件",

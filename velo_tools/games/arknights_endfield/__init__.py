@@ -7,9 +7,7 @@ from . import embedded as _embedded
 from . import mmd_pick as _mmd_pick
 from . import bridge_ui as _bridge_ui
 from . import ui_l10n as _ui_l10n
-from . import cpuposed_compat as _cpuposed_compat
 from . import lod_debug_import as _lod_debug_import
-from . import native_per_export as _native_per_export
 from ._efmi_core import auto_load as _al
 from ._efmi_core.addon import settings as _vsettings
 from .. import registry as _registry
@@ -255,6 +253,7 @@ def _patch_vtef_visible_property_texts():
         default="MERGED",
     )
     _patch_vtef_property(BoolProperty, "skip_empty_vertex_groups", default=True)
+    _patch_vtef_property(BoolProperty, "dedupe_bones", default=True)
     _patch_vtef_property(BoolProperty, "mirror_mesh", default=False)
 
     _patch_vtef_property(BoolProperty, "allow_lod_overwrite", default=False)
@@ -306,6 +305,9 @@ def _patch_vtef_visible_property_texts():
     _patch_vtef_property(BoolProperty, "allow_export_without_lods", default=False)
     _patch_vtef_property(BoolProperty, "add_missing_vertex_groups", default=True)
     _patch_vtef_property(BoolProperty, "fill_missing_mesh_data", default=True)
+    _patch_vtef_property(IntProperty, "max_instance_count", default=8, min=2, max=32)
+    _patch_vtef_property(BoolProperty, "use_spatial_identification", default=True)
+    _patch_vtef_property(IntProperty, "spatial_identification_threshold", default=3, min=1, max=8)
     _patch_vtef_property(FloatProperty, "skeleton_scale", default=1.0)
     _patch_vtef_property(BoolProperty, "partial_export", default=False)
     _patch_vtef_property(BoolProperty, "export_index", default=True)
@@ -502,7 +504,7 @@ def _patch_velo_settings():
 
     _vsettings.VTEF_Settings.__annotations__["generate_vertex_group_map"] = BoolProperty(
         name=_zh("生成 VertexGroupMap.json"),
-        description=_zh("提取对象时生成 Velo 的统一顶点组映射 sidecar。该文件只服务 Merged 导入/导出，不替代 EFMI 的 LOD 映射。"),
+        description=_zh("把 EFMI Metadata v4 的官方统一顶点组映射 vg_map 镜像为兼容 sidecar，供旧版 Velo 工程与外部工具读取。"),
         default=True,
     )
     _vsettings.VTEF_Settings.__annotations__["generate_crossib_json"] = BoolProperty(
@@ -534,9 +536,7 @@ def enabled() -> bool:
 def register():
     _props.register()
     _al.init()
-    _cpuposed_compat.install_patches()
     _lod_debug_import.install_patches()
-    _native_per_export.install_patches()
     _strip_unwanted_vendor_panels()
     _patch_panels_for_velo_tools()
     _patch_velo_settings()
@@ -642,15 +642,7 @@ def unregister():
     except Exception:
         pass
     try:
-        _cpuposed_compat.uninstall_patches()
-    except Exception:
-        pass
-    try:
         _lod_debug_import.uninstall_patches()
-    except Exception:
-        pass
-    try:
-        _native_per_export.uninstall_patches()
     except Exception:
         pass
     if hasattr(bpy.types.Scene, "VTEF_settings"):

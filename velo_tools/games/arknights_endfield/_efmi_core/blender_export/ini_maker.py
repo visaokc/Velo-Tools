@@ -23,34 +23,8 @@ from .object_merger import MergedObject
 from .metadata_collector import ModInfo
 from .texture_collector import Texture
 from .text_formatter import TextFormatter
-from ...merged_runtime import MergedRuntimePlan
 
 from ..libs.jinja2 import Environment, FileSystemLoader, TemplateSyntaxError, UndefinedError
-
-
-def validate_merged_skeleton_template(template_string: str) -> None:
-    """Validate the mod-owned wiring required by EFMI v1.4 MergedSkeleton."""
-    required_sections = (
-        "[CommandListCallback_MergedSkeleton_ConnectComponent]",
-        "[ResourceOutputMergedSkeleton_Template]",
-        "[ResourceOutput_MergedSkeleton]",
-        "[PoolInput_MergedSkeleton_Component_VertexGroupOffsets]",
-        "[PoolInput_MergedSkeleton_Component_VertexGroupCounts]",
-        "[PoolInput_MergedSkeleton_Component_LodRemaps]",
-    )
-    required_calls = (
-        "CommandList\\EFMIv1\\Object_ReadConfig",
-        "CommandList\\EFMIv1\\InitializeMergedSkeleton",
-        "CommandList\\EFMIv1\\MergedSkeleton_AttachComponent",
-        "CommandList\\EFMIv1\\Component_ReadConfig",
-        "CommandList\\EFMIv1\\SpatialIdentity_IdentifyComponentInstances",
-        "CommandList\\EFMIv1\\Component_DrawInstances",
-    )
-    missing = [item for item in (*required_sections, *required_calls) if item not in template_string]
-    if missing:
-        raise ValueError(
-            "Merged（骨架合并）模板缺少 EFMI v1.4.0 contract：" + ", ".join(missing)
-        )
 
 
 chached_template: Environment | None = None
@@ -68,20 +42,17 @@ class IniMaker:
     buffers: dict[str, NumpyBuffer]
     textures: list[Texture]
     comment_code: bool
-    unrestricted_custom_shape_keys: bool
-    skeleton_scale: float
-    merged_runtime_plan: MergedRuntimePlan | None = None
     formatter: TextFormatter = TextFormatter()
     # Output
     ini_string: str = field(init=False)
-    
+
     def start_live_write(self, context, cfg):
         thread = Thread(target=self.live_write_thread, args=(context, cfg))
         thread.start()
 
     def live_write_thread(self, context, cfg):
         print('Started live ini updates.')
-        
+
         if cfg.custom_template_source == 'INTERNAL':
             text = bpy.data.texts["CustomIniTemplate"]
             template_string = None
@@ -90,7 +61,7 @@ class IniMaker:
         else:
             custom_template_path = resolve_path(cfg.custom_template_path)
             mod_time = custom_template_path.stat().st_mtime
-        
+
         while True:
 
             if not cfg.custom_template_live_update:
@@ -120,17 +91,12 @@ class IniMaker:
 
                 self.write(ini_string=result)
 
-            time.sleep(0.05)      
+            time.sleep(0.05)
 
     @staticmethod
     def get_default_template(context, cfg, remove_code_comments = False):
 
-        default_templates_path = Path(os.path.realpath(__file__)).parent.parent / 'templates'
-
-        if cfg.mod_skeleton_type in {'MERGED', 'COMPONENT', 'MERGED_SKELETON'}:
-            default_template_path = default_templates_path / 'per_component.ini.j2'
-        else:
-            raise ValueError(f'Unknown skeleton type {cfg.mod_skeleton_type}!')
+        default_template_path = Path(os.path.realpath(__file__)).parent.parent / 'templates' / 'mod.ini.j2'
 
         result = ''
 
@@ -168,15 +134,12 @@ class IniMaker:
         if template_string is None or not(template_string.strip()):
             template_string = self.get_default_template(context, cfg, remove_code_comments=not cfg.comment_ini)
 
-        if cfg.mod_skeleton_type == 'MERGED_SKELETON':
-            validate_merged_skeleton_template(template_string)
-
         def get_template_fragment(error_line_id: int) -> str:
             template_lines = template_string.split("\n")
 
             start_line = max(0, error_line_id - 4)
             end_line = min(len(template_lines), error_line_id + 2)
-            
+
             template_fragment = ""
             for i in range(start_line, end_line):
                 line_pointer = ">> " if (i + 1) == error_line_id else "|  "
@@ -209,7 +172,7 @@ class IniMaker:
                 raise ValueError(
                     dedent(f"""
                         Ini Template syntax error:
-                        
+
                         {e.message}
 
                         Line Number: {e.lineno} (actual cause may be located above this line)
@@ -217,7 +180,7 @@ class IniMaker:
                         Template Fragment:
                     """) + get_template_fragment(e.lineno)
                 )
-            
+
             print(f'Ini template caching time: {time.time() - start_time :.3f}s')
 
         try:
@@ -232,7 +195,7 @@ class IniMaker:
                 raise ValueError(
                     dedent(f"""
                         Ini Template filling error:
-                        
+
                         {str(sys.exc_info()[1])}
 
                         Line Number: {lineno} (actual cause may be located above this line)
@@ -240,11 +203,11 @@ class IniMaker:
                         Template Fragment:
                     """) + get_template_fragment(lineno)
                 )
-            
+
             else:
                 raise ValueError(dedent(f"""
                     Ini Template runtime error:
-                    
+
                     {tb}
                 """))
 
@@ -252,7 +215,7 @@ class IniMaker:
 
         if with_checksum:
             result = self.with_checksum(result)
-        
+
         self.ini_string = result
 
         return result
@@ -269,8 +232,8 @@ class IniMaker:
             ini_path.rename(backup_path)
         with open(ini_path, 'w', encoding='utf-8') as f:
             print(f'Writing {ini_path.name}...')
-            f.write(ini_string)  
-    
+            f.write(ini_string)
+
     @staticmethod
     def with_checksum(lines):
         '''
@@ -296,14 +259,14 @@ class IniMaker:
             # Extract data from expected location of checksum stamp
             checksum = data[-1].strip()
 
-            # Ensure that checksum stamp has expected prefix 
+            # Ensure that checksum stamp has expected prefix
             checksum_prefix = '; SHA256 CHECKSUM: '
             if not checksum.startswith(checksum_prefix):
                 return False
-            
+
             # Extract sha256 hash value from checksum stamp
             sha256 = checksum.replace(checksum_prefix, '')
-            
+
             # Calculate sha256 hash of all lines above checksum stamp
             ini_data = data[:-1]
             ini_sha256 = hashlib.sha256(''.join(ini_data).encode('utf-8')).hexdigest()

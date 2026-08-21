@@ -7,7 +7,7 @@ from ..migoto_model.log_model.log_model import FrameDumpLog
 from ..migoto_model.frame_model.frame_model import DumpModel, ParseDumpModelConfig
 
 from .raw_object.raw_object_extractor import RawObjectExtractor, RawObjectIdentifier, DrawCallFilter, RawObjectFilter
-from .migoto_object.migoto_object_builder import MigotoObjectBuilder, MigotoObject, MigotoComponent, MigotoObjectFilter
+from .migoto_object.migoto_object_builder import MigotoObjectBuilder, MigotoObject, MigotoComponent, MigotoObjectFilter, MergedSkeletonFilter
 from .migoto_object.textures_descriptor import TexturesDescriptor, TextureFilter
 from .migoto_object.migoto_object_exporter import ObjectExporter
 
@@ -64,7 +64,8 @@ class ObjectExtractor:
         model: DumpModel,
         draw_call_filter: DrawCallFilter,
         raw_object_filter: RawObjectFilter,
-        migoto_object_filter: MigotoObjectFilter
+        migoto_object_filter: MigotoObjectFilter,
+        merged_skeleton_filter: MergedSkeletonFilter,
     ) -> list[MigotoObject]:
 
         t = time.time()
@@ -73,8 +74,11 @@ class ObjectExtractor:
 
         raw_objects = RawObjectExtractor(
             draw_call_filter=draw_call_filter,
-            identifier=RawObjectIdentifier(),
+            identifier=RawObjectIdentifier(
+                verbose_logging=self.verbose_logging
+            ),
             raw_object_filter=raw_object_filter,
+            verbose_logging=self.verbose_logging
         ).extract(model)
 
         print(f'Done extracting raw objects from frame model in {time.time() - t:.2f}s.')
@@ -85,6 +89,7 @@ class ObjectExtractor:
 
         migoto_object_builder = MigotoObjectBuilder(
             migoto_object_filter=migoto_object_filter,
+            merged_skeleton_filter=merged_skeleton_filter,
             verbose_logging=self.verbose_logging
         )
 
@@ -97,7 +102,7 @@ class ObjectExtractor:
     def export_objects(self, migoto_objects: list[MigotoObject], texture_filter: TextureFilter, output_path: Path):
         t = time.time()
 
-        print(f'Exporting objects...')
+        print(f'Exporting objects to `{output_path}`...')
 
         # output_path = Path(r"C:\Games\XXMI Launcher\Importers\EFMI\VTEF_DEV\Extracted Objects")
 

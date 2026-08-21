@@ -1,15 +1,15 @@
 """Monkey-patch hooks integrating ShapeKey into the EFMI-Tools pipeline.
 
 Hooks (all reversible via remove_patches()):
-1. `ModExporter.build_data_buffers` — bake position deltas immediately after
-   the base produces VB0, while the merged mesh + shape keys are still alive.
-2. `IniMaker.build_from_template` — append our generated INI section after
-   the base renders mod.ini.
-3. `IniMaker.write` — copy only the shader files needed by the current export
-    mode into the mod's `hlsl/` subfolder.
+1. `ModExporter.build_data_buffers` — collect Velo control metadata after the
+   official EFMI exporter builds its native ShapeKey buffers.
+2. `IniMaker.build_from_template` — connect Velo's persistent controls to the
+   official `CommandListSetShapeKey` runtime entrypoint.
+3. `IniMaker.write` — remove shaders left by the retired pre-v0.6.2 pipeline.
 
-A small `_state` dict keyed by `id(merged_object)` carries bake results
-between hook 1 and hook 2.
+The official EFMI v0.6.2 exporter owns delta buffers and runtime processing.
+This compatibility layer only keeps Velo's detection, validation, and control
+variables; it must not generate a second set of buffers or compute shaders.
 """
 import os
 import shutil
@@ -208,11 +208,6 @@ def _early_validate_all_shape_keys(context):
     all_keys = _collect_all_deform_keys_from_context(context)
 
     if all_keys:
-        merge_buffers = True
-        s2 = getattr(context.scene, "shapekey_settings", None)
-        if s2 is not None:
-            merge_buffers = bool(getattr(s2, "merge_buffers", True))
-        baker.build_export_slot_map(all_keys, baker.slot_capacity(merge_buffers))
         from .....core.export.shapekey_state import merge_shape_key_defaults
         merge_shape_key_defaults(
             ({int(item["slot"]): float(item["key_block"].value)}
@@ -244,7 +239,6 @@ def _patched_export_mod(self, *args, **kwargs):
 
 
 def _patched_build_data_buffers(self, merged_object, component_id=-1):
-    global _shape_defaults
     entry = _patched_exporter.get(id(type(self)))
     orig = entry[1] if entry else None
     if orig is None:
@@ -255,7 +249,6 @@ def _patched_build_data_buffers(self, merged_object, component_id=-1):
     # a sentinel for the first iteration. (-1 would mean "merged" mode.)
     if component_id <= 0:
         _reset_state()
-        _shape_defaults = _collect_shape_defaults_from_context(bpy.context)
 
     result = orig(self, merged_object, component_id)
 
@@ -266,86 +259,66 @@ def _patched_build_data_buffers(self, merged_object, component_id=-1):
     if blender_obj is None or not getattr(blender_obj, "data", None):
         return result
 
-    try:
-        deform_keys = detector.collect_deform_keys(blender_obj)
-        if not deform_keys:
-            return result
-        duplicates = detector.validate_no_duplicate_keys(deform_keys)
-        if duplicates:
-            msg = detector.format_duplicate_message(duplicates)
-            print(f"[ShapeKey] {msg}")
-            raise RuntimeError(msg)
-        conflicts = detector.validate_no_slot_name_disagreement(deform_keys)
-        if conflicts:
-            msg = detector.format_slot_name_disagreement_message(conflicts)
-            print(f"[ShapeKey] {msg}")
-            raise RuntimeError(msg)
-        meshes_path = getattr(self, "meshes_path", None)
-        if meshes_path is None:
-            print("[ShapeKey] WARNING: ModExporter.meshes_path missing, cannot bake.")
-            return result
-        data_model = _get_current_efmi_data_model(self)
-        if data_model is None:
-            raise RuntimeError(
-                "[ShapeKey] Missing current EFMI data_model instance; cannot read "
-                "VB0->mesh VertexId mapping for shape-key bake."
-            )
-        vb0_vertex_ids = getattr(data_model, "last_export_vertex_ids", None)
-        if vb0_vertex_ids is None:
-            raise RuntimeError(
-                "[ShapeKey] Missing VB0->mesh VertexId mapping from DataModelEFMI. "
-                "Refusing to bake shape keys because POSITION0 fallback is ambiguous "
-                "for duplicate Basis coordinates."
-            )
-        # Pull the freshly-built VB0 NumpyBuffer so baker can derive the
-        # actual VB0 vertex count. VertexId provides the strict VB0 -> mesh map.
-        vb0_key = f"Component{component_id}_VB0"
-        vb0_buffer = None
-        buffers = getattr(self, "buffers", None)
-        if buffers is not None:
-            vb0_buffer = buffers.get(vb0_key)
-        if vb0_buffer is None:
-            raise RuntimeError(
-                f"[ShapeKey] Missing {vb0_key} in exporter buffers; cannot validate "
-                "VB0->mesh VertexId mapping for shape-key bake."
-            )
-        # Pass through EFMI's mirror_mesh export setting; users almost always
-        # enable mirror import + mirror export, otherwise the delta baker
-        # computes is flipped on the X axis.
-        mirror_mesh = False
-        cfg = getattr(self, "cfg", None)
-        if cfg is not None:
-            mirror_mesh = bool(getattr(cfg, "mirror_mesh", False))
-        # Read the "merge buf" toggle from the N panel; default to True if absent.
-        merge_buffers = True
-        s2 = getattr(bpy.context.scene, "shapekey_settings", None)
-        if s2 is not None:
-            merge_buffers = bool(getattr(s2, "merge_buffers", True))
-        slot_map = _get_export_slot_map(deform_keys, merge_buffers)
-        baked = baker.bake_deform_keys(
-            blender_obj, deform_keys, str(meshes_path), component_id,
-            vb0_buffer=vb0_buffer, mirror_mesh=mirror_mesh,
-            merge_buffers=merge_buffers, slot_map=slot_map,
-            vb0_vertex_ids=vb0_vertex_ids,
-            default_values=_shape_defaults,
-        )
-        _bake_results.extend(baked)
-        if baked:
-            # Use VB0 vertex count from the bake result (== actual VB0 size).
-            _components_meta[component_id] = {
-                "vertex_count": baked[0]["vertex_count"],
-            }
-    except RuntimeError:
-        # Re-raise so EFMI shows it as a config error.
-        raise
-    except Exception:
-        print("[ShapeKey] Baking failed:")
-        traceback.print_exc()
+    component = merged_object.components[0] if merged_object.components else None
+    if component is None or component.shapekeys.vertex_count <= 0:
+        return result
+
+    deform_keys = detector.collect_deform_keys(blender_obj)
+    seen = {(int(item["component_id"]), int(item["slot"])) for item in _bake_results}
+    for item in deform_keys:
+        key = (int(component_id), int(item["slot"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        _bake_results.append({
+            "component_id": int(component_id),
+            "slot": int(item["slot"]),
+            "name": str(item["name"]),
+            "raw_name": str(item.get("raw_name") or item["key_block"].name),
+            "default_value": float(item["key_block"].value),
+        })
 
     return result
 
 
 # ───────────────────────── patched IniMaker ─────────────────────────
+
+def _format_control_value(value):
+    return format(float(value), ".9g")
+
+
+def _build_official_control_constants(items):
+    by_slot = {}
+    for item in items:
+        by_slot.setdefault(int(item["slot"]), item)
+
+    lines = ["", "; --- ShapeKey: persistent Velo controls for official EFMI runtime ---"]
+    for slot, item in sorted(by_slot.items()):
+        lines.append(f"; Deform {slot}: {item['raw_name']}")
+        lines.append(f"global persist $ShapeKey_{slot} = {_format_control_value(item['default_value'])}")
+    for item in sorted(items, key=lambda value: (int(value["component_id"]), int(value["slot"]))):
+        component_id = int(item["component_id"])
+        slot = int(item["slot"])
+        lines.append(f"global $ShapeKeyLast_C{component_id}_S{slot} = -1")
+    return lines
+
+
+def _build_official_control_updates(items):
+    lines = ["", "; --- ShapeKey: update official EFMI values when controls change ---"]
+    for item in sorted(items, key=lambda value: (int(value["component_id"]), int(value["slot"]))):
+        component_id = int(item["component_id"])
+        slot = int(item["slot"])
+        last_var = f"$ShapeKeyLast_C{component_id}_S{slot}"
+        lines.extend([
+            f"if {last_var} != $ShapeKey_{slot}",
+            f"    $component_id = {component_id}",
+            f"    $shapekey_id = {slot}",
+            f"    $shapekey_value = $ShapeKey_{slot}",
+            "    run = CommandListSetShapeKey",
+            f"    {last_var} = $ShapeKey_{slot}",
+            "endif",
+        ])
+    return lines
 
 def _patched_build_from_template(self, context, cfg, template_string=None, with_checksum=False):
     entry = _patched_inimaker.get(id(type(self)))
@@ -358,19 +331,13 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
 
     if _settings_enabled() and _bake_results:
         try:
-            # Inject [Constants] additions.
-            cons_lines = generator.build_constants_lines(_bake_results)
+            cons_lines = _build_official_control_constants(_bake_results)
             if cons_lines:
                 result = _inject_into_section(result, "[Constants]", cons_lines)
-            # Inject [Present] additions.
-            pres_lines = generator.build_present_lines(_bake_results)
+            pres_lines = _build_official_control_updates(_bake_results)
             if pres_lines:
                 result = _inject_into_section(result, "[Present]", pres_lines)
-            # Append all new resource + compute shader sections.
-            appendix = generator.build_full_ini_appendix(_bake_results, _components_meta)
-            if appendix:
-                result = result.rstrip() + "\n" + appendix + "\n"
-            print(f"[ShapeKey] Injected {len(_bake_results)} shape key(s) into mod.ini.")
+            print(f"[ShapeKey] Connected {len(_bake_results)} control(s) to official EFMI ShapeKey runtime.")
         except Exception:
             print("[ShapeKey] INI injection failed:")
             traceback.print_exc()
@@ -423,32 +390,18 @@ def _patched_write(self, ini_string=None, ini_path=None):
         return None
     out = orig(self, ini_string=ini_string, ini_path=ini_path)
 
-    if not _settings_enabled() or not _bake_results:
-        return out
-
     try:
         if ini_path is None:
             mod_folder = Path(os.path.expandvars(os.path.expanduser(str(self.cfg.mod_output_folder))))
             ini_path = mod_folder / "mod.ini"
         hlsl_dst = Path(ini_path).parent / "hlsl"
-        hlsl_dst.mkdir(parents=True, exist_ok=True)
-        required_names = set(_get_required_hlsl_names())
         for name in _SHAPEKEY_HLSL_NAMES:
-            if name in required_names:
-                continue
             stale = hlsl_dst / name
             if stale.exists():
                 stale.unlink()
-                print(f"[ShapeKey] Removed stale shader -> {stale}")
-        for name in sorted(required_names):
-            src = _HLSL_DIR / name
-            if not src.exists():
-                print(f"[ShapeKey] WARNING: missing shader file: {src}")
-                continue
-            dst = hlsl_dst / src.name
-            _write_required_hlsl(src, dst)
+                print(f"[ShapeKey] Removed retired pre-v0.6.2 shader -> {stale}")
     except Exception:
-        print("[ShapeKey] HLSL copy failed:")
+        print("[ShapeKey] Stale HLSL cleanup failed:")
         traceback.print_exc()
 
     return out

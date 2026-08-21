@@ -1,5 +1,4 @@
 import time
-from collections import defaultdict
 from textwrap import dedent
 
 import bpy
@@ -10,10 +9,11 @@ from ..migoto_io.blender_interface.utility import *
 from ..migoto_io.blender_interface.collections import *
 from ..migoto_io.blender_interface.objects import *
 
-from ..migoto_io.object_extractor.migoto_object.migoto_object import MigotoObject
+from ..migoto_io.object_extractor.migoto_object.migoto_object import MigotoObject, MigotoComponent
+from ..migoto_io.blender_tools.vertex_groups import remove_unused_vertex_groups
+from ..migoto_io.migoto_model.migoto_mesh import WeightingType
 
 from ..data_models.data_model_efmi import DataModelEFMI
-from ... import vgmap as velo_vgmap
 
 
 _PRESERVE_EMPTY_COLLECTION_KEY = "velo_preserve_empty_collection"
@@ -40,92 +40,6 @@ def _mark_component_collection(collection, component_id):
     return collection
 
 
-def _reorder_vertex_groups_numerically(obj):
-    if obj.type != "MESH" or not obj.vertex_groups:
-        return
-    snapshot = []
-    for vg in obj.vertex_groups:
-        try:
-            key = (0, int(vg.name))
-        except (ValueError, TypeError):
-            key = (1, vg.index)
-        snapshot.append((key, vg.name, vg.index))
-
-    weights = {idx: [] for _, _, idx in snapshot}
-    for vertex in obj.data.vertices:
-        for group in vertex.groups:
-            if group.group in weights:
-                weights[group.group].append((vertex.index, group.weight))
-
-    snapshot.sort(key=lambda item: item[0])
-    while obj.vertex_groups:
-        obj.vertex_groups.remove(obj.vertex_groups[0])
-    for _key, name, old_idx in snapshot:
-        new_vg = obj.vertex_groups.new(name=name)
-        for vertex_idx, weight in weights[old_idx]:
-            new_vg.add([vertex_idx], weight, "REPLACE")
-
-
-def _apply_merged_vertex_group_names(obj, component_id, vertex_group_map, cfg):
-    entry = vertex_group_map.components[component_id]
-    local_to_global = {int(k): int(v) for k, v in entry.vg_map.items()}
-    if not local_to_global:
-        raise ConfigError(
-            "object_source_folder",
-            _zh(f"VertexGroupMap.json Component {component_id} 没有 vg_map，无法使用 Merged 导入。"),
-        )
-
-    global_to_local_names = defaultdict(list)
-    for vg in obj.vertex_groups:
-        try:
-            local_id = int(vg.name)
-        except (ValueError, TypeError):
-            continue
-        if local_id in local_to_global:
-            global_to_local_names[local_to_global[local_id]].append(vg.name)
-
-    for _global_id, names in global_to_local_names.items():
-        if len(names) <= 1:
-            continue
-        canonical = obj.vertex_groups.get(names[0])
-        if canonical is None:
-            continue
-        for dup_name in names[1:]:
-            dup = obj.vertex_groups.get(dup_name)
-            if dup is None:
-                continue
-            dup_idx = dup.index
-            for vertex in obj.data.vertices:
-                for group in vertex.groups:
-                    if group.group == dup_idx:
-                        canonical.add([vertex.index], group.weight, "ADD")
-                        break
-            obj.vertex_groups.remove(dup)
-
-    tmp_prefix = "__vtef_tmp_g_"
-    for vg in obj.vertex_groups:
-        try:
-            local_id = int(vg.name)
-        except (ValueError, TypeError):
-            continue
-        global_id = local_to_global.get(local_id)
-        if global_id is not None:
-            vg.name = f"{tmp_prefix}{global_id}"
-    for vg in obj.vertex_groups:
-        if vg.name.startswith(tmp_prefix):
-            vg.name = vg.name[len(tmp_prefix):]
-
-    if not getattr(cfg, "skip_empty_vertex_groups", False):
-        existing_names = {vg.name for vg in obj.vertex_groups}
-        for global_id in velo_vgmap.global_palette(vertex_group_map):
-            name = str(int(global_id))
-            if name not in existing_names:
-                obj.vertex_groups.new(name=name)
-                existing_names.add(name)
-
-    _reorder_vertex_groups_numerically(obj)
-
-
 # TODO: Add support of import of unhandled semantics into vertex attributes
 def import_object(
     context,
@@ -137,21 +51,27 @@ def import_object(
     model = DataModelEFMI()
     model.legacy_vertex_colors = cfg.color_storage == "LEGACY"
 
+    if migoto_object.metadata.format_version < 4 and cfg.import_skeleton_type == 'MERGED':
+        raise ConfigError('object_source_folder', f"""
+            Specified sources folder uses old data format `v{migoto_object.metadata.format_version}`!
+            This format is missing data required for Merged Skeleton.
+            Please extract object again from a new frame dump.
+        """)
+
+    if cfg.import_skeleton_type == 'MERGED' and migoto_object.metadata.weigthing_type != WeightingType.Explicit:
+        raise ConfigError('import_skeleton_type', f"""
+            Specified sources folder contains object {'without' if migoto_object.metadata.weigthing_type == WeightingType.NoWeights else 'with implicit'} weights!
+            Merged Skeleton makes sense only for object with explicit weights.
+            Please use Per-Component Skeleton instead.
+        """)
+
     if migoto_object.metadata.format_version < 3:
         cfg.last_error_setting_name = "object_source_folder"
         cfg.last_error_text = dedent(f"""
             Specified sources folder uses outdated data format `v{migoto_object.metadata.format_version}`!
             When used for mod export, it will not work correctly.
-            Please extract data again from a new frame dump.
+            Please extract object again from a new frame dump.
         """).strip()
-
-    skeleton_mode = getattr(cfg, "import_skeleton_type", "COMPONENT")
-    vertex_group_map = None
-    if skeleton_mode == "MERGED":
-        try:
-            vertex_group_map = velo_vgmap.load_for_metadata(resolve_path(cfg.object_source_folder), migoto_object.metadata)
-        except velo_vgmap.VertexGroupMapError as exc:
-            raise ConfigError("object_source_folder", str(exc))
 
     imported_objects = []
 
@@ -168,21 +88,29 @@ def import_object(
         mesh = bpy.data.meshes.new(mesh_name)
         obj = bpy.data.objects.new(mesh.name, mesh)
 
+        vg_remap = None
+        if cfg.import_skeleton_type == 'MERGED' and cfg.dedupe_bones and not component.metadata.cpu_posed:
+            if component.metadata.vg_map:
+                vg_remap = numpy.array(list(component.metadata.vg_map.values()))
+            else:
+                raise ConfigError('object_source_folder', f"""
+                    Specified sources folder contains object with invalid data!
+                    {component.metadata.mesh_name} is missing `vg_map` required for import in Merged Skeleton mode.
+                    Most likely this object is currently incompatible with Merged Skeleton.
+                    Please use Per-Component Skeleton instead.
+                """)
         model.set_data(
             obj=obj,
             mesh=mesh,
             index_buffer=component.mesh.index_buffer,
             vertex_buffer=component.mesh.vertex_buffer,
-            vg_remap=None,
+            vg_remap=vg_remap,
             mirror_mesh=cfg.mirror_mesh,
             mesh_scale=1.00,
             mesh_rotation=migoto_object.metadata.rotation.to_tuple(),
             import_tangent_data_to_attribute=cfg.import_tangent_data_to_attribute,
         )
         obj["velo_component_id"] = int(component_id)
-
-        if skeleton_mode == "MERGED":
-            _apply_merged_vertex_group_names(obj, component_id, vertex_group_map, cfg)
 
         imported_objects.append(obj)
 
@@ -202,6 +130,8 @@ def import_object(
             link_object_to_collection(obj, target_col)
         else:
             link_object_to_collection(obj, col)
+        if cfg.skip_empty_vertex_groups and cfg.import_skeleton_type == 'MERGED':
+            remove_unused_vertex_groups(context, obj)
 
     try:
         cfg.component_collection = col
