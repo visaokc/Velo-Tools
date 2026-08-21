@@ -459,6 +459,7 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
     bl_label = "WWMI 数字编号 ↔ 原始骨骼名"
     bl_space_type = 'VIEW_3D'; bl_region_type = 'UI'; bl_category = 'Velo Tools'
     bl_parent_id = 'VELO_PT_main'; bl_order = 1
+    bl_options = {'DEFAULT_CLOSED'}
     @classmethod
     def poll(cls, context):
         s = getattr(context.scene, "velo_tools", None)

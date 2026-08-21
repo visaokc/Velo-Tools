@@ -23,7 +23,7 @@ IMPORT_SKELETON_ITEMS = [
 MOD_SKELETON_ITEMS = [
     (
         "MERGED",
-        "Merged（统一顶点组回译）",
+        "Merged（统一顶点组）",
         "Blender 内使用统一顶点组编辑，导出时按各 Component 的 vg_map 回译成本地编号并使用 Per-Component runtime。",
     ),
     (
@@ -33,7 +33,7 @@ MOD_SKELETON_ITEMS = [
     ),
     (
         "MERGED_SKELETON",
-        "Merged（官方合并骨架）",
+        "Merged（合并骨架）",
         "使用 EFMI v1.4.1 Merged Skeleton runtime，以统一编号导出，支持跨组件权重、骨架缩放与多实例。",
     ),
 ]

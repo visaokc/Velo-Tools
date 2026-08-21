@@ -17,6 +17,7 @@ from .. import _a2_panels as _a2
 
 
 _TAB_VALUE = "GAME"
+_ORIGINAL_VTEF_IMPORT_EXECUTE = None
 
 # Arknights: Endfield (EFMI) game descriptor: registered into the multi-game registry,
 # queried by active_game for shared tools such as the export adapter / export hook /
@@ -142,6 +143,38 @@ def _patch_velo_ui_labels():
                 cls.bl_description = _zh(description)
 
 
+def _sync_import_export_mode(cfg, context=None):
+    cfg.mod_skeleton_type = (
+        "MERGED_SKELETON" if cfg.import_skeleton_type == "MERGED" else "COMPONENT"
+    )
+
+
+def _execute_import_with_merged_export_default(self, context):
+    result = _ORIGINAL_VTEF_IMPORT_EXECUTE(self, context)
+    _sync_import_export_mode(context.scene.VTEF_settings)
+    return result
+
+
+def _install_import_export_mode_sync():
+    global _ORIGINAL_VTEF_IMPORT_EXECUTE
+    if _ORIGINAL_VTEF_IMPORT_EXECUTE is not None:
+        return
+    from ._efmi_core.addon import ui as _vui
+
+    _ORIGINAL_VTEF_IMPORT_EXECUTE = _vui.VTEF_Import.execute
+    _vui.VTEF_Import.execute = _execute_import_with_merged_export_default
+
+
+def _remove_import_export_mode_sync():
+    global _ORIGINAL_VTEF_IMPORT_EXECUTE
+    if _ORIGINAL_VTEF_IMPORT_EXECUTE is None:
+        return
+    from ._efmi_core.addon import ui as _vui
+
+    _vui.VTEF_Import.execute = _ORIGINAL_VTEF_IMPORT_EXECUTE
+    _ORIGINAL_VTEF_IMPORT_EXECUTE = None
+
+
 def _patch_preferences():
     from bpy.props import BoolProperty
 
@@ -253,6 +286,7 @@ def _patch_vtef_visible_property_texts():
         "import_skeleton_type",
         items=_ui_l10n.IMPORT_SKELETON_ITEMS,
         default="MERGED",
+        update=_sync_import_export_mode,
     )
     _patch_vtef_property(BoolProperty, "skip_empty_vertex_groups", default=True)
     _patch_vtef_property(BoolProperty, "dedupe_bones", default=True)
@@ -295,7 +329,12 @@ def _patch_vtef_visible_property_texts():
         subtype="DIR_PATH",
         update=lambda self, context: self.on_update_clear_error("mod_output_folder"),
     )
-    _patch_vtef_property(EnumProperty, "mod_skeleton_type", items=_ui_l10n.MOD_SKELETON_ITEMS, default="MERGED")
+    _patch_vtef_property(
+        EnumProperty,
+        "mod_skeleton_type",
+        items=_ui_l10n.MOD_SKELETON_ITEMS,
+        default="MERGED_SKELETON",
+    )
     _patch_vtef_property(BoolProperty, "apply_all_modifiers", default=False)
     _patch_vtef_property(BoolProperty, "copy_textures", default=True)
     _patch_vtef_property(BoolProperty, "write_ini", default=True)
@@ -537,6 +576,7 @@ def register():
     _strip_unwanted_vendor_panels()
     _patch_panels_for_velo_tools()
     _patch_velo_settings()
+    _install_import_export_mode_sync()
     _al.register()
     bpy.types.Scene.VTEF_settings = bpy.props.PointerProperty(type=_vsettings.VTEF_Settings)
     _unified_vg_extract.install_patches()
@@ -604,6 +644,10 @@ def unregister_embedded_late():
 
 
 def unregister():
+    try:
+        _remove_import_export_mode_sync()
+    except Exception:
+        pass
     try:
         from . import form_identity as _form_identity
         _form_identity.remove()
