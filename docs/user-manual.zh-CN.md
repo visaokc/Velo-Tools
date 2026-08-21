@@ -1,6 +1,6 @@
 # Velo Tools 中文使用手册
 
-> 适用版本：Velo Tools v1.6.0。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
+> 适用版本：Velo Tools v1.6.1。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
 
 Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI 工作流、鸣潮 WWMI 工作流放在同一个 **Velo Tools** 面板中。
 
@@ -455,7 +455,7 @@ Deform12 CapeLift
 global persist $ShapeKey_12 = 0.375
 ```
 
-变量初始值继承导出时 Blender 中对应 ShapeKey 的值；Velo 只在计算 Basis 和运行时 delta 时临时将标准 Deform 归零。如果同一运行时 ID 在不同物体上的导出前值不一致，导出会停止，而不是选择一个含糊的全局默认值。
+变量初始值继承导出时 Blender 中对应 ShapeKey 的值；插件只在计算 Basis 和运行时 delta 时临时将标准 Deform 归零。导出的基础 `VB0` 始终保持 Deform-neutral，Blender 中设定的值只用于初始化 `$ShapeKey_<编号>`，再由官方运行时应用一次。如果同一运行时 ID 在不同物体上的导出前值不一致，导出会停止，而不是选择一个含糊的全局默认值。
 
 外部 INI 逻辑应引用 `$ShapeKey_<编号>`，不要再引用由 Blender 名称清理得到的旧变量名。
 

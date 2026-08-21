@@ -1,6 +1,6 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.6.0. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.6.1. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
@@ -404,7 +404,7 @@ Every exported ID uses a stable numeric global and keeps its source name only as
 global persist $ShapeKey_12 = 0.375
 ```
 
-The initial value is the ShapeKey value authored in Blender at export time; it is temporarily zeroed only while Velo calculates the Basis and runtime delta. If one runtime ID has conflicting authored values across objects, export stops instead of choosing an ambiguous global default.
+The initial value is the ShapeKey value authored in Blender at export time; the add-on temporarily zeroes it only while calculating the Basis and runtime delta. The exported base `VB0` therefore remains Deform-neutral, while the authored Blender value only initializes `$ShapeKey_<slot>` and is applied once by the official runtime. If one runtime ID has conflicting authored values across objects, export stops instead of choosing an ambiguous global default.
 
 With buffer merging on, each component receives two extra merged buffer files regardless of its Deform-key count. The default position buffer is never merged.
 
