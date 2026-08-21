@@ -115,7 +115,7 @@ For WWMI cross-scene work, the merged source folder becomes the object source. I
 | `Metadata.json` | EFMI/WWMI extraction | Import/export geometry, component, skeleton, and LOD metadata |
 | `TextureUsage.json` | EFMI/WWMI extraction | Basic texture attribution and import-time material assignment |
 | `ShaderTextureUsage.json` | Velo WWMI extraction | Shader-pair, `ps-tN`, format, freshness, form, and captured Unreal asset-path evidence |
-| `VertexGroupMap.json` | Velo EFMI extraction | Unified-to-component-local vertex-group translation for EFMI Merged mode |
+| `Metadata.json` `components[*].vg_map` | Official EFMI extraction | Unified-to-component-local vertex-group mapping for both Merged export modes |
 | `CrossIB.json` | Velo EFMI extraction or CrossIB panel | EFMI Component match, pass topology, transparency, and input-compatibility evidence consumed by CrossIB export |
 | `CrossSceneManifest.json` | Velo WWMI cross-scene merge | Runtime IB ownership and component/VG/LOD/fold/morph routing not derivable from root Metadata/STU |
 
@@ -267,7 +267,7 @@ Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
 Important Velo extraction options:
 
-- **生成 VertexGroupMap.json** is required for later Merged import/export.
+- EFMI Tools v0.6.2+ writes the official unified vertex-group mapping directly to `Metadata.json`; no separate mapping-file option is required.
 - **生成 CrossIB.json** writes the v2 Component-match and transparency evidence used by later CrossIB exports.
 - **组件过滤 (Component Filter)** accepts ranges such as `0-8` or `0,1,5-7`.
 
@@ -287,7 +287,7 @@ Set **模式 (Mode)** to **导入对象 (Import Object)**.
 
 | Import mode | Use it when | Contract |
 | --- | --- | --- |
-| **Merged（统一顶点组）** | You want unified cross-component bone names | Requires `VertexGroupMap.json` |
+| **MERGED (unified vertex groups)** | You want unified cross-component bone names | Requires EFMI Tools v0.6.2+ `Metadata.json` with `components[*].vg_map` |
 | **Per-Component（部件独立）** | You want component-local vertex groups | Uses each component's local numbering |
 
 **按组件创建子集合 (Create Component Sub-Collections)** creates `C0`, `C1`, and later children. It also keeps nested collection export enabled.
@@ -310,15 +310,15 @@ Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
 
 **Velo 兼容选项 (Velo Compatibility) -> 导出时自动按材质拆分 (Auto Split by Material on Export)** is enabled by default. If one joined object actually uses at least two `Component N`-prefixed materials, Velo separates only the export copy and keeps the scene object and ShapeKeys unchanged. Every used material in this mode must match the object's Component; conflicts report the collection, object, and material slot and stop export. Objects with no material, one material, or only unprefixed preview materials retain native object-name behavior. Turning the option off restores the complete legacy path without validation or splitting.
 
-EFMI `Merged（统一顶点组）` export uses `VertexGroupMap.json` to translate unified authoring names back to component-local runtime numbering. `Merged（骨架合并）` is a separate EFMI v1.4.0+ runtime strategy: it keeps unified VG authoring and emits the official per-instance MergedSkeleton remap/callback contract.
+EFMI `MERGED` export reads `Metadata.json` `components[*].vg_map` to translate unified authoring names back to component-local runtime numbering. `MERGED_SKELETON` uses the same official mapping table and emits the official per-instance MergedSkeleton remap/callback contract.
 
-If an old project stored its map only inside `Metadata.json`, run **从旧 Metadata 转换 VertexGroupMap (Convert VertexGroupMap from Legacy Metadata)** before Merged export.
+Older EFMI extraction folders without Metadata v4 `components[*].vg_map` must be re-extracted with EFMI Tools v0.6.2+ before either Merged mode can be exported.
 
 > **Nested collection warning:** if component objects are inside `C0/C1/...` children, enabling **忽略嵌套集合 (Ignore Nested Collections)** can produce an empty export.
 
 ### EFMI LOD
 
-EFMI LOD data is separate from `VertexGroupMap.json`.
+EFMI LOD mapping remains separate from each component's main `vg_map` and is stored in the relevant Metadata v4 LOD records.
 
 1. Extract the base object first.
 2. Capture a dump while the game is drawing the desired LOD.
@@ -853,11 +853,11 @@ Also check hidden collection, hidden object, and muted ShapeKey filters.
 
 ### EFMI Merged Import or Export Reports a Missing Map
 
-Generate `VertexGroupMap.json` during extraction. For an older source, use the legacy Metadata conversion action.
+Use EFMI Tools v0.6.2+ extraction so `Metadata.json` contains the official `components[*].vg_map`; older sidecar-only sources are no longer supported.
 
-`VertexGroupMap.json` is not LOD data; extract LOD data separately when required.
+The component `vg_map` is not LOD data; extract LOD data separately when required.
 
-`Merged（骨架合并）` additionally validates Component/LOD remaps and rejects missing or inconsistent data instead of silently falling back to Per-Component output. Custom templates must contain the EFMI v1.4.0 MergedSkeleton contract.
+`Merged（骨架合并）` additionally validates Component/LOD remaps and rejects missing or inconsistent data instead of silently falling back to Per-Component output. Custom templates must contain the EFMI v1.4.1 MergedSkeleton contract.
 
 ### Per-Component (from Merged) Rejects Stray Weights
 

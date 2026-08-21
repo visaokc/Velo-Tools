@@ -171,28 +171,13 @@ def _validate_merged_export_preconditions(context, settings_attr: str):
     format_version = int(payload.get("format_version") or 0)
     components = payload.get("components") or []
 
-    if mode == "MERGED_SKELETON" and format_version < 4:
+    if format_version < 4:
         return (
-            f"\u5f53\u524d\u5bfc\u51fa\u6a21\u5f0f\u4e3a\u5b98\u65b9 Merged Skeleton\uff0c\u4f46\u6e90\u6587\u4ef6\u5939\u4f7f\u7528\u65e7 Metadata v{format_version}\u3002"
+            f"\u5f53\u524d Merged \u5bfc\u51fa\u4f7f\u7528\u65e7 Metadata v{format_version}\uff0c\u6ca1\u6709\u5b98\u65b9 component.vg_map\u3002"
             "\u8bf7\u7528 EFMI Tools v0.6.2+ \u91cd\u65b0\u63d0\u53d6 Metadata v4\u3002"
         )
 
     maps = [component.get("vg_map") or {} for component in components]
-    if mode == "MERGED" and not any(maps):
-        sidecar_path = source_path / "VertexGroupMap.json"
-        try:
-            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-            sidecar_components = sidecar.get("components") or []
-            if len(sidecar_components) != len(components):
-                return "VertexGroupMap.json \u4e0e Metadata.json \u7684 Component \u6570\u91cf\u4e0d\u4e00\u81f4\u3002"
-            maps = [component.get("vg_map") or {} for component in sidecar_components]
-        except FileNotFoundError:
-            return (
-                "\u7edf\u4e00\u9876\u70b9\u7ec4\u56de\u8bd1\u6a21\u5f0f\u9700\u8981 Metadata v4 component.vg_map "
-                "\u6216 VertexGroupMap.json\u3002"
-            )
-        except Exception as exc:
-            return f"\u8bfb\u53d6 VertexGroupMap.json \u5931\u8d25\uff1a{exc}"
 
     invalid_components = []
     for component_id in export_component_ids:
@@ -208,9 +193,8 @@ def _validate_merged_export_preconditions(context, settings_attr: str):
         return None
 
     labels = ", ".join(f"C{component_id}" for component_id in invalid_components)
-    source_name = "Metadata v4" if mode == "MERGED_SKELETON" else "Metadata/VertexGroupMap"
     return (
-        f"\u5f53\u524d\u5bfc\u51fa\u6a21\u5f0f\u7f3a\u5c11 {source_name} \u4e2d {labels} \u7684 vg_map\u3002"
+        f"\u5f53\u524d\u5bfc\u51fa\u6a21\u5f0f\u7f3a\u5c11 Metadata v4 \u4e2d {labels} \u7684 vg_map\u3002"
         "\u8bf7\u91cd\u65b0\u63d0\u53d6\u6216\u6539\u7528 Per-Component \u5bfc\u51fa\u3002"
     )
 

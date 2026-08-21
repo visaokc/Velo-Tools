@@ -19,7 +19,6 @@ from ..migoto_io.object_extractor.object_extractor import ObjectExtractor
 from ..migoto_io.object_extractor.lod_matcher import LODMatcher, ObjectLowSimilarityError, ComponentLowSimilarityError
 
 from ..blender_import.blender_import import import_object
-from ... import vgmap as velo_vgmap
 
 
 def _parse_component_filter(spec: str):
@@ -50,11 +49,6 @@ def _filter_components_contiguously(migoto_object: MigotoObject, component_filte
         if component_id in component_filter
     ]
     migoto_object.build_metadata()
-
-
-def _write_vertex_group_sidecars(migoto_objects: list[MigotoObject], output_path: Path) -> None:
-    for migoto_object in migoto_objects:
-        velo_vgmap.write_from_metadata(output_path / migoto_object.id, migoto_object.metadata)
 
 
 def _write_crossib_sidecars(migoto_objects: list[MigotoObject], output_path: Path, dump_path: Path) -> None:
@@ -193,9 +187,6 @@ def extract_frame_data(context, cfg, extract_lods=False):
         output_path = resolve_path(cfg.extract_output_folder)
 
         object_extractor.export_objects(migoto_objects, texture_filter, output_path)
-
-        if getattr(cfg, "generate_vertex_group_map", True):
-            _write_vertex_group_sidecars(migoto_objects, output_path)
 
         if getattr(cfg, "generate_crossib_json", True):
             _write_crossib_sidecars(migoto_objects, output_path, dump_path)

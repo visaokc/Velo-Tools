@@ -1,7 +1,5 @@
 """Compatibility export mode for unified authoring and local runtime palettes."""
 
-from pathlib import Path
-
 
 _PATCHED = False
 _ORIGINAL_EXPORT_MOD = None
@@ -9,20 +7,16 @@ _ORIGINAL_FINALIZE_DATA = None
 
 
 def _component_map(merger, component_id):
+    from ._efmi_core.addon.exceptions import ConfigError
+
     component = merger.extracted_object.components[component_id]
     mapping = getattr(component, "vg_map", None) or {}
     if mapping:
         return {int(local): int(global_id) for local, global_id in mapping.items()}
-
-    from . import vgmap
-    from ._efmi_core.migoto_io.blender_interface.utility import resolve_path
-
-    folder = Path(resolve_path(merger.context.scene.VTEF_settings.object_source_folder))
-    sidecar = vgmap.load_for_metadata(folder, merger.extracted_object)
-    return {
-        int(local): int(global_id)
-        for local, global_id in sidecar.components[component_id].vg_map.items()
-    }
+    raise ConfigError(
+        "object_source_folder",
+        f"Metadata.json Component {component_id} does not contain vg_map. Re-extract it with EFMI Tools v0.6.2+.",
+    )
 
 
 def _has_weight(obj, group_index):

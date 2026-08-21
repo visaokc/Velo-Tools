@@ -5,9 +5,6 @@ from __future__ import annotations
 import bpy
 
 from . import import_textures
-from . import vgmap
-from ._efmi_core.migoto_io.blender_interface.utility import resolve_path
-from ._efmi_core.migoto_io.object_extractor.migoto_object.metadata_format import read_metadata
 
 
 _ORIGINAL_MENU_METHODS = {}
@@ -24,11 +21,11 @@ def _zh(text: str) -> str:
 def velo_controls_for_mode(mode: str) -> tuple[str, ...]:
     """Return Velo-only controls that should be drawn inline for a tool mode."""
     if mode == "EXTRACT_FRAME_DATA":
-        return ("generate_vertex_group_map", "generate_crossib_json", "extract_components_filter")
+        return ("generate_crossib_json", "extract_components_filter")
     if mode == "IMPORT_OBJECT":
         return ("import_as_component_collections",)
     if mode == "EXPORT_MOD":
-        return ("auto_split_by_material", "convert_legacy_vertex_group_map")
+        return ("auto_split_by_material",)
     return ()
 
 
@@ -38,8 +35,6 @@ def _draw_velo_inline_controls(layout, cfg, mode: str) -> None:
         return
     box = layout.box()
     box.label(text=_zh("Velo 兼容选项"), icon="TOOL_SETTINGS")
-    if "generate_vertex_group_map" in controls and hasattr(cfg, "generate_vertex_group_map"):
-        box.prop(cfg, "generate_vertex_group_map")
     if "generate_crossib_json" in controls and hasattr(cfg, "generate_crossib_json"):
         box.prop(cfg, "generate_crossib_json")
     if "extract_components_filter" in controls and hasattr(cfg, "extract_components_filter"):
@@ -48,8 +43,6 @@ def _draw_velo_inline_controls(layout, cfg, mode: str) -> None:
         box.prop(cfg, "import_as_component_collections")
     if "auto_split_by_material" in controls and hasattr(cfg, "velo_auto_split_by_material"):
         box.prop(cfg, "velo_auto_split_by_material")
-    if "convert_legacy_vertex_group_map" in controls:
-        box.operator(VTEF_OT_convert_legacy_vertex_group_map.bl_idname, icon="FILE_REFRESH")
     layout.row()
 
 
@@ -58,24 +51,6 @@ def draw_export_mode_selector(layout, cfg) -> bool:
         return False
     layout.row().prop(cfg, "mod_skeleton_type", text=_zh("导出骨架模式"))
     return True
-
-
-class VTEF_OT_convert_legacy_vertex_group_map(bpy.types.Operator):
-    bl_idname = "vtef.convert_legacy_vertex_group_map"
-    bl_label = _zh("从旧 Metadata 转换 VertexGroupMap")
-    bl_description = _zh("从旧版 Velo 写在 Metadata.json 内的 component.vg_map 显式生成 VertexGroupMap.json")
-
-    def execute(self, context):
-        cfg = context.scene.VTEF_settings
-        folder = resolve_path(cfg.object_source_folder)
-        try:
-            metadata = read_metadata(folder / "Metadata.json")
-            out_path = vgmap.convert_legacy_metadata(folder, metadata)
-        except Exception as exc:
-            self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
-        self.report({"INFO"}, _zh(f"已生成 {out_path}"))
-        return {"FINISHED"}
 
 
 class VTEF_PT_VeloBridgeOptions(bpy.types.Panel):
@@ -381,7 +356,6 @@ def uninstall_patches() -> None:
 
 
 classes = (
-    VTEF_OT_convert_legacy_vertex_group_map,
     VTEF_PT_VeloBridgeOptions,
 )
 

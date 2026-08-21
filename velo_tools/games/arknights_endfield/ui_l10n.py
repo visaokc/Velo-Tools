@@ -117,7 +117,6 @@ VTEF_PROPERTY_TEXTS = {
     "custom_template_source": ("模板存储", "选择自定义 INI 模板的存储位置。"),
     "custom_template_path": ("模板文件", "外部 mod.ini 模板文件路径。新建模板时可先从内置编辑器复制默认内容。"),
     "use_ini_toggles": ("使用 INI 开关", "把配置好的 INI 开关逻辑写入 mod.ini。"),
-    "generate_vertex_group_map": ("生成 VertexGroupMap.json", "把 EFMI Metadata v4 的官方统一顶点组映射 vg_map 镜像为兼容 sidecar，供旧版 Velo 工程与外部工具读取。"),
     "import_as_component_collections": ("按组件创建子集合", "导入模型时在对象父集合下创建 C0/C1/... 子集合；关闭后沿用上游 EFMI 的单集合导入。"),
     "extract_components_filter": ("组件过滤", "可选组件范围，例如 0-8 或 0,1,5-7。过滤后输出仍连续编号为 Component 0..N。"),
     "import_texture": ("导入贴图", "导入模型后依据 TextureUsage.json 给网格指定源目录内的 .dds 贴图。"),

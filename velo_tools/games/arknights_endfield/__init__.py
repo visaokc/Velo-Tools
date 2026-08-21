@@ -503,11 +503,6 @@ def _patch_velo_settings():
         default=True,
     )
 
-    _vsettings.VTEF_Settings.__annotations__["generate_vertex_group_map"] = BoolProperty(
-        name=_zh("生成 VertexGroupMap.json"),
-        description=_zh("把 EFMI Metadata v4 的官方统一顶点组映射 vg_map 镜像为兼容 sidecar，供旧版 Velo 工程与外部工具读取。"),
-        default=True,
-    )
     _vsettings.VTEF_Settings.__annotations__["generate_crossib_json"] = BoolProperty(
         name=_zh("生成 CrossIB.json"),
         description=_zh("提取对象时随模型文件夹生成 CrossIB.json v2，只记录 Component 匹配与透明性证据。跨 IB 导出必须使用该文件，并生成规则式 CrossIBClassifier.ini；不再生成 ShaderOverride.ini 或累积多个场景的 VS Hash。"),
