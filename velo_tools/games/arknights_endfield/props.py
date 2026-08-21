@@ -7,6 +7,7 @@ from bpy.props import (
 
 
 _suspend_mmd_row_update = False
+_suspend_mmd_text_update = False
 
 
 def _is_mesh_poll(self, obj):
@@ -117,7 +118,9 @@ def _refresh_available_src_vgs(settings):
 
 def _on_active_mmd_text_update(self, context):
     """When switching the MMD mapping table Text: load the Text content into profile.rows."""
-    global _suspend_mmd_row_update
+    global _suspend_mmd_row_update, _suspend_mmd_text_update
+    if _suspend_mmd_text_update:
+        return
     prev = _suspend_mmd_row_update
     tb = self.active_mmd_text
     src = self.mmd_source_object

@@ -163,7 +163,7 @@ def apply_mmd_text_meta(settings, tb):
 
 def _autosync_to_text(settings):
     """After every table write, auto-sync to the current mapping table Text; if unbound, create one automatically.
-    The order must be from_string first then set active, to avoid the update callback reading an empty Text and clearing profile.rows."""
+    Incomplete rows are intentionally absent from the serialized Text, so the first programmatic bind must not reload it."""
     try:
         text = _tio.serialize_mapping(settings)
         tb = settings.active_mmd_text
@@ -172,9 +172,15 @@ def _autosync_to_text(settings):
             base_part = (src.name if src is not None else "default")
             name = f"velo_mmd_{base_part}.txt"
             tb = bpy.data.texts.get(name) or bpy.data.texts.new(name)
-            tb.from_string(text)            # write content first
+            tb.from_string(text)
             _write_mmd_text_meta(tb, settings)
-            settings.active_mmd_text = tb   # set active afterwards; callback parses out consistent rows
+            from ...games.arknights_endfield import props as _ef_props
+            prev = _ef_props._suspend_mmd_text_update
+            _ef_props._suspend_mmd_text_update = True
+            try:
+                settings.active_mmd_text = tb
+            finally:
+                _ef_props._suspend_mmd_text_update = prev
             if src is not None:
                 try:
                     src["velo_mmd_text"] = tb.name
