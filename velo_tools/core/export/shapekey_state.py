@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from array import array
+from contextlib import contextmanager
 import math
 from typing import Callable, Iterable, Mapping
 
@@ -73,6 +74,21 @@ def _update_mix(obj) -> None:
         bpy.context.view_layer.update()
     except Exception:
         pass
+
+
+@contextmanager
+def neutralized_shape_key_values(obj, key_blocks):
+    """Temporarily evaluate selected ShapeKeys at zero during base export."""
+    saved = [(key, float(getattr(key, "value", 0.0))) for key in key_blocks]
+    try:
+        for key, _value in saved:
+            key.value = 0.0
+        _update_mix(obj)
+        yield
+    finally:
+        for key, value in saved:
+            key.value = value
+        _update_mix(obj)
 
 
 def _capture_mix(obj, name: str, vertex_count: int):

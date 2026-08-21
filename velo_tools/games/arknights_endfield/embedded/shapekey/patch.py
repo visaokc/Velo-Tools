@@ -1,8 +1,9 @@
 """Monkey-patch hooks integrating ShapeKey into the EFMI-Tools pipeline.
 
 Hooks (all reversible via remove_patches()):
-1. `ModExporter.build_data_buffers` — collect Velo control metadata after the
-   official EFMI exporter builds its native ShapeKey buffers.
+1. `ModExporter.build_data_buffers` — isolate the base mesh from live Deform
+   values, then collect control metadata after the official EFMI exporter
+   builds its native ShapeKey buffers.
 2. `IniMaker.build_from_template` — connect Velo's persistent controls to the
    official `CommandListSetShapeKey` runtime entrypoint.
 3. `IniMaker.write` — remove shaders left by the retired pre-v0.6.2 pipeline.
@@ -250,12 +251,27 @@ def _patched_build_data_buffers(self, merged_object, component_id=-1):
     if component_id <= 0:
         _reset_state()
 
-    result = orig(self, merged_object, component_id)
+    enabled = _settings_enabled()
+    blender_obj = getattr(merged_object, "object", None)
+    deform_keys = (
+        detector.collect_deform_keys(blender_obj)
+        if enabled and blender_obj is not None
+        else []
+    )
+    if deform_keys:
+        from .....core.export.shapekey_state import neutralized_shape_key_values
 
-    if not _settings_enabled():
+        with neutralized_shape_key_values(
+            blender_obj,
+            (item["key_block"] for item in deform_keys),
+        ):
+            result = orig(self, merged_object, component_id)
+    else:
+        result = orig(self, merged_object, component_id)
+
+    if not enabled:
         return result
 
-    blender_obj = getattr(merged_object, "object", None)
     if blender_obj is None or not getattr(blender_obj, "data", None):
         return result
 
@@ -263,7 +279,6 @@ def _patched_build_data_buffers(self, merged_object, component_id=-1):
     if component is None or component.shapekeys.vertex_count <= 0:
         return result
 
-    deform_keys = detector.collect_deform_keys(blender_obj)
     seen = {(int(item["component_id"]), int(item["slot"])) for item in _bake_results}
     for item in deform_keys:
         key = (int(component_id), int(item["slot"]))
