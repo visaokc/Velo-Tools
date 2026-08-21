@@ -1,6 +1,6 @@
 # Velo Tools 中文使用手册
 
-> 适用版本：Velo Tools v1.5.5。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
+> 适用版本：Velo Tools v1.6.0。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
 
 Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI 工作流、鸣潮 WWMI 工作流放在同一个 **Velo Tools** 面板中。
 
@@ -224,6 +224,10 @@ Hash-style 导出使用的是提取证据中的资源 identity，来源包括 Fr
 
 按贴图合并会改变对象组织方式。执行前保存工程副本，并在操作后确认材质槽、UV、ShapeKey 和 Component 归属。
 
+#### 平滑法线八面体 UV
+
+打开 **UV工具**，对需要处理的全部网格执行 **平滑法线-八面体UV**。该操作以每个网格的第一层 UV 建立切线空间，将平滑法线编码为八面体坐标，并写入 `TEXCOORD1.xy`。源网格必须先有第一层 UV；已有 `TEXCOORD1.xy` 会被替换，因此如其中保存了手工数据，应先备份并在处理后按目标 shader/导出约定验收。
+
 #### 按材质分离所属集合
 
 该面板会读取当前游戏 **导出 Mod** 中设置的组件集合，并预览按材质形成的最终分组。
@@ -335,7 +339,7 @@ EFMI 面板提供四种模式：
 1. 设置有效的 **Frame Dump 目录**，其中应包含 `log.txt`。
 2. 设置 **输出目录**。
 3. 按需启用对象、Component 和贴图过滤。
-4. 如需使用任一 Merged 模式，请确认对象源由 EFMI Tools v0.6.2+ 提取，且 `Metadata.json` 含有官方 `components[*].vg_map`。
+4. 如需使用任一 Merged 模式，请用当前 Velo/EFMI Tools v0.6.2+ 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与官方 MergedSkeleton 来源槽 `runtime_vg_map`。
 5. 如需快速查看，可启用 **提取后导入 Blender**。
 6. 执行提取。
 
@@ -351,7 +355,7 @@ EFMI 面板提供四种模式：
 
 **容忍提取错误**会跳过单个失败对象并继续，不代表被跳过的对象已经正确提取。需要目标对象时，应查看日志并修复证据问题。
 
-对象源目录通常包含组件 Buffer、`Metadata.json` 和 `TextureUsage.json`；Merged 所需的官方统一顶点组映射直接存放在 `Metadata.json` 的 `components[*].vg_map`。
+对象源目录通常包含组件 Buffer、`Metadata.json` 和 `TextureUsage.json`。Velo 将 current+previous 骨骼矩阵签名生成的紧凑统一编号写入 `components[*].vg_map`，并在 `runtime_vg_map` 中保留官方 MergedSkeleton runtime 使用的来源槽；不再生成独立映射 sidecar。
 
 ### 5.3 导入对象
 
@@ -366,12 +370,14 @@ EFMI 面板提供四种模式：
 
 | 模式 | 行为 |
 | --- | --- |
-| **Merged（统一顶点组）** | 把各 Component 的局部顶点组映射为统一编号；需要 EFMI Tools v0.6.2+ `Metadata.json` 内的官方 `components[*].vg_map`。 |
+| **Merged（统一顶点组）** | 把各 Component 的局部顶点组映射为紧凑统一编号；需要当前 Velo/EFMI Tools v0.6.2+ 生成的 Metadata v4。 |
 | **Per-Component（部件独立）** | 保持每个 Component 的局部顶点组编号。 |
 
 **按组件创建子集合**会创建 `C0`、`C1` 等子集合，并连接到导出集合。关闭后使用更接近上游 EFMI 的单集合导入方式。
 
 **导入贴图**依据 `TextureUsage.json` 分配对象源目录中的 DDS。它只负责 Blender 材质预览，不改变游戏资源 Hash。
+
+选择或实际导入 **Merged（统一顶点组）** 后，导出骨架模式会自动同步为 **Merged（合并骨架）**。只有明确需要“统一顶点组制作、Per-Component runtime”时，才在导出阶段手动改回 **Merged（统一顶点组）**。
 
 ### 5.4 Blender 编辑
 
@@ -456,7 +462,7 @@ global persist $ShapeKey_12 = 0.375
 ### 5.8 导出 Mod
 
 1. 设置 **组件集合**、**对象源目录** 和 **Mod 输出目录**。
-2. 选择与导入一致的骨架模式。
+2. 选择骨架模式。Merged 导入默认同步为 **Merged（合并骨架）**；如需旧的统一顶点组回译 runtime，再手动选择 **Merged（统一顶点组）**。
 3. 按需启用 **应用所有修改器**、**复制贴图**、**写出 mod.ini** 和 **写入注释**。
 4. 检查隐藏对象、隐藏集合、嵌套集合和禁用 ShapeKey 的忽略选项。
 5. 仅在确有需要时调整 **高级** 或 **部分导出**。
@@ -465,6 +471,14 @@ global persist $ShapeKey_12 = 0.375
 **Velo 兼容选项 -> 导出时自动按材质拆分**默认开启。一个已合并对象实际使用两个以上 `Component N` 前缀材质时，Velo 只在导出临时副本上按材质拆分，场景对象与 ShapeKey 不变。所有实际使用材质必须与对象的 Component 一致；冲突或材质名模式中的无前缀材质会阻止导出，并报告集合、对象和材质槽。无材质、单材质或仅有多个预览材质的对象仍按对象名导出。关闭该选项会完整保留旧导出行为。
 
 EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导出** 才能继续；这种输出在开放世界可能无法正确加载。
+
+三种导出模式的边界：
+
+| 模式 | 导出结果 |
+| --- | --- |
+| **Merged（统一顶点组）** | Blender 使用紧凑统一编号；导出时按各 Component 的 `vg_map` 回译为局部编号，运行端仍为 Per-Component。 |
+| **Per-Component（部件独立）** | 制作、Buffer 与运行端始终使用 Component 局部编号。 |
+| **Merged（合并骨架）** | 通过 `runtime_vg_map` 输出统一编号，并使用 EFMI v1.4.1 官方按实例 MergedSkeleton runtime。 |
 
 ### 5.9 Mod 信息、INI 模板与 INI 开关
 
@@ -489,7 +503,7 @@ EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导�
 - `mod.ini` 存在且不是旧文件。
 - `Meshes` 中存在本次导出的 Buffer。
 - 启用复制贴图时，`Textures` 中存在所需贴图。
-- 使用 Merged 时，对象源目录必须保留含官方 `components[*].vg_map` 的 Metadata v4。
+- 使用 Merged 时，对象源目录必须保留当前 Velo 提取的 Metadata v4，其中同时含 `components[*].vg_map` 与 `runtime_vg_map`。
 - 使用 LOD、CrossIB 或 ShapeKey 时，对应资源和 INI 段确实存在。
 
 游戏检查：
@@ -557,6 +571,17 @@ EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导�
 
 **导入贴图**只影响 Blender 材质预览。它依据对象源目录中的贴图使用数据分配贴图，不会修改运行时 Hash 或 slot 证据。
 
+#### WWMI 数字编号 ↔ 原始骨骼名
+
+**顶点组工具**中的 **WWMI 数字编号 ↔ 原始骨骼名** 面板默认折叠。需要把 WWMI 数字顶点组恢复为原始骨骼名或导入可编辑骨架时再展开：
+
+1. 设置 **解包路径**和 WWMI **对象源目录**。
+2. 默认先保留 **最低相似度 55%** 与 **体素大小 0.050**；证据不足时再调整。
+3. 点击 **生成映射表**。Velo 会聚合解包目录中所有相关 `.uemodel` section，并结合 Component 体素证据与一对一蒙皮权重证据，不会只处理第一个模型文件。
+4. 用 **将匹配结果保存至源目录**生成 `WWMI_MatchingResult.json`；其中同时保存映射和骨架快照，以后可直接从对象源恢复。
+5. **切换至原始名字 / 切换至数字编号**只修改当前选中的网格；当前网格实际使用的编号若仍有歧义，会 fail closed。
+6. **导入骨架**可从解包路径或已保存结果创建骨架；**一键为Mod网格绑骨**会处理 WWMI 导出面板中组件集合内的全部网格、切换原始名、导入骨架并绑定。`.L/.R` 后缀只应用于检测到的左右成对骨骼。
+
 ### 6.4 选择骨架模式
 
 | 目标 | 推荐导入 | 推荐导出 |
@@ -566,9 +591,7 @@ EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导�
 | 想统一编辑、但运行时保持部件独立 | Merged | Per-Component (from Merged) |
 | 跨场景且存在独立 Buffer/可编辑 IB | Merged | 优先验证 Per-Component (from Merged) |
 
-`Merged（统一顶点组）` 是旧的统一编号 authoring 模式，导出后仍使用部件独立 runtime。`Merged（骨架合并）` 才会调用 EFMI v1.4.1+ 官方 `MergedSkeleton`，允许统一权重和骨架缩放；运行时可能有一帧更新延迟，同屏出现多个相同被改对象时 Mod 可能暂停。
-
-`Merged（骨架合并）` 需要匹配的 Metadata v4 `components[*].vg_map` 和 LOD 映射；缺失、越界或不一致时导出会直接停止，不会降级为旧模式。
+WWMI 的 **Merged** 使用统一顶点组及其 Merged runtime；**Per-Component (from Merged)** 保留统一编号制作体验，但导出时严格回译为各 Component 的局部骨表。后者遇到当前 Component 无法表达的非零权重会直接停止，不会静默丢弃。
 
 Per-Component 没有统一顶点组的自由度，也不支持自定义骨架缩放，但运行结构更接近部件局部骨架。
 
@@ -1065,9 +1088,9 @@ ps-tN = ref ResourceTexture...
 
 ### 9.2 Merged 导入或导出失败
 
-EFMI 两类 Merged 都需要对象源目录内 Metadata v4 的官方 `components[*].vg_map`。旧 sidecar-only 对象源必须用 EFMI Tools v0.6.2+ 重新提取，不要复制其它对象的映射。
+EFMI 两类 Merged 都需要当前 Velo/EFMI Tools v0.6.2+ 生成的 Metadata v4：`components[*].vg_map` 保存紧凑 authoring ID，`runtime_vg_map` 保存官方 MergedSkeleton 来源槽。旧 sidecar-only 对象源必须重新提取，不要复制其它对象的映射。
 
-选择 `Merged（骨架合并）` 时还必须使用 EFMI v1.4.1+；自定义模板必须包含官方 MergedSkeleton contract，否则应改用内置模板或修复模板。
+选择 `Merged（合并骨架）` 时还必须使用 EFMI v1.4.1+；自定义模板必须包含官方 MergedSkeleton contract，否则应改用内置模板或修复模板。
 
 WWMI 应确认导入和导出的骨架模式一致。若使用 Per-Component (from Merged)，检查是否有顶点权重越过所属 Component 的允许骨骼范围。
 
@@ -1207,7 +1230,7 @@ CrossIB 应在面板中选择一份当前 Frame Dump，生成或覆盖 `CrossIB.
 | Hash | 3Dmigoto 资源 identity，不是 DDS 像素内容的校验值。 |
 | Component | EFMI/WWMI 的部件编号单位。 |
 | draw | 一次绘制调用；同一 Component 可以包含多个 draw。 |
-| Merged | 使用跨 Component 统一顶点组列表的骨架模式。 |
+| Merged | 使用跨 Component 统一顶点组列表的骨架策略；EFMI 另分统一制作后回译和官方 MergedSkeleton runtime。 |
 | Per-Component | 每个 Component 使用局部顶点组列表的骨架模式。 |
 | Per-Component (from Merged) | 用 Merged 编辑，再导出为 Per-Component 运行结构。 |
 | LOD | Level of Detail，按观察距离使用的不同几何层级。 |

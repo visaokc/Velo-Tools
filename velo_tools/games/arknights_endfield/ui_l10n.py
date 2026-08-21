@@ -83,7 +83,7 @@ VTEF_PROPERTY_TEXTS = {
     "vg_matcher_candidates_count": ("顶点组匹配候选数", "按顶点组重心距离预选的候选数量。"),
     "component_collection": ("组件集合", "包含 Component 0、Component_1 等 EFMI 组件对象的 Blender 集合。"),
     "mod_output_folder": ("Mod 输出目录", "写入 mod.ini、Meshes 和 Textures 的 Mod 目录。"),
-    "mod_skeleton_type": ("骨架", "选择统一顶点组回译、原生 Per-Component 或 EFMI v1.4.1 官方 Merged Skeleton。"),
+    "mod_skeleton_type": ("骨架", "选择 Merged（统一顶点组）、Per-Component 或 Merged（合并骨架）。"),
     "apply_all_modifiers": ("应用所有修改器", "导出时在临时副本上应用所有可见修改器。"),
     "copy_textures": ("复制贴图", "导出时把引用的贴图文件复制到 Mod 输出目录。"),
     "write_ini": ("写出 mod.ini", "导出时在输出目录写入新的 mod.ini。"),

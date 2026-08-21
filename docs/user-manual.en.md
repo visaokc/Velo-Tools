@@ -1,6 +1,6 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.5.5. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.6.0. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
@@ -179,6 +179,10 @@ The icon-only toggle beside **选中物体生成材质球 (Create Materials for 
 
 Set **形态键清理阈值 (ShapeKey Cleanup Threshold)** before split/merge operations when tiny ShapeKey deltas should be discarded.
 
+#### Smooth-Normal Octahedral UV
+
+Open **UV工具 (UV Tools)** and run **平滑法线-八面体UV (Smooth Normal - Octahedral UV)** to encode tangent-space smooth normals for every selected mesh into the `TEXCOORD1.xy` UV layer. Each mesh must already have a first UV layer because it defines the tangent basis. The operation creates or replaces `TEXCOORD1.xy`; preserve any author-edited data from that layer before running it, then validate the result with the target shader/export convention.
+
 #### Material-to-Collection Routing
 
 Use **按材质分离所属集合 (Route Material Splits to Collections)** after selecting the game export component collection.
@@ -267,7 +271,7 @@ Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
 Important Velo extraction options:
 
-- EFMI Tools v0.6.2+ writes the official unified vertex-group mapping directly to `Metadata.json`; no separate mapping-file option is required.
+- Velo's EFMI Tools v0.6.2 integration writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and keeps the official MergedSkeleton source slots in `runtime_vg_map`; no sidecar mapping file is used.
 - **生成 CrossIB.json** writes the v2 Component-match and transparency evidence used by later CrossIB exports.
 - **组件过滤 (Component Filter)** accepts ranges such as `0-8` or `0,1,5-7`.
 
@@ -287,7 +291,7 @@ Set **模式 (Mode)** to **导入对象 (Import Object)**.
 
 | Import mode | Use it when | Contract |
 | --- | --- | --- |
-| **MERGED (unified vertex groups)** | You want unified cross-component bone names | Requires EFMI Tools v0.6.2+ `Metadata.json` with `components[*].vg_map` |
+| **Merged（统一顶点组）** | You want unified cross-component bone names | Requires Velo/EFMI Tools v0.6.2+ Metadata v4 with `components[*].vg_map` |
 | **Per-Component（部件独立）** | You want component-local vertex groups | Uses each component's local numbering |
 
 **按组件创建子集合 (Create Component Sub-Collections)** creates `C0`, `C1`, and later children. It also keeps nested collection export enabled.
@@ -310,7 +314,15 @@ Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
 
 **Velo 兼容选项 (Velo Compatibility) -> 导出时自动按材质拆分 (Auto Split by Material on Export)** is enabled by default. If one joined object actually uses at least two `Component N`-prefixed materials, Velo separates only the export copy and keeps the scene object and ShapeKeys unchanged. Every used material in this mode must match the object's Component; conflicts report the collection, object, and material slot and stop export. Objects with no material, one material, or only unprefixed preview materials retain native object-name behavior. Turning the option off restores the complete legacy path without validation or splitting.
 
-EFMI `MERGED` export reads `Metadata.json` `components[*].vg_map` to translate unified authoring names back to component-local runtime numbering. `MERGED_SKELETON` uses the same official mapping table and emits the official per-instance MergedSkeleton remap/callback contract.
+EFMI exposes three export choices:
+
+| Export mode | Result |
+| --- | --- |
+| **Merged（统一顶点组）** | Uses compact unified authoring IDs in Blender, translates them back to each Component-local palette, and emits the Per-Component runtime. |
+| **Per-Component（部件独立）** | Keeps Component-local IDs from authoring through runtime. |
+| **Merged（合并骨架）** | Uses the preserved `runtime_vg_map` source slots and emits the official EFMI v1.4.1 per-instance MergedSkeleton remap/callback contract. |
+
+Selecting or importing with **Merged（统一顶点组）** automatically makes **Merged（合并骨架）** the default follow-up export. Choose **Merged（统一顶点组）** manually only when you intentionally want unified authoring with the older Per-Component runtime.
 
 Older EFMI extraction folders without Metadata v4 `components[*].vg_map` must be re-extracted with EFMI Tools v0.6.2+ before either Merged mode can be exported.
 
@@ -431,6 +443,17 @@ Set **模式 (Mode)** to **导入对象 (Import Object)**.
 6. Run **导入模型 (Import Model)**.
 
 Texture import prefers `ShaderTextureUsage.json` and falls back to `TextureUsage.json`.
+
+#### WWMI Numeric IDs ↔ Original Bone Names
+
+The **WWMI 数字编号 ↔ 原始骨骼名** panel under **顶点组工具 (Vertex-Group Tools)** starts collapsed. Expand it when a WWMI import has numeric vertex groups but you also have the corresponding unpacked `.uemodel` assets.
+
+1. Set **解包路径 (Unpack Folder)** and the WWMI **对象源目录 (Object Source Folder)**.
+2. Adjust **最低相似度 (Minimum Similarity)** or **体素大小 (Voxel Size)** only when the default evidence is insufficient.
+3. Run **生成映射表 (Generate Mapping Table)**. Velo aggregates all relevant `.uemodel` sections and uses Component voxel evidence plus one-to-one skin-weight evidence; it does not rely on only the first model file.
+4. Save the result to `WWMI_MatchingResult.json` in the object source folder so the mapping and skeleton snapshot can be reused without the unpack folder.
+5. Use **切换至原始名字 / 切换至数字编号** only on the selected mesh objects. Ambiguous mappings used by those meshes fail closed.
+6. Use **导入骨架 (Import Skeleton)**, or **一键为Mod网格绑骨 (One-Click Bind Mod Meshes)** to rename every mesh in the configured WWMI Component collection, import the skeleton, and bind it. Optional `.L/.R` suffix conversion applies only to detected left/right bone pairs.
 
 ### 3. Choose a WWMI Skeleton Strategy
 
@@ -853,11 +876,11 @@ Also check hidden collection, hidden object, and muted ShapeKey filters.
 
 ### EFMI Merged Import or Export Reports a Missing Map
 
-Use EFMI Tools v0.6.2+ extraction so `Metadata.json` contains the official `components[*].vg_map`; older sidecar-only sources are no longer supported.
+Use Velo's EFMI Tools v0.6.2+ extraction so Metadata v4 contains compact `components[*].vg_map` authoring IDs and `runtime_vg_map` source slots; older sidecar-only sources are no longer supported.
 
 The component `vg_map` is not LOD data; extract LOD data separately when required.
 
-`Merged（骨架合并）` additionally validates Component/LOD remaps and rejects missing or inconsistent data instead of silently falling back to Per-Component output. Custom templates must contain the EFMI v1.4.1 MergedSkeleton contract.
+`Merged（合并骨架）` additionally validates Component/LOD remaps and rejects missing or inconsistent data instead of silently falling back to Per-Component output. Custom templates must contain the EFMI v1.4.1 MergedSkeleton contract.
 
 ### Per-Component (from Merged) Rejects Stray Weights
 
@@ -979,7 +1002,7 @@ They are required slot-transaction backup handles. Their values are assigned at 
 | **Hash-style** | Texture replacement matched by captured resource Hash |
 | **Slot-style** | Texture replacement rebound to `ps-tN` inside a draw transaction |
 | **STU** | `ShaderTextureUsage.json`, Velo's WWMI shader/slot evidence file |
-| **Merged** | Unified vertex-group authoring/runtime strategy |
+| **Merged** | Unified vertex-group strategy; EFMI distinguishes unified authoring with Per-Component runtime from the official MergedSkeleton runtime |
 | **Per-Component** | Component-local vertex-group runtime strategy |
 | **PFM** | Per-Component (from Merged): unified authoring, local runtime output |
 | **Fold** | WWMI scene route authored from the base geometry |
