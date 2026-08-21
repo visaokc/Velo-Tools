@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 
 _DISCONTINUITY_RATIO = 10.0
+_MAX_NUMERICAL_MATRIX_NOISE = 1e-4
 
 
 @dataclass
@@ -166,30 +167,29 @@ def _learn_matrix_noise_envelope(
         elif reciprocal and not current[1]:
             nearest_pairs[pair_key] = (current[0], True)
 
-    all_candidates = [
-        (distance, reciprocal)
-        for distance, reciprocal in nearest_pairs.values()
-        if distance.max_abs > 0.0 and math.isfinite(distance.max_abs)
-    ]
     reciprocal_candidates = [
         (distance, reciprocal)
-        for distance, reciprocal in all_candidates
-        if reciprocal
+        for distance, reciprocal in nearest_pairs.values()
+        if reciprocal and distance.max_abs > 0.0 and math.isfinite(distance.max_abs)
     ]
 
-    envelopes = [
-        envelope
-        for envelope in (
-            _learn_envelope_from_candidates(reciprocal_candidates, object_id, "reciprocal"),
-            _learn_envelope_from_candidates(all_candidates, object_id, "nearest"),
+    reciprocal_envelope = _learn_envelope_from_candidates(
+        reciprocal_candidates,
+        object_id,
+        "reciprocal",
+    )
+    if reciprocal_envelope is not None:
+        if reciprocal_envelope.max_abs <= _MAX_NUMERICAL_MATRIX_NOISE:
+            return reciprocal_envelope
+        log.warning(
+            "Rejected VG matrix noise envelope for %s: %.12g exceeds numerical-noise cap %.12g",
+            object_id,
+            reciprocal_envelope.max_abs,
+            _MAX_NUMERICAL_MATRIX_NOISE,
         )
-        if envelope is not None
-    ]
-    if envelopes:
-        return max(envelopes, key=lambda item: item.max_abs)
 
     log.info(
-        "No clear VG matrix noise discontinuity for %s; non-exact matrix aliases disabled",
+        "No safe reciprocal VG matrix noise discontinuity for %s; non-exact matrix aliases disabled",
         object_id,
     )
     return None
