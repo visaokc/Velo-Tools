@@ -421,7 +421,10 @@ def _make_patched_draw(orig_draw):
                 traceback.print_exc()
             # ─── injection end ───
             layout.row().prop(cfg, 'allow_export_without_lods')
-            if cfg.mod_skeleton_type == 'MERGED':
+            layout.row().prop(cfg, 'use_spatial_identification')
+            layout.row().prop(cfg, 'spatial_identification_threshold')
+            if cfg.mod_skeleton_type == 'MERGED_SKELETON':
+                layout.row().prop(cfg, 'max_instance_count')
                 layout.row().prop(cfg, 'skeleton_scale')
     return patched_draw
 

@@ -417,7 +417,10 @@ def install(merger_cls: type, settings_attr: str, after_split=None,
         cfg = getattr(self.context.scene, settings_attr, None)
         self._velo_allow_host_material_routes = (
             settings_attr == "VTEF_settings"
-            and getattr(cfg, "mod_skeleton_type", None) == "MERGED"
+            and (
+                getattr(cfg, "mod_skeleton_type", None) == "MERGED"
+                or bool(cfg.get("_unified_vg_component_export", False))
+            )
         )
         if not bool(getattr(cfg, "velo_auto_split_by_material", True)):
             self._velo_material_partition_plans = None
