@@ -280,6 +280,28 @@ class VELO_PT_mesh_actions(bpy.types.Panel):
             box.label(text="请先在视图中选择网格物体", icon='INFO')
 
 
+class MESH_PT_octahedral_uv(bpy.types.Panel):
+    bl_label = "UV工具"
+    bl_idname = "MESH_PT_octahedral_uv"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Velo Tools'
+    bl_parent_id = 'VELO_PT_main'
+    bl_order = 2
+
+    @classmethod
+    def poll(cls, context):
+        return _is_mesh_tab(context)
+
+    def draw(self, context):
+        column = self.layout.column(align=True)
+        column.scale_y = 1.1
+        column.operator(
+            "mesh_tools.smooth_normals_octahedral_uv",
+            icon='UV',
+        )
+
+
 class VELO_PT_shapekey_panel(bpy.types.Panel):
     bl_label = "形态键聚合 (按集合)"
     bl_idname = "VELO_PT_shapekey_panel"
@@ -287,7 +309,7 @@ class VELO_PT_shapekey_panel(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = 'Velo Tools'
     bl_parent_id = 'VELO_PT_main'
-    bl_order = 3
+    bl_order = 4
 
     @classmethod
     def poll(cls, context):
@@ -341,7 +363,7 @@ class VELO_PT_mesh_material_routing(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = 'Velo Tools'
     bl_parent_id = 'VELO_PT_main'
-    bl_order = 2
+    bl_order = 3
     bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
@@ -406,6 +428,7 @@ _classes = (
     VELO_UL_shapekey_agg,
     VELO_PT_mesh_sculpt,
     VELO_PT_mesh_actions,
+    MESH_PT_octahedral_uv,
     VELO_PT_mesh_material_routing,
     VELO_PT_shapekey_panel,
 )
