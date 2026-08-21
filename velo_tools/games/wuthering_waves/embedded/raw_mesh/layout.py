@@ -44,7 +44,7 @@ class ComponentLayout:
         return None
 
     def serialize_slots(self) -> List[dict]:
-        """Per-slot layout for the Metadata velo_raw_mesh block (faithful)."""
+        """Per-slot layout for the Metadata raw_mesh_layout block (faithful)."""
         out = []
         for s in self.slots:
             out.append({
@@ -126,10 +126,10 @@ def read_ib(ib_buf_path: str):
 
 def build_fmt(layout: ComponentLayout, ib_format: str) -> str:
     """Human-readable .fmt for familiarity. The authoritative, faithful layout
-    lives in Metadata.json's velo_raw_mesh block; our importer reads that, not
+    lives in Metadata.json's raw_mesh_layout block; our importer reads that, not
     this file (the stock importer cannot parse a multi-slot layout)."""
     lines = ['; Raw-mesh extract - multi-slot layout',
-             '; authoritative per-slot layout is in Metadata.json (velo_raw_mesh)']
+             '; authoritative per-slot layout is in Metadata.json (raw_mesh_layout)']
     for s in layout.slots:
         lines.append(f'; slot {s.slot} stride: {s.stride}')
     p = layout.position

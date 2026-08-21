@@ -13,6 +13,7 @@ This compatibility layer only keeps Velo's detection, validation, and control
 variables; it must not generate a second set of buffers or compute shaders.
 """
 import os
+import re
 import shutil
 import sys
 import traceback
@@ -28,6 +29,7 @@ _SHAPEKEY_HLSL_NAMES = (
     "shapekey_blend.hlsl",
     "shapekey_blend_merged.hlsl",
 )
+_TEMP_OBJECT_SUFFIX_RE = re.compile(r"__(?:velo_export|export_copy)(?:\.\d{3})?")
 
 # id(IniMaker class)  -> (cls, orig_build_from_template, orig_write, mod_name)
 _patched_inimaker = {}
@@ -307,7 +309,7 @@ def _build_official_control_constants(items):
     for item in items:
         by_slot.setdefault(int(item["slot"]), item)
 
-    lines = ["", "; --- ShapeKey: persistent Velo controls for official EFMI runtime ---"]
+    lines = ["", "; --- ShapeKey: persistent Deform controls for official EFMI runtime ---"]
     for slot, item in sorted(by_slot.items()):
         lines.append(f"; Deform {slot}: {item['raw_name']}")
         lines.append(f"global persist $ShapeKey_{slot} = {_format_control_value(item['default_value'])}")
@@ -343,6 +345,7 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
 
     # Render without checksum, post-process, then re-checksum.
     result = orig(self, context, cfg, template_string=template_string, with_checksum=False)
+    result = _TEMP_OBJECT_SUFFIX_RE.sub("", result)
 
     if _settings_enabled() and _bake_results:
         try:

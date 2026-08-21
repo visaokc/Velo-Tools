@@ -235,8 +235,8 @@ def _get_export_state(context, settings_attr: str):
     # Clone object + independent mesh
     clone = obj.copy()
     clone.data = obj.data.copy()
-    clone.name = f"{obj.name}__velo_export"
-    clone.data.name = f"{obj.data.name}__velo_export"
+    clone.name = f"{obj.name}__export_copy"
+    clone.data.name = f"{obj.data.name}__export_copy"
 
     # Link the clone into all the same collections as the source (keep the parent/child organization consistent)
     linked_to = []

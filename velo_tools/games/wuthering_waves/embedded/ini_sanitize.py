@@ -1,9 +1,9 @@
 # Final WWMI INI sanitizer for generated artifact readability.
 #
 # This hook runs at the rendered INI boundary instead of renaming Blender data
-# blocks mid-export. Material-route and MMD temp copies still use
-# __velo_export internally for cleanup and legacy detection, but that marker is
-# not part of the user-facing mod artifact. Stock numeric texture sections are
+# blocks mid-export. Material-route and MMD temp copies use a capability-named
+# suffix internally, but that marker is not part of the user-facing mod artifact.
+# Stock numeric texture sections are
 # also renamed from the hash already present in their generated DDS filename.
 
 import re
@@ -12,8 +12,10 @@ _INSTALLED = False
 _ORIG_BUILD_FROM_TEMPLATE = None
 _IM_MODULE = None
 
-_TEMP_OBJECT_SUFFIX_RE = re.compile(r"__velo_export(?:\.\d{3})?")
-_DRAWVAR_SUFFIX_RE = re.compile(r"(\$(?:draw|obj)_[A-Za-z0-9_]*?)_velo_export\b")
+_TEMP_OBJECT_SUFFIX_RE = re.compile(r"__(?:velo_export|export_copy)(?:\.\d{3})?")
+_DRAWVAR_SUFFIX_RE = re.compile(
+    r"(\$(?:draw|obj)_[A-Za-z0-9_]*?)_(?:velo_export|export_copy)\b"
+)
 _SECTION_NAME_RE = re.compile(r"^\[([^\]]+)\][ \t]*\r?$", re.MULTILINE)
 _NUMERIC_TEXTURE_RESOURCE_RE = re.compile(
     r"^\[ResourceTexture(?P<index>\d+)\][ \t]*\r?$"
@@ -73,9 +75,7 @@ def sanitize_ini_text(text: str) -> str:
     result = _readable_texture_section_names(text)
     result = _TEMP_OBJECT_SUFFIX_RE.sub("", result)
 
-    # Names that pass through format_ini_drawvar become e.g.
-    # $draw_component_3_body_velo_export. Collapse that exact internal suffix
-    # without touching arbitrary user metadata or custom prose containing Velo.
+    # Collapse the exact internal suffix without touching arbitrary user text.
     while True:
         collapsed = _DRAWVAR_SUFFIX_RE.sub(r"\1", result)
         if collapsed == result:

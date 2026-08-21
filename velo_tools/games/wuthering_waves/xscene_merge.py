@@ -1275,7 +1275,7 @@ def _build_manifest_v3(base_metadata, base_comps, info, splits,
 
     return {
         "schema_version": crossscene_manifest.SCHEMA_VERSION,
-        "generator": "velo_tools.games.wuthering_waves.xscene_merge",
+        "generator": "cross_scene_merge",
         "grid_size": GRID, "match_tol": TOL,
         "base": {
             "vb0_hash": base_metadata.get("vb0_hash", ""),

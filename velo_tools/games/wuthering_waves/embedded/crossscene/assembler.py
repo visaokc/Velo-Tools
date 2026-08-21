@@ -70,7 +70,10 @@ _RE_TEXHASH = re.compile(r't=([0-9a-fA-F]+)')
 _RE_PST_REF = re.compile(r'ps-t\d+\s*=\s*ref\s+(ResourceTexture(?:\d+|_C\d+_[0-9a-fA-F]+)(?:_ib\d+)*)\b')
 _RE_TEXTURE_REF = re.compile(r'\s*this\s*=\s*(ResourceTexture(?:\d+|_C\d+_[0-9a-fA-F]+)(?:_ib\d+)*)\b', re.I)
 _SHARED_BODY_GLOBALS = {"form_id"}
-_SLOT_CONTRACT_FILENAME = ".velo_slot_contract.json"
+_SLOT_CONTRACT_FILENAMES = (
+    ".slot_texture_contract.json",
+    ".velo_slot_contract.json",
+)
 
 
 def _alias_for_component(namespace_aliases, k, component_id):
@@ -247,8 +250,15 @@ def _collect_slot_contracts(mods, namespace_aliases):
     component_route_lists = {}
     sidecars = 0
     for k, mod in enumerate(mods):
-        path = os.path.join(mod, _SLOT_CONTRACT_FILENAME)
-        if not os.path.isfile(path):
+        path = next(
+            (
+                os.path.join(mod, name)
+                for name in _SLOT_CONTRACT_FILENAMES
+                if os.path.isfile(os.path.join(mod, name))
+            ),
+            None,
+        )
+        if path is None:
             missing.append(k)
             continue
         sidecars += 1

@@ -28,7 +28,7 @@ _COMPONENT_PREFIX_RE = re.compile(r"^\s*component[_ -]*(\d+)(?:\s+|[_ -]+)?", re
 
 def _sanitize_source_name(name):
     text = (name or "").strip()
-    return re.sub(r"__velo_export(?:\.\d{3})?$", "", text)
+    return re.sub(r"__(?:velo_export|export_copy)(?:\.\d{3})?$", "", text)
 
 
 def _strip_component_prefix(name):

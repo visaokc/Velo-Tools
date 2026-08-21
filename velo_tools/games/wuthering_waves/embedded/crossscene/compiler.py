@@ -303,7 +303,7 @@ def specialize_unit_template(source: str, suffix: str) -> str:
     placeholders: Dict[str, str] = {}
 
     def protect(value: str) -> str:
-        key = f"__VELO_XS_TOKEN_{len(placeholders)}__"
+        key = f"__CROSS_SCENE_TOKEN_{len(placeholders)}__"
         placeholders[key] = value
         return key
 
@@ -844,8 +844,8 @@ def _fold_morph_ini(entry: Mapping[str, Any], batch_counts: Sequence[int],
     offset = 0
     for index, count in enumerate(batch_counts):
         lines.extend([
-            f";VELO_CONST global $shapekey_vertex_offset_batch{index}_{tag}{suffix} = {offset}",
-            f";VELO_CONST global $shapekey_vertex_count_batch{index}_{tag}{suffix} = {count}",
+            f";SHAPEKEY_CONST global $shapekey_vertex_offset_batch{index}_{tag}{suffix} = {offset}",
+            f";SHAPEKEY_CONST global $shapekey_vertex_count_batch{index}_{tag}{suffix} = {count}",
         ])
         offset += count
     lines.extend([
@@ -972,8 +972,8 @@ def _append_fold_units(ir: CrossSceneIR, body: Any, manifest: Mapping[str, Any],
         morph_constants = []
         morph_lines = []
         for line in morph_ini.splitlines():
-            if line.startswith(";VELO_CONST "):
-                morph_constants.append(line[len(";VELO_CONST "):])
+            if line.startswith(";SHAPEKEY_CONST "):
+                morph_constants.append(line[len(";SHAPEKEY_CONST "):])
             else:
                 morph_lines.append(line)
         constants.lines.extend(morph_constants)

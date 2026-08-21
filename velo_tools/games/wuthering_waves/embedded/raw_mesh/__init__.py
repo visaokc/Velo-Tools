@@ -10,7 +10,7 @@
 # Modules:
 #   scan.py    pure: dump -> hash index -> resolution units (no bpy)
 #   layout.py  pure: per-slot input layout / .fmt / position heuristic (no bpy)
-#   schema.py  pure: Metadata.json + additive velo_raw_mesh block (no bpy)
+#   schema.py  pure: Metadata.json + additive raw_mesh_layout block (no bpy)
 #   extract.py orchestration + self-contained consolidated-folder writer
 #   (import_mesh.py / export_mesh.py / panel.py / settings.py / operators.py
 #    are added in later phases)

@@ -29,7 +29,10 @@ _COMPONENT_ANY_RE = re.compile(r"component[_ -]*(\d+)", re.IGNORECASE)
 _COMPONENT_COLLECTION_RE = re.compile(r"^C(\d+)(?:\.\d+)?$", re.IGNORECASE)
 _COMPONENT_COLLECTION_KEY = "velo_component_id"
 _PRESERVE_EMPTY_COLLECTION_KEY = "velo_preserve_empty_collection"
-_EXPORT_TEMP_SUFFIX = "__velo_export"
+_EXPORT_TEMP_SUFFIX = "__export_copy"
+_LEGACY_EXPORT_TEMP_SUFFIX = "__velo_export"
+_EXPORT_TEMP_KEY = "export_temp_object"
+_LEGACY_EXPORT_TEMP_KEY = "velo_export_temp"
 _ROUTE_AUTO_SIG = {}
 _ROUTE_AUTO_REFRESHING = [False]
 _ROUTE_REFRESH_GATE = SceneRefreshGate()
@@ -240,18 +243,23 @@ def _strip_component_prefix(name):
 def is_export_temp_object(obj):
     if obj is None:
         return False
-    if getattr(obj, "get", None) and obj.get("velo_export_temp"):
+    if getattr(obj, "get", None) and (
+        obj.get(_EXPORT_TEMP_KEY) or obj.get(_LEGACY_EXPORT_TEMP_KEY)
+    ):
         return True
-    return ((getattr(obj, "name", "") or "").endswith(_EXPORT_TEMP_SUFFIX))
+    name = getattr(obj, "name", "") or ""
+    return name.endswith((_EXPORT_TEMP_SUFFIX, _LEGACY_EXPORT_TEMP_SUFFIX))
 
 
 def _mark_export_temp_object(obj, enabled=True):
     if obj is None or not getattr(obj, "get", None):
         return obj
     if enabled:
-        obj["velo_export_temp"] = True
-    elif "velo_export_temp" in obj:
-        del obj["velo_export_temp"]
+        obj[_EXPORT_TEMP_KEY] = True
+    else:
+        for key in (_EXPORT_TEMP_KEY, _LEGACY_EXPORT_TEMP_KEY):
+            if key in obj:
+                del obj[key]
     return obj
 
 

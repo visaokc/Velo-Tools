@@ -1,4 +1,4 @@
-"""Driver-layer export for the Velo raw-mesh tool.
+"""Driver-layer export for the raw-mesh tool.
 
 Each imported component is re-emitted as an INDEPENDENT plain-3dmigoto override
 keyed on its OWN source vb0 hash + original index range (static VFX/scene meshes
@@ -32,6 +32,16 @@ class RawMeshExportError(Exception):
     pass
 
 
+LEGACY_OBJ_KEYS = ('velo_raw',)
+
+
+def _object_info_key(obj):
+    for key in (OBJ_KEY, *LEGACY_OBJ_KEYS):
+        if key in obj.keys():
+            return key
+    return None
+
+
 def _element_name(e):
     return e['semantic'] if e['index'] == 0 else f"{e['semantic']}{e['index']}"
 
@@ -50,7 +60,9 @@ def _read_slot_bytes(mesh, slot, stride, n) -> bytearray:
     nwords = (stride + 3) // 4
     words = numpy.zeros((n, nwords), dtype=numpy.int32)
     for k in range(nwords):
-        attr = mesh.attributes.get(f'velo_raw_s{slot}_{k}')
+        attr = mesh.attributes.get(f'raw_mesh_s{slot}_{k}')
+        if attr is None:
+            attr = mesh.attributes.get(f'velo_raw_s{slot}_{k}')
         if attr is None:
             continue  # missing -> zero-fill (rebuild degradation)
         col = numpy.empty(n, dtype=numpy.int32)
@@ -87,7 +99,7 @@ def _encode_ib(tris, ib_format, n):
 
 
 def _build_component(obj, mode):
-    info = json.loads(obj[OBJ_KEY])
+    info = json.loads(obj[_object_info_key(obj)])
     vc = info['component']
     mesh = obj.data
     n = len(mesh.vertices)
@@ -139,8 +151,8 @@ def _collect_textures(built):
 
 
 def export_mod(collection, mod_output_folder: str, mode: str = 'AUTO') -> dict:
-    objs = [o for o in collection.objects if OBJ_KEY in o.keys()]
-    objs.sort(key=lambda o: json.loads(o[OBJ_KEY]).get('component_index', 0))
+    objs = [o for o in collection.objects if _object_info_key(o) is not None]
+    objs.sort(key=lambda o: json.loads(o[_object_info_key(o)]).get('component_index', 0))
     if not objs:
         raise RawMeshExportError(f'集合「{collection.name}」里没有本工具导入的 raw-mesh 对象。')
 

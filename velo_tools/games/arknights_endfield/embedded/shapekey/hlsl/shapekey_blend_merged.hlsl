@@ -14,12 +14,12 @@
 
 #define MAX_SLOTS 128
 
-// VELO_ACTIVE_SHAPE_SLOTS_BEGIN
+// ACTIVE_SHAPE_SLOTS_BEGIN
 #define ACTIVE_SHAPE_SLOT_COUNT 0
 static const int ACTIVE_SHAPE_SLOTS[1] = {
     0
 };
-// VELO_ACTIVE_SHAPE_SLOTS_END
+// ACTIVE_SHAPE_SLOTS_END
 
 struct VertexAttributes {
     float3 position;

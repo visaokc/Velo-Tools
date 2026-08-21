@@ -1,16 +1,16 @@
-"""Driver-layer import for the Velo raw-mesh tool.
+"""Driver-layer import for the raw-mesh tool.
 
 Builds one Blender object per component:
   - faces from the (rebased) Component {i}.ib,
   - editable geometry from the Position element decoded out of its slot,
   - EVERY input slot's raw per-vertex bytes stored verbatim as packed int32
-    POINT attributes (``velo_raw_s{slot}_{k}``), so BGRA / packed / aliased
+    POINT attributes (``raw_mesh_s{slot}_{k}``), so BGRA / packed / aliased
     attributes the core decoder cannot model survive untouched for a faithful
     re-export.
 
 No coordinate transform is applied (import and export are identity), which
 guarantees the Faithful round-trip is byte-exact. The per-component source
-hashes + layout are stashed on the object (``obj['velo_raw']``) so export is
+hashes + layout are stashed on the object (``obj['raw_mesh_source']``) so export is
 self-contained. Never touches _wwmi_core or the stock importer.
 """
 
@@ -29,7 +29,7 @@ class RawMeshImportError(Exception):
     pass
 
 
-OBJ_KEY = 'velo_raw'
+OBJ_KEY = 'raw_mesh_source'
 
 
 def _element_name(e: dict) -> str:
@@ -74,7 +74,7 @@ def _store_slot_blob(mesh, slot_id: int, raw: bytes, stride: int, n: int):
     padded[:, :stride] = arr
     words = padded.view(numpy.int32).reshape(n, nwords)
     for k in range(nwords):
-        attr = mesh.attributes.new(f'velo_raw_s{slot_id}_{k}', 'INT', 'POINT')
+        attr = mesh.attributes.new(f'raw_mesh_s{slot_id}_{k}', 'INT', 'POINT')
         attr.data.foreach_set('value', numpy.ascontiguousarray(words[:, k]))
 
 
@@ -123,9 +123,9 @@ def import_folder(folder_path: str, context) -> dict:
     meta_path = folder / 'Metadata.json'
     if not meta_path.is_file():
         raise RawMeshImportError('文件夹缺少 Metadata.json。')
-    block = schema.get_velo_block(schema.load(meta_path))
+    block = schema.get_raw_mesh_block(schema.load(meta_path))
     if block is None:
-        raise RawMeshImportError('该文件夹不是本工具提取的 raw-mesh 文件夹（Metadata.json 缺 velo_raw_mesh 块）。')
+        raise RawMeshImportError('该文件夹不是本工具提取的 raw-mesh 文件夹（Metadata.json 缺 raw_mesh_layout 块）。')
 
     coll = bpy.data.collections.new(folder.name)
     context.scene.collection.children.link(coll)

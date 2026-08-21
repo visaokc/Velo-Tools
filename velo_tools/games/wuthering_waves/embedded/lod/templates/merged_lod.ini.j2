@@ -5,7 +5,7 @@
 ; fails loudly when the stock template drifts):
 ;   1. per-component draws factored into [CommandListDrawComponent{c}]
 ;   2. stock [TextureOverrideComponent{c}] sections run them instead of inlining
-;   3. per-draw stateless LOD sections appended when extracted_object.velo_lods exists
+;   3. per-draw stateless LOD sections appended when prepared LOD data exists
 
 {%- macro note(text) %}{% if comment_code %}; {{ text }}{% else %};DEL{% endif %}{% endmacro %}
 

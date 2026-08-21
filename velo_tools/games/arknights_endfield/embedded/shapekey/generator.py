@@ -71,7 +71,7 @@ ACTIVE_SLOT_SUM_PER_LINE = 15
 # ---------------------------------------------------------------- helpers
 
 _ACTIVE_SLOT_BLOCK_RE = re.compile(
-    r"// VELO_ACTIVE_SHAPE_SLOTS_BEGIN.*?// VELO_ACTIVE_SHAPE_SLOTS_END",
+    r"// ACTIVE_SHAPE_SLOTS_BEGIN.*?// ACTIVE_SHAPE_SLOTS_END",
     re.DOTALL,
 )
 
@@ -184,12 +184,12 @@ def _format_hlsl_slot_array(active_slots):
     else:
         body = "    0"
     return "\n".join([
-        "// VELO_ACTIVE_SHAPE_SLOTS_BEGIN",
+        "// ACTIVE_SHAPE_SLOTS_BEGIN",
         f"#define ACTIVE_SHAPE_SLOT_COUNT {count}",
         f"static const int ACTIVE_SHAPE_SLOTS[{array_size}] = {{",
         body,
         "};",
-        "// VELO_ACTIVE_SHAPE_SLOTS_END",
+        "// ACTIVE_SHAPE_SLOTS_END",
     ])
 
 

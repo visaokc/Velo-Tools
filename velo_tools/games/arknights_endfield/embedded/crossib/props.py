@@ -3,12 +3,12 @@ import bpy
 import re
 
 
-_VELO_EXPORT_SUFFIX_RE = re.compile(r'__velo_export(?:\.\d{3})?$')
+_EXPORT_COPY_SUFFIX_RE = re.compile(r'__(?:velo_export|export_copy)(?:\.\d{3})?$')
 
 
 def _sanitize_source_name(name):
     text = (name or '').strip()
-    return _VELO_EXPORT_SUFFIX_RE.sub('', text)
+    return _EXPORT_COPY_SUFFIX_RE.sub('', text)
 
 
 def _iter_collection_meshes(col):

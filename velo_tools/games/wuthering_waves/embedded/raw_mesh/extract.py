@@ -9,7 +9,7 @@ consolidated folder whose components and textures follow input order, with:
     Component {i}.fmt           informational layout
     Component {i} vb{slot}.buf  raw per-slot vertex bytes
     Components-{ids} t={hash}.* deduped textures (stock naming)
-    Metadata.json               stock-valid + velo_raw_mesh block
+    Metadata.json               stock-valid + raw_mesh_layout block
     TextureUsage.json
     ShaderTextureUsage.json
 
