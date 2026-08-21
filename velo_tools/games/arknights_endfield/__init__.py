@@ -8,6 +8,7 @@ from . import mmd_pick as _mmd_pick
 from . import bridge_ui as _bridge_ui
 from . import ui_l10n as _ui_l10n
 from . import lod_debug_import as _lod_debug_import
+from . import unified_vg_extract as _unified_vg_extract
 from . import unified_vg_export as _unified_vg_export
 from ._efmi_core import auto_load as _al
 from ._efmi_core.addon import settings as _vsettings
@@ -538,6 +539,7 @@ def register():
     _patch_velo_settings()
     _al.register()
     bpy.types.Scene.VTEF_settings = bpy.props.PointerProperty(type=_vsettings.VTEF_Settings)
+    _unified_vg_extract.install_patches()
     _unified_vg_export.install_patches()
     try:
         from ...core.export import material_partition as _material_partition
@@ -636,6 +638,10 @@ def unregister():
         pass
     try:
         _unified_vg_export.remove_patches()
+    except Exception:
+        pass
+    try:
+        _unified_vg_extract.remove_patches()
     except Exception:
         pass
     try:
