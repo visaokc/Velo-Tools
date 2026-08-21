@@ -11,12 +11,13 @@ import numpy
 
 from .bone_signature import (
     _build_bone_signature_from_blob,
-    _read_palette_bases_from_vs_cb1,
-    parse_vs_cb1_first_constants,
+    _read_palette_bases_from_instance_config,
+    parse_vs_cb_first_constants,
 )
 from ._efmi_core.migoto_io.object_extractor.migoto_object.migoto_object import MigotoObject
 from ._efmi_core.migoto_io.data_model.byte_buffer import Semantic
 from ._efmi_core.migoto_io.migoto_model.frame_model.resources import ConstantBuffer, Resource
+from ._efmi_core.migoto_io.migoto_model.types import ShaderType
 from .unified_vg_signature import (
     _BoneSignatureRecord,
     _apply_guarded_near_signature_aliases,
@@ -42,8 +43,9 @@ class _BufferProxy:
 class _SignatureComponent:
     buffers: dict[str, _BufferProxy]
     vs_t0_path: Optional[str] = None
-    vs_cb1_path: Optional[str] = None
-    vs_cb1_first_constant: Optional[int] = None
+    instance_config_path: Optional[str] = None
+    instance_config_first_constant: Optional[int] = None
+    instance_config_slot: Optional[int] = None
     bone_count: int = 0
     vg_map: dict[int, int] = field(default_factory=dict)
 
@@ -70,48 +72,69 @@ def _resource_path(resource: Resource | None) -> str | None:
     return None
 
 
-def _first_signature_resources(raw_component) -> tuple[str | None, str | None, int | None]:
+def _first_signature_resources(
+    raw_component,
+) -> tuple[str | None, str | None, int | None, int | None]:
     if raw_component is None:
-        return None, None, None
+        return None, None, None, None
     for shader_call in raw_component.shader_calls:
-        resources = shader_call.model_resources or shader_call.resources
+        resources = shader_call.resources
         if resources is None:
             continue
         vs_t0 = resources.get_by_slot("vs-t0")
-        vs_cb1 = resources.get_by_slot("vs-cb1")
         vs_t0_path = _resource_path(vs_t0)
-        vs_cb1_path = _resource_path(vs_cb1)
-        if not vs_t0_path or not vs_cb1_path:
+        instance_config = next(
+            (
+                (slot, cb)
+                for slot, cb in resources.constant_buffers.items()
+                if slot.shader_type == ShaderType.Vertex and cb.num_constants == 4096
+            ),
+            None,
+        )
+        if instance_config is None:
             continue
-        first_constant = int(vs_cb1.first_constant) if isinstance(vs_cb1, ConstantBuffer) else None
-        return vs_t0_path, vs_cb1_path, first_constant
-    return None, None, None
+        slot, constant_buffer = instance_config
+        instance_config_path = _resource_path(constant_buffer)
+        if not vs_t0_path or not instance_config_path:
+            continue
+        first_constant = (
+            int(constant_buffer.first_constant)
+            if isinstance(constant_buffer, ConstantBuffer)
+            else None
+        )
+        return vs_t0_path, instance_config_path, first_constant, int(slot.slot_id)
+    return None, None, None, None
 
 
 def _component_signature_adapter(component) -> _SignatureComponent:
     vertex_buffer = component.mesh.vertex_buffer
-    vs_t0_path, vs_cb1_path, first_constant = _first_signature_resources(component.raw_data)
+    vs_t0_path, instance_config_path, first_constant, instance_config_slot = (
+        _first_signature_resources(component.raw_data)
+    )
     return _SignatureComponent(
         buffers={"VB": _BufferProxy(vertex_buffer)},
         vs_t0_path=vs_t0_path,
-        vs_cb1_path=vs_cb1_path,
-        vs_cb1_first_constant=first_constant,
+        instance_config_path=instance_config_path,
+        instance_config_first_constant=first_constant,
+        instance_config_slot=instance_config_slot,
         bone_count=_compute_bone_count(vertex_buffer),
     )
 
 
 def _fallback_first_constant(component: _SignatureComponent) -> int | None:
-    if component.vs_cb1_first_constant is not None:
-        return component.vs_cb1_first_constant
-    if not component.vs_cb1_path:
+    if component.instance_config_first_constant is not None:
+        return component.instance_config_first_constant
+    if not component.instance_config_path or component.instance_config_slot is None:
         return None
-    log_dir = str(Path(component.vs_cb1_path).parent)
-    call_id_str = Path(component.vs_cb1_path).name.split("-", 1)[0]
+    log_dir = str(Path(component.instance_config_path).parent)
+    call_id_str = Path(component.instance_config_path).name.split("-", 1)[0]
     try:
         call_id_int = int(call_id_str)
     except ValueError:
         return None
-    return parse_vs_cb1_first_constants(str(Path(log_dir) / "log.txt")).get((call_id_int, 1))
+    return parse_vs_cb_first_constants(str(Path(log_dir) / "log.txt")).get(
+        (call_id_int, component.instance_config_slot)
+    )
 
 
 def build_component_maps(migoto_object: MigotoObject) -> list[dict[int, int]]:
@@ -126,19 +149,19 @@ def build_component_maps(migoto_object: MigotoObject) -> list[dict[int, int]]:
         if metadata is not None and getattr(metadata, "cpu_posed", False):
             log.info("Skipping unified VG map for CPU-posed Component_%s of %s", component_id, migoto_object.id)
             continue
-        if not adapter.vs_t0_path or not adapter.vs_cb1_path:
-            raise ValueError(f"Component_{component_id} is missing vs-t0 or vs-cb1")
+        if not adapter.vs_t0_path or not adapter.instance_config_path:
+            raise ValueError(f"Component_{component_id} is missing vs-t0 or instance-config CB")
         if adapter.bone_count <= 0:
             raise ValueError(f"Component_{component_id} has no explicit bone indices")
 
         first_constant = _fallback_first_constant(adapter)
         if first_constant is None:
-            raise ValueError(f"Component_{component_id} has no vs-cb1 first_constant")
-        adapter.vs_cb1_first_constant = int(first_constant)
+            raise ValueError(f"Component_{component_id} has no instance-config first_constant")
+        adapter.instance_config_first_constant = int(first_constant)
 
-        current_base, previous_base = _read_palette_bases_from_vs_cb1(
-            adapter.vs_cb1_path,
-            adapter.vs_cb1_first_constant,
+        current_base, previous_base = _read_palette_bases_from_instance_config(
+            adapter.instance_config_path,
+            adapter.instance_config_first_constant,
         )
         with open(adapter.vs_t0_path, "rb") as fh:
             vs_t0_blob = fh.read()

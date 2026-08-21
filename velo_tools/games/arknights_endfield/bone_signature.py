@@ -6,10 +6,10 @@ Algorithm derived from ssice-a/3dmigoto_bone_merge v0.3.0
 The three lower-level helpers (``_read_three_rows_from_blob``,
 ``_build_bone_signature_from_blob``) are ports of the upstream functions.
 
-``_read_palette_bases_from_vs_cb1`` is adapted to take an explicit
+``_read_palette_bases_from_instance_config`` is adapted to take an explicit
 ``first_constant`` argument because 3DMigoto dumps the entire constant
 buffer to disk while the shader sees a sub-window starting at
-``first_constant``. Cb1 register c5 is therefore at byte offset
+``first_constant``. The instance-config register c5 is therefore at byte offset
 ``(first_constant + 5) * 16`` inside the dumped ``.buf`` file, instead of
 the bare ``5 * 16`` used by ssice-a's pre-sliced dumper.
 """
@@ -36,7 +36,7 @@ _CB_INFO_RE = re.compile(
 _log_first_constant_cache: Dict[str, Dict[Tuple[int, int], int]] = {}
 
 
-def parse_vs_cb1_first_constants(log_path: str) -> Dict[Tuple[int, int], int]:
+def parse_vs_cb_first_constants(log_path: str) -> Dict[Tuple[int, int], int]:
     """Scan a 3DMigoto frame dump ``log.txt`` and return a mapping of
     ``(call_id_int, slot_int) -> first_constant`` for ``VSSetConstantBuffers1``
     bindings.
@@ -77,18 +77,21 @@ def parse_vs_cb1_first_constants(log_path: str) -> Dict[Tuple[int, int], int]:
     return result
 
 
-def _read_palette_bases_from_vs_cb1(vs_cb1_path: str, first_constant: int) -> Tuple[int, int]:
-    """Read ``(current_palette_base, previous_palette_base)`` from cb1
+def _read_palette_bases_from_instance_config(
+    instance_config_path: str,
+    first_constant: int,
+) -> Tuple[int, int]:
+    """Read ``(current_palette_base, previous_palette_base)`` from instance config
     register c5, accounting for ``first_constant`` provided by the
     ``VSSetConstantBuffers1`` call.
     """
     byte_offset = (int(first_constant) + 5) * 16
-    with open(vs_cb1_path, "rb") as fh:
+    with open(instance_config_path, "rb") as fh:
         fh.seek(byte_offset)
         row_bytes = fh.read(16)
     if len(row_bytes) != 16:
         raise ValueError(
-            f"vs-cb1 buffer too small at offset {byte_offset}: {vs_cb1_path}"
+            f"instance-config buffer too small at offset {byte_offset}: {instance_config_path}"
         )
     x_value, y_value, _z_value, _w_value = struct.unpack("<4I", row_bytes)
     return x_value, y_value
