@@ -322,6 +322,8 @@ EFMI exposes three export choices:
 | **Per-Component（部件独立）** | Keeps Component-local IDs from authoring through runtime. |
 | **Merged（合并骨架）** | Uses the preserved `runtime_vg_map` source slots and emits the official EFMI v1.4.1 per-instance MergedSkeleton remap/callback contract. |
 
+If an LOD dump completely omits a Component but EFMI extraction still writes a fallback LOD record for it, add `"present": false` to the matching `components[index].lods[*]` entry in the source folder's `Metadata.json`. During **Merged（合并骨架）** export, Velo will not select that Component as a runtime bone source for the missing LOD. Use `"present": true` when the Component really exists but its buffer identity is intentionally identical to the base record. Omitting the field keeps legacy Metadata compatible and falls back to comparing the LOD and base Component buffer identities.
+
 Selecting or importing with **Merged（统一顶点组）** automatically makes **Merged（合并骨架）** the default follow-up export. Choose **Merged（统一顶点组）** manually only when you intentionally want unified authoring with the older Per-Component runtime.
 
 Older EFMI extraction folders without Metadata v4 `components[*].vg_map` must be re-extracted with EFMI Tools v0.6.2+ before either Merged mode can be exported.
