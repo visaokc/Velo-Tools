@@ -307,7 +307,7 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
         pairs = {}
         collisions = set()
         from .games.wuthering_waves.skeleton_import import side_suffix_names
-        suffixes = side_suffix_names([row.original_name for row in candidates]) if rename_side_suffix else {}
+        suffixes = side_suffix_names([row.original_name for row in rows]) if rename_side_suffix else {}
         for row in candidates:
             if self.target == "NUMERIC":
                 keys = {row.original_name, suffixes.get(row.original_name, row.original_name)}
