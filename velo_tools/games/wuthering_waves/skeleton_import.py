@@ -40,7 +40,7 @@ def _side_name_candidates(name: str):
 
 
 def side_suffix_names(names):
-    """Return Blender .L/.R names only when a matching opposite-side bone exists."""
+    """Return Blender .L/.R names for explicit suffixes or paired side conventions."""
     name_set = set(names)
     renamed = {}
     for name in names:
@@ -48,7 +48,7 @@ def side_suffix_names(names):
         if not candidates:
             continue
         counterpart, base, side = candidates[0]
-        if counterpart in name_set:
+        if counterpart in name_set or re.search(r"[_\- ][LR]$", name):
             renamed[name] = f"{base}.{side}"
     return renamed
 

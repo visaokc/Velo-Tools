@@ -30,7 +30,7 @@ class VELO_WWMI_BoneMapSettings(bpy.types.PropertyGroup):
     )
     rename_side_suffix: bpy.props.BoolProperty(
         name="将骨骼重命名为.L/.R后缀", default=True,
-        description="导入骨架时仅对存在左右成对骨骼的名称添加 Blender .L/.R 后缀",
+        description="导入骨架和恢复原始权重组名时，将明确的 _L/_R 等左右后缀统一为 Blender .L/.R",
     )
 
 
