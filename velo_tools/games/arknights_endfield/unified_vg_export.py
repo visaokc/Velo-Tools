@@ -9,6 +9,7 @@ _PATCHED = False
 _ORIGINAL_EXPORT_MOD = None
 _ORIGINAL_FINALIZE_DATA = None
 _ORIGINAL_READ_METADATA = None
+_ORIGINAL_IMPORT_LODS = None
 
 
 def _component_map(merger, component_id, attribute="vg_map"):
@@ -25,21 +26,51 @@ def _component_map(merger, component_id, attribute="vg_map"):
     )
 
 
-_LOD_IDENTITY_FIELDS = (
-    "ib_hash",
-    "vb0_hash",
-    "vertex_offset",
-    "vertex_count",
-    "index_offset",
-    "index_count",
-)
-
-
 def _lod_is_present(component, lod):
     explicit = getattr(lod, "present", None)
     if explicit is not None:
         return bool(explicit)
-    return any(getattr(lod, field, None) != getattr(component, field, None) for field in _LOD_IDENTITY_FIELDS)
+    return True
+
+
+def _write_lod_presence(metadata_path, lod_object_name, matched_component_ids):
+    metadata_path = Path(metadata_path)
+    with metadata_path.open("r", encoding="utf-8") as handle:
+        metadata = json.load(handle)
+
+    matched_component_ids = set(matched_component_ids)
+    changed = False
+    for component_id, component in enumerate(metadata.get("components", [])):
+        for lod in component.get("lods", []) or []:
+            if str(lod.get("lod_object_name", "")) != str(lod_object_name):
+                continue
+            present = component_id in matched_component_ids
+            if lod.get("present") != present:
+                lod["present"] = present
+                changed = True
+
+    if not changed:
+        return
+    temp_path = metadata_path.with_suffix(metadata_path.suffix + ".tmp")
+    temp_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=4) + "\n",
+        encoding="utf-8",
+    )
+    temp_path.replace(metadata_path)
+
+
+def _import_lods_with_presence(context, cfg, full_object, lod_object, matched_components):
+    result = _ORIGINAL_IMPORT_LODS(context, cfg, full_object, lod_object, matched_components)
+    from ._efmi_core.migoto_io.blender_interface.utility import resolve_path
+
+    matched_component_ids = {
+        component_id
+        for component_id, component in enumerate(full_object.components)
+        if component in matched_components
+    }
+    metadata_path = resolve_path(cfg.object_source_folder) / "Metadata.json"
+    _write_lod_presence(metadata_path, lod_object.id, matched_component_ids)
+    return result
 
 
 def _apply_explicit_lod_presence(extracted_object, metadata_path):
@@ -107,12 +138,7 @@ def _local_lod_coverage(component, local_id):
     return coverage
 
 
-def _lod_aware_compact_to_runtime(components):
-    required_lods = {
-        str(lod.lod_object_name)
-        for component in components
-        for lod in (getattr(component, "lods", None) or [])
-    }
+def _lod_aware_compact_to_runtime(components, required_lods_by_compact):
     candidates = {}
     preferred = {}
     for component in components:
@@ -144,6 +170,7 @@ def _lod_aware_compact_to_runtime(components):
     mapping = {}
     unsupported = {}
     for compact_id, compact_candidates in candidates.items():
+        required_lods = required_lods_by_compact.get(compact_id, set())
         eligible = [
             candidate
             for candidate in compact_candidates
@@ -164,6 +191,24 @@ def _lod_aware_compact_to_runtime(components):
         )
         mapping[compact_id] = selected[3]
     return mapping, unsupported
+
+
+def _weighted_compact_lod_requirements(metadata_components, temp_components):
+    requirements = {}
+    for component in temp_components:
+        metadata = metadata_components[component.id]
+        required_lods = {
+            str(lod.lod_object_name)
+            for lod in (getattr(metadata, "lods", None) or [])
+            if _lod_is_present(metadata, lod)
+        }
+        for temp_object in component.objects:
+            obj = temp_object.object
+            for group in obj.vertex_groups:
+                name = (group.name or "").strip()
+                if name.isdigit() and _has_weight(obj, group.index):
+                    requirements.setdefault(int(name), set()).update(required_lods)
+    return requirements
 
 
 def _has_weight(obj, group_index):
@@ -261,7 +306,11 @@ def _compact_to_runtime_map(merger):
                     f"Metadata.json 的紧凑顶点组 {compact_id} 对应多个运行时编号。请重新提取。",
                 )
 
-    compact_to_runtime, unsupported = _lod_aware_compact_to_runtime(components)
+    required_lods_by_compact = _weighted_compact_lod_requirements(components, merger.components)
+    compact_to_runtime, unsupported = _lod_aware_compact_to_runtime(
+        components,
+        required_lods_by_compact,
+    )
     return compact_to_runtime, unsupported
 
 
@@ -354,11 +403,13 @@ def _export_with_three_modes(self, *args, **kwargs):
 
 
 def install_patches():
-    global _PATCHED, _ORIGINAL_EXPORT_MOD, _ORIGINAL_FINALIZE_DATA, _ORIGINAL_READ_METADATA
+    global _PATCHED, _ORIGINAL_EXPORT_MOD, _ORIGINAL_FINALIZE_DATA
+    global _ORIGINAL_READ_METADATA, _ORIGINAL_IMPORT_LODS
     if _PATCHED:
         return
 
     from ._efmi_core.blender_export import blender_export
+    from ._efmi_core.extract_frame_data import extract_frame_data
 
     ModExporter = blender_export.ModExporter
     ObjectMergerEFMI = blender_export.ObjectMergerEFMI
@@ -366,18 +417,22 @@ def install_patches():
     _ORIGINAL_EXPORT_MOD = ModExporter.export_mod
     _ORIGINAL_FINALIZE_DATA = ObjectMergerEFMI.finalize_temp_objects_data
     _ORIGINAL_READ_METADATA = blender_export.read_metadata
+    _ORIGINAL_IMPORT_LODS = extract_frame_data.import_lods
     ModExporter.export_mod = _export_with_three_modes
     ObjectMergerEFMI.finalize_temp_objects_data = _finalize_unified_vertex_groups
     blender_export.read_metadata = _read_metadata_with_lod_presence
+    extract_frame_data.import_lods = _import_lods_with_presence
     _PATCHED = True
 
 
 def remove_patches():
-    global _PATCHED, _ORIGINAL_EXPORT_MOD, _ORIGINAL_FINALIZE_DATA, _ORIGINAL_READ_METADATA
+    global _PATCHED, _ORIGINAL_EXPORT_MOD, _ORIGINAL_FINALIZE_DATA
+    global _ORIGINAL_READ_METADATA, _ORIGINAL_IMPORT_LODS
     if not _PATCHED:
         return
 
     from ._efmi_core.blender_export import blender_export
+    from ._efmi_core.extract_frame_data import extract_frame_data
 
     ModExporter = blender_export.ModExporter
     ObjectMergerEFMI = blender_export.ObjectMergerEFMI
@@ -388,7 +443,10 @@ def remove_patches():
         ObjectMergerEFMI.finalize_temp_objects_data = _ORIGINAL_FINALIZE_DATA
     if blender_export.read_metadata is _read_metadata_with_lod_presence:
         blender_export.read_metadata = _ORIGINAL_READ_METADATA
+    if extract_frame_data.import_lods is _import_lods_with_presence:
+        extract_frame_data.import_lods = _ORIGINAL_IMPORT_LODS
     _ORIGINAL_EXPORT_MOD = None
     _ORIGINAL_FINALIZE_DATA = None
     _ORIGINAL_READ_METADATA = None
+    _ORIGINAL_IMPORT_LODS = None
     _PATCHED = False

@@ -480,7 +480,7 @@ EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导�
 | **Per-Component（部件独立）** | 制作、Buffer 与运行端始终使用 Component 局部编号。 |
 | **Merged（合并骨架）** | 通过 `runtime_vg_map` 输出统一编号，并使用 EFMI v1.4.1 官方按实例 MergedSkeleton runtime。 |
 
-如果 LOD Dump 完全缺少某个 Component，而 EFMI 提取仍为它写入了回退 LOD 记录，可在对象源目录的 `Metadata.json` 中为对应 `components[索引].lods[*]` 手动添加 `"present": false`。Velo 在 **Merged（合并骨架）** 导出时不会再把该 Component 选作这个 LOD 的运行时骨骼来源；当确实存在但 Buffer 身份恰好与主模型相同时，可用 `"present": true` 明确覆盖自动判断。省略该字段时仍兼容旧 Metadata，并按 LOD 与主 Component 的 Buffer 身份差异判断。
+Velo 现在会在导入 LOD 时为每条 Component 记录写入 `present: true/false`：从 LOD Dump 实际匹配到的 Component 为存在，matcher 未命中后写入的主模型回退记录为缺失。执行 **Merged（合并骨架）** 导出时，缺失 Component 不会被选作 LOD 消费者的运行时骨骼来源。旧 Metadata 没有 `present` 时保持兼容并默认按 `true` 处理，等同 v1.6.2 以前的导出行为；只有已经确认某个 Component 在 LOD 中缺失时才手动添加 `"present": false`，也可使用当前版本重新导入 LOD 自动生成显式标记。
 
 ### 5.9 Mod 信息、INI 模板与 INI 开关
 
