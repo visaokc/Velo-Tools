@@ -1,11 +1,7 @@
 ; WWMI BETA-8 INI
-; LOD fork of per_component.ini.j2 (WWMI BETA-8).
-; Structural deltas vs stock (keep to exactly these three; re-diff against the
-; stock template on every vendored-core upgrade — tests/test_wwmi_lod_template.py
-; fails loudly when the stock template drifts):
-;   1. per-component draws factored into self-contained [CommandListDrawComponent{c}]
-;   2. stock [TextureOverrideComponent{c}] sections run them instead of inlining
-;   3. per-draw stateless LOD sections appended when prepared LOD data exists
+; Canonical LOD fork of per_component.ini.j2 (WWMI BETA-8).
+; LOD draws retain the full-detail Blend buffer. Native LOD palettes are
+; scattered into persistent component-local skeleton slots before each draw.
 
 {%- macro note(text) %}{% if comment_code %}; {{ text }}{% else %};DEL{% endif %}{% endmacro %}
 
@@ -53,6 +49,7 @@ global $object_detected = 0
 {%- if extracted_object.velo_lods %}
 {{note("Active LOD level of the current draw stack (0 = full model)")}}
 global $lod_level = 0
+global $canonical_skeleton_initialized = 0
 {%- endif %}
 {%- if cfg.use_ini_toggles %}
 ; Swap vars aka toggles defaults
@@ -169,6 +166,13 @@ filename = Textures/Logo.dds
 
 ; Shading: Draw Call Stacks Processing -------------------------
 
+{%- if extracted_object.velo_lods %}
+[TextureOverrideMarkBoneDataCB]
+hash = {{ extracted_object.cb4_hash }}
+match_priority = 0
+filter_index = 3381.7777
+{%- endif %}
+
 {{note("Overrides textures via triggering [ResourceTextureX] sections by calling chechtextureoverride on ps-t slots")}}
 [CommandListTriggerResourceOverrides]
 {{note("Trigger texture sections to replace texture with matching hash")}}
@@ -181,6 +185,10 @@ CheckTextureOverride = ps-t5
 CheckTextureOverride = ps-t6
 CheckTextureOverride = ps-t7
 CheckTextureOverride = ps-t8
+{%- if extracted_object.velo_lods %}
+CheckTextureOverride = vs-cb3
+CheckTextureOverride = vs-cb4
+{%- endif %}
 
 {{note("Overrides resources that are shared between VS calls")}}
 [CommandListOverrideSharedResources]
@@ -210,22 +218,100 @@ vb0 = ref ResourceBypassVB0
 
 {%- if extracted_object.velo_lods %}
 
+{{note("Scatters the calling LOD palette into stable component-local skeleton slots")}}
+[CustomShaderCanonicalSkeletonLodImporter]
+cs = Shaders/CanonicalSkeletonLodImporter.hlsl
+vs = null
+ps = null
+hs = null
+ds = null
+gs = null
+dispatch = x0/64+1, 1, 1
+
+[CustomShaderCanonicalSkeletonInitializer]
+cs = Shaders/CanonicalSkeletonInitializer.hlsl
+vs = null
+ps = null
+hs = null
+ds = null
+gs = null
+dispatch = x0/64+1, 1, 1
+
+[ResourceCanonicalComponentSkeleton]
+[ResourceCanonicalComponentSkeletonRW]
+type = RWBuffer
+format = R32G32B32A32_FLOAT
+array = 768
+[ResourceExtraCanonicalComponentSkeleton]
+[ResourceExtraCanonicalComponentSkeletonRW]
+type = RWBuffer
+format = R32G32B32A32_FLOAT
+array = 768
+
+[CommandListInitializeCanonicalSkeleton]
+if !$canonical_skeleton_initialized
+    local $bak_x0 = x0
+    x0 = 256
+    cs-u6 = ResourceCanonicalComponentSkeletonRW
+    run = CustomShaderCanonicalSkeletonInitializer
+    cs-u6 = ResourceExtraCanonicalComponentSkeletonRW
+    run = CustomShaderCanonicalSkeletonInitializer
+    cs-u6 = null
+    x0 = $bak_x0
+    ResourceCanonicalComponentSkeleton = copy ResourceCanonicalComponentSkeletonRW
+    ResourceExtraCanonicalComponentSkeleton = copy ResourceExtraCanonicalComponentSkeletonRW
+    $canonical_skeleton_initialized = 1
+endif
+
+{%- for lod in extracted_object.velo_lods %}
+{%- for lod_component in lod.components %}
+{%- if lod_component %}
+
+[CommandListImportCanonicalSkeletonLOD{{ lod.level }}Component{{ loop.index0 }}]
+run = CommandListInitializeCanonicalSkeleton
+local $bak_x0 = x0
+local $bak_y0 = y0
+local $bak_z0 = z0
+x0 = {{ lod_component.canonical_map_bone_count }}
+y0 = {{ lod_component.canonical_destination_offset }}
+z0 = {{ '%0.2f'| format(skeleton_scale) }}
+cs-t36 = Resource{{ lod_component.canonical_map_buffer }}Buffer
+if vs-cb4 == 3381.7777
+    cs-cb8 = ref vs-cb4
+    cs-u6 = ResourceCanonicalComponentSkeletonRW
+    run = CustomShaderCanonicalSkeletonLodImporter
+endif
+if vs-cb4 == 3381.7777 && vs-cb3 == 3381.7777
+    cs-cb8 = ref vs-cb3
+    cs-u6 = ResourceExtraCanonicalComponentSkeletonRW
+    run = CustomShaderCanonicalSkeletonLodImporter
+endif
+cs-cb8 = null
+cs-t36 = null
+cs-u6 = null
+x0 = $bak_x0
+y0 = $bak_y0
+z0 = $bak_z0
+ResourceCanonicalComponentSkeleton = copy ResourceCanonicalComponentSkeletonRW
+ResourceExtraCanonicalComponentSkeleton = copy ResourceExtraCanonicalComponentSkeletonRW
+{%- endif %}
+{%- endfor %}
+{%- endfor %}
+
 ; Shading: LOD Shared Resource Overrides -------------------------
 {%- for lod in extracted_object.velo_lods %}
 
-{{note("Per-draw stateless LOD%d overrides: shared mesh buffers + component-local 8-bit blend ids; native LOD bone constant buffers untouched" | format(lod.level))}}
+{{note("LOD%d keeps the full-detail Blend IDs and binds their canonical component skeleton" | format(lod.level))}}
 [CommandListOverrideSharedResourcesLOD{{ lod.level }}]
-{{note("Store pointer to original buffer to restore original context on cleanup")}}
-ResourceBypassVB0 = ref vb0
-{{note("Override resources to make LOD draw calls use the same custom mesh")}}
-ib = ResourceIndexBuffer
-vb0 = ResourcePositionBuffer
-vb1 = ResourceVectorBuffer
-vb2 = ResourceTexcoordBuffer
-{%- if "Color" in buffers.keys() %}
-vb3 = ResourceColorBuffer
-{%- endif %}
-vb4 = ResourceBlendLOD{{ lod.level }}Buffer
+run = CommandListOverrideSharedResources
+if vs-cb4 == 3381.7777
+    vs-cb4 = ref ResourceCanonicalComponentSkeleton
+    if vs-cb3 == 3381.7777
+        vs-cb3 = ref ResourceExtraCanonicalComponentSkeleton
+    endif
+elif vs-cb3 == 3381.7777
+    vs-cb3 = ref ResourceCanonicalComponentSkeleton
+endif
 {%- endfor %}
 {%- endif %}
 
@@ -318,7 +404,7 @@ endif
 {%- set lod_component = lod.components[loop.index0] %}
 {%- if lod_component %}
 
-{{note("Override LOD%d draw calls for Component %d (per-draw stateless: native bone CBs stay)" | format(lod.level, loop.index0))}}
+{{note("Override LOD%d draw calls for Component %d with stable component-local Blend IDs" | format(lod.level, loop.index0))}}
 [TextureOverrideComponent{{ loop.index0 }}LOD{{ lod.level }}]
 hash = {{ lod.vb0_hash }}
 match_first_index = {{ lod_component.index_offset }}
@@ -328,6 +414,7 @@ $object_detected = 1
 {{note("LOD%d draw stack" | format(lod.level))}}
 $lod_level = {{ lod.level }}
 if $mod_enabled
+    run = CommandListImportCanonicalSkeletonLOD{{ lod.level }}Component{{ loop.index0 }}
     {{note("Skip original LOD draw call")}}
     handling = skip
 {%- set velo_component_draws = extracted_object.velo_draws[loop.index0] %}

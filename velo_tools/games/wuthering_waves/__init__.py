@@ -410,9 +410,8 @@ def register():
     except Exception:
         import traceback
         traceback.print_exc()
-    # LOD export hook: patches ModExporter.export_mod (independent target from the operator wraps
-    # above); appends per-LOD remapped blend buffers + ini override sections when the export source's
-    # Metadata.json carries velo per-component "lods" entries (MERGED mode only; a no-op otherwise).
+    # LOD export hook: keeps full-detail Blend IDs canonical, emits compact native-source maps,
+    # and mounts the persistent same-draw skeleton importer without changing vendored core.
     try:
         from .embedded.lod import export_hook as _lodhook
         _lodhook.install()

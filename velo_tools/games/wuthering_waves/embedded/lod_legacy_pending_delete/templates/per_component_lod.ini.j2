@@ -1,7 +1,11 @@
 ; WWMI BETA-8 INI
-; Canonical LOD fork of merged.ini.j2 (WWMI BETA-8).
-; LOD draws retain the full-detail Blend buffer. Native LOD palettes are
-; scattered into persistent canonical skeleton slots before each custom draw.
+; LOD fork of per_component.ini.j2 (WWMI BETA-8).
+; Structural deltas vs stock (keep to exactly these three; re-diff against the
+; stock template on every vendored-core upgrade — tests/test_wwmi_lod_template.py
+; fails loudly when the stock template drifts):
+;   1. per-component draws factored into self-contained [CommandListDrawComponent{c}]
+;   2. stock [TextureOverrideComponent{c}] sections run them instead of inlining
+;   3. per-draw stateless LOD sections appended when prepared LOD data exists
 
 {%- macro note(text) %}{% if comment_code %}; {{ text }}{% else %};DEL{% endif %}{% endmacro %}
 
@@ -41,8 +45,6 @@ global $shapekey_vertex_count_batch{{ loop.index0 }} = {{ shapekey_batch.vertex_
 {%- endfor %}
 {{note("ID assigned to our mod by WWMI")}}
 global $mod_id = -1000
-{{note("Changes between 0 and 1 with every frame, used to run bone merging only once per frame for every component")}}
-global $state_id = 0
 {{note("Controls whether our mod is enabled, prevents any overrides from happening if $mod_enabled == 0")}}
 {{note("Prevents user from being crash-locked in case of incompatible WWMI version")}}
 global $mod_enabled = 0
@@ -51,17 +53,7 @@ global $object_detected = 0
 {%- if extracted_object.velo_lods %}
 {{note("Active LOD level of the current draw stack (0 = full model)")}}
 global $lod_level = 0
-global $canonical_skeleton_initialized = 0
 {%- endif %}
-{{note("Used to pass current merge status to CommandListMergeSkeleton and get resulting merge status")}}
-global $merge_status_id = 0
-{{note("Stores skeleton merging status of this component for current frame:")}}
-{{note("0 - neither regular nor special skeleton bones data was collected for this component")}}
-{{note("1 - only regular skeleton bones data was collected for this component")}}
-{{note("2 - both regular and special skeleton bones data was collected for this component")}}
-{%- for component in extracted_object.components %}
-global $merge_status_id_{{ loop.index0 }} = 0
-{%- endfor %}
 {%- if cfg.use_ini_toggles %}
 ; Swap vars aka toggles defaults
 {%- for var in cfg.ini_toggles.vars %}
@@ -81,13 +73,9 @@ global {{ formatter.format_ini_drawvar(obj.name) }} = 1
 if $object_detected
     if $mod_enabled
         post $object_detected = 0
-        {%- if merged_object.blend_remap_count > 0 %}
-        run = CommandListInitializeBlendRemaps
-        {%- endif %}
         {%- if cfg.use_ini_toggles %}
         run = CommandListProcessToggles
         {%- endif %}
-        run = CommandListUpdateMergedSkeleton
     else
         {{note("Check if our mod is compatible with installed WWMI version (runs only once)")}}
         if $mod_id == -1000
@@ -126,114 +114,6 @@ endif
 {{ formatter.format_ini_drawvar(object_name) }} = {{ conditions }}
 {%- endfor %}
 {{note("<< Here's a nice place to put your custom logic that controls objects visibility >>")}}
-{%- endif %}
-
-{{note("Copes hard to make merged skeleton work with WuWa 1.1+ pipeline")}}
-[CommandListUpdateMergedSkeleton]
-{{note("Reset skeleton merge status for all components")}}
-{%- for component in extracted_object.components %}
-$merge_status_id_{{ loop.index0 }} = 0
-{%- endfor %}
-{{note("Copy skeleton merged in previous frame to new buffer so we could force it to vs-cb4 slot")}}
-ResourceMergedSkeleton = copy ResourceMergedSkeletonRW
-{{note("Copy extra skeleton merged in previous frame to new buffer so we could force it to vs-cb3 slot")}}
-{{note("Yes, skeletons in vs-cb3 and vs-cb4 are slightly different, so we need to merge both for AA and outlines to work correctly")}}
-ResourceExtraMergedSkeleton = copy ResourceExtraMergedSkeletonRW
-{%- if merged_object.blend_remap_count > 0 %}
-run = CommandListRemapMergedSkeleton
-{%- endif %}
-
-{%- if merged_object.blend_remap_count > 0 %}
-
-[ResourceMergedSkeletonRemap]
-[ResourceExtraMergedSkeletonRemap]
-
-[ResourceBlendBufferOverride]
-[ResourceExtraMergedSkeletonOverride]
-[ResourceMergedSkeletonOverride]
-
-[ResourceRemappedBlendBufferRW]
-[ResourceRemappedSkeletonRW]
-[ResourceExtraRemappedSkeletonRW]
-
-{%- for component in merged_object.components %}
-{%- if component.blend_remap_vg_count > 0 %}
-
-[ResourceRemappedBlendBufferComponent{{ loop.index0 }}]
-[ResourceRemappedSkeletonComponent{{ loop.index0 }}]
-[ResourceExtraRemappedSkeletonComponent{{ loop.index0 }}]
-{%- endif %}
-{%- endfor %}
-
-{{note("Prepares copies of Blend.buf with remapped VG ids for each component with blend remap")}}
-[CommandListInitializeBlendRemaps]
-local $blend_remaps_initialized
-if !$blend_remaps_initialized
-    {{note("Initialize empty merged skeleton temp buffers to use in remapping")}}
-    ResourceRemappedSkeletonRW = copy ResourceMergedSkeletonRW
-    ResourceExtraRemappedSkeletonRW = copy ResourceExtraMergedSkeletonRW
-
-    {{note("Specify how many vertices to process, used to properly allocate CS dispatch size")}}
-    $\WWMIv1\custom_vertex_count = $mesh_vertex_count
-    {{note("Specify how many VGs are stored in Blend.buf for each vertex (usually it's 4, but i.e. Zani's ult torso uses 8)")}}
-    $\WWMIv1\weights_per_vertex_count = {{ buffers['BlendRemapVertexVG'].layout.semantics[0].get_num_values() }}
-    {{note("Pass resource with all VG maps used for all Blend.buf remapping calls")}}
-    cs-t34 = ref ResourceBlendRemapReverseBuffer
-    {{note("Pass 16-bit VG ids of each vertex (original Blend.buf is 8-bit and cannot store VG ids above 255)")}}
-    cs-t35 = ref ResourceBlendRemapVertexVGBuffer
-
-    {%- for component in merged_object.components %}
-    {%- if component.blend_remap_vg_count > 0 %}
-
-    {{note("Specify which remap data to use from ResourceBlendRemapReverseBuffer")}}
-    $\WWMIv1\blend_remap_id = {{ component.blend_remap_id }}
-    {{note("Copy original Blend.buf from resource without specified `stride` to temp resource")}}
-    {{note("We cannot use default ResourceBlendBuffer since CS cannot address it fully due to `stride`")}}
-    ResourceRemappedBlendBufferRW = copy ResourceBlendBufferNoStride
-    {{note("Pass temp resource to CS")}}
-    cs-u4 = ref ResourceRemappedBlendBufferRW
-    {{note("Run CS to remap VG ids in temp resource")}}
-    run = CustomShader\WWMIv1\BlendRemapper
-    {{note("Copy remapped temp resource to permanent storage")}}
-    ResourceRemappedBlendBufferComponent{{ loop.index0 }} = copy ResourceRemappedBlendBufferRW
-    {{note("Copy D3D11_BUFFER_DESC from original Blend.buf, since game expects buffer with correct `stride`")}}
-    ResourceRemappedBlendBufferComponent{{ loop.index0 }} = copy_desc ResourceBlendBuffer
-    {%- endif %}
-    {%- endfor %}
-
-    $blend_remaps_initialized = 1
-endif
-
-{{note("Remaps VG ids in merged skeleton buffers for each component with blend remap")}}
-[CommandListRemapMergedSkeleton]
-{{note("Copy merged skeleton buffers to use them as inputs for all SkeletonRemapper calls in current frame")}}
-{{note("FIXME: for some reason usage of ResourceMergedSkeleton and ResourceExtraMergedSkeleton crashes the modded pipeline, even though they're created just before this call via `copy` as well and only used to be passed to vs-cb4 and vs-cb3")}}
-ResourceMergedSkeletonRemap = copy ResourceMergedSkeletonRW
-ResourceExtraMergedSkeletonRemap = copy ResourceExtraMergedSkeletonRW
-
-{{note("Pass resource with all VG maps used for merged skeleton remapping calls")}}
-cs-t37 = ResourceBlendRemapForwardBuffer
-
-{%- for component in merged_object.components %}
-{%- if component.blend_remap_vg_count > 0 %}
-
-{{note("Remap Component%d Merged Skeleton" | format(loop.index0))}}
-{{note("Specify which remap data to use from ResourceBlendRemapForwardBuffer")}}
-$\WWMIv1\blend_remap_id = {{ component.blend_remap_id }}
-{{note("Specify how many VGs to process, used to properly allocate CS dispatch size")}}
-$\WWMIv1\vg_count = {{ component.blend_remap_vg_count }}
-{{note("Remap merged skeleton for Component%d to use in all draw calls of current frame" | format(loop.index0))}}
-cs-t38 = ResourceMergedSkeletonRemap
-cs-u5 = ResourceRemappedSkeletonRW
-run = CustomShader\WWMIv1\SkeletonRemapper
-ResourceRemappedSkeletonComponent{{ loop.index0 }} = copy ResourceRemappedSkeletonRW
-{{note("Remap second merged skeleton for Component%d to use in all draw calls of current frame" | format(loop.index0))}}
-cs-t38 = ResourceExtraMergedSkeletonRemap
-cs-u5 = ResourceExtraRemappedSkeletonRW
-run = CustomShader\WWMIv1\SkeletonRemapper
-ResourceExtraRemappedSkeletonComponent{{ loop.index0 }} = copy ResourceExtraRemappedSkeletonRW
-{%- endif %}
-{%- endfor %}
 {%- endif %}
 
 ; Resources: Mod Info -------------------------
@@ -289,151 +169,6 @@ filename = Textures/Logo.dds
 
 ; Shading: Draw Call Stacks Processing -------------------------
 
-{{note("Marks Bones Data CB resource with arbitrary value 3381.7777")}}
-[TextureOverrideMarkBoneDataCB]
-hash = {{ extracted_object.cb4_hash }}
-match_priority = 0
-filter_index = 3381.7777
-
-{{note("Updates merged skeleton buffers with skeleton data of calling component")}}
-{{note("The main problem is we can't reliably identify type of skeleton just from the buffer alone since both have the same hash")}}
-{{note("Luckily, any relevant shader call within the stack has one of the following slot usage patterns:")}}
-{{note("1. Only regular skeleton in vs-cb3")}}
-{{note("2. Only regular skeleton in vs-cb4")}}
-{{note("3. Special skeleton in vs-cb3 and regular skeleton in vs-cb4")}}
-{{note("So by the time we've finished processing the stack we can reliably grab:")}}
-{{note("* Regular skeleton from vs-cb4 (pattern 2 or 3), since special skeleton never goes there")}}
-{{note("* Special skeleton from vs-cb3 (pattern 3), since we know for sure that regular currently is in vs-cb4")}}
-[CommandListMergeSkeleton]
-{{note("Here we're using $merge_status_id as both 'function' input aka argument and return result")}}
-{{note("We're doing so to prevent wasting compute resources on job that's already done for current frame")}}
-{{note("* $merge_status_id being 0 indicates we haven't merged any skeleton data for calling component in current frame yet")}}
-if $merge_status_id == 0
-    {{note("Try to get regular skeleton data from current shader call")}}
-    {{note("Make sure vs-cb4 contain skeleton data")}}
-	if vs-cb4 == 3381.7777
-        {{note("Pass constant buffer with regular skeleton data to copy bones from")}}
-		cs-cb8 = ref vs-cb4
-        {{note("Pass buffer that gonna store regular skeleton data of all components")}}
-		cs-u6 = ResourceMergedSkeletonRW
-        {{note("Set custom scale for skeleton, changing size of the entire model")}}
-		$\WWMIv1\custom_mesh_scale = {{ '%0.2f'| format(skeleton_scale) }}
-        {{note("Run Skeleton Merger CS to merge regular skeleton data of current component into ResourceMergedSkeletonRW")}}
-		run = CustomShader\WWMIv1\SkeletonMerger
-        {{note("Memorize that we've merged regular skeleton data of current frame")}}
-		$merge_status_id = 1
-	endif
-endif
-{{note("* $merge_status_id being 1 indicates we've already merged regular skeleton data for calling component in current frame")}}
-if $merge_status_id == 1
-    {{note("Try to get special skeleton data from current shader call")}}
-    {{note("Make sure both vs-cb4 and vs-cb3 contain skeleton data")}}
-    {{note("That's the only place where we can reliably get data for extra skeleton")}}
-	if vs-cb4 == 3381.7777 && vs-cb3 == 3381.7777
-        {{note("Pass constant buffer with special skeleton data to copy bones from")}}
-		cs-cb8 = ref vs-cb3
-        {{note("Pass buffer that gonna store special skeleton data of all components")}}
-		cs-u6 = ResourceExtraMergedSkeletonRW
-        {{note("Set custom scale for skeleton, changing size of the entire model")}}
-		$\WWMIv1\custom_mesh_scale = {{ '%0.2f'| format(skeleton_scale) }}
-        {{note("Run Skeleton Merger CS to merge special skeleton data of current component into ResourceExtraMergedSkeletonRW")}}
-		run = CustomShader\WWMIv1\SkeletonMerger
-        {{note("Memorize that we've merged both regular and special skeleton data of current frame")}}
-		$merge_status_id = 2
-	endif
-endif
-
-{{note("Publish every successful component import before its custom draw. Other canonical slots remain persistent until their provider appears.")}}
-if $merge_status_id >= 1
-    ResourceMergedSkeleton = copy ResourceMergedSkeletonRW
-    ResourceExtraMergedSkeleton = copy ResourceExtraMergedSkeletonRW
-{%- if merged_object.blend_remap_count > 0 %}
-    run = CommandListRemapMergedSkeleton
-{%- endif %}
-endif
-
-{%- if extracted_object.velo_lods %}
-
-{{note("Scatters the calling LOD palette into stable canonical skeleton slots")}}
-[CustomShaderCanonicalSkeletonLodImporter]
-cs = Shaders/CanonicalSkeletonLodImporter.hlsl
-vs = null
-ps = null
-hs = null
-ds = null
-gs = null
-dispatch = x0/64+1, 1, 1
-
-[CustomShaderCanonicalSkeletonInitializer]
-cs = Shaders/CanonicalSkeletonInitializer.hlsl
-vs = null
-ps = null
-hs = null
-ds = null
-gs = null
-dispatch = x0/64+1, 1, 1
-
-[CommandListInitializeCanonicalSkeleton]
-if !$canonical_skeleton_initialized
-    local $bak_x0 = x0
-{%- if merged_object.blend_remap_count > 0 %}
-    x0 = 512
-{%- else %}
-    x0 = 256
-{%- endif %}
-    cs-u6 = ResourceMergedSkeletonRW
-    run = CustomShaderCanonicalSkeletonInitializer
-    cs-u6 = ResourceExtraMergedSkeletonRW
-    run = CustomShaderCanonicalSkeletonInitializer
-    cs-u6 = null
-    x0 = $bak_x0
-    ResourceMergedSkeleton = copy ResourceMergedSkeletonRW
-    ResourceExtraMergedSkeleton = copy ResourceExtraMergedSkeletonRW
-{%- if merged_object.blend_remap_count > 0 %}
-    run = CommandListRemapMergedSkeleton
-{%- endif %}
-    $canonical_skeleton_initialized = 1
-endif
-
-{%- for lod in extracted_object.velo_lods %}
-{%- for lod_component in lod.components %}
-{%- if lod_component %}
-
-[CommandListImportCanonicalSkeletonLOD{{ lod.level }}Component{{ loop.index0 }}]
-run = CommandListInitializeCanonicalSkeleton
-local $bak_x0 = x0
-local $bak_y0 = y0
-local $bak_z0 = z0
-x0 = {{ lod_component.canonical_map_bone_count }}
-y0 = {{ lod_component.canonical_destination_offset }}
-z0 = {{ '%0.2f'| format(skeleton_scale) }}
-cs-t36 = Resource{{ lod_component.canonical_map_buffer }}Buffer
-if vs-cb4 == 3381.7777
-    cs-cb8 = ref vs-cb4
-    cs-u6 = ResourceMergedSkeletonRW
-    run = CustomShaderCanonicalSkeletonLodImporter
-endif
-if vs-cb4 == 3381.7777 && vs-cb3 == 3381.7777
-    cs-cb8 = ref vs-cb3
-    cs-u6 = ResourceExtraMergedSkeletonRW
-    run = CustomShaderCanonicalSkeletonLodImporter
-endif
-cs-cb8 = null
-cs-t36 = null
-cs-u6 = null
-x0 = $bak_x0
-y0 = $bak_y0
-z0 = $bak_z0
-ResourceMergedSkeleton = copy ResourceMergedSkeletonRW
-ResourceExtraMergedSkeleton = copy ResourceExtraMergedSkeletonRW
-{%- if merged_object.blend_remap_count > 0 %}
-run = CommandListRemapMergedSkeleton
-{%- endif %}
-{%- endif %}
-{%- endfor %}
-{%- endfor %}
-{%- endif %}
-
 {{note("Overrides textures via triggering [ResourceTextureX] sections by calling chechtextureoverride on ps-t slots")}}
 [CommandListTriggerResourceOverrides]
 {{note("Trigger texture sections to replace texture with matching hash")}}
@@ -446,10 +181,6 @@ CheckTextureOverride = ps-t5
 CheckTextureOverride = ps-t6
 CheckTextureOverride = ps-t7
 CheckTextureOverride = ps-t8
-{{note("Trigger callbacks on bone data CBs to assign them filter_index")}}
-{{note("These buffers cannot be replaced directly via `this` as their hash is widely used by many objects")}}
-CheckTextureOverride = vs-cb3
-CheckTextureOverride = vs-cb4
 
 {{note("Overrides resources that are shared between VS calls")}}
 [CommandListOverrideSharedResources]
@@ -467,42 +198,7 @@ vb2 = ResourceTexcoordBuffer
 {%- if "Color" in buffers.keys() %}
 vb3 = ResourceColorBuffer
 {%- endif %}
-{% if merged_object.blend_remap_count == 0 -%}
 vb4 = ResourceBlendBuffer
-{{note("Pass merged skeleton is resource matches marked Bones Data CB")}}
-if vs-cb4 == 3381.7777
-    vs-cb4 = ref ResourceMergedSkeleton
-    if vs-cb3 == 3381.7777
-        vs-cb3 = ref ResourceExtraMergedSkeleton
-    endif
-elif vs-cb3 == 3381.7777
-    vs-cb3 = ref ResourceMergedSkeleton
-endif
-{%- else -%}
-if ResourceBlendBufferOverride === null
-    {{note("Use non-remapped Blend.buf and merged skeleton")}}
-    vb4 = ResourceBlendBuffer
-    if vs-cb4 == 3381.7777
-        vs-cb4 = ref ResourceMergedSkeleton
-		if vs-cb3 == 3381.7777
-			vs-cb3 = ref ResourceExtraMergedSkeleton
-		endif
-	elif vs-cb3 == 3381.7777
-		vs-cb3 = ref ResourceMergedSkeleton
-    endif
-else
-    {{note("Use blend remap proxy buffers")}}
-    vb4 = ref ResourceBlendBufferOverride
-    if vs-cb4 == 3381.7777
-        vs-cb4 = ref ResourceMergedSkeletonOverride
-		if vs-cb3 == 3381.7777
-			vs-cb3 = ref ResourceExtraMergedSkeletonOverride
-		endif
-	elif vs-cb3 == 3381.7777
-		vs-cb3 = ref ResourceMergedSkeletonOverride
-    endif
-endif
-{%- endif %}
 {%- if unrestricted_custom_shape_keys and merged_object.shapekeys.vertex_count > 0 %}
 vb6 = null
 {%- endif %}
@@ -511,24 +207,25 @@ vb6 = null
 [CommandListCleanupSharedResources]
 {{note("Restore original vb0 so we can use its hash to match next call")}}
 vb0 = ref ResourceBypassVB0
-{%- if merged_object.blend_remap_count > 0 %}
-{{note("Reset blend remap proxy buffers")}}
-{{note("(makes next CommandListOverrideSharedResources call to use non-remapped Blend.buf and merged skeleton by default)")}}
-if ResourceBlendBufferOverride !== null
-    ResourceBlendBufferOverride = null
-    ResourceMergedSkeletonOverride = null
-    ResourceExtraMergedSkeletonOverride = null
-endif
-{%- endif %}
 
 {%- if extracted_object.velo_lods %}
 
 ; Shading: LOD Shared Resource Overrides -------------------------
 {%- for lod in extracted_object.velo_lods %}
 
-{{note("LOD%d keeps the canonical Blend buffer and binds the persistent canonical skeleton" | format(lod.level))}}
+{{note("Per-draw stateless LOD%d overrides: shared mesh buffers + component-local 8-bit blend ids; native LOD bone constant buffers untouched" | format(lod.level))}}
 [CommandListOverrideSharedResourcesLOD{{ lod.level }}]
-run = CommandListOverrideSharedResources
+{{note("Store pointer to original buffer to restore original context on cleanup")}}
+ResourceBypassVB0 = ref vb0
+{{note("Override resources to make LOD draw calls use the same custom mesh")}}
+ib = ResourceIndexBuffer
+vb0 = ResourcePositionBuffer
+vb1 = ResourceVectorBuffer
+vb2 = ResourceTexcoordBuffer
+{%- if "Color" in buffers.keys() %}
+vb3 = ResourceColorBuffer
+{%- endif %}
+vb4 = ResourceBlendLOD{{ lod.level }}Buffer
 {%- endfor %}
 {%- endif %}
 
@@ -592,47 +289,23 @@ $object_detected = 1
 $lod_level = 0
 {%- endif %}
 if $mod_enabled
-{%- if extracted_object.velo_lods %}
-    run = CommandListInitializeCanonicalSkeleton
-{%- endif %}
-    {{note("Try to get skeleton data from each call of the stack until merge status is 2 (see Constants for details)")}}
-    if $merge_status_id_{{ loop.index0 }} != 2
-        {{note("Configure SkeletonMerger shader based on VG layout of current component")}}
-        $\WWMIv1\vg_offset = {{ extracted_object.components[loop.index0].vg_offset }}
-        $\WWMIv1\vg_count = {{ extracted_object.components[loop.index0].vg_count }}
-        {{note("Pass current merge status to MergeSkeleton command list")}}
-		$merge_status_id = $merge_status_id_{{ loop.index0 }}
-        {{note("Execute MergeSkeleton command list, updated merge status will be written to $merge_status_id")}}
-		run = CommandListMergeSkeleton
-        {{note("Remember merge status locally")}}
-		$merge_status_id_{{ loop.index0 }} = $merge_status_id
-	endif
-    {{note("Override draw call if we have merged skeleton ready")}}
-    if ResourceMergedSkeleton !== null
-    {%- set velo_component_draws = extracted_object.velo_draws[loop.index0] %}
+{%- set velo_component_draws = extracted_object.velo_draws[loop.index0] %}
 {%- if velo_component_draws | length > 0 %}
-        {{note("Skip original draw call")}}
-        handling = skip
-        {%- if merged_object.components[loop.index0].blend_remap_vg_count > 0 %}
-        {{note("Plug-in active blend remap data for this component")}}
-        ResourceBlendBufferOverride = ref ResourceRemappedBlendBufferComponent{{ loop.index0 }}
-        ResourceMergedSkeletonOverride = ref ResourceRemappedSkeletonComponent{{ loop.index0 }}
-        ResourceExtraMergedSkeletonOverride = ref ResourceExtraRemappedSkeletonComponent{{ loop.index0 }}
-        {%- endif %}
-        {{note("Run self-contained shared draw calls for this component")}}
-        run = CommandListDrawComponent{{ loop.index0 }}
-    {%- else %}
-        {{note("Skip original draw call")}}
-        handling = skip
-        {{note("Trigger by-hash resource overrides")}}
-        ; run = CommandListTriggerResourceOverrides
-        {{note("Do by-slot resource overrides")}}
-        ; run = CommandListOverrideSharedResources
-        ; Draw skipped: No matching custom components found
-        {{note("Restore required parts of original context")}}
-        ; run = CommandListCleanupSharedResources
-    {%- endif %}
-    endif
+    {{note("Skip original draw call")}}
+    handling = skip
+    {{note("Run self-contained shared draw calls for this component")}}
+    run = CommandListDrawComponent{{ loop.index0 }}
+{%- else %}
+    {{note("Skip original draw call")}}
+    handling = skip
+    {{note("Trigger by-hash resource overrides")}}
+    ; run = CommandListTriggerResourceOverrides
+    {{note("Do by-slot resource overrides")}}
+    ; run = CommandListOverrideSharedResources
+    ; Draw skipped: No matching custom components found
+    {{note("Restore required parts of original context")}}
+    ; run = CommandListCleanupSharedResources
+{%- endif %}
 endif
 
 {%- endfor %}
@@ -645,7 +318,7 @@ endif
 {%- set lod_component = lod.components[loop.index0] %}
 {%- if lod_component %}
 
-{{note("Override LOD%d draw calls for Component %d with canonical skeleton indices" | format(lod.level, loop.index0))}}
+{{note("Override LOD%d draw calls for Component %d (per-draw stateless: native bone CBs stay)" | format(lod.level, loop.index0))}}
 [TextureOverrideComponent{{ loop.index0 }}LOD{{ lod.level }}]
 hash = {{ lod.vb0_hash }}
 match_first_index = {{ lod_component.index_offset }}
@@ -655,16 +328,10 @@ $object_detected = 1
 {{note("LOD%d draw stack" | format(lod.level))}}
 $lod_level = {{ lod.level }}
 if $mod_enabled
-    run = CommandListImportCanonicalSkeletonLOD{{ lod.level }}Component{{ loop.index0 }}
     {{note("Skip original LOD draw call")}}
     handling = skip
 {%- set velo_component_draws = extracted_object.velo_draws[loop.index0] %}
 {%- if velo_component_draws | length > 0 %}
-{%- if merged_object.components[loop.index0].blend_remap_vg_count > 0 %}
-    ResourceBlendBufferOverride = ref ResourceRemappedBlendBufferComponent{{ loop.index0 }}
-    ResourceMergedSkeletonOverride = ref ResourceRemappedSkeletonComponent{{ loop.index0 }}
-    ResourceExtraMergedSkeletonOverride = ref ResourceExtraRemappedSkeletonComponent{{ loop.index0 }}
-{%- endif %}
     {{note("Run self-contained shared draw calls for this component")}}
     run = CommandListDrawComponent{{ loop.index0 }}
 {%- else %}
@@ -752,7 +419,7 @@ hash = {{ extracted_object.shapekeys.offsets_hash }}
 match_priority = 0
 if $mod_enabled
     {{note("Ensure that callback has WWMI filter_index of Shape Key Loader CS assigned")}}
-    if cs == 3381.3333 && ResourceMergedSkeleton !== null
+    if cs == 3381.3333
         {{note("It looks like we can skip checking for THREAD_GROUP_COUNT_Y as UAV hashes are unique for each object")}}
         {{note("Ensures that dispatch_y of Shape Key Loader CS call matches one from dump")}}
         {{note("if THREAD_GROUP_COUNT_Y == %d" | format(extracted_object.shapekeys.dispatch_y))}}
@@ -790,7 +457,7 @@ hash = {{ extracted_object.shapekeys.offsets_hash }}
 match_priority = 0
 if $mod_enabled
     {{note("Ensure that callback has WWMI filter_index of Shape Key Multiplier CS assigned")}}
-    if cs == 3381.4444 && ResourceMergedSkeleton !== null
+    if cs == 3381.4444
         {{note("It looks like we can skip checking for THREAD_GROUP_COUNT_Y as UAV hashes are unique for each object")}}
         {{note("Ensures that dispatch_y of Shape Key Multiplier CS call matches one from dump")}}
         {{note("if THREAD_GROUP_COUNT_Y == shapekeys.multiplier_dispatch_y")}}
@@ -842,40 +509,6 @@ format = R32G32B32A32_FLOAT
 array = {{ 32 * merged_object.shapekeys.batches | length }}
 {%- endif %}
 
-; Resources: Skeleton Override -------------------------
-
-{{note("Stores a copy of full skeleton merged in previous frame")}}
-[ResourceMergedSkeleton]
-
-{{note("Stores merged skeleton consisting of bones from all components, allows to make VG weights global")}}
-[ResourceMergedSkeletonRW]
-{{note("Contains up to 256 bones (or up to 512 with blend remaps)")}}
-type = RWBuffer
-format = R32G32B32A32_FLOAT
-{%- if merged_object.blend_remap_count == 0 %}
-{{note("256 bones, 3 elements per bone, 4 floats per element")}}
-array = 768
-{%- else %}
-{{note("512 bones, 3 elements per bone, 4 floats per element")}}
-array = 1536
-{%- endif %}
-
-{{note("Stores a copy of full extra skeleton merged in previous frame")}}
-[ResourceExtraMergedSkeleton]
-
-{{note("Stores additional merged skeleton used by some shaders like Anti Aliasing")}}
-[ResourceExtraMergedSkeletonRW]
-{{note("Contains up to 256 bones (or up to 512 with blend remaps)")}}
-type = RWBuffer
-format = R32G32B32A32_FLOAT
-{%- if merged_object.blend_remap_count == 0 %}
-{{note("256 bones, 3 elements per bone, 4 floats per element")}}
-array = 768
-{%- else %}
-{{note("512 bones, 3 elements per bone, 4 floats per element")}}
-array = 1536
-{%- endif %}
-
 ; Resources: Buffers -------------------------
 
 {{note("Stores pointer to original vb0")}}
@@ -886,22 +519,8 @@ array = 1536
 [Resource{{ buffer_name }}Buffer]
 type = Buffer
 format = {{ buffer.layout.semantics[0].get_format() }}
-{{note("Skip `stride` for blend remap buffers (since CS cannot fully address Buffer's with stride)")}}
-{%- if "BlendRemap" not in buffer_name %}
 stride = {{ buffer.layout.stride }}
-{%- endif %}
 filename = Meshes/{{ buffer_name }}.buf
-
-{%- if buffer_name == "Blend" %}
-{%- if merged_object.blend_remap_count > 0 %}
-
-{{note("Additional 'view' for Blend.buf but without `stride` specified (since CS cannot fully address Buffer's with stride)")}}
-[ResourceBlendBufferNoStride]
-type = Buffer
-format = {{ buffer.layout.semantics[0].get_format() }}
-filename = Meshes/{{ buffer_name }}.buf
-{%- endif %}
-{%- endif %}
 
 {%- endfor %}
 

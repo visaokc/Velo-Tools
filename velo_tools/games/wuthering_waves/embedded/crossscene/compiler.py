@@ -1513,6 +1513,13 @@ def _unit_draws(unit: Any, local_id: int) -> Tuple[Any, ...]:
     return tuple(getattr(components[local_id], "objects", ()) or ())
 
 
+def _canonical_import_name(level: int, global_id: int, suffix: str) -> str:
+    return (
+        f"CommandListImportCanonicalSkeletonLOD{int(level)}"
+        f"Component{int(global_id)}{suffix}"
+    )
+
+
 def _drawn_component_ids(units: Sequence[Any]) -> frozenset[int]:
     """Return global Components that own final encoded geometry draws."""
     return frozenset(
@@ -2041,8 +2048,12 @@ def _add_state_sections(ir: CrossSceneIR, units: Sequence[Any], root: Any,
             f"global $mod_enabled{suffix} = 0",
             f"global $object_detected{suffix} = 0",
         ])
-        if _unit_lods(unit, root):
-            constants.append(f"global $lod_level{suffix} = 0")
+        unit_lods = _unit_lods(unit, root)
+        if unit_lods:
+            constants.extend([
+                f"global $lod_level{suffix} = 0",
+                f"global $canonical_skeleton_initialized{suffix} = 0",
+            ])
         if mode == "MERGED" and _unit_has_geometry(unit):
             constants.extend([
                 f"global $state_id{suffix} = 0",
@@ -2220,12 +2231,9 @@ def _shared_override_lines(unit: Any, mode: str, *,
     if _buffer_key(unit, "Color") is not None:
         lines.append(f"vb3 = {_buffer_resource('Color', suffix)}")
     if blend_resource is None:
-        blend_resource = _buffer_resource(
-            f"BlendLOD{lod_level}" if lod_level is not None else "Blend",
-            suffix,
-        )
+        blend_resource = _buffer_resource("Blend", suffix)
     lines.append(f"vb4 = {blend_resource}")
-    if mode == "MERGED" and lod_level is None:
+    if mode == "MERGED":
         remaps = int(getattr(unit.merged_object, "blend_remap_count", 0))
         if remaps == 0:
             lines.extend([
@@ -2262,6 +2270,17 @@ def _shared_override_lines(unit: Any, mode: str, *,
                 "    endif",
                 "endif",
             ])
+    elif mode == "COMPONENT" and lod_level is not None:
+        lines.extend([
+            "if vs-cb4 == 3381.7777",
+            f"    vs-cb4 = ref ResourceCanonicalComponentSkeleton{suffix}",
+            "    if vs-cb3 == 3381.7777",
+            f"        vs-cb3 = ref ResourceExtraCanonicalComponentSkeleton{suffix}",
+            "    endif",
+            "elif vs-cb3 == 3381.7777",
+            f"    vs-cb3 = ref ResourceCanonicalComponentSkeleton{suffix}",
+            "endif",
+        ])
     return lines
 
 
@@ -2380,6 +2399,9 @@ def _matcher_lines(unit: Any, local_id: int, global_id: int,
     lines.append(f"if $mod_enabled{suffix}")
     if mode == "MERGED" and lod is None and has_draws:
         extracted_component = unit.extracted_object.components[local_id]
+        if has_lods:
+            lines.append(
+                f"    run = CommandListInitializeCanonicalSkeleton{suffix}")
         lines.extend([
             f"    if $merge_status_id_{global_id}{suffix} != 2",
             f"        $\\WWMIv1\\vg_offset = "
@@ -2397,9 +2419,13 @@ def _matcher_lines(unit: Any, local_id: int, global_id: int,
         indent = "        "
     else:
         indent = "    "
+    if lod is not None and has_draws:
+        lines.append(
+            f"{indent}run = "
+            f"{_canonical_import_name(level, global_id, suffix)}")
     lines.append(f"{indent}handling = skip")
     if has_draws:
-        if mode == "MERGED" and lod is None and has_draws:
+        if mode == "MERGED":
             merged_component = unit.merged_object.components[local_id]
             if int(getattr(merged_component, "blend_remap_vg_count", 0)) > 0:
                 lines.extend([
@@ -2522,7 +2548,7 @@ def _add_unit_draw_sections(
     lods = _unit_lods(unit, root)
     if _unit_has_geometry(unit):
         trigger = [f"CheckTextureOverride = ps-t{slot}" for slot in range(9)]
-        if mode == "MERGED":
+        if mode == "MERGED" or lods:
             trigger.extend([
                 "CheckTextureOverride = vs-cb3",
                 "CheckTextureOverride = vs-cb4",
@@ -3163,8 +3189,7 @@ def _add_merged_skeleton_sections(ir: CrossSceneIR, units: Sequence[Any],
         ir.add_section(
             f"CommandListUpdateMergedSkeleton{suffix}", update,
             phase=IniPhase.DRAW_STACKS, ib_order=order, role="shared")
-        ir.add_section(
-            f"CommandListMergeSkeleton{suffix}", [
+        merge_lines = [
                 f"if $merge_status_id{suffix} == 0",
                 "    if vs-cb4 == 3381.7777",
                 "        cs-cb8 = ref vs-cb4",
@@ -3183,7 +3208,18 @@ def _add_merged_skeleton_sections(ir: CrossSceneIR, units: Sequence[Any],
                 f"        $merge_status_id{suffix} = 2",
                 "    endif",
                 "endif",
-            ], phase=IniPhase.DRAW_STACKS, ib_order=order, role="shared")
+                f"if $merge_status_id{suffix} >= 1",
+                f"    ResourceMergedSkeleton{suffix} = copy "
+                f"ResourceMergedSkeletonRW{suffix}",
+                f"    ResourceExtraMergedSkeleton{suffix} = copy "
+                f"ResourceExtraMergedSkeletonRW{suffix}",
+        ]
+        if remap_count > 0:
+            merge_lines.append(f"    run = CommandListRemapMergedSkeleton{suffix}")
+        merge_lines.append("endif")
+        ir.add_section(
+            f"CommandListMergeSkeleton{suffix}", merge_lines,
+            phase=IniPhase.DRAW_STACKS, ib_order=order, role="shared")
         size = 1536 if remap_count > 0 else 768
         for name, lines in (
                 (f"ResourceMergedSkeleton{suffix}", []),
@@ -3203,6 +3239,167 @@ def _add_merged_skeleton_sections(ir: CrossSceneIR, units: Sequence[Any],
                 ib_order=order, role="buffer")
         if remap_count > 0:
             _add_merged_remap_sections(ir, unit)
+
+
+def _add_canonical_lod_sections(ir: CrossSceneIR, units: Sequence[Any],
+                                root: Any, cfg: Any, mode: str) -> None:
+    lod_units = [unit for unit in units if _unit_lods(unit, root)]
+    if not lod_units:
+        return
+
+    if mode == "COMPONENT":
+        hashes = sorted({
+            str(getattr(unit.extracted_object, "cb4_hash", "")).lower()
+            for unit in lod_units if _unit_has_geometry(unit)
+        })
+        for index, cb_hash in enumerate(value for value in hashes if value):
+            ir.add_section(
+                f"TextureOverrideMarkBoneDataCBLOD{index}", [
+                    f"hash = {cb_hash}",
+                    "match_priority = 0",
+                    "filter_index = 3381.7777",
+                ], phase=IniPhase.DRAW_STACKS, role="shared")
+
+    ir.add_section(
+        "CustomShaderCanonicalSkeletonLodImporter", [
+            "cs = Shaders/CanonicalSkeletonLodImporter.hlsl",
+            "vs = null",
+            "ps = null",
+            "hs = null",
+            "ds = null",
+            "gs = null",
+            "dispatch = x0/64+1, 1, 1",
+        ], phase=IniPhase.DRAW_STACKS, role="shared")
+    ir.add_section(
+        "CustomShaderCanonicalSkeletonInitializer", [
+            "cs = Shaders/CanonicalSkeletonInitializer.hlsl",
+            "vs = null",
+            "ps = null",
+            "hs = null",
+            "ds = null",
+            "gs = null",
+            "dispatch = x0/64+1, 1, 1",
+        ], phase=IniPhase.DRAW_STACKS, role="shared")
+
+    scale = float(getattr(cfg, "skeleton_scale", 1.0))
+    for unit in lod_units:
+        suffix = str(unit.plan.suffix)
+        order = _unit_order(unit)
+        bone_count = (
+            512 if mode == "MERGED" and int(getattr(
+                unit.merged_object, "blend_remap_count", 0)) > 0
+            else 256
+        )
+        if mode == "COMPONENT":
+            for name, lines in (
+                    (f"ResourceCanonicalComponentSkeleton{suffix}", ()),
+                    (f"ResourceCanonicalComponentSkeletonRW{suffix}", (
+                        "type = RWBuffer",
+                        "format = R32G32B32A32_FLOAT",
+                        "array = 768",
+                    )),
+                    (f"ResourceExtraCanonicalComponentSkeleton{suffix}", ()),
+                    (f"ResourceExtraCanonicalComponentSkeletonRW{suffix}", (
+                        "type = RWBuffer",
+                        "format = R32G32B32A32_FLOAT",
+                        "array = 768",
+                    ))):
+                ir.add_section(
+                    name, lines, phase=IniPhase.BUFFERS,
+                    ib_order=order, role="buffer")
+
+        if mode == "MERGED":
+            regular = f"ResourceMergedSkeletonRW{suffix}"
+            extra = f"ResourceExtraMergedSkeletonRW{suffix}"
+            publish_regular = f"ResourceMergedSkeleton{suffix}"
+            publish_extra = f"ResourceExtraMergedSkeleton{suffix}"
+        else:
+            regular = f"ResourceCanonicalComponentSkeletonRW{suffix}"
+            extra = f"ResourceExtraCanonicalComponentSkeletonRW{suffix}"
+            publish_regular = f"ResourceCanonicalComponentSkeleton{suffix}"
+            publish_extra = f"ResourceExtraCanonicalComponentSkeleton{suffix}"
+        initialize = [
+            f"if !$canonical_skeleton_initialized{suffix}",
+            "    local $bak_x0 = x0",
+            f"    x0 = {bone_count}",
+            f"    cs-u6 = {regular}",
+            "    run = CustomShaderCanonicalSkeletonInitializer",
+            f"    cs-u6 = {extra}",
+            "    run = CustomShaderCanonicalSkeletonInitializer",
+            "    cs-u6 = null",
+            "    x0 = $bak_x0",
+            f"    {publish_regular} = copy {regular}",
+            f"    {publish_extra} = copy {extra}",
+        ]
+        if (mode == "MERGED" and int(getattr(
+                unit.merged_object, "blend_remap_count", 0)) > 0):
+            initialize.append(
+                f"    run = CommandListRemapMergedSkeleton{suffix}")
+        initialize.extend([
+            f"    $canonical_skeleton_initialized{suffix} = 1",
+            "endif",
+        ])
+        ir.add_section(
+            f"CommandListInitializeCanonicalSkeleton{suffix}", initialize,
+            phase=IniPhase.DRAW_STACKS, ib_order=order, role="shared")
+
+        local_to_global = {
+            int(local_id): int(global_id)
+            for local_id, global_id in unit.plan.component_map
+        }
+        for lod in _unit_lods(unit, root):
+            level = int(lod["level"])
+            for local_id, entry in enumerate(lod["components"]):
+                if (entry is None or local_id not in local_to_global
+                        or not _unit_draws(unit, local_id)):
+                    continue
+                global_id = local_to_global[local_id]
+                map_name = str(_value(entry, "canonical_map_buffer", ""))
+                bone_count = int(_value(
+                    entry, "canonical_map_bone_count", 0) or 0)
+                destination_offset = int(_value(
+                    entry, "canonical_destination_offset", 0) or 0)
+                if not map_name or bone_count <= 0:
+                    raise CrossSceneCompileError(
+                        f"LOD{level} Component {global_id}{suffix} has no "
+                        "prepared canonical bone map")
+                lines = [
+                    f"run = CommandListInitializeCanonicalSkeleton{suffix}",
+                    "local $bak_x0 = x0",
+                    "local $bak_y0 = y0",
+                    "local $bak_z0 = z0",
+                    f"x0 = {bone_count}",
+                    f"y0 = {destination_offset}",
+                    f"z0 = {scale:.2f}",
+                    f"cs-t36 = {_buffer_resource(map_name, suffix)}",
+                    "if vs-cb4 == 3381.7777",
+                    "    cs-cb8 = ref vs-cb4",
+                    f"    cs-u6 = {regular}",
+                    "    run = CustomShaderCanonicalSkeletonLodImporter",
+                    "endif",
+                    "if vs-cb4 == 3381.7777 && vs-cb3 == 3381.7777",
+                    "    cs-cb8 = ref vs-cb3",
+                    f"    cs-u6 = {extra}",
+                    "    run = CustomShaderCanonicalSkeletonLodImporter",
+                    "endif",
+                    "cs-cb8 = null",
+                    "cs-t36 = null",
+                    "cs-u6 = null",
+                    "x0 = $bak_x0",
+                    "y0 = $bak_y0",
+                    "z0 = $bak_z0",
+                    f"{publish_regular} = copy {regular}",
+                    f"{publish_extra} = copy {extra}",
+                ]
+                if (mode == "MERGED" and int(getattr(
+                        unit.merged_object, "blend_remap_count", 0)) > 0):
+                    lines.append(
+                        f"run = CommandListRemapMergedSkeleton{suffix}")
+                ir.add_section(
+                    _canonical_import_name(level, global_id, suffix),
+                    lines, phase=IniPhase.DRAW_STACKS,
+                    ib_order=order, global_component=global_id,
+                    role="shared")
 
 
 def _add_merged_remap_sections(ir: CrossSceneIR, unit: Any) -> None:
@@ -3849,6 +4046,7 @@ def compile_cross_scene(units: Sequence[Any], root: Any,
     _add_mod_info_sections(ir, units, cfg, logo_source)
     if mode == "MERGED":
         _add_merged_skeleton_sections(ir, units, cfg)
+    _add_canonical_lod_sections(ir, units, root, cfg, mode)
     fold_callers = _fold_callers(root)
     for unit in units:
         _add_unit_draw_sections(
@@ -3957,6 +4155,10 @@ def write_compiled_mod(compiled: CompiledMod, output: Path | str,
     if not gates.partial_export and __package__:
         from ..shapekey.generator import write_hlsl_assets
         write_hlsl_assets(output, compiled.external_shape_keys)
+        if any("CanonicalLodMap" in str(name)
+               for name in compiled.buffers):
+            from ..lod.runtime import write_runtime_assets
+            write_runtime_assets(output)
 
     ini_written = False
     textures_written = False

@@ -666,7 +666,6 @@ def _build_geometry_unit(context: Any, cfg: Any, plan: ExportUnitPlan,
                          hole: bool, hole_frac: int) -> ExportUnit:
     import bpy
 
-    from ..._wwmi_core.blender_export import blender_export as blender_export_module
     from ..._wwmi_core.blender_export.object_merger import SkeletonType
     from ..._wwmi_core.extract_frame_data.metadata_format import ExtractedObject, from_dict
     from ..._wwmi_core.migoto_io.blender_interface.mesh import remove_mesh
@@ -743,10 +742,7 @@ def _build_geometry_unit(context: Any, cfg: Any, plan: ExportUnitPlan,
             merged_object=merged_object,
             excluded_buffers=list(excluded_buffers),
         )
-        core_build = (lod_export_hook._ORIG_BUILD_DATA_BUFFERS
-                      or blender_export_module.ModExporter.build_data_buffers)
-        core_build(adapter)
-        lod_export_hook._snapshot_lod_export_state(adapter)
+        lod_export_hook.build_base_data_buffers(adapter)
         lod_export_hook.prepare_lod_export_memory(
             adapter,
             metadata=dict(metadata),

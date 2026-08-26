@@ -1,15 +1,7 @@
-# WWMI LOD support (velo driver layer).
-#
-# Ports the EFMI "Extract LOD Data" capability to Wuthering Waves:
-#   - extract.py    matches a LOD frame dump against an extracted object and
-#                   persists per-component LOD data into Metadata.json
-#   - export_hook.py per-draw stateless LOD export: injects one BlendLOD{n}
-#                   buffer per LOD level (component-local 8-bit ids, native
-#                   bone constant buffers untouched) and switches the ini
-#                   generation to the velo fork template (templates/), which
-#                   factors draws into shared command lists and emits the LOD
-#                   override sections
-#
-# Nothing in this package modifies _wwmi_core sources; the vendored core is
-# only called (extraction pipeline, buffer parsing, IniMaker's public
-# template_string parameter) or wrapped (ModExporter / IniMaker methods).
+"""Canonical WWMI LOD support implemented in the Velo driver layer.
+
+The active runtime keeps vertex Blend IDs stable across LODs. Per-LOD map
+buffers select native palette sources and scatter them into persistent
+canonical skeleton slots before the custom draw. The former stateless
+per-LOD Blend implementation is isolated in ``lod_legacy_pending_delete``.
+"""

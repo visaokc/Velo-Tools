@@ -6,8 +6,8 @@
 #   - foldable dungeon IBs: entries are translated to BASE component numbers
 #     via fold.comp_map, and the vg chain is PRE-COMPOSED into base space:
 #       base local --fold.vg_remap--> IB local --entry.vg_map--> LOD local
-#     The body export consumes the result as a canonical-to-native LOD source
-#     dictionary while retaining the base Blend indices.
+#     The body export (COMPONENT runtime, blend already base-local) then
+#     consumes these entries with the stock LOD hook math unchanged.
 #   - editable IBs: entries shift to the merged component numbers unchanged
 #     (informational: their actual consumption happens in their own sub-export
 #     against scene_ibs/<hash>/, whose metadata keeps the IB-local entries).

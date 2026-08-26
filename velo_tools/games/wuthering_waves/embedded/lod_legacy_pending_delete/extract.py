@@ -129,8 +129,8 @@ def build_component_lod_entry(full_component, lod_component, vg_map, lod_object)
 
     `vg_map` is the matcher remap (full component-local -> LOD component-local,
     None = identity), matching EFMI's per-component LOD vg_map semantics. The
-    runtime consumes vb0_hash + index ranges + vg_map to import the current
-    native LOD palette into stable canonical skeleton slots.
+    per-draw LOD export consumes only vb0_hash + index ranges + vg_map; the
+    native LOD bone buffers need no further skeleton data.
     """
     lod_meta = lod_component.meta
     return {
