@@ -609,12 +609,6 @@ def register():
         import traceback
         traceback.print_exc()
     try:
-        from . import form_identity as _form_identity
-        _form_identity.install()
-    except Exception:
-        import traceback
-        traceback.print_exc()
-    try:
         from ...core.export import hook as _hook
         _hook.install_export_hook()
     except Exception:
@@ -646,11 +640,6 @@ def unregister_embedded_late():
 def unregister():
     try:
         _remove_import_export_mode_sync()
-    except Exception:
-        pass
-    try:
-        from . import form_identity as _form_identity
-        _form_identity.remove()
     except Exception:
         pass
     try:
