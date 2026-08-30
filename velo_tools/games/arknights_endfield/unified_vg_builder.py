@@ -21,6 +21,7 @@ from ._efmi_core.migoto_io.migoto_model.types import ShaderType
 from .unified_vg_signature import (
     _BoneSignatureRecord,
     _apply_guarded_near_signature_aliases,
+    _canonical_signature,
     _compute_bone_count,
     _signature_matrix_values,
 )
@@ -48,6 +49,7 @@ class _SignatureComponent:
     instance_config_slot: Optional[int] = None
     bone_count: int = 0
     vg_map: dict[int, int] = field(default_factory=dict)
+    resource_candidates: list[tuple[str, str, int | None, int]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,8 @@ class UnifiedVertexGroupMaps:
     runtime_maps: list[dict[int, int]]
     vg_offsets: list[int]
     vg_counts: list[int]
+    runtime_source_valid: list[bool]
+    runtime_source_weights: list[dict[int, int]]
 
     @property
     def authoring_group_count(self) -> int:
@@ -66,51 +70,51 @@ class UnifiedVertexGroupMaps:
 def _resource_path(resource: Resource | None) -> str | None:
     if resource is None:
         return None
-    for candidate in (resource.bin_path, resource.bin_path_deduped, resource.txt_path, resource.txt_path_deduped):
+    for candidate in (resource.bin_path, resource.bin_path_deduped):
         if candidate:
             return str(candidate)
     return None
 
 
-def _first_signature_resources(
+def _signature_resource_candidates(
     raw_component,
-) -> tuple[str | None, str | None, int | None, int | None]:
+) -> list[tuple[str, str, int | None, int]]:
     if raw_component is None:
-        return None, None, None, None
+        return []
+    candidates = []
     for shader_call in raw_component.shader_calls:
         resources = shader_call.resources
         if resources is None:
             continue
         vs_t0 = resources.get_by_slot("vs-t0")
         vs_t0_path = _resource_path(vs_t0)
-        instance_config = next(
-            (
-                (slot, cb)
-                for slot, cb in resources.constant_buffers.items()
-                if slot.shader_type == ShaderType.Vertex and cb.num_constants == 4096
-            ),
-            None,
-        )
-        if instance_config is None:
-            continue
-        slot, constant_buffer = instance_config
-        instance_config_path = _resource_path(constant_buffer)
-        if not vs_t0_path or not instance_config_path:
-            continue
-        first_constant = (
-            int(constant_buffer.first_constant)
-            if isinstance(constant_buffer, ConstantBuffer)
-            else None
-        )
-        return vs_t0_path, instance_config_path, first_constant, int(slot.slot_id)
-    return None, None, None, None
+        for slot, constant_buffer in resources.constant_buffers.items():
+            if slot.shader_type != ShaderType.Vertex or constant_buffer.num_constants != 4096:
+                continue
+            instance_config_path = _resource_path(constant_buffer)
+            if not vs_t0_path or not instance_config_path:
+                continue
+            first_constant = (
+                int(constant_buffer.first_constant)
+                if isinstance(constant_buffer, ConstantBuffer)
+                else None
+            )
+            candidate = (
+                vs_t0_path,
+                instance_config_path,
+                first_constant,
+                int(slot.slot_id),
+            )
+            if candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
 
 
 def _component_signature_adapter(component) -> _SignatureComponent:
     vertex_buffer = component.mesh.vertex_buffer
-    vs_t0_path, instance_config_path, first_constant, instance_config_slot = (
-        _first_signature_resources(component.raw_data)
-    )
+    candidates = _signature_resource_candidates(component.raw_data)
+    first = candidates[0] if candidates else (None, None, None, None)
+    vs_t0_path, instance_config_path, first_constant, instance_config_slot = first
     return _SignatureComponent(
         buffers={"VB": _BufferProxy(vertex_buffer)},
         vs_t0_path=vs_t0_path,
@@ -118,6 +122,7 @@ def _component_signature_adapter(component) -> _SignatureComponent:
         instance_config_first_constant=first_constant,
         instance_config_slot=instance_config_slot,
         bone_count=_compute_bone_count(vertex_buffer),
+        resource_candidates=candidates,
     )
 
 
@@ -137,6 +142,45 @@ def _fallback_first_constant(component: _SignatureComponent) -> int | None:
     )
 
 
+def _candidate_signatures(
+    candidate: tuple[str, str, int | None, int],
+    bone_count: int,
+) -> tuple[bytes, ...]:
+    vs_t0_path, instance_config_path, first_constant, slot = candidate
+    if first_constant is None:
+        adapter = _SignatureComponent(
+            buffers={},
+            instance_config_path=instance_config_path,
+            instance_config_slot=slot,
+        )
+        first_constant = _fallback_first_constant(adapter)
+    if first_constant is None:
+        raise ValueError("instance-config resource has no first_constant")
+    current_base, previous_base = _read_palette_bases_from_instance_config(
+        instance_config_path,
+        first_constant,
+    )
+    with open(vs_t0_path, "rb") as fh:
+        vs_t0_blob = fh.read()
+    if len(vs_t0_blob) % 16 != 0:
+        raise ValueError("vs-t0 bone buffer size is not aligned to 16-byte rows")
+    total_rows = len(vs_t0_blob) // 16
+    if total_rows <= 0:
+        raise ValueError("vs-t0 bone buffer is empty")
+    return tuple(
+        _canonical_signature(
+            _build_bone_signature_from_blob(
+                vs_t0_blob=vs_t0_blob,
+                total_rows=total_rows,
+                current_base=current_base,
+                previous_base=previous_base,
+                local_bone=local_bone,
+            )
+        )
+        for local_bone in range(bone_count)
+    )
+
+
 def _build_component_maps_and_signatures(
     migoto_object: MigotoObject,
 ) -> tuple[list[dict[int, int]], list[_BoneSignatureRecord]]:
@@ -150,34 +194,36 @@ def _build_component_maps_and_signatures(
         if metadata is not None and getattr(metadata, "cpu_posed", False):
             log.info("Skipping unified VG map for CPU-posed Component_%s of %s", component_id, migoto_object.id)
             continue
-        if not adapter.vs_t0_path or not adapter.instance_config_path:
+        if not adapter.resource_candidates:
             raise ValueError(f"Component_{component_id} is missing vs-t0 or instance-config CB")
         if adapter.bone_count <= 0:
             raise ValueError(f"Component_{component_id} has no explicit bone indices")
 
-        first_constant = _fallback_first_constant(adapter)
-        if first_constant is None:
-            raise ValueError(f"Component_{component_id} has no instance-config first_constant")
-        adapter.instance_config_first_constant = int(first_constant)
-
-        current_base, previous_base = _read_palette_bases_from_instance_config(
+        valid_candidates = []
+        failures = []
+        for candidate in adapter.resource_candidates:
+            try:
+                valid_candidates.append((candidate, _candidate_signatures(candidate, adapter.bone_count)))
+            except (OSError, ValueError) as exc:
+                failures.append(str(exc))
+        if not valid_candidates:
+            detail = failures[0] if failures else "no readable candidate"
+            raise ValueError(f"Component_{component_id} has no valid matrix resource pair: {detail}")
+        distinct_signatures = {signatures for _candidate, signatures in valid_candidates}
+        if len(distinct_signatures) != 1:
+            raise ValueError(
+                f"Component_{component_id} has ambiguous matrix resource pairs "
+                f"({len(distinct_signatures)} distinct signature sets)"
+            )
+        selected_candidate, selected_signatures = valid_candidates[0]
+        (
+            adapter.vs_t0_path,
             adapter.instance_config_path,
             adapter.instance_config_first_constant,
-        )
-        with open(adapter.vs_t0_path, "rb") as fh:
-            vs_t0_blob = fh.read()
-        total_rows = len(vs_t0_blob) // 16
-        if total_rows <= 0:
-            raise ValueError(f"Component_{component_id} has an empty vs-t0 bone buffer")
+            adapter.instance_config_slot,
+        ) = selected_candidate
 
-        for local_bone in range(adapter.bone_count):
-            signature = _build_bone_signature_from_blob(
-                vs_t0_blob=vs_t0_blob,
-                total_rows=total_rows,
-                current_base=current_base,
-                previous_base=previous_base,
-                local_bone=local_bone,
-            )
+        for local_bone, signature in enumerate(selected_signatures):
             canonical = signature_to_canonical.get(signature)
             if canonical is None:
                 canonical = next_global_id
@@ -252,10 +298,16 @@ def build_unified_maps(
         for record in signature_records
     }
     runtime_candidates: dict[tuple[int, bytes], list[tuple[bool, int, int]]] = {}
+    source_validity: list[bool] = []
+    source_weights: list[dict[int, int]] = []
     for component_id, (component, mapping) in enumerate(zip(migoto_object.components, authoring_maps)):
         offset = offsets[component_id]
         weighted_counts = _weighted_vertex_counts(component, counts[component_id]) if mapping else []
-        valid_source = True if valid_source_checker is None else bool(valid_source_checker(component))
+        valid_source = bool(mapping) and (
+            True if valid_source_checker is None else bool(valid_source_checker(component))
+        )
+        source_validity.append(valid_source)
+        source_weights.append({local_id: weighted_counts[local_id] for local_id in sorted(mapping)})
         for local_id, compact_id in sorted(mapping.items()):
             identity = (compact_id, signatures[(component_id, local_id)])
             runtime_candidates.setdefault(identity, []).append(
@@ -275,7 +327,14 @@ def build_unified_maps(
         }
         for component_id, mapping in enumerate(authoring_maps)
     ]
-    return UnifiedVertexGroupMaps(authoring_maps, runtime_maps, offsets, counts)
+    return UnifiedVertexGroupMaps(
+        authoring_maps,
+        runtime_maps,
+        offsets,
+        counts,
+        source_validity,
+        source_weights,
+    )
 
 
 def apply_to_metadata(
@@ -284,15 +343,19 @@ def apply_to_metadata(
 ) -> UnifiedVertexGroupMaps:
     """Replace extraction metadata maps with the matrix-signature mapping."""
     result = build_unified_maps(migoto_object, valid_source_checker)
-    for component, authoring_map, runtime_map, offset, count in zip(
+    for component, authoring_map, runtime_map, offset, count, source_valid, source_weights in zip(
         migoto_object.metadata.components,
         result.authoring_maps,
         result.runtime_maps,
         result.vg_offsets,
         result.vg_counts,
+        result.runtime_source_valid,
+        result.runtime_source_weights,
     ):
         component.vg_map = authoring_map
         component.vg_offset = offset
         component.vg_count = count
         component.runtime_vg_map = runtime_map
+        component.runtime_source_valid = source_valid
+        component.runtime_source_weights = source_weights
     return result

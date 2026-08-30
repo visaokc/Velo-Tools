@@ -33,7 +33,7 @@ _CB_INFO_RE = re.compile(
 )
 
 
-_log_first_constant_cache: Dict[str, Dict[Tuple[int, int], int]] = {}
+_log_first_constant_cache: Dict[Tuple[str, int, int], Dict[Tuple[int, int], int]] = {}
 
 
 def parse_vs_cb_first_constants(log_path: str) -> Dict[Tuple[int, int], int]:
@@ -43,16 +43,16 @@ def parse_vs_cb_first_constants(log_path: str) -> Dict[Tuple[int, int], int]:
 
     Later bindings within the same draw call overwrite earlier ones.
     """
-    cache_key = str(Path(log_path).resolve())
+    path = Path(log_path)
+    if not path.is_file():
+        return {}
+    stat = path.stat()
+    cache_key = (str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
     cached = _log_first_constant_cache.get(cache_key)
     if cached is not None:
         return cached
 
     result: Dict[Tuple[int, int], int] = {}
-    if not Path(log_path).is_file():
-        _log_first_constant_cache[cache_key] = result
-        return result
-
     pending_call = None
     with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
         for raw_line in fh:
@@ -68,7 +68,6 @@ def parse_vs_cb_first_constants(log_path: str) -> Dict[Tuple[int, int], int]:
                 slot_id = int(info_match.group("slot"))
                 first_constant = int(info_match.group("first"))
                 result[(pending_call, slot_id)] = first_constant
-                pending_call = None
                 continue
             if line and not line.startswith(" "):
                 pending_call = None
@@ -112,12 +111,20 @@ def _build_bone_signature_from_blob(
 
 
 def _read_three_rows_from_blob(vs_t0_blob: bytes, row_index: int, total_rows: int) -> bytes:
+    total_rows = int(total_rows)
+    row_index = int(row_index)
+    if total_rows <= 0 or len(vs_t0_blob) != total_rows * 16:
+        raise ValueError("vs-t0 buffer size does not match its declared row count")
+    if row_index < 0 or row_index + 2 >= total_rows:
+        raise ValueError(
+            f"vs-t0 bone rows {row_index}..{row_index + 2} exceed row range 0..{total_rows - 1}"
+        )
     blobs = []
     for row_offset in range(3):
-        wrapped_row_index = (int(row_index) + row_offset) % int(total_rows)
-        byte_offset = wrapped_row_index * 16
+        source_row = row_index + row_offset
+        byte_offset = source_row * 16
         row_blob = vs_t0_blob[byte_offset : byte_offset + 16]
         if len(row_blob) != 16:
-            raise ValueError(f"vs-t0 buffer too small for row {wrapped_row_index}")
+            raise ValueError(f"vs-t0 buffer too small for row {source_row}")
         blobs.append(row_blob)
     return b"".join(blobs)

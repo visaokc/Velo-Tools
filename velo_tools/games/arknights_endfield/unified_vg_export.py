@@ -158,7 +158,7 @@ def _local_lod_coverage(component, local_id):
         if not _lod_is_present(component, lod):
             continue
         remap = _metadata_map(lod, "vg_map")
-        if remap and (local_id not in remap or remap[local_id] < 0):
+        if remap.get(local_id, local_id) < 0:
             continue
         coverage.add(str(lod.lod_object_name))
     return coverage
