@@ -250,7 +250,7 @@ SHAPEKEY_PROPERTY_TEXTS = {
     "ShapeKeySettings": {
         "enabled": (
             'Export custom ShapeKey',
-            'After enabling, add persistent control variables for EFMI v0.6.2 official ShapeKey export; position interpolation and runtime processing are handled by the official core.',
+            'After enabling, add persistent control variables for EFMI v0.6.4 official ShapeKey export; position interpolation and runtime processing are handled by the official core.',
         ),
         "merge_buffers": (
             'Merge Buffer file',

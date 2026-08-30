@@ -90,7 +90,7 @@ ZH_TRANSLATIONS = {
     'Advanced Usage: Only export the selected buffer, skipping INI generation and resource copying.': '高级用途：只导出选定 buffer，跳过 INI 生成和资源复制。',
     'Advanced Usage: Only export the selected buffer; confirming that certain data have not changed since the last export can speed up the export. INI generation and resource copying will be disabled.': '高级用途：只导出选定 buffer；确认某些数据自上次导出未变化时可加快导出。会禁用 INI 生成和资源复制。',
     "After clicking 'Refresh Material Groups,' the final grouping will be simulated here according to the materials": '点击“刷新材质分组”后，这里会按材质模拟最终分组',
-    'After enabling, add persistent control variables for EFMI v0.6.2 official ShapeKey export; position interpolation and runtime processing are handled by the official core.': '启用后，为 EFMI v0.6.2 官方 ShapeKey 导出添加持久控制变量；位置差值与运行时处理由官方核心负责。',
+    'After enabling, add persistent control variables for EFMI v0.6.4 official ShapeKey export; position interpolation and runtime processing are handled by the official core.': '启用后，为 EFMI v0.6.4 官方 ShapeKey 导出添加持久控制变量；位置差值与运行时处理由官方核心负责。',
     'After enabling, exclude components with too few vertices from candidates matched in LOD': '启用后从 LOD 匹配候选中排除顶点数过少的组件',
     'After enabling, exclude components with too few vertices from candidates matched in LOD.': '启用后从 LOD 匹配候选中排除顶点数过少的组件。',
     'After enabling, exclude objects of specified vb0 Hash from candidates matched in LOD (separated by commas, semicolons, or spaces)': '启用后从 LOD 匹配候选中排除指定 vb0 Hash 的对象（逗号、分号或空格分隔）',

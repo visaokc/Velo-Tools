@@ -8,7 +8,7 @@ Hooks (all reversible via remove_patches()):
    official `CommandListSetShapeKey` runtime entrypoint.
 3. `IniMaker.write` — remove shaders left by the retired pre-v0.6.2 pipeline.
 
-The official EFMI v0.6.2 exporter owns delta buffers and runtime processing.
+The official EFMI v0.6.4 exporter owns delta buffers and runtime processing.
 This compatibility layer only keeps Velo's detection, validation, and control
 variables; it must not generate a second set of buffers or compute shaders.
 """
@@ -313,27 +313,19 @@ def _build_official_control_constants(items):
     for slot, item in sorted(by_slot.items()):
         lines.append(f"; Deform {slot}: {item['raw_name']}")
         lines.append(f"global persist $ShapeKey_{slot} = {_format_control_value(item['default_value'])}")
-    for item in sorted(items, key=lambda value: (int(value["component_id"]), int(value["slot"]))):
-        component_id = int(item["component_id"])
-        slot = int(item["slot"])
-        lines.append(f"global $ShapeKeyLast_C{component_id}_S{slot} = -1")
     return lines
 
 
 def _build_official_control_updates(items):
-    lines = ["", "; --- ShapeKey: update official EFMI values when controls change ---"]
+    lines = ["", "; --- ShapeKey: submit persistent controls to official EFMI runtime ---"]
     for item in sorted(items, key=lambda value: (int(value["component_id"]), int(value["slot"]))):
         component_id = int(item["component_id"])
         slot = int(item["slot"])
-        last_var = f"$ShapeKeyLast_C{component_id}_S{slot}"
         lines.extend([
-            f"if {last_var} != $ShapeKey_{slot}",
-            f"    $component_id = {component_id}",
-            f"    $shapekey_id = {slot}",
-            f"    $shapekey_value = $ShapeKey_{slot}",
-            "    run = CommandListSetShapeKey",
-            f"    {last_var} = $ShapeKey_{slot}",
-            "endif",
+            f"$component_id = {component_id}",
+            f"$shapekey_id = {slot}",
+            f"$shapekey_value = $ShapeKey_{slot}",
+            "run = CommandListSetShapeKey",
         ])
     return lines
 
