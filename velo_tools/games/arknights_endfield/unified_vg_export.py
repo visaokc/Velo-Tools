@@ -59,7 +59,33 @@ def _write_lod_presence(metadata_path, lod_object_name, matched_component_ids):
     temp_path.replace(metadata_path)
 
 
+def _remove_lod_overwrite_collisions(full_object, lod_object, matched_components):
+    incoming_name = str(lod_object.id)
+    replacement_names = {incoming_name}
+
+    for full_component in full_object.components:
+        lod_component, _vg_map = matched_components.get(full_component, (None, None))
+        if lod_component is None:
+            lod_component = full_component
+        incoming_vertex_count = int(lod_component.metadata.vertex_count)
+        for old_lod in full_component.metadata.lods or []:
+            if (
+                str(old_lod.lod_object_name) == incoming_name
+                or int(old_lod.vertex_count) == incoming_vertex_count
+            ):
+                replacement_names.add(str(old_lod.lod_object_name))
+
+    for full_component in full_object.components:
+        full_component.metadata.lods = [
+            old_lod
+            for old_lod in full_component.metadata.lods or []
+            if str(old_lod.lod_object_name) not in replacement_names
+        ]
+
+
 def _import_lods_with_presence(context, cfg, full_object, lod_object, matched_components):
+    if getattr(cfg, "allow_lod_overwrite", False):
+        _remove_lod_overwrite_collisions(full_object, lod_object, matched_components)
     result = _ORIGINAL_IMPORT_LODS(context, cfg, full_object, lod_object, matched_components)
     from ._efmi_core.migoto_io.blender_interface.utility import resolve_path
 
