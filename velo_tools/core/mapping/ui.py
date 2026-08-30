@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import bpy
 
 
@@ -33,7 +35,7 @@ class VELO_EF_UL_mmd_rows(bpy.types.UIList):
 
 
 class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
-    bl_label = "MMD ↔ 统一编号 映射"
+    bl_label = 'MMD ↔ Unified ID Mapping'
     bl_idname = "VELO_EF_PT_mmd_mapping"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -50,19 +52,19 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
         layout = self.layout
         ef = getattr(context.scene, "velo_endfield", None)
         if ef is None:
-            layout.label(text="未初始化终末地数据", icon='ERROR')
+            layout.label(text='Uninitialized Arknights: Endfield data', icon='ERROR')
             return
         profile = ef.mmd_profile
         if profile is None:
-            layout.label(text="未初始化映射数据", icon='ERROR')
+            layout.label(text='Uninitialized mapping data', icon='ERROR')
             return
 
         # Top: MMD-specific source/target objects
         box_obj = layout.box()
-        box_obj.label(text="MMD 工作物体（与下方 顶点组改名 Tab 完全隔离）", icon='OBJECT_DATA')
-        box_obj.prop(ef, "mmd_source_object", text="MMD 源")
-        box_obj.prop(ef, "mmd_target_object", text="目标 Component")
-        box_obj.prop(ef, "mmd_armature_object", text="MMD 骨架")
+        box_obj.label(text='MMD Working Objects (completely isolated from the vertex group renaming tab below)', icon='OBJECT_DATA')
+        box_obj.prop(ef, "mmd_source_object", text='MMD Source')
+        box_obj.prop(ef, "mmd_target_object", text='Target Component')
+        box_obj.prop(ef, "mmd_armature_object", text='MMD Skeleton')
 
         # 1.0.8: the export adapter is decided solely by active_game on the "Game" tab; here we only show a read-only hint of the current game
         try:
@@ -72,17 +74,17 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
         except Exception:
             display = "终末地"
         box_obj.label(
-            text=f"当前游戏：{display}（在上方『游戏』tab 切换）",
+            text=iface_("Current game: {0} (switch in the 'Game' tab above)").format(display),
             icon='SETTINGS',
         )
         box_obj.label(
-            text="点击对应导出器原本的「导出 Mod」按钮，会自动用克隆副本完成预处理后导出，源物体不被改动",
+            text="Click the original 'Export Mod' button of the corresponding exporter, and it will automatically export using a cloned copy after preprocessing, leaving the source object unchanged",
             icon='INFO',
         )
 
         # Task 4: mapping-table selector (template_ID, same as Blender's text datablock selector)
         box_p = layout.box()
-        box_p.label(text="映射表", icon='TEXT')
+        box_p.label(text='Mapping Table', icon='TEXT')
         box_p.template_ID(ef, "active_mmd_text", new="velo.mmd_text_new")
 
         layout.template_list(
@@ -94,13 +96,13 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
 
         # Row operations
         row = layout.row(align=True)
-        row.operator("velo.vg_row_add", icon='ADD', text="新增空行").after_index = -1
-        row.operator("velo.vg_row_remove", icon='REMOVE', text="删除当前行").index = -1
-        row.operator("velo.vg_table_clear", icon='TRASH', text="清空映射表")
+        row.operator("velo.vg_row_add", icon='ADD', text='Add a new blank row').after_index = -1
+        row.operator("velo.vg_row_remove", icon='REMOVE', text='Delete current row').index = -1
+        row.operator("velo.vg_table_clear", icon='TRASH', text='Clear Mapping Table')
 
         row = layout.row(align=True)
-        row.operator("velo.vg_stage_unified", icon='IMPORT', text="从源物体补行")
-        row.operator("velo.vg_match_to_mmd_table", icon='AUTOMERGE_ON', text="按位置匹配→写入本表")
+        row.operator("velo.vg_stage_unified", icon='IMPORT', text='Fill Rows from Source Object')
+        row.operator("velo.vg_match_to_mmd_table", icon='AUTOMERGE_ON', text='Match by position → write to this table.')
 
         col = layout.column(align=True)
         col.scale_y = 1.2
@@ -114,7 +116,7 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
         # Built-in Text two-way sync
         layout.separator()
         box_t = layout.box()
-        box_t.label(text=".blend 内置文本同步（可在 Text Editor 中打开 velo_mmd_mapping.txt 编辑）", icon='TEXT')
+        box_t.label(text='.blend built-in text synchronization (can be opened in the Text Editor to edit velo_mmd_mapping.txt)', icon='TEXT')
         rt = box_t.row(align=True)
         rt.operator("velo.vg_table_to_text", icon='EXPORT')
         rt.operator("velo.vg_table_from_text", icon='IMPORT')
@@ -127,16 +129,16 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
         # Hints
         box = layout.box()
         box.scale_y = 0.8
-        box.label(text="工作流", icon='INFO')
-        box.label(text="① 在顶部分别拾取 MMD 源物体 与 目标 Component")
-        box.label(text="② 点『从源物体补行』自动补 mmd 列（已过滤无权重 / mmd_edge_scale / UV_*）")
-        box.label(text="③ 点『按位置匹配→写入本表』自动填 unified 列（KDTree 加速）")
-        box.label(text="④ 点『实际改名』切到统一编号；点『还原』切回 MMD 名（仅作用于 MMD 源物体）")
+        box.label(text='Workflow', icon='INFO')
+        box.label(text='① At the top, pick the MMD source object and the target Component separately')
+        box.label(text="② Click 'Fill from Source Object' to automatically fill the MMD column (filtered for unweighted / mmd_edge_scale / UV_*)")
+        box.label(text="③ Click 'Match by Position → Write to This Table' to automatically fill the unified column (KDTree accelerated)")
+        box.label(text="④ Click 'Actual Rename' to switch to unified numbering; click 'Restore' to switch back to MMD names (only applies to MMD source objects)")
 
 
 class VELO_EF_PT_mmd_overlay(bpy.types.Panel):
     """Visualize MMD mapping results (a sub-panel of the MMD mapping panel)."""
-    bl_label = "MMD 映射 - 可视化校对（重心连线）"
+    bl_label = 'MMD Mapping - Visual Proofreading (Centroid Connection)'
     bl_idname = "VELO_EF_PT_mmd_overlay"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -155,22 +157,22 @@ class VELO_EF_PT_mmd_overlay(bpy.types.Panel):
         ef = getattr(context.scene, "velo_endfield", None)
         s = context.scene.velo_tools
         if ef is None:
-            layout.label(text="未初始化", icon='ERROR')
+            layout.label(text='Uninitialized', icon='ERROR')
             return
 
-        layout.label(text="数据来自 MMD 源 ↔ 目标 重心连线", icon='INFO')
+        layout.label(text='Data from MMD source ↔ target center of gravity connection', icon='INFO')
         layout.prop(ef, "show_overlay", toggle=True,
                     icon='HIDE_OFF' if ef.show_overlay else 'HIDE_ON')
 
         col = layout.column(align=True)
         col.enabled = ef.show_overlay
         col.prop(s, "show_labels")
-        col.prop(s, "show_unmatched_targets", text="显示未匹配的目标顶点组")
+        col.prop(s, "show_unmatched_targets", text='Show unmatched target vertex groups')
         col.prop(s, "overlay_max_distance")
 
         gm = getattr(context.scene, "velo_general_mapping", None)
         if ef.show_overlay and gm is not None and getattr(gm, "show_overlay", False):
-            layout.label(text="已自动关闭顶点组改名 Tab 的 overlay 以避免重叠", icon='INFO')
+            layout.label(text='Overlay of vertex group renaming tab automatically closed to avoid overlap', icon='INFO')
 
 
 _classes = (

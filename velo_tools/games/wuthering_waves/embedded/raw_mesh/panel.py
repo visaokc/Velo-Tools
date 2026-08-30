@@ -7,7 +7,7 @@ import bpy
 
 class VELO_PT_raw_mesh(bpy.types.Panel):
     bl_idname = "VELO_PT_raw_mesh"
-    bl_label = "原始网格工具"
+    bl_label = 'Raw Mesh Tools'
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "Velo Tools"

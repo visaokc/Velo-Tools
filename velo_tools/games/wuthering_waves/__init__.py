@@ -10,6 +10,8 @@ arknights_endfield, neutralizing the upstream updater); it does not change a sin
 inside _wwmi_core.
 """
 
+from velo_tools.i18n import iface_
+
 import sys
 from pathlib import Path
 
@@ -47,7 +49,7 @@ def _zh(text: str) -> str:
 _DESCRIPTOR = _registry.GameDescriptor(
     key="WUTHERING",
     game_value="WUTHERING",
-    display_name="鸣潮",
+    display_name="Wuthering Waves",
     settings_attr="VTWW_settings",
     adapter_key="WWMI",
     export_op="vtww.export_mod",
@@ -261,8 +263,8 @@ def _patch_tool_mode():
     global _orig_tool_mode_annotation
     _orig_tool_mode_annotation = _wsettings.VTWW_Settings.__annotations__.get("tool_mode", _MISSING)
     _wsettings.VTWW_Settings.__annotations__["tool_mode"] = bpy.props.EnumProperty(
-        name=_zh("模式"),
-        description=_zh("切换当前鸣潮 WWMI/Velo 工具功能。"),
+        name=_zh('Mode'),
+        description=_zh('Toggle current Wuthering Waves WWMI/Velo tool functionality.'),
         items=[(i, _zh(label), _zh(desc)) for i, label, desc in _TOOL_MODE_ITEMS],
         update=lambda self, context: _wsettings.clear_error(self),
         default='EXTRACT_FRAME_DATA',
@@ -280,15 +282,13 @@ def _patch_mod_skeleton_type():
     # Item labels stay in English on purpose (Merged / Per-Component are
     # technical terms by project convention); descriptions are localized.
     _wsettings.VTWW_Settings.__annotations__["mod_skeleton_type"] = bpy.props.EnumProperty(
-        name=_zh("骨架"),
-        description=_zh("请选择与导入时一致的骨架类型！决定导出 mod.ini 的逻辑。"),
+        name=_zh('Skeleton'),
+        description=_zh('Please select the skeleton type consistent with the import! This determines the logic for exporting mod.ini.'),
         items=[
-            ('MERGED', 'Merged', _zh('该骨架的网格使用统一顶点组列表。')),
-            ('COMPONENT', 'Per-Component', _zh('该骨架的网格按组件拆分顶点组列表。')),
+            ('MERGED', 'Merged', _zh('The mesh of this skeleton uses a unified vertex group list.')),
+            ('COMPONENT', 'Per-Component', _zh('The mesh of this skeleton splits the vertex group list by components.')),
             ('COMPONENT_FROM_MERGED', 'Per-Component (from Merged)',
-             _zh('按 Merged（统一）骨架编辑、导出 Per-Component mod：统一顶点组编号自动回译为'
-                 '各组件局部编号。避免 Merged 模式同屏多个相同对象时的运行期暂停。把权重刷到'
-                 '顶点组所属组件之外的骨骼会报错并阻止导出。')),
+             _zh("Edit according to the Merged (unified) skeleton and export Per-Component mod: automatically reverse-transfer the unified vertex group numbers to the local numbers of each component. This avoids runtime pauses when multiple identical objects appear on the same screen in Merged mode. Painting weights to bones outside the vertex group's component will trigger an error and prevent export.")),
         ],
         default=0,
     )
@@ -308,12 +308,12 @@ def _neutralize_updater():
         _orig_pref_draw = getattr(pref, "draw", None)
         _orig_pref_auto_check = pref.__annotations__.get("auto_check_update", _MISSING)
         pref.__annotations__["auto_check_update"] = bpy.props.BoolProperty(
-            name=_zh("自动检查更新"),
-            description=_zh("已禁用：Velo Tools 内置 WWMI core 不使用在线更新器。"),
+            name=_zh('Automatically check for updates'),
+            description=_zh('Disabled: built-in WWMI core inside Velo Tools does not use the online updater.'),
             default=False,
         )
         pref.draw = lambda self, context: self.layout.label(
-            text=_zh("Velo Tools 内置 WWMI core 已禁用在线更新器。")
+            text=iface_('Velo Tools built-in WWMI core has disabled the online updater.')
         )
 
 
@@ -372,7 +372,7 @@ def register():
         import traceback
         traceback.print_exc()
     # For the single container (VELO_PT_game): collapse-header text + body draw (proxies the vendored root panel draw via a Shim).
-    _DESCRIPTOR.header_label = "鸣潮 WWMI"
+    _DESCRIPTOR.header_label = "Wuthering Waves WWMI"
     _DESCRIPTOR.draw_body = _a2.make_draw_body(_wui.VTWW_PT_SIDEBAR)
     _registry.register_descriptor(_DESCRIPTOR)
     # WWMI registers after EFMI; install the export hook once more here so the MMD preprocessing /

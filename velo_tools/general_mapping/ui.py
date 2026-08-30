@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import bpy
 
 
@@ -32,7 +34,7 @@ class VELO_GM_UL_rows(bpy.types.UIList):
 
 
 class VELO_PT_general_mapping(bpy.types.Panel):
-    bl_label = "通用顶点组映射"
+    bl_label = 'General Vertex Group Mapping'
     bl_idname = "VELO_PT_weight_match"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -50,29 +52,29 @@ class VELO_PT_general_mapping(bpy.types.Panel):
         layout = self.layout
         settings = getattr(context.scene, "velo_general_mapping", None)
         if settings is None:
-            layout.label(text="未初始化通用映射数据", icon='ERROR')
+            layout.label(text='Uninitialized general mapping data', icon='ERROR')
             return
         profile = settings.profile
         if profile is None:
-            layout.label(text="未初始化映射表", icon='ERROR')
+            layout.label(text='Uninitialized mapping table', icon='ERROR')
             return
 
         box_obj = layout.box()
-        box_obj.label(text="通用工作物体", icon='OBJECT_DATA')
-        box_obj.prop(settings, "source_object", text="源物体")
-        box_obj.prop(settings, "target_object", text="目标物体")
-        box_obj.prop(settings, "armature_object", text="骨架")
+        box_obj.label(text='General work object', icon='OBJECT_DATA')
+        box_obj.prop(settings, "source_object", text='Source Object')
+        box_obj.prop(settings, "target_object", text='Target Object')
+        box_obj.prop(settings, "armature_object", text='Skeleton')
 
         opt = layout.box()
-        opt.label(text="匹配选项", icon='PREFERENCES')
+        opt.label(text='Matching Options', icon='PREFERENCES')
         row = opt.row(align=True)
         row.prop(settings, "use_max_distance")
         sub = row.row(align=True)
         sub.enabled = settings.use_max_distance
-        sub.prop(settings, "max_match_distance", text="阈值")
+        sub.prop(settings, "max_match_distance", text='Threshold')
 
         box_p = layout.box()
-        box_p.label(text="映射表", icon='TEXT')
+        box_p.label(text='Mapping Table', icon='TEXT')
         box_p.template_ID(settings, "active_general_text", new="velo.general_text_new")
 
         layout.template_list(
@@ -83,13 +85,13 @@ class VELO_PT_general_mapping(bpy.types.Panel):
         )
 
         row = layout.row(align=True)
-        row.operator("velo.match_row_add", icon='ADD', text="新增空行").after_index = -1
-        row.operator("velo.match_row_remove", icon='REMOVE', text="删除当前行").index = -1
-        row.operator("velo.clear_mappings", icon='TRASH', text="清空映射表")
+        row.operator("velo.match_row_add", icon='ADD', text='Add a new blank row').after_index = -1
+        row.operator("velo.match_row_remove", icon='REMOVE', text='Delete current row').index = -1
+        row.operator("velo.clear_mappings", icon='TRASH', text='Clear Mapping Table')
 
         row = layout.row(align=True)
-        row.operator("velo.match_stage_from_source", icon='IMPORT', text="从源物体补行")
-        row.operator("velo.match_to_table_lite", icon='AUTOMERGE_ON', text="按位置匹配→写入本表")
+        row.operator("velo.match_stage_from_source", icon='IMPORT', text='Fill Rows from Source Object')
+        row.operator("velo.match_to_table_lite", icon='AUTOMERGE_ON', text='Match by position → write to this table.')
 
         col = layout.column(align=True)
         col.scale_y = 1.2
@@ -102,7 +104,7 @@ class VELO_PT_general_mapping(bpy.types.Panel):
 
         layout.separator()
         box_t = layout.box()
-        box_t.label(text=".blend 内置文本同步", icon='TEXT')
+        box_t.label(text='.blend built-in text synchronization', icon='TEXT')
         text_row = box_t.row(align=True)
         text_row.operator("velo.match_table_to_text", icon='EXPORT')
         text_row.operator("velo.match_table_from_text", icon='IMPORT')
@@ -113,15 +115,15 @@ class VELO_PT_general_mapping(bpy.types.Panel):
 
         box = layout.box()
         box.scale_y = 0.8
-        box.label(text="工作流", icon='INFO')
-        box.label(text="① 在顶部分别选择源物体与目标物体")
-        box.label(text="② 点『从源物体补行』补齐源列")
-        box.label(text="③ 点『按位置匹配→写入本表』生成目标列")
-        box.label(text="④ 4 按钮分别处理源/目标两侧改名与还原")
+        box.label(text='Workflow', icon='INFO')
+        box.label(text='① At the top, select the source object and the target object separately')
+        box.label(text="② Click 'Fill from Source Object' to complete the source column")
+        box.label(text="③ Click 'Match by Position → Write to This Table' to generate the target column")
+        box.label(text='④ The 4 buttons respectively handle renaming and restoring on the source/target sides')
 
 
 class VELO_PT_general_overlay(bpy.types.Panel):
-    bl_label = "通用映射 - 可视化校对（重心连线）"
+    bl_label = 'General Mapping - Visual Review (Centroid Links)'
     bl_idname = "VELO_PT_overlay"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -141,10 +143,10 @@ class VELO_PT_general_overlay(bpy.types.Panel):
         shared = getattr(context.scene, "velo_tools", None)
         ef = getattr(context.scene, "velo_endfield", None)
         if settings is None or shared is None:
-            layout.label(text="未初始化", icon='ERROR')
+            layout.label(text='Uninitialized', icon='ERROR')
             return
 
-        layout.label(text="数据来自 源物体 ↔ 目标物体 重心连线", icon='INFO')
+        layout.label(text='Data comes from source object ↔ target object center of mass connection', icon='INFO')
         layout.prop(
             settings,
             "show_overlay",
@@ -155,15 +157,15 @@ class VELO_PT_general_overlay(bpy.types.Panel):
         col = layout.column(align=True)
         col.enabled = settings.show_overlay
         col.prop(shared, "show_labels")
-        col.prop(shared, "show_unmatched_targets", text="显示未匹配的目标顶点组")
+        col.prop(shared, "show_unmatched_targets", text='Show unmatched target vertex groups')
         col.prop(shared, "overlay_max_distance")
 
         if settings.show_overlay and ef is not None and getattr(ef, "show_overlay", False):
-            layout.label(text="已自动关闭 MMD 映射区的 overlay 以避免重叠", icon='INFO')
+            layout.label(text='Overlay of MMD mapping area automatically closed to avoid overlap', icon='INFO')
 
 
 class VELO_PT_general_unmatched(bpy.types.Panel):
-    bl_label = "未匹配列表"
+    bl_label = 'Unmatched list'
     bl_idname = "VELO_PT_unmatched"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -181,27 +183,27 @@ class VELO_PT_general_unmatched(bpy.types.Panel):
         layout = self.layout
         settings = getattr(context.scene, "velo_general_mapping", None)
         if settings is None:
-            layout.label(text="未初始化", icon='ERROR')
+            layout.label(text='Uninitialized', icon='ERROR')
             return
         from . import overlay as _overlay
         unmatched_sources = list(_overlay.iter_unmatched_sources(settings) or ())
         unmatched_targets = list(_overlay.iter_unmatched_targets(settings) or ())
 
-        layout.label(text=f"未匹配的源顶点组: {len(unmatched_sources)}", icon='OUTLINER_OB_MESH')
+        layout.label(text=iface_('Unmatched source vertex groups: {0}').format(len(unmatched_sources)), icon='OUTLINER_OB_MESH')
         if unmatched_sources:
             box = layout.box()
             for _world, name in unmatched_sources[:12]:
                 box.label(text=name, icon='GROUP_VERTEX')
 
         layout.separator()
-        layout.label(text=f"未匹配的目标顶点组: {len(unmatched_targets)}", icon='OUTLINER_OB_MESH')
+        layout.label(text=iface_('Unmatched target vertex groups: {0}').format(len(unmatched_targets)), icon='OUTLINER_OB_MESH')
         if unmatched_targets:
             box = layout.box()
             for _world, name in unmatched_targets[:12]:
                 box.label(text=name, icon='GROUP_VERTEX')
 
         if not unmatched_sources and not unmatched_targets:
-            layout.label(text="(无)", icon='CHECKMARK')
+            layout.label(text='(None)', icon='CHECKMARK')
 
 
 _classes = (

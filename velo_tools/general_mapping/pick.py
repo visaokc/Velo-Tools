@@ -330,7 +330,7 @@ def _enter_weight_paint(context, obj, vg_name):
 
 class VELO_OT_general_pick_modal(bpy.types.Operator):
     bl_idname = "velo.general_pick_modal"
-    bl_label = "通用映射 - 端点拾取/拖拽"
+    bl_label = 'General mapping - endpoint picking/dragging'
     bl_options = {'INTERNAL'}
 
     _running = False

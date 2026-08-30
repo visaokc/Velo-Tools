@@ -38,7 +38,7 @@ class VELO_PT_main(bpy.types.Panel):
         s = context.scene.velo_tools
         col = layout.column(align=True)
         title_row = col.row(align=True)
-        title_row.label(text="Mod 制作辅助工具集", icon='TOOL_SETTINGS')
+        title_row.label(text='Mod Production Auxiliary Toolset', icon='TOOL_SETTINGS')
         repository = title_row.operator("wm.url_open", text="GitHub", icon='URL')
         package = sys.modules.get(__package__ or "velo_tools")
         repository.url = getattr(package, "bl_info", {}).get("doc_url", "")
@@ -53,7 +53,7 @@ class VELO_PT_main(bpy.types.Panel):
         # so newly qualifying sibling sub-panels (VTWW_PT_SIDEBAR etc.) are immediately re-polled and shown.
         # If placed in a sub-panel, changing the property only redraws that sub-panel; sibling panels are not re-polled (root cause of issue A).
         if s.active_tab == 'GAME':
-            layout.prop(s, "active_game", text="游戏")
+            layout.prop(s, "active_game", text='Game')
 
 
 def _is_match_tab(context):
@@ -62,7 +62,7 @@ def _is_match_tab(context):
 
 class VELO_PT_vg_tools(bpy.types.Panel):
     """Top of the Vertex Group tools Tab -- batch vertex-group operations from the VTEF toolbox."""
-    bl_label = "顶点组操作"
+    bl_label = 'Vertex Group Operations'
     bl_idname = "VELO_PT_vg_tools"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -112,7 +112,7 @@ class VELO_PT_game(bpy.types.Panel):
 
     def draw_header(self, context):
         desc = self._active_desc(context)
-        self.layout.label(text=(getattr(desc, "header_label", None) or "游戏"))
+        self.layout.label(text=(getattr(desc, "header_label", None) or 'Game'))
 
     def draw(self, context):
         desc = self._active_desc(context)

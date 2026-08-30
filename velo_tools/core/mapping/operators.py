@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import json
 import os
 
@@ -417,25 +419,25 @@ def _sync_mmd_source_row_incremental(settings, row, new_root: str):
 
 class VELO_OT_vg_apply_unified(bpy.types.Operator):
     bl_idname = "velo.vg_apply_unified"
-    bl_label = "将源物体改名为统一编号"
-    bl_description = "按 MMD 映射表把 mmd_source_object 的顶点组改名为统一编号；若选择了 MMD 骨架则同步骨骼名（lossless 备份原始权重供还原）"
+    bl_label = 'Rename the source object to a unified number'
+    bl_description = 'Rename the vertex groups of mmd_source_object to unified numbers according to the MMD mapping table; if an MMD skeleton is selected, synchronize the bone names (lossless backup of the original weights for restoration).'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         settings = _get_settings(context)
         if settings is None or settings.mmd_profile is None:
-            self.report({'ERROR'}, "未找到终末地映射数据")
+            self.report({'ERROR'}, iface_('Arknights: Endfield mapping data not found'))
             return {'CANCELLED'}
         obj = _mmd_source(context)
         if obj is None:
-            self.report({'ERROR'}, "请先在面板顶部指定『MMD 源物体』")
+            self.report({'ERROR'}, iface_("Please first specify the 'MMD source object' at the top of the panel"))
             return {'CANCELLED'}
         ordered = _algo.build_ordered_mmd_pairs(settings.mmd_profile)
         if not ordered:
-            self.report({'ERROR'}, "MMD 映射表为空")
+            self.report({'ERROR'}, iface_('MMD Mapping Table is Empty'))
             return {'CANCELLED'}
         r, bone_n = _sync_mmd_source_from_table(settings, save_backup=True)
-        self.report({'INFO'}, f"完成: 改名 {r['renamed']} (未合并; 骨骼同步 {bone_n})")
+        self.report({'INFO'}, iface_('Done: Rename {0} (not merged; Skeleton sync {1})').format(r['renamed'], bone_n))
         return {'FINISHED'}
 
 
@@ -445,26 +447,25 @@ class VELO_OT_vg_apply_unified(bpy.types.Operator):
 
 class VELO_OT_vg_stage_unified(bpy.types.Operator):
     bl_idname = "velo.vg_stage_unified"
-    bl_label = "从源物体补行"
+    bl_label = 'Fill Rows from Source Object'
     bl_description = (
-        "把 mmd_source_object 当前实际有权重的顶点组追加为新行；"
-        "自动跳过 mmd_edge_scale / mmd_vertex_order / UV_* 等特殊组以及完全无权重的组"
+        'Append the currently weighted vertex groups of mmd_source_object as new rows; automatically skip special groups like mmd_edge_scale / mmd_vertex_order / UV_* and groups with no weights at all'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
     prune_invalid: BoolProperty(
-        name="同时清理表里 mmd 列已不存在的行",
+        name='Also clean up rows in the table where the mmd column no longer exists',
         default=True,
     )
 
     def execute(self, context):
         settings = _get_settings(context)
         if settings is None or settings.mmd_profile is None:
-            self.report({'ERROR'}, "未找到终末地映射数据")
+            self.report({'ERROR'}, iface_('Arknights: Endfield mapping data not found'))
             return {'CANCELLED'}
         obj = _mmd_source(context)
         if obj is None:
-            self.report({'ERROR'}, "请先在面板顶部指定『MMD 源物体』")
+            self.report({'ERROR'}, iface_("Please first specify the 'MMD source object' at the top of the panel"))
             return {'CANCELLED'}
 
         profile = settings.mmd_profile
@@ -494,7 +495,7 @@ class VELO_OT_vg_stage_unified(bpy.types.Operator):
                     pruned += 1
 
         _autosync_to_text(settings)
-        self.report({'INFO'}, f"补行: 新增 {added}, 清理 {pruned} (源={obj.name})")
+        self.report({'INFO'}, iface_('Supplementary operation: Added {0}, Cleared {1} (Source={2})').format(added, pruned, obj.name))
         return {'FINISHED'}
 
 
@@ -504,24 +505,24 @@ class VELO_OT_vg_stage_unified(bpy.types.Operator):
 
 class VELO_OT_vg_revert_to_mmd(bpy.types.Operator):
     bl_idname = "velo.vg_revert_to_mmd"
-    bl_label = "将源物体还原为MMD名字"
-    bl_description = "使用快照把 mmd_source_object 完整还原到改名前的 VG 名/顺序/权重；若选择了 MMD 骨架则同步骨骼名"
+    bl_label = 'Restore the source object to the MMD name'
+    bl_description = 'Use a snapshot to fully restore mmd_source_object to the VG name/order/weights before renaming; if an MMD skeleton is selected, synchronize skeleton names'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         settings = _get_settings(context)
         if settings is None or settings.mmd_profile is None:
-            self.report({'ERROR'}, "未找到终末地映射数据")
+            self.report({'ERROR'}, iface_('Arknights: Endfield mapping data not found'))
             return {'CANCELLED'}
         obj = _mmd_source(context)
         if obj is None:
-            self.report({'ERROR'}, "请先在面板顶部指定『MMD 源物体』")
+            self.report({'ERROR'}, iface_("Please first specify the 'MMD source object' at the top of the panel"))
             return {'CANCELLED'}
         ok, bone_n = _restore_mmd_source_to_original(settings)
         if not ok:
-            self.report({'ERROR'}, "未找到 VG 快照，无法无损还原")
+            self.report({'ERROR'}, iface_('VG snapshot not found, cannot restore losslessly'))
             return {'CANCELLED'}
-        self.report({'INFO'}, f"还原: 已用快照无损还原 (源={obj.name}; 骨骼 {bone_n})")
+        self.report({'INFO'}, iface_('Restore: Lossless restoration using snapshot (source={0}; skeleton {1})').format(obj.name, bone_n))
         return {'FINISHED'}
 
 
@@ -531,18 +532,18 @@ class VELO_OT_vg_revert_to_mmd(bpy.types.Operator):
 
 class VELO_OT_vg_target_to_mmd(bpy.types.Operator):
     bl_idname = "velo.vg_target_to_mmd"
-    bl_label = "目标物体改名为MMD名字"
-    bl_description = "按映射表把『目标 Component』的统一编号顶点组改名为 MMD 名字，并按映射表顺序重排 VG"
+    bl_label = 'Rename target object to MMD name'
+    bl_description = "Rename the unified number vertex groups on 'Target Component' to MMD names according to the mapping table, and reorder VG according to the mapping table order"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         settings = _get_settings(context)
         if settings is None or settings.mmd_profile is None:
-            self.report({'ERROR'}, "未找到终末地映射数据")
+            self.report({'ERROR'}, iface_('Arknights: Endfield mapping data not found'))
             return {'CANCELLED'}
         obj = _mmd_target(context)
         if obj is None:
-            self.report({'ERROR'}, "请先在面板顶部指定『目标 Component』")
+            self.report({'ERROR'}, iface_("Please first specify the 'target Component' at the top of the panel"))
             return {'CANCELLED'}
         # in profile order, take the first occurrence of (unified -> first_mmd)
         seen = set()
@@ -555,35 +556,35 @@ class VELO_OT_vg_target_to_mmd(bpy.types.Operator):
             seen.add(row.unified_name)
             ordered.append((row.unified_name, row.mmd_name))
         if not ordered:
-            self.report({'ERROR'}, "MMD 映射表为空")
+            self.report({'ERROR'}, iface_('MMD Mapping Table is Empty'))
             return {'CANCELLED'}
         # save snapshot + rename without merging
         r = _algo.rename_no_merge_with_suffix(obj, ordered, save_backup=True)
         # reorder by the first-occurrence order of mmd_name
         desired = [m for _u, m in ordered]
         _algo.reorder_vertex_groups_by_order(obj, desired)
-        self.report({'INFO'}, f"目标→MMD 名: 改名 {r['renamed']} (目标={obj.name})")
+        self.report({'INFO'}, iface_('Target→MMD Name: Rename {0} (Target={1})').format(r['renamed'], obj.name))
         return {'FINISHED'}
 
 
 class VELO_OT_vg_target_to_unified(bpy.types.Operator):
     bl_idname = "velo.vg_target_to_unified"
-    bl_label = "将目标物体改名为统一编号"
-    bl_description = "按映射表把『目标 Component』上的 MMD 名字顶点组改回统一编号；保持当前 VG 顺序不变"
+    bl_label = 'Rename the target object to a unified number'
+    bl_description = "Rename the MMD name vertex groups on 'Target Component' back to unified numbers according to the mapping table; keep the current VG order unchanged"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         settings = _get_settings(context)
         if settings is None or settings.mmd_profile is None:
-            self.report({'ERROR'}, "未找到终末地映射数据")
+            self.report({'ERROR'}, iface_('Arknights: Endfield mapping data not found'))
             return {'CANCELLED'}
         obj = _mmd_target(context)
         if obj is None:
-            self.report({'ERROR'}, "请先在面板顶部指定『目标 Component』")
+            self.report({'ERROR'}, iface_("Please first specify the 'target Component' at the top of the panel"))
             return {'CANCELLED'}
         # prefer lossless restore from snapshot
         if _algo.restore_vg_snapshot(obj):
-            self.report({'INFO'}, f"目标→统一编号: 已用快照无损还原 (目标={obj.name})")
+            self.report({'INFO'}, iface_('Target → Unified Number: Restored from used snapshot without loss (Target={0})').format(obj.name))
             return {'FINISHED'}
         # when no snapshot: rename by (first occurrence of mmd -> unified)
         seen = set()
@@ -596,10 +597,10 @@ class VELO_OT_vg_target_to_unified(bpy.types.Operator):
             seen.add(row.unified_name)
             ordered.append((row.mmd_name, row.unified_name))
         if not ordered:
-            self.report({'ERROR'}, "MMD 映射表为空且无快照可还原")
+            self.report({'ERROR'}, iface_('MMD Mapping Table is Empty and No Snapshot to Restore'))
             return {'CANCELLED'}
         r = _algo.rename_no_merge_with_suffix(obj, ordered, save_backup=False)
-        self.report({'INFO'}, f"目标→统一编号: 改名 {r['renamed']} (目标={obj.name})")
+        self.report({'INFO'}, iface_('Target → Unified Number: Renamed {0} (Target={1})').format(r['renamed'], obj.name))
         return {'FINISHED'}
 
 
@@ -609,8 +610,8 @@ class VELO_OT_vg_target_to_unified(bpy.types.Operator):
 
 class VELO_OT_vg_table_import(bpy.types.Operator, ImportHelper):
     bl_idname = "velo.vg_table_import"
-    bl_label = "导入映射文本"
-    bl_description = "从 .txt 文件读取 MMD 映射表"
+    bl_label = 'Import Mapping Text'
+    bl_description = 'Read the MMD mapping table from a .txt file.'
     bl_options = {'REGISTER', 'UNDO'}
 
     filename_ext = ".txt"
@@ -619,16 +620,16 @@ class VELO_OT_vg_table_import(bpy.types.Operator, ImportHelper):
     def execute(self, context):
         settings = _get_settings(context)
         if settings is None:
-            self.report({'ERROR'}, "未找到终末地映射数据")
+            self.report({'ERROR'}, iface_('Arknights: Endfield mapping data not found'))
             return {'CANCELLED'}
         if not self.filepath or not os.path.exists(self.filepath):
-            self.report({'ERROR'}, "未选择有效文件")
+            self.report({'ERROR'}, iface_('No valid file selected'))
             return {'CANCELLED'}
         try:
             with open(self.filepath, 'r', encoding='utf-8') as fh:
                 text = fh.read()
         except Exception as e:
-            self.report({'ERROR'}, f"读取失败: {e}")
+            self.report({'ERROR'}, iface_('Failed to read: {0}').format(e))
             return {'CANCELLED'}
         parsed = _tio.parse_mapping_text(text)
         from ...games.arknights_endfield import props as _mmd_props
@@ -641,14 +642,14 @@ class VELO_OT_vg_table_import(bpy.types.Operator, ImportHelper):
         if _mmd_source_is_unified(settings):
             _sync_mmd_source_from_table(settings, save_backup=False)
         _autosync_to_text(settings)
-        self.report({'INFO'}, f"导入完成: rows={report.get('rows', 0)}")
+        self.report({'INFO'}, iface_('Import completed: rows={0}').format(report.get('rows', 0)))
         return {'FINISHED'}
 
 
 class VELO_OT_vg_table_export(bpy.types.Operator, ExportHelper):
     bl_idname = "velo.vg_table_export"
-    bl_label = "导出映射文本"
-    bl_description = "把当前 MMD 映射表写出为 .txt"
+    bl_label = 'Export mapping text'
+    bl_description = 'Write out the current MMD mapping table as .txt'
     bl_options = {'REGISTER'}
 
     filename_ext = ".txt"
@@ -657,16 +658,16 @@ class VELO_OT_vg_table_export(bpy.types.Operator, ExportHelper):
     def execute(self, context):
         settings = _get_settings(context)
         if settings is None:
-            self.report({'ERROR'}, "未找到终末地映射数据")
+            self.report({'ERROR'}, iface_('Arknights: Endfield mapping data not found'))
             return {'CANCELLED'}
         try:
             text = _tio.serialize_mapping(settings)
             with open(self.filepath, 'w', encoding='utf-8') as fh:
                 fh.write(text)
         except Exception as e:
-            self.report({'ERROR'}, f"写入失败: {e}")
+            self.report({'ERROR'}, iface_('Write failed: {0}').format(e))
             return {'CANCELLED'}
-        self.report({'INFO'}, f"已导出到 {self.filepath}")
+        self.report({'INFO'}, iface_('Exported to {0}').format(self.filepath))
         return {'FINISHED'}
 
 
@@ -728,22 +729,19 @@ def _compute_centroids_world(obj, only_indices=None):
 
 class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
     bl_idname = "velo.vg_match_to_mmd_table"
-    bl_label = "按位置匹配 → 写入本表"
+    bl_label = 'Match by position → write to this table.'
     bl_description = (
-        "用 mmd_source_object（MMD 网格）和 mmd_target_object（终末地 Component）"
-        "做一次顶点组重心位置匹配，结果写入本表的 unified 列；不会改名顶点组。"
-        "使用 KDTree 加速：单遍扫描两边网格 + O(N log M) 最近邻"
+        'Perform a vertex group centroid position match using mmd_source_object (MMD mesh) and mmd_target_object (Arknights: Endfield Component), and write the results to the unified column of this table; vertex groups will not be renamed. Accelerated with KDTree: single-pass scan of both meshes + O(N log M) nearest neighbor'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
-    overwrite_existing: BoolProperty(name="覆盖已有 unified", default=True)
-    use_max_distance: BoolProperty(name="启用最大距离过滤", default=False)
-    max_match_distance: bpy.props.FloatProperty(name="最大匹配距离", default=0.5, min=0.0, soft_max=10.0)
+    overwrite_existing: BoolProperty(name='Overwrite existing unified', default=True)
+    use_max_distance: BoolProperty(name='Enable maximum distance filtering.', default=False)
+    max_match_distance: bpy.props.FloatProperty(name='Maximum match distance', default=0.5, min=0.0, soft_max=10.0)
     only_existing_rows: BoolProperty(
-        name="只匹配表内已有的 mmd 行",
+        name='Only match mmd rows that already exist in the table.',
         default=True,
-        description="开启后只对 profile.rows 里 mmd_name 已存在的源 VG 计算重心，"
-                    "可显著加快速度（建议先点『从源物体补行』再来匹配）",
+        description="When enabled, only calculate the centroid for sources VG whose mmd_name already exists in profile.rows, which can significantly speed up the process (it is recommended to first click 'Fill Rows From Source Objects' before matching)",
     )
 
     def execute(self, context):
@@ -751,13 +749,13 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
 
         settings = _get_settings(context)
         if settings is None or settings.mmd_profile is None:
-            self.report({'ERROR'}, "未找到终末地映射数据")
+            self.report({'ERROR'}, iface_('Arknights: Endfield mapping data not found'))
             return {'CANCELLED'}
 
         base = _mmd_source(context)
         target = _mmd_target(context)
         if base is None or target is None:
-            self.report({'ERROR'}, "请先在面板顶部指定 MMD 源物体 + 目标物体")
+            self.report({'ERROR'}, iface_('Please first specify both the MMD source object and target object at the top of the panel'))
             return {'CANCELLED'}
 
         profile = settings.mmd_profile
@@ -776,10 +774,10 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
         src_centroids = _compute_centroids_world(base, only_indices=only_src_indices)
         tgt_centroids = _compute_centroids_world(target)
         if not src_centroids:
-            self.report({'ERROR'}, f"源物体 {base.name} 没有可用的有权重顶点组")
+            self.report({'ERROR'}, iface_('Source object {0} has no available vertex groups with weights').format(base.name))
             return {'CANCELLED'}
         if not tgt_centroids:
-            self.report({'ERROR'}, f"目标物体 {target.name} 没有可用的有权重顶点组")
+            self.report({'ERROR'}, iface_('Target Object {0} has no available vertex groups with weights').format(target.name))
             return {'CANCELLED'}
 
         # V0.1.6 fix: also compute local centroids for the overlay snapshot (unaffected by VG name changes)
@@ -859,7 +857,7 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
             _sync_mmd_source_from_table(settings, save_backup=False)
 
         _autosync_to_text(settings)
-        self.report({'INFO'}, f"匹配(KDTree): 新增 {added}, 更新 {updated}, 跳过 {skipped}")
+        self.report({'INFO'}, iface_('Match (KDTree): Added {0}, Updated {1}, Skipped {2}').format(added, updated, skipped))
         return {'FINISHED'}
 
 
@@ -869,7 +867,7 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
 
 class VELO_OT_mmd_row_add(bpy.types.Operator):
     bl_idname = "velo.vg_row_add"
-    bl_label = "新增空行"
+    bl_label = 'Add a new blank row'
     bl_options = {'REGISTER', 'UNDO'}
 
     after_index: IntProperty(default=-1)
@@ -894,7 +892,7 @@ class VELO_OT_mmd_row_add(bpy.types.Operator):
 
 class VELO_OT_mmd_row_remove(bpy.types.Operator):
     bl_idname = "velo.vg_row_remove"
-    bl_label = "删除该行"
+    bl_label = 'Delete this row'
     bl_options = {'REGISTER', 'UNDO'}
 
     index: IntProperty(default=-1)
@@ -916,8 +914,8 @@ class VELO_OT_mmd_row_remove(bpy.types.Operator):
 
 class VELO_OT_mmd_table_clear(bpy.types.Operator):
     bl_idname = "velo.vg_table_clear"
-    bl_label = "清空映射表"
-    bl_description = "清空当前 MMD 映射表所有行（不可撤销请谨慎）"
+    bl_label = 'Clear Mapping Table'
+    bl_description = 'Clear All Rows of the Current MMD Mapping Table (Irreversible, Please Be Cautious)'
     bl_options = {'REGISTER', 'UNDO'}
 
     def invoke(self, context, event):
@@ -932,7 +930,7 @@ class VELO_OT_mmd_table_clear(bpy.types.Operator):
         profile.rows.clear()
         profile.active_row_index = 0
         _autosync_to_text(settings)
-        self.report({'INFO'}, f"已清空 {n} 行")
+        self.report({'INFO'}, iface_('{0} rows cleared').format(n))
         return {'FINISHED'}
 
 
@@ -955,13 +953,13 @@ def _enum_source_vgs(self, context):
 
 class VELO_OT_mmd_row_pick_source(bpy.types.Operator):
     bl_idname = "velo.vg_row_pick_source"
-    bl_label = "选择源顶点组"
-    bl_description = "从 MMD 源物体的顶点组中挑一个填入本行的 mmd_name"
+    bl_label = 'Select source vertex group'
+    bl_description = "Pick a vertex group from the MMD source object to fill in this row's mmd_name."
     bl_options = {'REGISTER', 'UNDO'}
     bl_property = "choice"
 
     index: IntProperty(default=-1)
-    choice: EnumProperty(name="顶点组", items=_enum_source_vgs)
+    choice: EnumProperty(name='Vertex group', items=_enum_source_vgs)
 
     def invoke(self, context, event):
         wm = context.window_manager
@@ -977,7 +975,7 @@ class VELO_OT_mmd_row_pick_source(bpy.types.Operator):
         if idx < 0:
             idx = profile.active_row_index
         if not (0 <= idx < len(profile.rows)):
-            self.report({'WARNING'}, "无效行")
+            self.report({'WARNING'}, iface_('Invalid Row'))
             return {'CANCELLED'}
         if not self.choice:
             return {'CANCELLED'}
@@ -992,8 +990,8 @@ class VELO_OT_mmd_row_pick_source(bpy.types.Operator):
 
 class VELO_OT_vg_table_to_text(bpy.types.Operator):
     bl_idname = "velo.vg_table_to_text"
-    bl_label = "→ 内置文本"
-    bl_description = "把当前映射表写入当前选中的映射表 Text（未选中会自动按源物体名创建）"
+    bl_label = '→ Built-in Text'
+    bl_description = 'Write the current mapping table into the currently selected mapping table Text (if not selected, it will automatically be created based on the source object name).'
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -1002,14 +1000,14 @@ class VELO_OT_vg_table_to_text(bpy.types.Operator):
             return {'CANCELLED'}
         _autosync_to_text(settings)
         tb = settings.active_mmd_text
-        self.report({'INFO'}, f"已写入 Text『{tb.name if tb else '?'}』")
+        self.report({'INFO'}, iface_("Written to Text '{0}'").format(tb.name if tb else '?'))
         return {'FINISHED'}
 
 
 class VELO_OT_vg_table_from_text(bpy.types.Operator):
     bl_idname = "velo.vg_table_from_text"
-    bl_label = "← 内置文本"
-    bl_description = "从当前选中的映射表 Text 重新加载映射表"
+    bl_label = '← Built-in Text'
+    bl_description = 'Reload the mapping table from the currently selected mapping table Text.'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -1018,12 +1016,12 @@ class VELO_OT_vg_table_from_text(bpy.types.Operator):
             return {'CANCELLED'}
         tb = settings.active_mmd_text
         if tb is None:
-            self.report({'ERROR'}, "未选中映射表 Text")
+            self.report({'ERROR'}, iface_('Unselected mapping table Text'))
             return {'CANCELLED'}
         try:
             text = tb.as_string()
         except Exception as e:
-            self.report({'ERROR'}, f"读取 Text 失败: {e}")
+            self.report({'ERROR'}, iface_('Failed to read Text: {0}').format(e))
             return {'CANCELLED'}
         parsed = _tio.parse_mapping_text(text)
         from ...games.arknights_endfield import props as _mmd_props
@@ -1036,7 +1034,7 @@ class VELO_OT_vg_table_from_text(bpy.types.Operator):
         if _mmd_source_is_unified(settings):
             _sync_mmd_source_from_table(settings, save_backup=False)
         _autosync_to_text(settings)
-        self.report({'INFO'}, f"从 Text 同步: rows={report.get('rows', 0)}")
+        self.report({'INFO'}, iface_('Sync from Text: rows={0}').format(report.get('rows', 0)))
         return {'FINISHED'}
 
 
@@ -1050,10 +1048,10 @@ import json as _json_mmd
 class VELO_OT_mmd_text_new(bpy.types.Operator):
     """Create a new empty MMD mapping table Text and bind it to the current source object; the current profile.rows will be cleared."""
     bl_idname = "velo.mmd_text_new"
-    bl_label = "新建映射表"
+    bl_label = 'Create Mapping Table'
     bl_options = {'REGISTER', 'UNDO'}
 
-    name: bpy.props.StringProperty(name="名称", default="")
+    name: bpy.props.StringProperty(name='Name', default="")
 
     def invoke(self, context, event):
         ef = _get_settings(context)
@@ -1085,7 +1083,7 @@ class VELO_OT_mmd_text_new(bpy.types.Operator):
                 src["velo_mmd_text"] = tb.name
             except Exception:
                 pass
-        self.report({'INFO'}, f"已新建并切换到映射表: {tb.name}")
+        self.report({'INFO'}, iface_('Created and switched to mapping table: {0}').format(tb.name))
         return {'FINISHED'}
 
 

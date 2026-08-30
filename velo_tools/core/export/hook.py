@@ -12,6 +12,8 @@ delete the clone object and clone mesh.
 """
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import json
 import re
 import sys
@@ -311,7 +313,7 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
         if validation_error:
             print(f"[velo.export-hook] {validation_error}")
             try:
-                self.report({'ERROR'}, validation_error)
+                self.report({'ERROR'}, iface_(str(validation_error)))
             except Exception:
                 pass
             return {'CANCELLED'}

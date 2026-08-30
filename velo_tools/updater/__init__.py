@@ -29,32 +29,30 @@ class VELO_AddonUpdaterPreferences(bpy.types.AddonPreferences):
     # toggle. Self-driving: when on, the panel runs its own throttled check and
     # draws the banner, independent of auto_check_update (see updater/notify.py).
     auto_update_notify: bpy.props.BoolProperty(
-        name="自动接收更新通知",
-        description=("启用后，打开 Velo Tools 面板时会按下方间隔自动检查更新，"
-                     "检测到新版本就在面板顶部弹出提示横幅"),
+        name='Automatically receive update notifications',
+        description=('After enabling, when opening the Velo Tools panel, updates will be automatically checked at the interval below, and a prompt banner will appear at the top of the panel when a new version is detected.'),
         default=True,
     )  # type: ignore
     auto_check_update: bpy.props.BoolProperty(
-        name="自动检查更新",
-        description="启用后，按下方间隔在后台自动检查更新",
+        name='Automatically check for updates',
+        description='After enabling, updates will be automatically checked in the background at the interval below.',
         default=True,
     )  # type: ignore
     updater_interval_months: bpy.props.IntProperty(
-        name="月", description="检查更新的间隔月数", default=0, min=0,
+        name='Month', description='Number of months between update checks', default=0, min=0,
     )  # type: ignore
     updater_interval_days: bpy.props.IntProperty(
-        name="天", description="检查更新的间隔天数", default=1, min=0, max=31,
+        name='Heaven', description='Number of days between update checks', default=1, min=0, max=31,
     )  # type: ignore
     updater_interval_hours: bpy.props.IntProperty(
-        name="时", description="检查更新的间隔小时数", default=0, min=0, max=23,
+        name='Time', description='Number of hours between update checks', default=0, min=0, max=23,
     )  # type: ignore
     updater_interval_minutes: bpy.props.IntProperty(
-        name="分", description="检查更新的间隔分钟数", default=0, min=0, max=59,
+        name='Points', description='Interval in minutes for checking updates', default=0, min=0, max=59,
     )  # type: ignore
     receive_prereleases: bpy.props.BoolProperty(
-        name="接收预发布版本",
-        description=("启用后，更新检查会包含 GitHub 上标记为 pre-release 的版本；"
-                     "默认只接收稳定的正式版本"),
+        name='Receive pre-release version',
+        description=('After enabling, update checks will include versions marked as pre-release on GitHub; by default, only stable official releases are received.'),
         default=False,
     )  # type: ignore
 

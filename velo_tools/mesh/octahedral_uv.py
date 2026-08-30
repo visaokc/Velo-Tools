@@ -1,5 +1,7 @@
 """Smooth-normal octahedral UV generation for selected mesh objects."""
 
+from velo_tools.i18n import iface_
+
 import math
 
 import bpy
@@ -55,12 +57,9 @@ def calculate_smooth_normals(mesh):
 
 class MESH_TOOLS_OT_smooth_normals_octahedral_uv(bpy.types.Operator):
     bl_idname = "mesh_tools.smooth_normals_octahedral_uv"
-    bl_label = "平滑法线-八面体UV"
+    bl_label = 'Smooth normals - Octahedral UV'
     bl_description = (
-        "对所有选中物体\n"
-        "平滑法线在切线空间的坐标，投射八面体展开平面\n"
-        "存储在TEXCOORD1\n"
-        "为了计算切线空间，必须要有一个正常展开的UV"
+        'For all selected objects\nSmooth normals in tangent space coordinates, project onto octahedron UV unwrap\nStored in TEXCOORD1\nA properly unwrapped UV is required for tangent space calculation'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -79,10 +78,10 @@ class MESH_TOOLS_OT_smooth_normals_octahedral_uv(bpy.types.Operator):
 
         context.view_layer.update()
         if processed_count == 0:
-            self.report({'WARNING'}, "没有处理任何网格物体，请确保选中了网格物体")
+            self.report({'WARNING'}, iface_('No mesh objects processed, please make sure mesh objects are selected'))
             return {'CANCELLED'}
 
-        self.report({'INFO'}, f"切线空间八面体UV映射完成！共处理 {processed_count} 个网格物体")
+        self.report({'INFO'}, iface_('Tangential space octahedral UV mapping complete! Processed {0} mesh objects in total').format(processed_count))
         return {'FINISHED'}
 
     @staticmethod

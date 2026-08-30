@@ -856,52 +856,52 @@ def _on_shapekey_agg_value_update(self, context):
 class VELO_ShapeKeyAggItem(bpy.types.PropertyGroup):
     """An aggregate entry for shape keys that appear in the target collection (only mesh.shape_keys, i.e. MMD vertex morphs)."""
     name: StringProperty(
-        name="形态键名",
-        description="编辑名称将同步重命名集合里所有同名形态键",
+        name='ShapeKey Name',
+        description='Edit name will rename all items with the same name in the collection synchronously',
         update=_on_shapekey_agg_name_update,
     )
     original_name: StringProperty()
     selected: BoolProperty(
-        name="选择自动重命名",
-        description="仅勾选且当前已解锁的形态键会参与自动重命名",
+        name='Select auto rename',
+        description='Only checked and currently unlocked ShapeKey will participate in automatic renaming.',
         default=False,
     )
     deform_rename_order: IntProperty(default=-1, options={'HIDDEN'})
-    count: IntProperty(default=0, description="该名称在多少个网格上出现")
+    count: IntProperty(default=0, description='The number of meshes this name appears on')
     contributor_names: StringProperty(
-        name="贡献对象",
-        description="包含该形态键的全部网格对象名称",
+        name='Contribution object',
+        description='Contains all mesh object names of this ShapeKey.',
     )
     is_deform_numbered: BoolProperty(
-        name="已有 Deform 编号",
-        description="连续编号锁定前缀中的形态键受保护，不参与自动重命名",
+        name='Deform number already exists',
+        description='The prefix ShapeKey in serial number lock is protected and does not participate in automatic renaming',
         default=False,
     )
     value: FloatProperty(
-        name="值",
+        name='Value',
         default=0.0,
         min=-10.0,
         max=10.0,
         soft_min=0.0,
         soft_max=1.0,
         precision=3,
-        description="同步设置集合里所有同名形态键的 value",
+        description='Synchronize the value of all ShapeKey with the same name in the settings collection',
         update=_on_shapekey_agg_value_update,
     )
 
 
 class VELO_MatchMappingItem(bpy.types.PropertyGroup):
-    enabled: BoolProperty(name="启用", default=True)
-    source_index: IntProperty(name="源索引", default=-1)
-    target_vg_index: IntProperty(name="目标顶点组索引", default=-1)
-    original_name: StringProperty(name="原始名称")
-    current_name: StringProperty(name="当前名称")
+    enabled: BoolProperty(name='Enable', default=True)
+    source_index: IntProperty(name='Source Index', default=-1)
+    target_vg_index: IntProperty(name='Target vertex group index', default=-1)
+    original_name: StringProperty(name='Original Name')
+    current_name: StringProperty(name='Current name')
     target_name: StringProperty(
-        name="目标名称",
-        description="目标顶点组名; 直接编辑可二次修正, 同步顶点组与骨骼",
+        name='Target Name',
+        description='Target vertex group name; direct editing can be corrected a second time, synchronize vertex groups with skeleton',
         update=_on_target_name_update,
     )
-    distance: FloatProperty(name="距离", default=-1.0)
+    distance: FloatProperty(name='Distance', default=-1.0)
     matched: BoolProperty(default=True)
 
     base_centroid_local: FloatVectorProperty(size=3, default=(0.0, 0.0, 0.0))
@@ -962,22 +962,22 @@ def _on_active_general_text_update(self, context):
 
 class VELO_ToolsSettings(bpy.types.PropertyGroup):
     base_object: PointerProperty(
-        name="源物体",
+        name='Source Object',
         type=bpy.types.Object,
         poll=lambda self, obj: obj.type == 'MESH',
         update=lambda self, context: _on_base_object_update(self, context),
     )
     target_object: PointerProperty(
-        name="目标物体",
+        name='Target Object',
         type=bpy.types.Object,
         poll=lambda self, obj: obj.type == 'MESH',
         update=lambda self, context: _on_target_object_update(self, context),
     )
     armature_object: PointerProperty(
-        name="骨架",
+        name='Skeleton',
         type=bpy.types.Object,
         poll=lambda self, obj: obj.type == 'ARMATURE',
-        description="可选; 选择后改名将同步到骨骼",
+        description='Optional; if selected, renaming will be synchronized to the skeleton.',
     )
 
     mappings: CollectionProperty(type=VELO_MatchMappingItem)
@@ -995,35 +995,35 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
 
     # Task 4: current mapping-table Text selector (template_ID style, consistent with the MMD section)
     active_general_text: PointerProperty(
-        name="映射表",
+        name='Mapping Table',
         type=bpy.types.Text,
-        description="当前使用的映射表内置文本；点击三角小图标在多个映射表之间切换",
+        description='Current mapping table built-in text; click the small triangle icon to switch between multiple mapping tables',
         update=_on_active_general_text_update,
     )
 
     # Match options
     match_method: EnumProperty(
-        name="匹配算法",
+        name='Matching Algorithm',
         items=[
-            ('SAMPLES', "Top-K 加权样本", "每个顶点组取权重最高 K 个顶点做加权点云距离 (V0.0.5 算法)"),
-            ('CENTROID', "权重重心", "仅比较权重中心 (旧算法, 速度最快, 区分度低)"),
+            ('SAMPLES', 'Top-K Weighted Samples', 'For each vertex group, take the top K vertices by weight for weighted point cloud distance (V0.0.5 algorithm)'),
+            ('CENTROID', 'Weight Center of Gravity', 'Only compare weight centers (old algorithm, fastest speed, low distinction).'),
         ],
         default='SAMPLES',
     )
     sample_count: IntProperty(
-        name="采样数 K",
+        name='Number of samples K',
         default=8,
         min=1,
         max=64,
-        description="每个顶点组用权重最高的 K 个顶点做匹配",
+        description='For each vertex group, use the top K vertices by weight for matching',
     )
     use_max_distance: BoolProperty(
-        name="启用最大距离过滤",
+        name='Enable maximum distance filtering.',
         default=False,
-        description="得分(距离)超过阈值的匹配视为失败, 保留原名",
+        description='Matches with score (distance) exceeding the threshold are considered failed, original name retained',
     )
     max_match_distance: FloatProperty(
-        name="最大匹配距离",
+        name='Maximum match distance',
         default=0.5,
         min=0.0,
         soft_max=10.0,
@@ -1031,46 +1031,46 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
 
     # Visualization
     show_overlay: BoolProperty(
-        name="启用可视化校对",
+        name='Enable visualization proofreading',
         default=False,
-        description="旧通用映射可视化开关；当前通用映射已迁移到独立面板，此项不再自动关闭任何其它可视化功能",
+        description='Old General Mapping Visualization Toggle; The current general mapping has been migrated to a separate panel, and this no longer automatically disables any other visualization features',
         update=lambda self, context: _on_match_show_overlay_update(self, context),
     )
     only_show_active: BoolProperty(
-        name="只显示当前选中行",
+        name='Only display the currently selected row.',
         default=False,
-        description="仅显示当前选中映射行的可视化连线和端点",
+        description='Only display visual connections and endpoints for the currently selected mapping row.',
     )
     overlay_max_distance: FloatProperty(
-        name="距离阈值(可视化)",
+        name='Distance threshold (visualization)',
         default=0.1,
         min=0.0,
         soft_max=2.0,
-        description="可视化中判断匹配距离是否正常的阈值；超过阈值会显示为异常颜色",
+        description='Threshold for determining whether the match distance is normal in visualization; exceeding the threshold will display as an abnormal color.',
     )
     show_labels: BoolProperty(
-        name="显示名称标签",
+        name='Display name label',
         default=True,
-        description="在可视化端点旁显示顶点组名称标签",
+        description='Display vertex group name labels next to the visual endpoint',
     )
     show_unmatched_targets: BoolProperty(
-        name="显示未匹配的目标顶点组",
+        name='Show unmatched target vertex groups',
         default=True,
-        description="显示目标网格上尚未被映射表认领的可用顶点组端点",
+        description='Show available vertex group endpoints on the target mesh that have not yet been claimed by the mapping table',
     )
     show_unmatched_sources: BoolProperty(
-        name="显示未匹配的源顶点组",
+        name='Show unmatched source vertex groups',
         default=False,
-        description="显示源网格上尚未被映射表认领的可用顶点组端点",
+        description='Show available vertex group endpoints on the source mesh that have not yet been claimed by the mapping table',
     )
 
     # ============================================================
     # Mesh / shape-key features (separate N-panel tab "Velo 网格")
     # ============================================================
     target_collection: PointerProperty(
-        name="目标集合",
+        name='Target collection',
         type=bpy.types.Collection,
-        description="形态键聚合面板的扫描范围",
+        description='ShapeKey Scan Range of Aggregate Panel',
         update=lambda self, context: _on_target_collection_update(self, context),
     )
     shapekey_items: CollectionProperty(type=VELO_ShapeKeyAggItem)
@@ -1082,10 +1082,9 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
     # Unit = object local coordinates (meters). Baking bones into shape keys often leaves residual displacement on the order of 1e-4 ~ 1e-3;
     # Blender's built-in "clean" only deletes exact zeros, so this provides an adjustable threshold as a fallback.
     shapekey_cleanup_threshold: FloatProperty(
-        name="形态键清理阈值",
+        name='ShapeKey Cleanup Threshold',
         description=(
-            "按材质拆分后, 若某形态键在该子网格上所有顶点的最大位移 ≤ 此阈值, "
-            "则视为无效并删除 (单位: 米, 物体局部坐标)"
+            'After separating by material, if the maximum displacement of all vertices of a certain ShapeKey on this submesh ≤ this threshold, consider it invalid and delete it (unit: meters, object local coordinates)'
         ),
         default=1e-4,
         min=0.0,
@@ -1094,30 +1093,29 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
         step=0.01,
     )
     mesh_component_prefix_id: IntProperty(
-        name="Component 编号",
-        description="网格工具中为选中物体添加 Component 前缀时使用的编号",
+        name='Component numbering',
+        description='Number used when adding Component prefix to selected objects in the grid tool',
         default=0,
         min=0,
         soft_max=999,
     )
 
     mesh_auto_material_on_rename: BoolProperty(
-        name="改名时自动同步材质球",
+        name='Automatically synchronize material when renaming',
         description=(
-            "开启后，当前游戏 Export Mod 部件集合及其子集合中的单材质网格物体改名时，"
-            "自动同步 mesh 与材质球名称；多材质槽物体不处理"
+            'When enabled, renaming single-material mesh objects in the current game Export Mod component set and its sub-collections will automatically sync the mesh and material names; multi-material objects are not processed'
         ),
         default=False,
     )
 
     # Top-of-main-panel tab switch
     active_tab: EnumProperty(
-        name="功能区",
+        name='Function Area',
         items=[
-            ('MATCH', "顶点组工具", "顶点组名称匹配 / MMD 映射 / 顶点组操作"),
-            ('MESH', "网格工具", "材质 / 拆分合并 / 形态键聚合 / 多物体雕刻"),
-            ('WEIGHT', "权重工具", "权重传递 / 平滑 / 限制组数量"),
-            ('GAME', "游戏", "游戏 MOD 工作流：终末地(EFMI) / 鸣潮(WWMI)"),
+            ('MATCH', 'Vertex Group Tools', 'Vertex Group Name Matching / MMD Mapping / Vertex Group Operations'),
+            ('MESH', 'Grid tool', 'Material / Split and Merge / ShapeKey Aggregation / Multi-Object Sculpting'),
+            ('WEIGHT', 'Weight Tool', 'Weight transfer / Smooth / Limit group count'),
+            ('GAME', 'Game', 'Game MOD Workflow: Arknights: Endfield(EFMI) / Wuthering Waves(WWMI)'),
         ],
         default='MATCH',
         update=_on_active_tab_update,
@@ -1125,10 +1123,10 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
 
     # Game selector (dropdown) inside the "游戏" tab: Endfield (EFMI) / Wuthering (WWMI)
     active_game: EnumProperty(
-        name="游戏",
+        name='Game',
         items=[
-            ('ENDFIELD', "终末地", "明日方舟：终末地 MOD 工作流（EFMITools）"),
-            ('WUTHERING', "鸣潮", "鸣潮 MOD 工作流（WWMITools）"),
+            ('ENDFIELD', 'Arknights: Endfield', 'Arknights: Endfield Mod Workflow (EFMI Tools)'),
+            ('WUTHERING', 'Wuthering Waves', 'Wuthering Waves MOD Workflow (WWMITools)'),
         ],
         default='ENDFIELD',
         update=_on_active_game_update,

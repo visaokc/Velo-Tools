@@ -66,7 +66,7 @@ class ShapeKeyGroupState(bpy.types.PropertyGroup):
 
 class ShapeKeySettings(bpy.types.PropertyGroup):
     enabled: bpy.props.BoolProperty(
-        name="导出自定义形状键",
+        name='Export custom shape keys',
         description=(
             "When enabled, shape keys named 'Deform <num> <name>' "
             "(whitespace optional, e.g. 'Deform 1 abc' or 'Deform1abc') "
@@ -80,7 +80,7 @@ class ShapeKeySettings(bpy.types.PropertyGroup):
     )  # type: ignore
 
     merge_buffers: bpy.props.BoolProperty(
-        name="合并 Buffer 文件",
+        name='Merge Buffer file',
         description=(
             "Merge all shape-key delta + map files inside one Component into a "
             "single deltas buffer + a single lookup buffer. Massively reduces "
@@ -95,8 +95,8 @@ class ShapeKeySettings(bpy.types.PropertyGroup):
     )  # type: ignore
 
     show_detector: bpy.props.BoolProperty(
-        name="显示已识别的形状键",
-        description="展开 / 折叠下方的实时识别列表。",
+        name='Show recognized shape keys',
+        description='Expand / Collapse the real-time recognition list below.',
         default=True,
     )  # type: ignore
 

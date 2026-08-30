@@ -19,6 +19,13 @@ Requires Blender 3.6+ (developed and tested on 4.4).
 - [English user manual](docs/user-manual.en.md)
 - [Chinese user manual](docs/user-manual.zh-CN.md)
 
+## UI language
+
+Velo Tools follows Blender's interface language automatically. Simplified and
+Traditional Chinese use the Simplified Chinese UI catalog; every other Blender
+language uses the canonical English UI. This covers labels, tooltips, operator
+messages, and updater controls.
+
 Quick guide:
 
 | Goal | Start here |

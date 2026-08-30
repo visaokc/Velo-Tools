@@ -8,6 +8,8 @@ the original draw is restored on unregister.
 The panel also has a live feedback area showing the count of Deform shape keys
 detected in the current component collection along with any naming conflicts.
 """
+
+from velo_tools.i18n import iface_
 import bpy
 import sys
 import traceback
@@ -308,7 +310,7 @@ def _draw_shapekey_row(layout, context):
         text="", emboss=False,
     )
     leaf_count = sum(1 for it in settings.detected_items if it.item_kind == "leaf")
-    head.label(text=f"已识别形状键  ({leaf_count})", icon='SHAPEKEY_DATA')
+    head.label(text=iface_('Shape keys recognized ({0})').format(leaf_count), icon='SHAPEKEY_DATA')
     head.operator(
         SHAPEKEY_OT_RefreshDetected.bl_idname,
         text="", icon='FILE_REFRESH', emboss=False,
@@ -318,12 +320,12 @@ def _draw_shapekey_row(layout, context):
         return
 
     if coll is None:
-        box.label(text="未设置部件集合（Component Collection）", icon='INFO')
+        box.label(text='Part collection (Component Collection) not set', icon='INFO')
         return
 
     if not settings.detected_items:
-        box.label(text="未发现命名为 'Deform <编号> <名称>' 的形状键", icon='INFO')
-        box.label(text="如果你刚刚编辑了形状键，请点右侧刷新按钮",
+        box.label(text="Shape key named 'Deform <number> <name>' not found", icon='INFO')
+        box.label(text='If you just edited the shape key, click the refresh button on the right',
                   icon='INFO')
         return
 
@@ -360,7 +362,7 @@ def _draw_shapekey_row(layout, context):
         rows=n_rows, maxrows=n_max,
         type='DEFAULT',
     )
-    box.label(text="点击列表行可跳转到对应物体与形状键",
+    box.label(text='Click on a list row to jump to the corresponding object and shape key',
               icon='RESTRICT_SELECT_OFF')
 
     # Validate naming issues (across all detected leaves).
@@ -381,7 +383,7 @@ def _draw_shapekey_row(layout, context):
     if duplicates:
         warn = layout.column(align=True)
         warn.alert = True
-        warn.label(text="形状键重复 — 导出将被阻止：", icon='ERROR')
+        warn.label(text='Shape Key Duplicate — Export will be blocked:', icon='ERROR')
         for obj_name, slot, name, raws in duplicates:
             raw_str = ", ".join(f"'{r}'" for r in raws)
             warn.label(text=f"  [{obj_name}] Deform {slot} '{name}' → {raw_str}")
@@ -394,7 +396,7 @@ def _draw_shapekey_row(layout, context):
     if disagreements:
         warn = layout.column(align=True)
         warn.alert = True
-        warn.label(text="同一物体的 Deform 编号重复 — 导出将被阻止：",
+        warn.label(text='Duplicate Deform number on the same object — export will be blocked:',
                    icon='ERROR')
         for obj_name, slot, names in disagreements:
             names_str = ", ".join(f"'{name}'" for name in names)
@@ -417,7 +419,7 @@ def _make_patched_draw(orig_draw):
             except Exception:
                 row = layout.row()
                 row.alert = True
-                row.label(text="ShapeKey UI 渲染异常（详见控制台）", icon='ERROR')
+                row.label(text='ShapeKey UI render exception (see console for details)', icon='ERROR')
                 traceback.print_exc()
             # ─── injection end ───
             layout.row().prop(cfg, 'allow_export_without_lods')

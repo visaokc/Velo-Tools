@@ -5,6 +5,8 @@ properties.py (to centralize management with existing properties); this module
 handles: scan/refresh, auto-listening (depsgraph), batch renaming.
 """
 
+from velo_tools.i18n import iface_
+
 import json
 from pathlib import Path
 
@@ -155,8 +157,8 @@ _LAST_SIG = [None]
 
 class VELO_OT_refresh_shapekey_list(bpy.types.Operator):
     bl_idname = "velo.refresh_shapekey_list"
-    bl_label = "读取/刷新形态键"
-    bl_description = "扫描目标集合下所有真实网格的形态键 (跳过 Basis), 按名称聚合"
+    bl_label = 'Scan / Refresh ShapeKeys'
+    bl_description = 'Scan all real meshes under the target collection for ShapeKey (skip Basis) and aggregate by name'
     bl_options = {'REGISTER'}
 
     @classmethod
@@ -166,17 +168,17 @@ class VELO_OT_refresh_shapekey_list(bpy.types.Operator):
     def execute(self, context):
         s = context.scene.velo_tools
         if s.target_collection is None:
-            self.report({'WARNING'}, "请先选择目标集合")
+            self.report({'WARNING'}, iface_('Please select the target collection first'))
             return {'CANCELLED'}
         refresh_shapekey_list(context, force=True)
-        self.report({'INFO'}, f"形态键种类: {len(s.shapekey_items)}")
+        self.report({'INFO'}, iface_('ShapeKey Type: {0}').format(len(s.shapekey_items)))
         return {'FINISHED'}
 
 
 class VELO_OT_toggle_shapekey_rename_selection(bpy.types.Operator):
     bl_idname = "velo.toggle_shapekey_rename_selection"
-    bl_label = "全选/全不选可重命名形态键"
-    bl_description = "仅切换尚无 Deform 编号的条目"
+    bl_label = 'Select / Deselect All Renamable ShapeKeys'
+    bl_description = 'Only switch entries that do not yet have a Deform number.'
     bl_options = {'REGISTER'}
 
     @classmethod
@@ -197,7 +199,7 @@ class VELO_OT_toggle_shapekey_rename_selection(bpy.types.Operator):
 
 class VELO_OT_shapekey_contributors_tooltip(bpy.types.Operator):
     bl_idname = "velo.shapekey_contributors_tooltip"
-    bl_label = "形态键所在对象"
+    bl_label = 'ShapeKey Owner Objects'
     bl_options = {'INTERNAL'}
 
     count: IntProperty(options={'HIDDEN'})
@@ -240,10 +242,9 @@ def _reserved_deform_numbers(context):
 
 class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
     bl_idname = "velo.rename_shapekeys_deform"
-    bl_label = "自动重命名 (Deform N)"
+    bl_label = 'Auto-Rename (Deform N)'
     bl_description = (
-        "为已勾选且可重命名的形态键分配最小可用编号; 鸣潮模式会从"
-        "对象源 Metadata.json 保留原生编号，手工高编号不会抬高后续编号"
+        'Assign the smallest available number to ShapeKey that is checked and renamable; Wuthering Waves mode preserves original numbers from object source Metadata.json, manual high numbers will not raise subsequent numbers'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -256,7 +257,7 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
         s = context.scene.velo_tools
         coll = s.target_collection
         if coll is None or len(s.shapekey_items) == 0:
-            self.report({'WARNING'}, "请先选择集合并刷新形态键")
+            self.report({'WARNING'}, iface_('Please select a collection and refresh ShapeKey'))
             return {'CANCELLED'}
 
         order, _count, _first_value, _contributors = _scan_collection(coll)
@@ -273,7 +274,7 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
         try:
             reserved_numbers = _reserved_deform_numbers(context)
         except ValueError as exc:
-            self.report({'ERROR'}, str(exc))
+            self.report({'ERROR'}, iface_(str(str(exc))))
             return {'CANCELLED'}
 
         plan = build_rename_plan(
@@ -286,7 +287,7 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
         skipped = len(selected_names) - len(plan)
 
         if not plan:
-            self.report({'INFO'}, f"没有可重命名的已勾选条目（已选择 {len(selected_names)}，跳过 {skipped}）")
+            self.report({'INFO'}, iface_('No checked items to rename (selected {0}, skipped {1})').format(len(selected_names), skipped))
             return {'CANCELLED'}
 
         meshes = [o for o in coll.all_objects if is_real_mesh(o) and o.data.shape_keys]
@@ -334,7 +335,7 @@ class VELO_OT_rename_shapekeys_deform(bpy.types.Operator):
 
         self.report(
             {'INFO'},
-            f"自动重命名完成：选择 {len(selected_names)} 种，修改 {len(plan)} 种/{renamed} 个形态键，跳过 {skipped} 种",
+            iface_('Automatic renaming completed: selected {0}, modified {1}/{2} ShapeKey, skipped {3}').format(len(selected_names), len(plan), renamed, skipped),
         )
         return {'FINISHED'}
 

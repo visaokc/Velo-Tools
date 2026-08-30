@@ -362,7 +362,7 @@ def _enter_weight_paint(context, obj, vg_name):
 
 class VELO_OT_mmd_pick_modal(bpy.types.Operator):
     bl_idname = "velo.mmd_pick_modal"
-    bl_label = "MMD 映射 - 端点拾取/拖拽"
+    bl_label = 'MMD Mapping - Endpoint Picking/Dragging'
     bl_options = {'INTERNAL'}
 
     _running = False

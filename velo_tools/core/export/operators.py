@@ -1,6 +1,8 @@
 """Operators for export preprocessing + handing off to the adapter export (V0.1.5)."""
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import bpy
 from bpy.props import BoolProperty, StringProperty
 
@@ -23,22 +25,21 @@ def _get_source(context):
 
 class VELO_OT_mmd_pre_export(bpy.types.Operator):
     bl_idname = "velo.mmd_pre_export"
-    bl_label = "执行 MMD 导出预处理"
+    bl_label = 'Run MMD Export Preprocessing'
     bl_description = (
-        "对 MMD 源物体执行：按映射改名为统一编号 → 删除特殊命名 VG → 删除无权重 VG。"
-        "用于在调起 EFMI / WWMI 导出之前清理出符合导出器约束的网格。"
+        'Perform on MMD source objects: Rename according to mapping to unify numbering → Delete specially named VGs → Delete VGs without weights. Used to clean up meshes to meet exporter constraints before invoking EFMI / WWMI for export.'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
-    drop_special: BoolProperty(name="删除特殊命名 VG", default=True)
-    drop_empty: BoolProperty(name="删除无权重 VG", default=True)
-    rename_to_unified: BoolProperty(name="改名为统一编号", default=True)
+    drop_special: BoolProperty(name='Delete specially named VG', default=True)
+    drop_empty: BoolProperty(name='Delete unweighted VG', default=True)
+    rename_to_unified: BoolProperty(name='Rename to unified number', default=True)
 
     def execute(self, context):
         s = _get_settings(context)
         obj = _get_source(context)
         if s is None or obj is None:
-            self.report({'ERROR'}, "请先在 MMD↔统一编号映射 面板顶部指定 MMD 源物体")
+            self.report({'ERROR'}, iface_('Please first specify the MMD source object at the top of the MMD↔Unified Numbering Mapping panel'))
             return {'CANCELLED'}
         profile = s.mmd_profile if s else None
         r = preexport.apply_mmd_pre_export(
@@ -59,32 +60,31 @@ class VELO_OT_mmd_pre_export(bpy.types.Operator):
             pass
         self.report(
             {'INFO'},
-            f"预处理完成: 改名 {r['renamed']}, 合并 {r['merged']}, "
-            f"删特殊 {r['dropped_special']}, 删空 {r['dropped_empty']}",
+            iface_('Preprocessing completed: Renamed {0}, Merged {1}, Removed special {2}, Removed empty {3}').format(r['renamed'], r['merged'], r['dropped_special'], r['dropped_empty']),
         )
         return {'FINISHED'}
 
 
 class VELO_OT_invoke_game_export(bpy.types.Operator):
     bl_idname = "velo.invoke_game_export"
-    bl_label = "预处理 + 转交目标导出器"
+    bl_label = 'Preprocess and Run Target Exporter'
     bl_description = (
-        "先对 MMD 源物体执行导出预处理，然后调起当前选定的导出适配器（EFMI / WWMI）"
+        'First perform export preprocessing on the MMD source object, then invoke the currently selected export adapter (EFMI / WWMI)'
     )
     bl_options = {'REGISTER'}
 
-    do_preprocess: BoolProperty(name="先执行预处理", default=True)
+    do_preprocess: BoolProperty(name='Perform preprocessing first', default=True)
 
     def execute(self, context):
         s = _get_settings(context)
         if s is None:
-            self.report({'ERROR'}, "未找到终末地映射数据")
+            self.report({'ERROR'}, iface_('Arknights: Endfield mapping data not found'))
             return {'CANCELLED'}
 
         obj = _get_source(context)
         if self.do_preprocess:
             if obj is None:
-                self.report({'ERROR'}, "请先指定 MMD 源物体（或取消「先执行预处理」）")
+                self.report({'ERROR'}, iface_("Please specify the MMD source object first (or cancel 'Preprocess First')"))
                 return {'CANCELLED'}
             preexport.apply_mmd_pre_export(obj, s.mmd_profile)
 
@@ -96,14 +96,14 @@ class VELO_OT_invoke_game_export(bpy.types.Operator):
         if not is_avail():
             self.report(
                 {'ERROR'},
-                f"目标导出器 {adapter_key} 未检测到，请安装/启用对应插件后重试",
+                iface_('Target Exporter {0} not detected, please install/enable the corresponding plugin and try again').format(adapter_key),
             )
             return {'CANCELLED'}
         result = invoke(context)
         if not result.get("ok"):
-            self.report({'ERROR'}, result.get("msg", "调用导出失败"))
+            self.report({'ERROR'}, result.get("msg", iface_('Call export failed')))
             return {'CANCELLED'}
-        self.report({'INFO'}, result.get("msg", "已调起导出"))
+        self.report({'INFO'}, result.get("msg", iface_('Export triggered')))
         return {'FINISHED'}
 
 

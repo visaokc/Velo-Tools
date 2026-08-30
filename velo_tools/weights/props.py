@@ -36,15 +36,15 @@ def _on_mirror_mapping_update(self, context):
 
 class VELO_WeightMirrorMapping(bpy.types.PropertyGroup):
     left_group: StringProperty(
-        name="左侧组",
+        name='Left group',
         default="",
-        description="手动镜像映射的一侧顶点组名",
+        description='Manually mirror the vertex group name on one side of the mapping',
         update=_on_mirror_mapping_update,
     )
     right_group: StringProperty(
-        name="右侧组",
+        name='Right-side group',
         default="",
-        description="手动镜像映射的另一侧顶点组名",
+        description='Manually mirror the vertex group name on the other side of the mapping',
         update=_on_mirror_mapping_update,
     )
 
@@ -599,134 +599,134 @@ def _on_manual_mirror_target_group_update(self, context):
 
 class VELO_WeightSettings(bpy.types.PropertyGroup):
     source_object: PointerProperty(
-        name="来源网格",
+        name='Source Mesh',
         type=bpy.types.Object,
         poll=_is_mesh_poll,
-        description="提供权重来源的网格；来源顶点组从该物体读取",
+        description='Provide a mesh for weight sources; the source vertex group is read from this object',
         update=_on_source_object_update,
     )
     target_object: PointerProperty(
-        name="目标网格",
+        name='Target mesh',
         type=bpy.types.Object,
         poll=_is_mesh_poll,
-        description="接收新权重的网格；承接组会在该物体上复用或创建",
+        description='Receive mesh with new weights; the associated group will be reused or created on this object',
         update=_on_target_object_update,
     )
     armature_object: PointerProperty(
-        name="目标骨架",
+        name='Target skeleton',
         type=bpy.types.Object,
         poll=_is_armature_poll,
-        description="可选；承接组不存在且允许创建新骨时，会在该骨架里创建同名 deform 骨骼。若留空，会尝试从目标网格的父级/Armature 修改器自动推断。",
+        description='Optional; if the target group does not exist and creating new bones is allowed, a deform bone with the same name will be created in this armature. If left blank, it will try to automatically infer from the parent / Armature modifier of the target mesh.',
     )
     merge_source_group: StringProperty(
-        name="转移来源组",
+        name='Transfer source group',
         default="",
-        description="当前选中网格上要把权重转出的顶点组",
+        description='Vertex group on the currently selected mesh to transfer weights from',
     )
     merge_target_group: StringProperty(
-        name="转移目标组",
+        name='Transfer target group',
         default="",
-        description="当前选中网格上要接收额外权重的顶点组",
+        description='Vertex group on the currently selected mesh to receive additional weights',
     )
     available_source_vgs: CollectionProperty(
         type=VELO_WeightVGName,
-        description="来源网格上可作为权重供体的非锁定、非特殊顶点组候选",
+        description='Candidates for weight donors on the source mesh that are non-locked and non-special vertex groups',
     )
     available_donor_vgs: CollectionProperty(
         type=VELO_WeightVGName,
-        description="目标网格上可手动选择的供体组候选；只显示未锁定、非特殊顶点组",
+        description='Candidate donor groups manually selectable on the target mesh; only unlocked, non-special vertex groups are displayed',
     )
     available_mirror_vgs: CollectionProperty(
         type=VELO_WeightVGName,
-        description="来源网格上可作为镜像顶点组的候选",
+        description='Candidates for mirror vertex groups on the source mesh',
     )
     mirror_mappings: CollectionProperty(
         type=VELO_WeightMirrorMapping,
-        description="场景级手动镜像顶点组映射；同名映射会作用于当前 Velo 接管范围内的 Component 物体",
+        description='Scene-level manual mirror vertex group mapping; mappings with the same name will apply to Component objects within the current Velo takeover range',
     )
     active_mirror_mapping_index: IntProperty(
-        name="镜像映射索引",
+        name='Mirror Mapping Index',
         default=0,
         min=0,
     )
     source_group: StringProperty(
-        name="来源顶点组",
+        name='Source Vertex Group',
         default="",
-        description="要从来源网格读取的顶点组；会自动根据 MMD 映射表推断承接组",
+        description='Vertex groups to be read from the source mesh; binding groups will be automatically inferred according to the MMD mapping table.',
         update=_on_source_group_update,
     )
     mirror_group: StringProperty(
-        name="镜像顶点组",
+        name='Mirror Vertex Group',
         default="",
-        description="来源顶点组的镜像组；来源顶点组变化时会自动重新匹配，也可以手动改选",
+        description='Mirror group of the source vertex group; automatically rematches when the source vertex group changes, can also be manually reselected',
         update=_on_mirror_group_update,
     )
     mirror_status: StringProperty(
-        name="镜像状态",
+        name='Mirror Status',
         default="",
-        description="最近一次镜像顶点组自动匹配结果",
+        description='The most recent automatic matching result of the mirror vertex group',
     )
     mirror_donor_status: StringProperty(
-        name="镜像供体状态",
+        name='Mirror Donor Status',
         default="",
-        description="最近一次镜像供体预计算结果",
+        description='The most recent precomputation result of the mirror donor',
     )
     engine: EnumProperty(
-        name="传递引擎",
+        name='Transfer engine',
         items=[
-            ('ROBUST', "Robust", "robust_weight_transfer 最近表面匹配 + inpaint"),
-            ('DATA_TRANSFER_SURFACE', "面插值传递", "Blender Data Transfer 数据传递修改器的 POLYINTERP_NEAREST 表面面插值"),
+            ('ROBUST', "Robust", 'robust_weight_transfer Recent Surface Matching + Inpaint'),
+            ('DATA_TRANSFER_SURFACE', 'Face interpolation pass', 'Blender Data Transfer modifier POLYINTERP_NEAREST surface interpolation'),
         ],
         default='ROBUST',
-        description="选择权重传递核心：Robust 表面匹配/inpaint，或 Blender Data Transfer 数据修改器的 POLYINTERP_NEAREST 表面面插值传递",
+        description='Select weight transfer core: Robust surface matching/inpaint, or POLYINTERP_NEAREST surface interpolation transfer of Blender Data Transfer modifier',
     )
     manual_target_group_name: BoolProperty(
-        name="手动指定承接组",
+        name='Manually specify receiving group',
         default=False,
-        description="关闭时按 MMD 映射表自动识别承接组；开启后使用下面填写的承接组名作为覆盖",
+        description='When off, automatically recognize the undertaking group according to the MMD mapping table; when on, use the undertaking group name filled in below as an override',
         update=_on_manual_target_group_update,
     )
     target_group_name: StringProperty(
-        name="承接组名",
+        name='Parent group name',
         default="",
-        description="自动推断或手动指定的目标顶点组名；自动模式会优先使用 MMD 映射表认领的对应组",
+        description='Automatically infer or manually specify the target vertex group name; in automatic mode, the corresponding group claimed by the MMD mapping table will be prioritized',
         update=_on_target_group_name_update,
     )
     manual_mirror_target_group_name: BoolProperty(
-        name="手动指定镜像承接组",
+        name='Manually specify mirrored receiving group',
         default=False,
-        description="关闭时按当前镜像传递规则自动识别镜像承接组；开启后使用下面填写的镜像承接组名作为覆盖",
+        description='When off, automatically recognize the mirror undertaking group according to the current image transmission rules; when on, use the mirror undertaking group name filled in below as an override',
         update=_on_manual_mirror_target_group_update,
     )
     mirror_target_group_name: StringProperty(
-        name="镜像承接组名",
+        name='Mirror Receiving Group Name',
         default="",
-        description="镜像传递时写入的目标顶点组名；可手动覆盖自动解析结果",
+        description='The name of the target vertex group written during mirror transfer; can manually override the automatically parsed result',
         update=_on_mirror_target_group_update,
     )
     reuse_existing_group: BoolProperty(
-        name="复用已有承接组",
+        name='Reuse already has an acceptance group',
         default=True,
-        description="保留项：当前流程会自动复用目标网格上存在且未锁定的承接组",
+        description='Holded: The current process will automatically reuse any unlocked successor groups on the target mesh',
     )
     clear_before_transfer: BoolProperty(
-        name="传递前清空承接组",
+        name='Clear the receiving group before transfer',
         default=True,
-        description="保留项：当前执行会在写入前清空承接组，避免旧权重残留",
+        description='Reserved item: The current execution will clear the acceptance group before writing to avoid retaining old weights',
     )
     create_bone_if_missing: BoolProperty(
-        name="无承接组时创建新骨",
+        name='Create New Bone When No Connected Group',
         default=True,
-        description="承接组不存在且选择了目标骨架时，同时创建同名 deform 骨骼",
+        description='If the parent group does not exist and the target skeleton is selected, simultaneously create a deform bone with the same name',
     )
     auto_lock_target_groups: BoolProperty(
-        name="传递后自动锁定承接组",
+        name='Automatically lock receiving group after transfer',
         default=True,
-        description="权重传递成功后锁定本次写入的承接组；镜像传递时也会锁定镜像承接组，防止后续限制或规格化改写已完成组",
+        description='After the weight transfer is successful, lock the recipient group for this write; during mirror transfer, the mirror recipient group will also be locked to prevent subsequent restrictions or normalization rewrites from affecting the completed group.',
     )
     donor_count: IntProperty(
-        name="自动供体数",
-        description="规格化时最多使用的供体组数量；当前固定为 1 到 6 档，自动选择不会为了凑满上限强行加入弱相关组",
+        name='Automatic donor count',
+        description='The maximum number of donor groups used during normalization; currently fixed at 1 to 6 levels, automatic selection will not forcibly add weakly related groups to reach the limit',
         default=4,
         min=1,
         soft_max=6,
@@ -734,39 +734,39 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
         update=_on_donor_count_update,
     )
     donor_slot_1: StringProperty(
-        name="供体 1",
+        name='Donor 1',
         default="",
-        description="规格化时优先使用的第 1 个供体；来源组切换时会自动预填",
+        description='First donor to prioritize when normalizing; will be automatically pre-filled when switching source groups',
         update=_on_donor_slot_1_update,
     )
     donor_slot_2: StringProperty(
-        name="供体 2",
+        name='Donor 2',
         default="",
-        description="规格化时优先使用的第 2 个供体；来源组切换时会自动预填",
+        description='Second donor to prioritize when normalizing; will be automatically pre-filled when switching source groups',
         update=_on_donor_slot_2_update,
     )
     donor_slot_3: StringProperty(
-        name="供体 3",
+        name='Donor 3',
         default="",
-        description="规格化时优先使用的第 3 个供体；来源组切换时会自动预填",
+        description='The 3rd donor preferred during normalization; automatically prefilled when switching source groups',
         update=_on_donor_slot_3_update,
     )
     donor_slot_4: StringProperty(
-        name="供体 4",
+        name='Donor 4',
         default="",
-        description="规格化时优先使用的第 4 个供体；来源组切换时会自动预填",
+        description='The 4th donor preferred during normalization; automatically prefilled when switching source groups',
         update=_on_donor_slot_4_update,
     )
     donor_slot_5: StringProperty(
-        name="供体 5",
+        name='Donor 5',
         default="",
-        description="规格化时优先使用的第 5 个供体；来源组切换时会自动预填",
+        description='The 5th donor preferred during normalization; automatically prefilled when switching source groups',
         update=_on_donor_slot_5_update,
     )
     donor_slot_6: StringProperty(
-        name="供体 6",
+        name='Donor 6',
         default="",
-        description="规格化时优先使用的第 6 个供体；来源组切换时会自动预填",
+        description='The 6th donor preferred during normalization; automatically prefilled when switching source groups',
         update=_on_donor_slot_6_update,
     )
     donor_slot_1_manual: BoolProperty(
@@ -794,85 +794,85 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
         options={'HIDDEN'},
     )
     mirror_donor_slot_1: StringProperty(
-        name="镜像供体 1",
+        name='Mirror Donor 1',
         default="",
-        description="供体 1 的镜像供体；会自动预填，也可手动覆盖",
+        description='Mirror donor for donor 1; will auto-fill, can also override manually',
         update=_on_mirror_donor_slot_1_update,
     )
     mirror_donor_slot_2: StringProperty(
-        name="镜像供体 2",
+        name='Mirror Donor 2',
         default="",
-        description="供体 2 的镜像供体；会自动预填，也可手动覆盖",
+        description='Mirror donor for donor 2; will auto-fill, can also override manually',
         update=_on_mirror_donor_slot_2_update,
     )
     mirror_donor_slot_3: StringProperty(
-        name="镜像供体 3",
+        name='Mirror Donor 3',
         default="",
-        description="供体 3 的镜像供体；会自动预填，也可手动覆盖",
+        description='Mirror donor for donor 3; will auto-fill, can also override manually',
         update=_on_mirror_donor_slot_3_update,
     )
     mirror_donor_slot_4: StringProperty(
-        name="镜像供体 4",
+        name='Mirror Donor 4',
         default="",
-        description="供体 4 的镜像供体；会自动预填，也可手动覆盖",
+        description="Donor 4's mirror donor; Will be automatically prefilled or manually overwritten",
         update=_on_mirror_donor_slot_4_update,
     )
     mirror_donor_slot_5: StringProperty(
-        name="镜像供体 5",
+        name='Mirror Donor 5',
         default="",
-        description="供体 5 的镜像供体；会自动预填，也可手动覆盖",
+        description="Donor 5's mirror donor; It will be automatically prefilled or manually overwritten",
         update=_on_mirror_donor_slot_5_update,
     )
     mirror_donor_slot_6: StringProperty(
-        name="镜像供体 6",
+        name='Mirror Donor 6',
         default="",
-        description="供体 6 的镜像供体；会自动预填，也可手动覆盖",
+        description="Donor 6's mirror donor; It will be automatically prefilled or manually overwritten",
         update=_on_mirror_donor_slot_6_update,
     )
     smoothing_enable: BoolProperty(
-        name="启用平滑",
+        name='Enable smoothing.',
         default=True,
-        description="传递后对新承接组执行 seam-safe 平滑；会阻断 UV seam 边以避免接缝串权重",
+        description='After transfer, perform seam-safe smoothing on the new receiving group; UV seam edges will be blocked to prevent seams from affecting weights',
     )
     smoothing_repeat: IntProperty(
-        name="平滑次数",
+        name='Smoothing repetitions',
         default=4,
         min=0,
         soft_max=20,
-        description="平滑迭代次数；次数越高越柔和，但也更容易扩散细节",
+        description='Number of smoothing iterations; the more iterations, the smoother, but details are also more likely to diffuse',
     )
     smoothing_factor: FloatProperty(
-        name="平滑强度",
+        name='Smoothing strength',
         default=0.2,
         min=0.0,
         max=1.0,
-        description="每次平滑混合邻域权重的比例；0 不改变，1 完全采用邻域平均",
+        description='The proportion to smooth and blend neighborhood weights each time; 0 means no change, 1 means fully adopt neighborhood average',
     )
     limit_groups_enable: BoolProperty(
-        name="限制每顶点组数量",
+        name='Limit the number of vertex groups',
         default=True,
-        description="传递后限制每个顶点参与的可编辑骨骼权重数量；锁定组和 Velo 特殊组不会参与",
+        description='After transfer, limit the number of editable bone weights each vertex can participate in; locked groups and Velo special groups will not be involved',
     )
     max_groups_per_vertex: IntProperty(
-        name="最大组数量",
+        name='Maximum number of groups',
         default=4,
         min=1,
         soft_max=8,
-        description="每个顶点最多保留的可编辑权重组数量",
+        description='Maximum number of editable weight groups that can be retained per vertex',
     )
     normalize_after: BoolProperty(
-        name="执行后规格化",
+        name='Perform post-normalization',
         default=True,
-        description="传递后用自动供体组一起规格化；当前实现会优先保留新传递组的权重，只压缩供体组去适配剩余权重空间。同对象不同组传递时会自动跳过，避免改写来源组。",
+        description='After transfer, normalize together with the automatic donor group; the current implementation prioritizes keeping the weights of the newly transferred group and only compresses the donor group to fit the remaining weight space. When transferring different groups of the same object, it will automatically skip to avoid overwriting the source group.',
     )
     show_advanced: BoolProperty(
-        name="高级参数",
+        name='Advanced Parameters',
         default=False,
-        description="保留项：高级参数面板目前作为独立折叠面板显示",
+        description='Reserved item: The advanced parameter panel is currently displayed as a standalone folding panel',
     )
     robust_max_distance: FloatProperty(
-        name="Robust 最大距离",
-        description="Robust 直接匹配允许的最大世界空间距离；超过该距离的目标顶点不会作为 direct match",
+        name='Robust Maximum Distance',
+        description='Robust direct match allows maximum world-space distance; target vertices beyond this distance will not be included as direct matches',
         default=0.05,
         min=0.0,
         soft_max=1.0,
@@ -880,8 +880,8 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
         unit='LENGTH',
     )
     robust_normal_angle: FloatProperty(
-        name="Robust 法线角",
-        description="Robust 直接匹配时，来源面插值法线与目标顶点法线允许的最大夹角。超出阈值的顶点不会作为 direct match；若全部超出，Robust 会失败。开启法线翻转时，也会接受接近 180 度的反向法线。",
+        name='Robust Normal Angle',
+        description='For Robust direct match, the maximum allowed angle between the interpolated normal of the source face and the target vertex normal. Vertices exceeding this threshold will not be direct matches; if all exceed, Robust will fail. When normal flipping is enabled, nearly 180-degree opposite normals are also accepted.',
         default=math.radians(60.0),
         min=0.0,
         max=math.pi,
@@ -889,36 +889,36 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
         unit='ROTATION',
     )
     robust_flip_normals: BoolProperty(
-        name="允许法线翻转",
-        description="允许把接近 180 度的反向法线也视为可匹配；当法线角达到 90 度及以上时，这会基本关闭角度过滤。",
+        name='Allow normal flipping',
+        description='Allow nearly 180-degree opposite normals to be considered a match; this effectively disables angle filtering when normal angles reach 90 degrees or more.',
         default=True,
     )
     robust_point_cloud_inpaint: BoolProperty(
         name="Point inpaint",
         default=True,
-        description="使用点云 Laplacian 做 inpaint；关闭后使用网格面 Laplacian",
+        description='Use point cloud Laplacian for inpainting; when turned off, use mesh face Laplacian',
     )
     use_deformed_source: BoolProperty(
-        name="使用来源变形结果",
+        name='Use the source deformation result',
         default=True,
-        description="开启时在来源网格的 evaluated/deformed 结果上计算表面和法线",
+        description='When enabled, calculate surface and normals on the evaluated/deformed result of the source mesh',
     )
     use_deformed_target: BoolProperty(
-        name="使用目标变形结果",
+        name='Use the target deformation result',
         default=True,
-        description="开启时在目标网格的 evaluated/deformed 结果上匹配；目标拓扑必须与原网格一致",
+        description='When enabled, match on the evaluated/deformed result of the target mesh; target topology must match the original mesh',
     )
     limit_dilation_repeat: IntProperty(
         name="Limit dilation",
         default=4,
         min=0,
         soft_max=12,
-        description="限制每顶点组数量时，对被剔除候选做邻域扩张保护的次数",
+        description='Number of neighborhood expansion protections for pruned candidates when limiting the number of vertex groups',
     )
     last_report: StringProperty(
-        name="结果",
+        name='Result',
         default="",
-        description="最近一次权重传递的结果或错误信息",
+        description='The result or error message of the most recent weight transfer',
     )
 
 

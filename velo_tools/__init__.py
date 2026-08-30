@@ -4,13 +4,14 @@ bl_info = {
     "version": (1, 6, 4),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar (N) > Velo Tools",
-    "description": "Mod 制作辅助工具集（合并 Velo Tools Endfield V0.0.8）— 顶点组工具 / 网格工具 / 权重工具 / 游戏 MOD 工作流（终末地 EFMI / 鸣潮 WWMI）",
+    "description": "Mod Authoring Toolset — Vertex Group, Mesh, Weight, Arknights: Endfield EFMI, and Wuthering Waves WWMI workflows",
     "doc_url": "https://github.com/visaokc/Velo-Tools",
     "category": "Object",
 }
 
 # v0.3.0 refactored skeleton (PLAN_v0.4_rebuild.md R1/R2/R3 phases)
 from . import updater
+from . import i18n
 from . import properties
 from . import operators
 from . import ui
@@ -30,6 +31,7 @@ _modules = (updater, properties, operators, ui, bone_number_map, overlay, genera
 
 
 def register():
+    i18n.register()
     for m in _modules:
         m.register()
     # V0.1.6: embedded (CrossIB / ShapeKey) registration and the export-hook install are
@@ -43,6 +45,7 @@ def unregister():
             m.unregister()
         except Exception:
             pass
+    i18n.unregister()
 
 
 if __name__ == "__main__":

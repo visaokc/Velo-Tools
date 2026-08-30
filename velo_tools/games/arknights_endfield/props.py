@@ -255,35 +255,35 @@ class VELO_EF_Settings(bpy.types.PropertyGroup):
     mmd_profile: PointerProperty(type=VELO_EF_MMDProfile)
     # Task 4: current mapping table Text (template_ID selector)
     active_mmd_text: PointerProperty(
-        name="映射表",
+        name='Mapping Table',
         type=bpy.types.Text,
-        description="当前使用的 MMD 映射表内置文本",
+        description='Current MMD mapping table built-in text',
         update=_on_active_mmd_text_update,
     )
     mmd_source_object: PointerProperty(
-        name="MMD 源物体",
+        name='MMD Source Object',
         type=bpy.types.Object,
         poll=_is_mesh_poll,
-        description="MMD 模型网格（profile 行的 mmd_name 来自它）",
+        description='MMD Model Mesh (the mmd_name in the profile row comes from it)',
         update=lambda self, ctx: _on_mmd_source_update(self, ctx),
     )
     mmd_target_object: PointerProperty(
-        name="目标物体",
+        name='Target Object',
         type=bpy.types.Object,
         poll=_is_mesh_poll,
-        description="终末地 Component 网格（profile 行的 unified_name 来自它）",
+        description='Arknights: Endfield Component Grid (the unified_name of the profile row comes from it)',
         update=lambda self, ctx: _on_mmd_target_update(self, ctx),
     )
     mmd_armature_object: PointerProperty(
-        name="MMD 骨架",
+        name='MMD Skeleton',
         type=bpy.types.Object,
         poll=lambda self, obj: obj is not None and obj.type == 'ARMATURE',
-        description="可选；选择后『改名为统一编号 / 还原为 MMD 名字』将同步更新骨骼名",
+        description="Optional; after selection, 'Rename to Unified Number / Restore to MMD Name' will synchronize bone names.",
     )
     show_overlay: BoolProperty(
-        name="启用 MMD 映射可视化",
+        name='Enable MMD mapping visualization',
         default=False,
-        description="开启或关闭 MMD 映射可视化校对；开启时会自动关闭通用映射可视化以避免两套端点叠加",
+        description='Enable or disable MMD mapping visualization verification; when enabled, it will automatically disable general mapping visualization to avoid overlapping two sets of endpoints',
         update=lambda self, context: _on_mmd_overlay_update(self, context),
     )
     # prop_search candidate collection (rebuilt at runtime, not persisted)

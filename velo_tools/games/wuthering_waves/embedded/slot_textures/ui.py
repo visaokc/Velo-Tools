@@ -1,3 +1,5 @@
+
+from velo_tools.i18n import iface_
 # UI for the WWMI slot-style texture layer (velo-owned, registered like
 # embedded/lod/ui.py; nothing added to _wwmi_core's auto_load).
 #
@@ -47,39 +49,31 @@ def inject_settings():
     _orig_auto_split_annotation = _wsettings.VTWW_Settings.__annotations__.get(
         "velo_auto_split_by_material", _MISSING)
     _wsettings.VTWW_Settings.__annotations__["velo_slot_style_textures"] = bpy.props.BoolProperty(
-        name="插槽风格贴图",
+        name='Slot style texture',
         description=(
-            "用槽位重绑替代逐 hash 贴图段：贴图在组件 draw 范围内按槽位绑定，"
-            "不再匹配游戏贴图 hash，因此对纹理流送（3.4 起每个 mip 级独立 hash）免疫。"
-            "多形态角色需先在提取页用「合并形态贴图数据」逐形态合并 dump。"
-            "关闭则按原版 hash 风格导出（与未升级版本逐字节一致）"
+            'Use slot rebinding to replace per-hash texture segments: textures are bound by slot within the component draw range, no longer matching the game texture hash, thus immune to texture streaming (from version 3.4 each mip level has an independent hash). Multi-form characters need to first merge dump data per form on the extraction page using "Merge Form Texture Data". If disabled, export follows the original hash style (identical byte-for-byte with un-upgraded versions).'
         ),
         default=False,
     )
     _wsettings.VTWW_Settings.__annotations__["use_asset_name_matching"] = (
         bpy.props.BoolProperty(
-            name="使用资产名称匹配",
+            name='Use asset name matching',
             description=(
-                "把导出 INI 中带资产路径证据的贴图 Hash 覆盖改为 "
-                "match_asset_name；资产路径来自 F8 转储并随 "
-                "ShaderTextureUsage.json 保留，与插槽风格贴图互斥"
+                'Override the texture Hash in the exported INI with asset path evidence to match_asset_name; the asset path comes from F8 dump and is retained with ShaderTextureUsage.json, mutually exclusive with slot style textures.'
             ),
             default=False,
             update=_enable_asset_name_export,
         ))
     _wsettings.VTWW_Settings.__annotations__["skip_slot_residual_textures"] = bpy.props.BoolProperty(
-        name="贴图过滤：跳过 Dirty Slot",
+        name='Texture filtering: skip Dirty Slot',
         description=(
-            "保留 log.txt 中由 PSSetShaderResources 明确绑定的槽位，以及写入/消费 draw 均为彩色 pass、"
-            "属于不同 vb0、具有相同角色 cb4 与相同材质 cb5/cb6 证据的跨对象 service slot 继承；"
-            "同一 vb0 内的 Component 残留、depth-only 和主材质槽继承仍按残留过滤；"
-            "没有可用 log 证据时保持 legacy STU，不猜测删除。"
+            'Retain slots explicitly bound by PSSetShaderResources in the log.txt, as well as write/consume draws that are color passes, belong to different vb0s, and have the same role cb4 and cb5/cb6 material evidence as cross-object service slot inheritance; Component residues, depth-only, and main material slot inheritance within the same vb0 are still filtered by residue; If there is no available log evidence, legacy STU is retained and deletion is not speculated.'
         ),
         default=True,
     )
     _wsettings.VTWW_Settings.__annotations__["velo_auto_split_by_material"] = bpy.props.BoolProperty(
-        name="导出时自动按材质拆分",
-        description="导出临时对象时按带 Component 前缀的实际材质自动拆分；不会修改场景对象",
+        name='Automatically split by material during export',
+        description='When exporting temporary objects, automatically split according to the actual material with the prefix Component; it will not modify scene objects.',
         default=True,
     )
 
@@ -133,7 +127,7 @@ def _patch_export_menu():
         cfg = context.scene.VTWW_settings
         layout = self.layout
         box = layout.box()
-        box.label(text="Velo 兼容选项", icon="TOOL_SETTINGS")
+        box.label(text='Velo Compatibility Options', icon="TOOL_SETTINGS")
         if hasattr(cfg, "velo_auto_split_by_material"):
             box.prop(cfg, "velo_auto_split_by_material")
         if hasattr(cfg, "use_asset_name_matching"):
@@ -232,15 +226,14 @@ class VTWW_AnchorFormDump(bpy.types.PropertyGroup):
     and the mod-making blend are different files, so the finder carries its
     own dump paths instead of relying on the extraction page)."""
     dump_folder: bpy.props.StringProperty(
-        name="形态 Dump",
-        description="该形态的原始帧转储目录",
+        name='Form Dump',
+        description='The original frame dump directory of this form',
         default='',
         subtype="DIR_PATH",
     )
     form_label: bpy.props.StringProperty(
-        name="标签",
-        description="该形态的标签（留空按行序自动 form2/form3...；"
-                    "采用候选时写入形态锚点字段的就是这个标签）",
+        name='Tags',
+        description='The label of this form (leave blank to automatically use line order form2/form3...; if using a candidate, this label is written to the form anchor field)',
         default='',
     )
 
@@ -251,9 +244,8 @@ class VTWW_SlotComponentRule(bpy.types.PropertyGroup):
     from the source folder's ShaderTextureUsage.json by VTWW_OT_slot_populate_components."""
     component_id: bpy.props.IntProperty(default=0)
     use_slot: bpy.props.BoolProperty(
-        name="插槽",
-        description="勾选=该组件贴图走插槽风格；取消=该组件改走 hash 风格"
-                    "（提前删掉的贴图仍由游戏接管）",
+        name='Slot',
+        description="Check = this component's texture uses slot style; uncheck = this component switches to hash style (textures deleted in advance are still managed by the game)",
         default=True,
     )
     texture_count: bpy.props.IntProperty(default=0)
@@ -262,18 +254,15 @@ class VTWW_SlotComponentRule(bpy.types.PropertyGroup):
 class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
 
     form_dump_folder: bpy.props.StringProperty(
-        name="形态 Frame Dump",
-        description="另一形态的原始帧转储目录（无需二次提取角色文件夹）。"
-                    "在该形态下近距离抓帧，保证材质贴图全量绑定",
+        name='Form Frame Dump',
+        description='The original frame dump directory of another form (no need to extract the character folder again). Capture frames at close range in this form to ensure full binding of material textures.',
         default='',
         subtype="DIR_PATH",
     )
 
     form_label: bpy.props.StringProperty(
-        name="形态标签",
-        description="可选：该形态在合并数据里的显示名（留空自动编号）。"
-                    "同一标签再合并不同距离的 dump 会收割该形态贴图的其它流送级 "
-                    "hash（缩短形态切换的检测延迟）；填 base 表示收割进基础提取数据",
+        name='Morph Tag',
+        description="Optional: display name of the form in the merged data (leave blank for automatic numbering). Merging dumps of the same label at different distances will collect other streaming-level hashes of that form's texture (reduces detection delay for form switching); fill in base to collect into base extraction data.",
         default='',
     )
 
@@ -285,23 +274,15 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
     anchor_form_dumps: bpy.props.CollectionProperty(type=VTWW_AnchorFormDump)
 
     form_anchors: bpy.props.StringProperty(
-        name="形态锚点",
-        description="可选：手动指定形态独占的锚点 hash，格式 hash:形态标签，"
-                    "逗号/空格分隔（如 358cdfe4:base）。基础形态标签固定为 base，"
-                    "其余用合并时起的标签。只能用两类值：8 位 = vb0 hash"
-                    "（dump 文件名里 vb0= 的值；ib 值不参与 WWMI 匹配、无效），"
-                    "16 位 = ps hash（vs 有同样失效风险，勿用）。恰好只剩一个"
-                    "形态没有锚点时（任意形态数）自动启用每帧看门狗：命中=对应"
-                    "形态，整帧无命中=排除法判定无锚形态，全方向零延迟切换；"
-                    "锚点因版本更新失效后自动退回贴图锁存（有流送延迟）",
+        name='Morph Anchor',
+        description='Optional: manually specify exclusive anchor point hash for a form, format hash:form label, separated by comma/space (e.g., 358cdfe4:base). Base form label is fixed as base, others use labels created during merging. Only two types of values can be used: 8-digit = vb0 hash (value of vb0 in dump file name; ib value is not involved in WWMI matching, invalid), 16-digit = ps hash (vs has the same invalidation risk, do not use). If only one form is left without an anchor (any number of forms), per-frame watchdog is automatically enabled: hit = corresponding form, no hit in full frame = use exclusion method to determine form without anchor, zero-delay switching in all directions; if anchor becomes invalid due to version update, it will automatically revert to texture latching (with data streaming delay).',
         default='',
     )
 
     formid_auxiliary_gate: bpy.props.BoolProperty(
-        name="formid 辅助判据",
+        name='formid Auxiliary Criterion',
         description=(
-            "可选：在已经能用本地 ps-t slot-layout 安全区分的多形态分支末尾追加 $form_id 条件。"
-            "默认关闭以保持纯 0hash slot；该选项不能挽救 C0 这类 slot-layout 完全相同的组件。"
+            'Optional: append $form_id condition at the end of multi-form branches that can already be safely distinguished by local ps-t slot-layout. Disabled by default to maintain a pure 0hash slot; this option cannot salvage components with identical slot-layout like C0.'
         ),
         default=False,
     )
@@ -315,11 +296,8 @@ class VTWW_SlotTextureSettings(bpy.types.PropertyGroup):
 
 class VTWW_OT_merge_form_textures(bpy.types.Operator):
     bl_idname = "vtww.merge_form_textures"
-    bl_label = "合并形态贴图数据"
-    bl_description = ("解析另一形态的原始帧转储，把它的 (组件 x 着色器对 x 槽位) 贴图表"
-                      "合并进模型文件夹 ShaderTextureUsage.json 的组件 form_variants 字段"
-                      "（支持任意数量形态），供插槽风格导出生成 per-form 分支。"
-                      "同名 dump 重复合并会覆盖旧条目")
+    bl_label = 'Merge Form Texture Data'
+    bl_description = ('Parse the raw frame dump of another form, merge its (component x shader pair x slot) texture table into the form_variants field of the ShaderTextureUsage.json component in the model folder (supports any number of forms), for slot style export to generate per-form branches. Duplicate dumps with the same name will overwrite the old entry')
 
     def execute(self, context):
         cfg = context.scene.VTWW_settings
@@ -335,7 +313,7 @@ class VTWW_OT_merge_form_textures(bpy.types.Operator):
             )
         except Exception as exc:
             traceback.print_exc()
-            self.report({'ERROR'}, f"形态合并失败：{exc}")
+            self.report({'ERROR'}, iface_('Form merge failed: {0}').format(exc))
             return {'CANCELLED'}
 
         if summary.get('mode') == 'cross_scene':
@@ -343,9 +321,7 @@ class VTWW_OT_merge_form_textures(bpy.types.Operator):
             # the root (hash-style; no per-object match / extra_forms). Re-export to emit them.
             self.report(
                 {'INFO'},
-                f"跨场景模式：已把形态「{summary['form_label']}」的贴图抬入合并根"
-                f"（覆盖 IB {', '.join(summary['lifted_ibs']) or '（无匹配）'}，"
-                f"拷入 {summary['textures_copied']} 张）。重新导出 Mod 即生效。")
+                iface_('Cross-scene mode: The texture of the form "{0}" has been lifted into the merge root (overwriting IB {1}, copying in {2} files). Re-export Mod for it to take effect.').format(summary['form_label'], ', '.join(summary['lifted_ibs']) or iface_('(No match)'), summary['textures_copied']))
             return {'FINISHED'}
 
         action = "覆盖" if summary['replaced'] else "新增"
@@ -353,18 +329,15 @@ class VTWW_OT_merge_form_textures(bpy.types.Operator):
                    if summary.get('variants_added') else "")
         self.report(
             {'INFO'},
-            f"已{action}形态「{summary['label']}」（按 {summary['matched_by']} 匹配，"
-            f"{summary['components']} 组件 / {summary['pairs']} 着色器对，"
-            f"拷入 {summary['textures_copied']} 张该形态贴图{harvest}），"
-            f"当前共 {summary['total_forms']} 个形态。"
+            iface_('The form "{1}" has been {0} (matched by {2}, {3} component / {4} shader pair, copied {5} maps of this form {6}), currently there are {7} forms in total.').format(action, summary['label'], summary['matched_by'], summary['components'], summary['pairs'], summary['textures_copied'], harvest, summary['total_forms'])
         )
         return {'FINISHED'}
 
 
 class VTWW_OT_anchor_form_dump_add(bpy.types.Operator):
     bl_idname = "vtww.anchor_form_dump_add"
-    bl_label = "添加形态 Dump 行"
-    bl_description = "再加一行形态 dump（第三/第四形态角色逐形态各一份 dump）"
+    bl_label = 'Add Form Dump Row'
+    bl_description = 'Add another line of form dump (one dump for each third/fourth form character)'
 
     def execute(self, context):
         context.scene.vtww_slot_settings.anchor_form_dumps.add()
@@ -373,8 +346,8 @@ class VTWW_OT_anchor_form_dump_add(bpy.types.Operator):
 
 class VTWW_OT_anchor_form_dump_remove(bpy.types.Operator):
     bl_idname = "vtww.anchor_form_dump_remove"
-    bl_label = "移除"
-    bl_description = "移除这一行形态 dump"
+    bl_label = 'Remove'
+    bl_description = 'Remove this line shape dump'
 
     index: bpy.props.IntProperty(default=-1)
 
@@ -387,13 +360,8 @@ class VTWW_OT_anchor_form_dump_remove(bpy.types.Operator):
 
 class VTWW_OT_find_form_anchors(bpy.types.Operator):
     bl_idname = "vtww.find_form_anchors"
-    bl_label = "查找形态锚点"
-    bl_description = ("对比基础形态 dump 与全部已填的形态 dump 行（跨全部形态做"
-                      "独占交集），给出 top5 形态独占 vb0 锚点候选：按角色贴图"
-                      "亲和度排序（新鲜绑定证据加权），点行尾「采用」自动填入"
-                      "导出页的形态锚点字段。行内「骨」=skinned 蒙皮件（更像"
-                      "角色专属件、比场景道具/特效更可靠）、「规模」=draw 索引数"
-                      "（网格大小参考）")
+    bl_label = 'Find Form Anchors'
+    bl_description = ('Compare base shape dump with all completed shape dump rows (exclusive intersection across all shapes), provide top 5 exclusive shape vb0 anchor candidates: sorted by character texture affinity (weighted by fresh binding evidence). Click "Adopt" at the line end to automatically fill the shape anchor field on the export page. "Bone" in the row = skinned piece (more like character-specific piece, more reliable than props/effects), "Scale" = draw index count (mesh size reference)')
 
     def execute(self, context):
         cfg = context.scene.VTWW_settings
@@ -497,7 +465,7 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
         except Exception as exc:
             traceback.print_exc()
             slot_cfg.anchor_status = f"查找失败：{exc}"
-            self.report({'ERROR'}, f"锚点查找失败：{exc}")
+            self.report({'ERROR'}, iface_('Anchor point not found: {0}').format(exc))
             return {'CANCELLED'}
 
         slot_cfg.anchor_candidates.clear()
@@ -525,49 +493,49 @@ class VTWW_OT_find_form_anchors(bpy.types.Operator):
                 f"{prefix}已确认 {len(candidates)} 个角色形态件（cb 与主体比对）；"
                 f"特效/UI 不自动列出，如需作锚点请在游戏确认 vb0 后手动填入"
                 f"{trusted_note}")
-            self.report({'INFO'}, f"确认 {len(candidates)} 个角色形态锚点")
+            self.report({'INFO'}, iface_('Confirm {0} character form anchor points').format(len(candidates)))
         else:
             slot_cfg.anchor_status = (
                 f"{prefix}没有 cb 确认的角色形态件；特效/UI 不自动推荐，"
                 f"请在游戏确认 vb0 后手动填入形态锚点字段（确认各 dump 分属"
                 f"不同形态、角色都在画面内）")
-            self.report({'WARNING'}, "没有 cb 确认的角色形态锚点")
+            self.report({'WARNING'}, iface_('No CB-confirmed character shape anchors'))
         return {'FINISHED'}
 
 
 class VTWW_OT_anchor_candidates_reset(bpy.types.Operator):
     bl_idname = "vtww.anchor_candidates_reset"
-    bl_label = "重置候选"
-    bl_description = "清空形态锚点候选结果，不清空 Dump 路径或已填写的形态锚点"
+    bl_label = 'Reset candidates'
+    bl_description = 'Clear Morph Anchor Candidate Results, Do Not Clear Dump Paths or Already Filled Morph Anchors'
 
     def execute(self, context):
         slot_cfg = context.scene.vtww_slot_settings
         slot_cfg.anchor_candidates.clear()
         slot_cfg.anchor_status = ''
-        self.report({'INFO'}, "已清空形态锚点候选")
+        self.report({'INFO'}, iface_('Morph anchor candidates cleared'))
         return {'FINISHED'}
 
 
 class VTWW_OT_apply_form_anchor(bpy.types.Operator):
     bl_idname = "vtww.apply_form_anchor"
-    bl_label = "采用"
-    bl_description = "把该候选以 hash:形态标签 追加进导出页的形态锚点字段"
+    bl_label = 'Apply'
+    bl_description = "Append the candidate to the export page's morphology anchor field with hash:morphology tag"
 
     index: bpy.props.IntProperty(default=-1)
 
     def execute(self, context):
         slot_cfg = context.scene.vtww_slot_settings
         if not (0 <= self.index < len(slot_cfg.anchor_candidates)):
-            self.report({'ERROR'}, "候选索引无效，请重新查找")
+            self.report({'ERROR'}, iface_('Candidate indexes are invalid; please search again'))
             return {'CANCELLED'}
         item = slot_cfg.anchor_candidates[self.index]
         token = f"{item.vb0}:{item.form_label}"
         existing = slot_cfg.form_anchors.strip()
         if item.vb0 in existing:
-            self.report({'WARNING'}, f"{item.vb0} 已在形态锚点字段里")
+            self.report({'WARNING'}, iface_('{0} Already in Morph Anchor Field').format(item.vb0))
             return {'CANCELLED'}
         slot_cfg.form_anchors = f"{existing}, {token}" if existing else token
-        self.report({'INFO'}, f"已采用形态锚点 {token}")
+        self.report({'INFO'}, iface_('Morph anchor {0} adopted').format(token))
         return {'FINISHED'}
 
 
@@ -580,10 +548,10 @@ def _draw_anchor_finder(layout, slot_cfg, wwmi_cfg):
     always show the same value with zero sync code."""
     box = layout.box()
     header = box.row(align=True)
-    header.label(text="形态锚点查找", icon='VIEWZOOM')
+    header.label(text='Find Morph Anchor', icon='VIEWZOOM')
     header.operator(VTWW_OT_anchor_candidates_reset.bl_idname,
                     text='', icon='FILE_REFRESH')
-    box.row().prop(wwmi_cfg, 'frame_dump_folder', text="基础形态 Dump")
+    box.row().prop(wwmi_cfg, 'frame_dump_folder', text='Basic form Dump')
     for index, row_item in enumerate(slot_cfg.anchor_form_dumps):
         split = box.row(align=True).split(factor=0.62, align=True)
         split.prop(row_item, 'dump_folder', text='',
@@ -595,37 +563,32 @@ def _draw_anchor_finder(layout, slot_cfg, wwmi_cfg):
         op.index = index
     if (not any(r.dump_folder.strip() for r in slot_cfg.anchor_form_dumps)
             and slot_cfg.form_dump_folder.strip()):
-        box.row().label(text=f"形态行空 → 自动用合并页形态 Dump: "
-                             f"{slot_cfg.form_dump_folder}",
+        box.row().label(text=iface_('Form-free → Automatically use the merged page form Dump: {0}').format(slot_cfg.form_dump_folder),
                         icon='INFO')
     box.row().operator(VTWW_OT_anchor_form_dump_add.bl_idname,
-                       text="添加形态 Dump 行", icon='ADD')
+                       text='Add Form Dump Row', icon='ADD')
     box.row().operator(VTWW_OT_find_form_anchors.bl_idname, icon='VIEWZOOM')
-    box.row().label(text="只列出 cb 与主体确认的角色形态件；特效/UI 需"
-                         "在游戏确认 vb0 后手动填入上方字段", icon='INFO')
+    box.row().label(text='Only list the role form parts confirmed with the main body by cb; special effects/UI need to be manually filled in the above field after vb0 is confirmed in the game.', icon='INFO')
     if slot_cfg.anchor_status:
         box.row().label(text=slot_cfg.anchor_status)
     for index, item in enumerate(slot_cfg.anchor_candidates):
         row = box.row(align=True)
         ps_mark = " ps" if item.shares_character_ps else ""
         skin_mark = " 骨" if item.skinned else ""
-        row.label(text=(f"{item.vb0}  {item.form_label}  "
-                        f"贴图×{item.shared_textures}{ps_mark}{skin_mark}  "
-                        f"距{item.min_call_distance}  规模{item.index_count}  "
-                        f"{item.hits}"))
+        row.label(text=(iface_('{0}  {1}  Texture ×{2}{3}{4}  Distance {5}  Scale {6}  {7}').format(item.vb0, item.form_label, item.shared_textures, ps_mark, skin_mark, item.min_call_distance, item.index_count, item.hits)))
         # Fixed-width apply button: the label gets every extra pixel when
         # the sidebar is widened (an evenly-split row let the button grow
         # without bound while the data got truncated).
         btn = row.row(align=True)
         btn.ui_units_x = 4
         op = btn.operator(VTWW_OT_apply_form_anchor.bl_idname,
-                          text="采用", icon='IMPORT')
+                          text='Apply', icon='IMPORT')
         op.index = index
 
 
 class VELO_PT_wwmi_slot_forms(bpy.types.Panel):
     bl_idname = "VELO_PT_wwmi_slot_forms"
-    bl_label = "形态贴图合并"
+    bl_label = 'Form Texture Merge'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Velo Tools"
@@ -663,15 +626,13 @@ class VTWW_UL_slot_components(bpy.types.UIList):
         row = layout.row(align=True)
         row.prop(item, "use_slot", text="")
         row.label(text=f"Component {item.component_id}")
-        row.label(text=f"{item.texture_count} 贴图")
+        row.label(text=iface_('{0} Texture').format(item.texture_count))
 
 
 class VTWW_OT_slot_populate_components(bpy.types.Operator):
     bl_idname = "vtww.slot_populate_components"
-    bl_label = "列出组件"
-    bl_description = ("从对象源文件夹的 ShaderTextureUsage.json 列出所有组件供逐个勾选；"
-                      "默认全部勾选（= 全部走插槽风格）。取消勾选的组件改走 hash 风格，"
-                      "提前删掉的贴图仍由游戏接管。改了源文件夹后请重新列出")
+    bl_label = 'List components'
+    bl_description = ('List all components from the ShaderTextureUsage.json in the object source folder for individual selection; all are selected by default (= all use slot style). Unchecked components switch to hash style, and textures deleted in advance are still taken over by the game. Please relist after changing the source folder.')
 
     def execute(self, context):
         cfg = context.scene.VTWW_settings
@@ -685,7 +646,7 @@ class VTWW_OT_slot_populate_components(bpy.types.Operator):
                 resolve_path(cfg.object_source_folder))
         except Exception as exc:
             traceback.print_exc()
-            self.report({'ERROR'}, f"列出组件失败：{exc}")
+            self.report({'ERROR'}, iface_('Failed to list components: {0}').format(exc))
             return {'CANCELLED'}
 
         # distinct texture hashes per component, across base + extra forms
@@ -698,7 +659,7 @@ class VTWW_OT_slot_populate_components(bpy.types.Operator):
                         if h:
                             bucket.add(h)
         if not per_comp:
-            self.report({'WARNING'}, "ShaderTextureUsage.json 里没有组件贴图记录")
+            self.report({'WARNING'}, iface_('No component texture record in ShaderTextureUsage.json'))
             return {'CANCELLED'}
 
         # Preserve the user's prior checked state on refresh; new components default checked.
@@ -710,13 +671,13 @@ class VTWW_OT_slot_populate_components(bpy.types.Operator):
             item.use_slot = prev.get(comp_id, True)
             item.texture_count = len(per_comp[comp_id])
         self.report({'INFO'},
-                    f"列出 {len(per_comp)} 个组件（默认全部走插槽，取消勾选改走 hash）")
+                    iface_('List {0} components (default uses all slots, uncheck to use hash)').format(len(per_comp)))
         return {'FINISHED'}
 
 
 def _draw_slot_components(box, slot_cfg):
     sub = box.box()
-    sub.label(text="按组件选插槽风格", icon="TEXTURE")
+    sub.label(text='Select slot style by component', icon="TEXTURE")
     row = sub.row()
     row.template_list("VTWW_UL_slot_components", "", slot_cfg,
                       "slot_component_rules", slot_cfg,
@@ -724,10 +685,10 @@ def _draw_slot_components(box, slot_cfg):
     col = row.column(align=True)
     col.operator("vtww.slot_populate_components", text="", icon='FILE_REFRESH')
     if not len(slot_cfg.slot_component_rules):
-        sub.label(text="未列出：默认全部走插槽。点刷新从源文件夹列出后可逐组件取消",
+        sub.label(text='Not listed: defaults to using all slots. After listing points from the source folder, components can be individually deselected',
                   icon='INFO')
     else:
-        sub.label(text="取消勾选的组件改走 hash；提前删掉的贴图归游戏", icon='INFO')
+        sub.label(text='Unchecked components use hash; prematurely deleted textures belong to the game', icon='INFO')
 
 
 _CLASSES = (

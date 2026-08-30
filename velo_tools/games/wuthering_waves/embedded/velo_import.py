@@ -1,3 +1,5 @@
+
+from velo_tools.i18n import iface_
 # Velo import extras for WWMI (velo-owned, zero core edits), the EFMI parity:
 #   - inject_settings(): import_as_component_collections / import_texture
 #     BoolProperties injected into VTWW_Settings (EFMI-aligned texts and
@@ -47,14 +49,13 @@ def inject_settings():
     ann = _wsettings.VTWW_Settings.__annotations__
     props = {
         "import_as_component_collections": bpy.props.BoolProperty(
-            name=_zh("按组件创建子集合"),
-            description=_zh("导入模型时在对象父集合下创建 C0/C1/... 子集合；"
-                            "关闭后沿用上游 WWMI 的单集合导入。"),
+            name=_zh('Create sub-collection by component'),
+            description=_zh('When importing the model, create C0/C1/... sub-collections under the parent collection of objects; when closed, continue to use the single collection import of upstream WWMI.'),
             default=True,
         ),
         "import_texture": bpy.props.BoolProperty(
-            name=_zh("导入贴图"),
-            description=_zh("导入模型后依据 TextureUsage.json 给网格指定源目录内的 .dds 贴图。"),
+            name=_zh('Import Texture'),
+            description=_zh('After importing the model, assign the .dds texture in the source directory to the mesh according to TextureUsage.json.'),
             default=True,
         ),
     }
@@ -157,22 +158,22 @@ def install():
                     cfg.ignore_nested_collections = not use_sub_cols
             except Exception as exc:
                 traceback.print_exc()
-                self.report({'WARNING'}, _zh(f"按组件创建子集合失败：{exc}"))
+                self.report({'WARNING'}, iface_('Failed to create sub-collection by component: {0}').format(exc))
             try:
                 filled = _prefill_form_anchors_from_stu(context, cfg)
                 if filled:
                     self.report(
                         {'INFO'},
-                        _zh(f"已从 STU 预填 {len(filled)} 个形态锚点"))
+                        iface_('Pre-filled {0} form anchors from STU').format(len(filled)))
             except Exception as exc:
                 traceback.print_exc()
-                self.report({'WARNING'}, _zh(f"预填形态锚点失败：{exc}"))
+                self.report({'WARNING'}, iface_('Pre-fill morph anchor failed: {0}').format(exc))
             if getattr(cfg, "import_texture", False):
                 try:
                     summary = _imp_tex.assign_textures(cfg.object_source_folder, objects=new_objects)
                 except Exception as exc:
                     traceback.print_exc()
-                    self.report({'WARNING'}, _zh(f"导入贴图失败：{exc}"))
+                    self.report({'WARNING'}, iface_('Failed to import texture: {0}').format(exc))
                     return result
                 parts = []
                 if summary.assigned:
@@ -180,7 +181,7 @@ def install():
                 if summary.bare:
                     parts.append(f"{summary.bare} 个仅创建材质（漫反射贴图不在文件夹）")
                 if parts:
-                    self.report({'INFO'}, _zh("，".join(parts)))
+                    self.report({'INFO'}, iface_(str("，".join(parts))))
             return result
 
         _wui.VTWW_Import.execute = execute_with_velo_extras
@@ -229,7 +230,7 @@ def _patch_import_menu():
         # dropdown, before the remaining import toggles.
         if hasattr(cfg, "import_as_component_collections"):
             box = layout.box()
-            box.label(text=_zh("Velo 兼容选项"), icon="TOOL_SETTINGS")
+            box.label(text=iface_('Velo Compatibility Options'), icon="TOOL_SETTINGS")
             box.prop(cfg, "import_as_component_collections")
 
         if cfg.import_skeleton_type == 'MERGED':

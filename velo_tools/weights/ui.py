@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import bpy
 
 from . import algorithms as _algo
@@ -27,7 +29,7 @@ def _is_weight_tab(context):
 
 
 class VELO_PT_weight_objects(bpy.types.Panel):
-    bl_label = "工作对象"
+    bl_label = 'Working Objects'
     bl_idname = "VELO_PT_weight_objects"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -45,10 +47,10 @@ class VELO_PT_weight_objects(bpy.types.Panel):
         col = layout.column(align=True)
         col.prop(settings, "source_object")
         row = col.row(align=True)
-        row.prop_search(settings, "source_group", settings, "available_source_vgs", text="来源顶点组")
+        row.prop_search(settings, "source_group", settings, "available_source_vgs", text='Source Vertex Group')
         row.operator("velo.weight_refresh_groups", text="", icon='FILE_REFRESH')
         mirror_row = col.row(align=True)
-        mirror_row.prop_search(settings, "mirror_group", settings, "available_mirror_vgs", text="镜像顶点组")
+        mirror_row.prop_search(settings, "mirror_group", settings, "available_mirror_vgs", text='Mirror Vertex Group')
         if settings.mirror_status:
             icon = 'INFO' if settings.mirror_group else 'ERROR'
             col.label(text=settings.mirror_status, icon=icon)
@@ -57,7 +59,7 @@ class VELO_PT_weight_objects(bpy.types.Panel):
 
 
 class VELO_PT_weight_mirror_mapping(bpy.types.Panel):
-    bl_label = "镜像映射组"
+    bl_label = 'Mirror Mapping Groups'
     bl_idname = "VELO_PT_weight_mirror_mapping"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -76,7 +78,7 @@ class VELO_PT_weight_mirror_mapping(bpy.types.Panel):
         root = _algo.active_component_collection(context.scene)
         game_name = _algo.active_game_display_name(context.scene)
         if root is None:
-            layout.label(text=f"{game_name}: 未选择导出集合", icon='ERROR')
+            layout.label(text=iface_('{0}: No export collection selected').format(game_name), icon='ERROR')
         else:
             layout.label(text=f"{game_name}: {root.name}", icon='OUTLINER_COLLECTION')
 
@@ -87,10 +89,10 @@ class VELO_PT_weight_mirror_mapping(bpy.types.Panel):
 
         mapping_box = layout.box()
         header = mapping_box.row(align=True)
-        header.label(text="手动映射")
+        header.label(text='Manual mapping')
         header.operator("velo.weight_mirror_mapping_add", text="", icon='ADD')
         if len(settings.mirror_mappings) <= 0:
-            mapping_box.label(text="暂无手动镜像映射", icon='INFO')
+            mapping_box.label(text='No manual mirror mapping yet', icon='INFO')
         for index, item in enumerate(settings.mirror_mappings):
             row = mapping_box.row(align=True)
             if active is not None and active.type == 'MESH':
@@ -109,7 +111,7 @@ class VELO_PT_weight_mirror_mapping(bpy.types.Panel):
 
 
 class VELO_PT_weight_transfer(bpy.types.Panel):
-    bl_label = "传递设置"
+    bl_label = 'Transfer settings'
     bl_idname = "VELO_PT_weight_transfer"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -147,16 +149,16 @@ class VELO_PT_weight_transfer(bpy.types.Panel):
         col.prop(settings, "auto_lock_target_groups")
         col.prop(settings, "donor_count")
         donor_box = col.box()
-        donor_box.label(text="预计算供体（规格化时使用）")
+        donor_box.label(text='Precompute donor (used during normalization)')
         if len(settings.available_donor_vgs) <= 0:
-            donor_box.label(text="当前没有可选供体组", icon='INFO')
+            donor_box.label(text='Currently no selectable donor group', icon='INFO')
         else:
             for slot_index, prop_name in enumerate(("donor_slot_1", "donor_slot_2", "donor_slot_3", "donor_slot_4", "donor_slot_5", "donor_slot_6")[:_donor_slot_count(settings)], start=1):
                 row = donor_box.row(align=True)
-                row.prop_search(settings, prop_name, settings, "available_donor_vgs", text=f"供体 {slot_index}")
+                row.prop_search(settings, prop_name, settings, "available_donor_vgs", text=iface_('Donor {0}').format(slot_index))
                 mirror_prop = f"mirror_donor_slot_{slot_index}"
                 mirror = row.row(align=True)
-                mirror.prop_search(settings, mirror_prop, settings, "available_donor_vgs", text=f"镜像 {slot_index}")
+                mirror.prop_search(settings, mirror_prop, settings, "available_donor_vgs", text=iface_('Mirror {0}').format(slot_index))
         if settings.mirror_donor_status:
             icon = 'ERROR' if "锁定" in settings.mirror_donor_status or "未找到" in settings.mirror_donor_status else 'INFO'
             donor_box.label(text=settings.mirror_donor_status, icon=icon)
@@ -167,11 +169,11 @@ class VELO_PT_weight_transfer(bpy.types.Panel):
                 transfer_row.operator("velo.weight_transfer", icon='MOD_DATA_TRANSFER')
             elif dependency_status == "running":
                 transfer_row.enabled = False
-                transfer_row.label(text="正在后台安装 Robust 依赖…", icon='TIME')
+                transfer_row.label(text='Installing Robust dependencies in the background…', icon='TIME')
             else:
                 transfer_row.operator(
                     "velo.weight_install_native_dependencies",
-                    text=f"安装 Robust 依赖 ({_native_deps.download_size_bytes() / 1048576:.1f} MiB)",
+                    text=iface_('Install Robust dependencies ({0:.1f} MiB)').format(_native_deps.download_size_bytes() / 1048576),
                     icon='IMPORT',
                 )
                 if dependency_error:
@@ -187,7 +189,7 @@ class VELO_PT_weight_transfer(bpy.types.Panel):
 
 
 class VELO_PT_weight_group_merge(bpy.types.Panel):
-    bl_label = "权重组转移"
+    bl_label = 'Weight Group Transfer'
     bl_idname = "VELO_PT_weight_group_merge"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -205,23 +207,23 @@ class VELO_PT_weight_group_merge(bpy.types.Panel):
         settings = context.scene.velo_weight_tools
         active = getattr(context, "active_object", None)
         if active is None or active.type != 'MESH':
-            layout.label(text="请先选中一个网格物体", icon='INFO')
+            layout.label(text='Please select a mesh object first', icon='INFO')
             return
-        layout.label(text=f"当前物体: {active.name}", icon='MESH_DATA')
+        layout.label(text=iface_('Current object: {0}').format(active.name), icon='MESH_DATA')
         col = layout.column(align=True)
-        col.prop_search(settings, "merge_source_group", active, "vertex_groups", text="来源组")
-        col.prop_search(settings, "merge_target_group", active, "vertex_groups", text="目标组")
+        col.prop_search(settings, "merge_source_group", active, "vertex_groups", text='Source Group')
+        col.prop_search(settings, "merge_target_group", active, "vertex_groups", text='Target group')
         col.operator("velo.weight_merge_groups", icon='SORT_DESC')
         layout.separator()
         col = layout.column(align=True)
-        op = col.operator("velo.weight_merge_mapping_families", text="按 MMD 映射合并同目标", icon='AUTOMERGE_ON')
+        op = col.operator("velo.weight_merge_mapping_families", text='Merge the same target according to the MMD mapping.', icon='AUTOMERGE_ON')
         op.mapping_mode = 'MMD'
-        op = col.operator("velo.weight_merge_mapping_families", text="按通用映射合并同目标", icon='AUTOMERGE_ON')
+        op = col.operator("velo.weight_merge_mapping_families", text='Merge the same target according to a common mapping', icon='AUTOMERGE_ON')
         op.mapping_mode = 'GENERAL'
 
 
 class VELO_PT_weight_postprocess(bpy.types.Panel):
-    bl_label = "后处理"
+    bl_label = 'Post-processing'
     bl_idname = "VELO_PT_weight_postprocess"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -259,7 +261,7 @@ class VELO_PT_weight_postprocess(bpy.types.Panel):
 
 
 class VELO_PT_weight_advanced(bpy.types.Panel):
-    bl_label = "高级"
+    bl_label = 'Advanced'
     bl_idname = "VELO_PT_weight_advanced"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'

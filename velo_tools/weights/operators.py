@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import contextlib
 import threading
 import textwrap
@@ -61,8 +63,8 @@ def _poll_native_install():
 
 class VELO_OT_weight_install_native_dependencies(bpy.types.Operator):
     bl_idname = "velo.weight_install_native_dependencies"
-    bl_label = "安装 Robust 依赖"
-    bl_description = "下载并校验 Robust Weight Tools 所需的可选 native dependencies"
+    bl_label = 'Install Robust dependencies'
+    bl_description = 'Download and verify optional native dependencies required by Robust Weight Tools'
     bl_options = {'INTERNAL'}
 
     def invoke(self, context, event):
@@ -72,18 +74,18 @@ class VELO_OT_weight_install_native_dependencies(bpy.types.Operator):
         size_mib = _native_deps.download_size_bytes() / (1024 * 1024)
         installed_mib = _native_deps.installed_size_bytes() / (1024 * 1024)
         col = self.layout.column(align=True)
-        col.label(text=f"将下载约 {size_mib:.1f} MiB 的 scipy、libigl 和 robust-laplacian。")
-        col.label(text=f"安装后共享 cache 约占 {installed_mib:.1f} MiB。")
-        col.label(text="共享 cache 不进入 Velo Tools 插件目录或更新备份。")
+        col.label(text=iface_('Will download about {0:.1f} MiB of scipy, libigl, and robust-laplacian.').format(size_mib))
+        col.label(text=iface_('After installation, the shared cache occupies about {0:.1f} MiB.').format(installed_mib))
+        col.label(text='Shared cache does not enter the Velo Tools plugin directory or update backup.')
 
     def execute(self, context):
         global _native_install_job
         status, _error = native_install_status()
         if status == "installed":
-            self.report({'INFO'}, "Robust 依赖已经安装")
+            self.report({'INFO'}, iface_('Robust dependencies installed'))
             return {'CANCELLED'}
         if status == "running":
-            self.report({'INFO'}, "Robust 依赖正在后台下载")
+            self.report({'INFO'}, iface_('Robust dependencies are downloading in the background'))
             return {'CANCELLED'}
 
         job = {"thread": None, "error": ""}
@@ -102,7 +104,7 @@ class VELO_OT_weight_install_native_dependencies(bpy.types.Operator):
         _native_install_job = job
         job["thread"].start()
         bpy.app.timers.register(_poll_native_install, first_interval=0.25)
-        self.report({'INFO'}, "Robust 依赖已开始后台下载")
+        self.report({'INFO'}, iface_('Robust dependencies have started downloading in the background'))
         return {'FINISHED'}
 
 
@@ -490,8 +492,8 @@ def _mapping_merge_groups(obj, armature, grouped_rows, *, mode):
 
 class VELO_OT_weight_refresh_groups(bpy.types.Operator):
     bl_idname = "velo.weight_refresh_groups"
-    bl_label = "刷新来源组"
-    bl_description = "重新扫描来源网格上可作为权重来源的顶点组候选"
+    bl_label = 'Refresh Source Groups'
+    bl_description = 'Rescan candidate vertex groups on the source mesh that can be used as weight sources.'
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -503,8 +505,8 @@ class VELO_OT_weight_refresh_groups(bpy.types.Operator):
 
 class VELO_OT_weight_show_last_report(bpy.types.Operator):
     bl_idname = "velo.weight_show_last_report"
-    bl_label = "查看完整结果"
-    bl_description = "查看最近一次权重传递的完整结果或错误信息"
+    bl_label = 'View full results'
+    bl_description = 'View the full results or error information of the most recent weight transfer'
     bl_options = {'INTERNAL'}
 
     @classmethod
@@ -531,8 +533,8 @@ class VELO_OT_weight_show_last_report(bpy.types.Operator):
 
 class VELO_OT_weight_copy_last_report(bpy.types.Operator):
     bl_idname = "velo.weight_copy_last_report"
-    bl_label = "复制完整结果"
-    bl_description = "把最近一次权重传递的完整结果复制到剪贴板，便于发送排错信息"
+    bl_label = 'Copy full result'
+    bl_description = 'Copy the full result of the most recent weight transfer to the clipboard for sending debugging information'
     bl_options = {'INTERNAL'}
 
     @classmethod
@@ -542,21 +544,21 @@ class VELO_OT_weight_copy_last_report(bpy.types.Operator):
     def execute(self, context):
         text = _last_report_text(context)
         context.window_manager.clipboard = text
-        self.report({'INFO'}, "已复制完整结果到剪贴板")
+        self.report({'INFO'}, iface_('Copied complete results to clipboard'))
         return {'FINISHED'}
 
 
 class VELO_OT_weight_cycle_donor_count(bpy.types.Operator):
     bl_idname = "velo.weight_cycle_donor_count"
-    bl_label = "切换自动供体数"
-    bl_description = "在 1 到 6 之间切换自动供体数量"
+    bl_label = 'Toggle automatic donor count'
+    bl_description = 'Switch the number of automatic donors between 1 and 6'
     bl_options = {'INTERNAL'}
 
     direction: EnumProperty(
-        name="方向",
+        name='Direction',
         items=[
-            ('PREV', "上一项", "切到更小的供体数量"),
-            ('NEXT', "下一项", "切到更大的供体数量"),
+            ('PREV', 'Previous', 'Switch to a smaller number of donors'),
+            ('NEXT', 'Next', 'Switch to a larger number of donors'),
         ],
         default='NEXT',
     )
@@ -578,8 +580,8 @@ class VELO_OT_weight_cycle_donor_count(bpy.types.Operator):
 
 class VELO_OT_weight_mirror_mapping_add(bpy.types.Operator):
     bl_idname = "velo.weight_mirror_mapping_add"
-    bl_label = "新增镜像映射"
-    bl_description = "把一对顶点组加入场景级手动镜像映射表"
+    bl_label = 'Add a mirrored mapping'
+    bl_description = 'Add a pair of vertex groups to the scene-level manual mirror mapping table'
     bl_options = {'REGISTER', 'UNDO'}
 
     left_group: StringProperty(default="")
@@ -600,7 +602,7 @@ class VELO_OT_weight_mirror_mapping_add(bpy.types.Operator):
                 item.right_group = ""
                 settings.active_mirror_mapping_index = len(settings.mirror_mappings) - 1
                 settings.last_report = "已新增空白镜像映射"
-                self.report({'INFO'}, settings.last_report)
+                self.report({'INFO'}, iface_(str(settings.last_report)))
                 return {'FINISHED'}
             if not left or not right:
                 raise ValueError("请同时指定左右两个镜像顶点组")
@@ -610,18 +612,18 @@ class VELO_OT_weight_mirror_mapping_add(bpy.types.Operator):
             _props.sync_mirror_group(settings, context)
             _props.sync_donor_preview(settings, context)
             settings.last_report = f"镜像映射 {'新增' if created else '已存在'}: {left} ↔ {right}"
-            self.report({'INFO'}, settings.last_report)
+            self.report({'INFO'}, iface_(str(settings.last_report)))
             return {'FINISHED'}
         except Exception as exc:
             settings.last_report = str(exc)
-            self.report({'ERROR'}, str(exc))
+            self.report({'ERROR'}, iface_(str(str(exc))))
             return {'CANCELLED'}
 
 
 class VELO_OT_weight_mirror_mapping_remove(bpy.types.Operator):
     bl_idname = "velo.weight_mirror_mapping_remove"
-    bl_label = "移除镜像映射"
-    bl_description = "从场景级手动镜像映射表移除一对顶点组"
+    bl_label = 'Remove mirror mapping'
+    bl_description = 'Remove a pair of vertex groups from the scene-level manual mirror mapping table.'
     bl_options = {'REGISTER', 'UNDO'}
 
     index: IntProperty(default=-1)
@@ -633,21 +635,21 @@ class VELO_OT_weight_mirror_mapping_remove(bpy.types.Operator):
     def execute(self, context):
         settings = context.scene.velo_weight_tools
         if self.index < 0 or self.index >= len(settings.mirror_mappings):
-            self.report({'ERROR'}, "镜像映射索引无效")
+            self.report({'ERROR'}, iface_('Mirror Mapping Index Invalid'))
             return {'CANCELLED'}
         settings.mirror_mappings.remove(self.index)
         settings.active_mirror_mapping_index = max(0, min(settings.active_mirror_mapping_index, len(settings.mirror_mappings) - 1))
         _props.sync_mirror_group(settings, context)
         _props.sync_donor_preview(settings, context)
         settings.last_report = "已移除镜像映射"
-        self.report({'INFO'}, settings.last_report)
+        self.report({'INFO'}, iface_(str(settings.last_report)))
         return {'FINISHED'}
 
 
 class VELO_OT_weight_mirror_active_group(bpy.types.Operator):
     bl_idname = "velo.weight_mirror_active_group"
-    bl_label = "镜像权重"
-    bl_description = "以当前活动顶点组为权威侧，把权重镜像覆盖到另一侧并执行规格化"
+    bl_label = 'Mirror Weight'
+    bl_description = 'Use the current active vertex group as the authoritative side, mirror the weights to the other side, and perform normalization'
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -735,7 +737,7 @@ class VELO_OT_weight_mirror_active_group(bpy.types.Operator):
                 except Exception:
                     pass
             settings.last_report = str(exc)
-            self.report({'ERROR'}, str(exc))
+            self.report({'ERROR'}, iface_(str(str(exc))))
             _invalidate_weight_overlay_caches(context)
             return {'CANCELLED'}
         finally:
@@ -756,15 +758,15 @@ class VELO_OT_weight_mirror_active_group(bpy.types.Operator):
         if mirror_donors:
             bits.append(f"镜像供体 {len(mirror_donors)}/{_props.donor_count_value(settings)} " + ", ".join(group.name for group in mirror_donors))
         settings.last_report = "；".join(bits)
-        self.report({'INFO'}, settings.last_report)
+        self.report({'INFO'}, iface_(str(settings.last_report)))
         _invalidate_weight_overlay_caches(context)
         return {'FINISHED'}
 
 
 class VELO_OT_weight_merge_groups(bpy.types.Operator):
     bl_idname = "velo.weight_merge_groups"
-    bl_label = "执行权重组转移"
-    bl_description = "把当前选中网格的左侧来源组权重累加到右侧目标组，然后清空左侧来源组"
+    bl_label = 'Execute weight group transfer'
+    bl_description = "Add the weights of the currently selected mesh's left-side source group to the right-side target group, then clear the left-side source group"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -806,10 +808,10 @@ class VELO_OT_weight_merge_groups(bpy.types.Operator):
             if saturated_vertices > 0:
                 bits.append(f"{saturated_vertices} 点写入时截到 1.0")
             settings.last_report = "；".join(bits)
-            self.report({'INFO'}, settings.last_report)
+            self.report({'INFO'}, iface_(str(settings.last_report)))
         except Exception as exc:
             settings.last_report = str(exc)
-            self.report({'ERROR'}, str(exc))
+            self.report({'ERROR'}, iface_(str(str(exc))))
             _invalidate_weight_overlay_caches(context)
             return {'CANCELLED'}
 
@@ -819,15 +821,15 @@ class VELO_OT_weight_merge_groups(bpy.types.Operator):
 
 class VELO_OT_weight_merge_mapping_families(bpy.types.Operator):
     bl_idname = "velo.weight_merge_mapping_families"
-    bl_label = "按映射合并同目标来源权重"
-    bl_description = "把映射表里指向同一目标的多条来源权重合并到父级更高的来源组，并断开冗余映射线"
+    bl_label = 'Merge weights for the same target according to the mapping'
+    bl_description = 'Merge multiple source weights in the mapping table pointing to the same target into the higher-level parent source group, and disconnect redundant mapping lines'
     bl_options = {'REGISTER', 'UNDO'}
 
     mapping_mode: EnumProperty(
-        name="映射类型",
+        name='Mapping Type',
         items=[
-            ('MMD', "MMD", "使用终末地 MMD 映射表"),
-            ('GENERAL', "通用", "使用通用顶点组映射表"),
+            ('MMD', "MMD", 'Use Arknights: Endfield MMD mapping table'),
+            ('GENERAL', 'General', 'Use the generic vertex group mapping table'),
         ],
         default='MMD',
     )
@@ -919,10 +921,10 @@ class VELO_OT_weight_merge_mapping_families(bpy.types.Operator):
             if removed_rows > 0:
                 bits.append(f"删除空行 {removed_rows}")
             settings.last_report = "；".join(bits)
-            self.report({'INFO'}, settings.last_report)
+            self.report({'INFO'}, iface_(str(settings.last_report)))
         except Exception as exc:
             settings.last_report = str(exc)
-            self.report({'ERROR'}, str(exc))
+            self.report({'ERROR'}, iface_(str(str(exc))))
             _invalidate_weight_overlay_caches(context)
             return {'CANCELLED'}
         _invalidate_weight_overlay_caches(context)
@@ -931,8 +933,8 @@ class VELO_OT_weight_merge_mapping_families(bpy.types.Operator):
 
 class VELO_OT_weight_normalize_selected_vertices(bpy.types.Operator):
     bl_idname = "velo.weight_normalize_selected_vertices"
-    bl_label = "按比例规格化选中顶点"
-    bl_description = "只处理当前编辑模式选中的顶点；按当前最大组数量裁剪未锁定普通权重后再规格化，不创建新的顶点组权重"
+    bl_label = 'Normalize selected vertices by proportion'
+    bl_description = 'Only process vertices selected in the current edit mode; trim unlocked normal weights according to the current maximum group count and then normalize, without creating new vertex group weights.'
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -945,17 +947,17 @@ class VELO_OT_weight_normalize_selected_vertices(bpy.types.Operator):
         obj = getattr(context, "active_object", None)
         if obj is None or getattr(obj, "type", None) != 'MESH':
             settings.last_report = "请先选中一个 Mesh 物体"
-            self.report({'ERROR'}, settings.last_report)
+            self.report({'ERROR'}, iface_(str(settings.last_report)))
             return {'CANCELLED'}
         if getattr(obj, "mode", None) != 'EDIT':
             settings.last_report = "按比例规格化选中顶点需要在 Mesh Edit Mode 下执行"
-            self.report({'ERROR'}, settings.last_report)
+            self.report({'ERROR'}, iface_(str(settings.last_report)))
             return {'CANCELLED'}
         try:
             selected = _selected_edit_vertex_indices(obj)
             if not selected:
                 settings.last_report = "没有选择任何顶点"
-                self.report({'ERROR'}, settings.last_report)
+                self.report({'ERROR'}, iface_(str(settings.last_report)))
                 return {'CANCELLED'}
             bpy.ops.object.mode_set(mode='OBJECT')
             report = _algo.normalize_selected_vertices_proportional(
@@ -986,7 +988,7 @@ class VELO_OT_weight_normalize_selected_vertices(bpy.types.Operator):
             else:
                 bits.append("全部完成")
             settings.last_report = "；".join(bits)
-            self.report({'INFO'}, settings.last_report)
+            self.report({'INFO'}, iface_(str(settings.last_report)))
             _invalidate_weight_overlay_caches(context)
             return {'FINISHED'}
         except Exception as exc:
@@ -996,15 +998,15 @@ class VELO_OT_weight_normalize_selected_vertices(bpy.types.Operator):
             except Exception:
                 pass
             settings.last_report = str(exc)
-            self.report({'ERROR'}, settings.last_report)
+            self.report({'ERROR'}, iface_(str(settings.last_report)))
             _invalidate_weight_overlay_caches(context)
             return {'CANCELLED'}
 
 
 class VELO_OT_weight_transfer(bpy.types.Operator):
     bl_idname = "velo.weight_transfer"
-    bl_label = "执行权重传递"
-    bl_description = "按当前 WEIGHT 设置把来源顶点组权重传递到目标网格，并执行可选平滑、限制和规格化"
+    bl_label = 'Execute weight transfer'
+    bl_description = 'Transfer source vertex group weights to the target mesh according to the current WEIGHT settings, and perform optional smoothing, limiting, and normalization.'
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -1394,7 +1396,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             _restore_group_snapshots(target, snapshots)
             _remove_created_groups(target, created_groups)
             settings.last_report = str(exc)
-            self.report({'ERROR'}, str(exc))
+            self.report({'ERROR'}, iface_(str(str(exc))))
             _invalidate_weight_overlay_caches(context)
             return {'CANCELLED'}
         finally:
@@ -1466,7 +1468,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             else:
                 bits.append("已锁定承接组/镜像承接组")
         settings.last_report = "；".join(bits)
-        self.report({'INFO'}, settings.last_report)
+        self.report({'INFO'}, iface_(str(settings.last_report)))
         return {'FINISHED'}
 
 

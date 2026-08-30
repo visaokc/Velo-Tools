@@ -6,6 +6,8 @@ message instead of falling through to the stock single-IB path.
 """
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import sys
 import traceback
 from pathlib import Path
@@ -69,7 +71,7 @@ def _make_patched(orig_execute):
             try:
                 # Surface the actual reason (e.g. the own-buffer stray-weight guidance) instead
                 # of only pointing at the console.
-                self.report({'ERROR'}, "Cross-scene export failed: %s" % str(e))
+                self.report({'ERROR'}, iface_('Cross-scene export failed: %s') % str(e))
             except Exception:
                 pass
             return {'CANCELLED'}
@@ -127,9 +129,9 @@ def _make_patched(orig_execute):
                 if audit_errors:
                     msg += " | static audit %d error(s)" % len(audit_errors)
                     print("[velo.xscene] static audit errors: %s" % " | ".join(audit_errors))
-                self.report({'WARNING'}, msg)
+                self.report({'WARNING'}, iface_(str(msg)))
             else:
-                self.report({'INFO'}, msg)
+                self.report({'INFO'}, iface_(str(msg)))
         except Exception:
             pass
         return {'FINISHED'}
@@ -241,7 +243,7 @@ def _make_patched_import(orig_execute):
             load_manifest(root)
         except CrossSceneManifestError as exc:
             try:
-                self.report({'ERROR'}, str(exc))
+                self.report({'ERROR'}, iface_(str(str(exc))))
             except Exception:
                 pass
             return {'CANCELLED'}

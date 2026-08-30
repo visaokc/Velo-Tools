@@ -223,8 +223,8 @@ class VELO_GM_VGName(bpy.types.PropertyGroup):
 
 
 class VELO_GM_Row(bpy.types.PropertyGroup):
-    source_name: StringProperty(name="源", default="")
-    target_name: StringProperty(name="目标", default="", update=_on_general_row_target_update)
+    source_name: StringProperty(name='Source', default="")
+    target_name: StringProperty(name='Target', default="", update=_on_general_row_target_update)
     current_source_name: StringProperty(name="CurrentSource", default="")
     enabled: BoolProperty(name="Enabled", default=True)
     source_centroid_local: FloatVectorProperty(size=3, default=(0.0, 0.0, 0.0))
@@ -242,49 +242,49 @@ class VELO_GM_Profile(bpy.types.PropertyGroup):
 class VELO_GM_Settings(bpy.types.PropertyGroup):
     profile: PointerProperty(type=VELO_GM_Profile)
     active_general_text: PointerProperty(
-        name="映射表",
+        name='Mapping Table',
         type=bpy.types.Text,
-        description="当前使用的通用映射表内置文本",
+        description='Current universal mapping table built-in text',
         update=_on_active_general_text_update,
     )
     source_object: PointerProperty(
-        name="源物体",
+        name='Source Object',
         type=bpy.types.Object,
         poll=_is_mesh_poll,
-        description="通用映射的源物体",
+        description='Source object of the universal mapping',
         update=_on_source_object_update,
     )
     target_object: PointerProperty(
-        name="目标物体",
+        name='Target Object',
         type=bpy.types.Object,
         poll=_is_mesh_poll,
-        description="通用映射的目标物体",
+        description='Target object of the universal mapping',
         update=_on_target_object_update,
     )
     armature_object: PointerProperty(
-        name="骨架",
+        name='Skeleton',
         type=bpy.types.Object,
         poll=lambda self, obj: obj is not None and obj.type == 'ARMATURE',
-        description="可选；选择后源物体改名会同步到骨架",
+        description='Optional; after selection, renaming the source object will synchronize to the armature.',
     )
     show_overlay: BoolProperty(
-        name="启用通用映射可视化",
+        name='Enable universal mapping visualization.',
         default=False,
-        description="开启或关闭通用映射可视化校对；开启时会自动关闭 MMD 映射可视化以避免两套端点叠加",
+        description='Enable or disable general mapping visualization verification; when enabled, it will automatically disable MMD mapping visualization to avoid overlapping two sets of endpoints',
         update=_on_general_overlay_update,
     )
     available_source_vgs: CollectionProperty(type=VELO_GM_VGName)
     use_max_distance: BoolProperty(
-        name="启用最大距离过滤",
+        name='Enable maximum distance filtering.',
         default=False,
-        description="KDTree 匹配距离超过阈值时跳过写表",
+        description='Skip writing table when KDTree match distance exceeds threshold',
     )
     max_match_distance: FloatProperty(
-        name="最大匹配距离",
+        name='Maximum match distance',
         default=0.5,
         min=0.0,
         soft_max=10.0,
-        description="通用映射启用最大距离过滤时允许的最大匹配距离",
+        description='Maximum matching distance allowed when general mapping enables maximum distance filtering',
     )
 
 

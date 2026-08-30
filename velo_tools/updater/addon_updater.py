@@ -42,6 +42,8 @@ from datetime import datetime, timedelta
 import bpy
 import addon_utils
 
+from velo_tools.i18n import iface_
+
 # -----------------------------------------------------------------------------
 # The main class
 # -----------------------------------------------------------------------------
@@ -746,7 +748,7 @@ class SingletonUpdater:
         local = os.path.join(self._updater_path, "update_staging")
         error = None
 
-        self.report_progress("准备更新", 0.02, "正在准备临时目录")
+        self.report_progress(iface_("Preparing Update"), 0.02, iface_("Preparing temporary directory"))
         self.cleanup_staging()
 
         # Make/clear the staging folder, to ensure the folder is always clean.
@@ -775,7 +777,7 @@ class SingletonUpdater:
         self.print_verbose("Now retrieving the new source zip")
         self._source_zip = os.path.join(local, "source.zip")
         self.print_verbose("Starting download update zip")
-        self.report_progress("下载更新包", 0.08, "正在连接下载服务器")
+        self.report_progress(iface_("Downloading Update Package"), 0.08, iface_("Connecting to download server"))
         try:
             request = urllib.request.Request(url)
             context = ssl._create_unverified_context()
@@ -903,7 +905,7 @@ class SingletonUpdater:
 
     def unpack_staged_zip(self, clean=False):
         """Unzip the downloaded file, and validate contents"""
-        self.report_progress("解压与校验", 0.60, "正在检查下载包")
+        self.report_progress(iface_("Extracting and Validating"), 0.60, iface_("Checking downloaded package"))
         if not os.path.isfile(self._source_zip):
             self.print_verbose("Error, update zip not found")
             self._error = "Install failed"
@@ -955,9 +957,9 @@ class SingletonUpdater:
             name_count = max(len(names), 1)
             for index, name in enumerate(names, 1):
                 self.report_progress(
-                    "解压与校验",
+                    iface_("Extracting and Validating"),
                     0.60 + (0.10 * index / name_count),
-                    "正在解压文件：{}%".format(
+                    iface_("Extracting files: {}%").format(
                         round(index * 100 / name_count)),
                 )
                 if zsep not in name:
@@ -1021,20 +1023,20 @@ class SingletonUpdater:
         # Merge code with the addon directory, using blender default behavior,
         # plus any modifiers indicated by user (e.g. force remove/keep).
         if self._backup_current:
-            self.report_progress("创建 rollback backup", 0.72, "正在备份当前版本")
+            self.report_progress(iface_("Creating Rollback Backup"), 0.72, iface_("Backing up current version"))
             if not self.create_backup():
                 self._error = "Install failed"
                 self._error_msg = "Failed to create rollback backup"
                 return -1
-            self.report_progress("创建 rollback backup", 0.85, "当前版本已备份")
+            self.report_progress(iface_("Creating Rollback Backup"), 0.85, iface_("Current version backed up"))
         else:
-            self.report_progress("准备安装", 0.85, "正在准备安装目标版本")
-        self.report_progress("安装", 0.88, "正在安装目标版本")
+            self.report_progress(iface_("Preparing Installation"), 0.85, iface_("Preparing target version installation"))
+        self.report_progress(iface_("Installing"), 0.88, iface_("Installing target version"))
         if self.deep_merge_directory(self._addon_root, unpath, clean) == -1:
             self._error = "Install failed"
             self._error_msg = "Failed to merge downloaded files"
             return -1
-        self.report_progress("安装", 0.96, "目标版本已写入")
+        self.report_progress(iface_("Installing"), 0.96, iface_("Target version installed"))
 
         # Now save the json state.
         # Change to True to trigger the handler on other side if allowing
@@ -1273,7 +1275,7 @@ class SingletonUpdater:
                         continue
                     last_reported_percent = percent
                     progress = 0.08 + (0.47 * min(downloaded / total, 1.0))
-                    detail = "正在下载：{}%（{:.1f} / {:.1f} MiB）".format(
+                    detail = iface_("Downloading: {}% ({:.1f} / {:.1f} MiB)").format(
                         percent,
                         downloaded / (1024 * 1024),
                         total / (1024 * 1024),
@@ -1284,10 +1286,10 @@ class SingletonUpdater:
                         continue
                     last_reported_mib = downloaded_mib
                     progress = 0.08
-                    detail = "正在下载：{:.1f} MiB".format(
+                    detail = iface_("Downloading: {:.1f} MiB").format(
                         downloaded / (1024 * 1024))
-                self.report_progress("下载更新包", progress, detail)
-        self.report_progress("下载更新包", 0.55, "更新包下载完成")
+                self.report_progress(iface_("Downloading Update Package"), progress, detail)
+        self.report_progress(iface_("Downloading Update Package"), 0.55, iface_("Update package downloaded"))
 
     def version_tuple_from_text(self, text):
         """Convert text into a tuple of numbers (int).

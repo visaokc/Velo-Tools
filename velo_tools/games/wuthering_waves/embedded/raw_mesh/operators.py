@@ -1,3 +1,5 @@
+
+from velo_tools.i18n import iface_
 # Operators for the Velo raw-mesh tool. Phase 1 ships the extract operator;
 # import/export operators are added in later phases.
 
@@ -6,8 +8,8 @@ import bpy
 
 class VELO_OT_RawMeshExtract(bpy.types.Operator):
     bl_idname = "vtww_raw.extract"
-    bl_label = "按 Hash 提取网格"
-    bl_description = "按 IB/VB Hash 从 Dump 提取特效/场景网格到一个整合文件夹"
+    bl_label = 'Extract Mesh by Hash'
+    bl_description = 'Extract special effects/scene meshes from Dump into an integrated folder according to IB/VB Hash.'
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -17,13 +19,13 @@ class VELO_OT_RawMeshExtract(bpy.types.Operator):
         dump = bpy.path.abspath(cfg.frame_dump_folder).strip()
         out = bpy.path.abspath(cfg.output_folder).strip()
         if not dump:
-            self.report({'ERROR'}, "请先指定 Frame Dump 目录")
+            self.report({'ERROR'}, iface_('Please first specify the Frame Dump directory'))
             return {'CANCELLED'}
         if not out:
-            self.report({'ERROR'}, "请先指定输出目录")
+            self.report({'ERROR'}, iface_('Please specify the output directory first'))
             return {'CANCELLED'}
         if not cfg.hashes.strip():
-            self.report({'ERROR'}, "请先填写要提取的 Hash 列表")
+            self.report({'ERROR'}, iface_('Please first fill in the list of Hash to be extracted'))
             return {'CANCELLED'}
 
         try:
@@ -40,24 +42,24 @@ class VELO_OT_RawMeshExtract(bpy.types.Operator):
         except (extract.RawMeshExtractError,
                 extract.scan.RawMeshScanError,
                 extract._layout.RawMeshLayoutError) as e:
-            self.report({'ERROR'}, str(e))
+            self.report({'ERROR'}, iface_(str(str(e))))
             return {'CANCELLED'}
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self.report({'ERROR'}, f"提取失败：{e}")
+            self.report({'ERROR'}, iface_('Extraction failed: {0}').format(e))
             return {'CANCELLED'}
 
         self.report(
             {'INFO'},
-            f"已提取 {summary['components']} 个 component、{summary['textures']} 张贴图 → {summary['folder']}")
+            iface_('Extracted {0} components, {1} textures → {2}').format(summary['components'], summary['textures'], summary['folder']))
         return {'FINISHED'}
 
 
 class VELO_OT_RawMeshImport(bpy.types.Operator):
     bl_idname = "vtww_raw.import_mesh"
-    bl_label = "导入整合文件夹"
-    bl_description = "把本工具提取出的整合文件夹导入 Blender（保留全部顶点属性，可编辑 Position）"
+    bl_label = 'Import Merged Folder'
+    bl_description = 'Import the consolidated folder extracted by this tool into Blender (retain all vertex attributes, editable Position)'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -66,28 +68,28 @@ class VELO_OT_RawMeshImport(bpy.types.Operator):
 
         folder = bpy.path.abspath(cfg.import_folder).strip()
         if not folder:
-            self.report({'ERROR'}, "请先指定要导入的整合文件夹")
+            self.report({'ERROR'}, iface_('Please specify the integrated folder to import first'))
             return {'CANCELLED'}
 
         try:
             summary = import_mesh.import_folder(folder, context)
         except import_mesh.RawMeshImportError as e:
-            self.report({'ERROR'}, str(e))
+            self.report({'ERROR'}, iface_(str(str(e))))
             return {'CANCELLED'}
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self.report({'ERROR'}, f"导入失败：{e}")
+            self.report({'ERROR'}, iface_('Import failed: {0}').format(e))
             return {'CANCELLED'}
 
-        self.report({'INFO'}, f"已导入 {summary['objects']} 个 component → 集合「{summary['collection']}」")
+        self.report({'INFO'}, iface_("Imported {0} components → Collection '{1}'").format(summary['objects'], summary['collection']))
         return {'FINISHED'}
 
 
 class VELO_OT_RawMeshExport(bpy.types.Operator):
     bl_idname = "vtww_raw.export"
-    bl_label = "导出为 Mod"
-    bl_description = "把集合里的 raw-mesh 对象导出为 plain 3dmigoto mod（每个 component 独立覆盖各自的源 draw）"
+    bl_label = 'Export as Mod'
+    bl_description = 'Export raw-mesh objects in the collection as a plain 3dmigoto mod (each component independently overrides its own source draw).'
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -97,27 +99,27 @@ class VELO_OT_RawMeshExport(bpy.types.Operator):
         coll = cfg.export_collection
         out = bpy.path.abspath(cfg.mod_output_folder).strip()
         if coll is None:
-            self.report({'ERROR'}, "请先指定导出集合")
+            self.report({'ERROR'}, iface_('Please specify the export set first'))
             return {'CANCELLED'}
         if not out:
-            self.report({'ERROR'}, "请先指定 Mod 输出目录")
+            self.report({'ERROR'}, iface_('Please specify the Mod output directory first'))
             return {'CANCELLED'}
 
         try:
             summary = export_mesh.export_mod(coll, out, cfg.export_mode)
         except export_mesh.RawMeshExportError as e:
-            self.report({'ERROR'}, str(e))
+            self.report({'ERROR'}, iface_(str(str(e))))
             return {'CANCELLED'}
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self.report({'ERROR'}, f"导出失败：{e}")
+            self.report({'ERROR'}, iface_('Export failed: {0}').format(e))
             return {'CANCELLED'}
 
         msg = f"已导出 {summary['components']} 个 component、{summary['textures']} 张贴图 → {summary['folder']}"
         if summary['rebuilt']:
             msg += f"（{summary['rebuilt']} 个走 Rebuild：非标准属性有损）"
-        self.report({'INFO'}, msg)
+        self.report({'INFO'}, iface_(str(msg)))
         return {'FINISHED'}
 
 

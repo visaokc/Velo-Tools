@@ -10,6 +10,8 @@ clean and easy to re-sync. Reuses the engine bits from there (the ``updater``
 singleton, ``ui_refresh``, ``get_user_preferences``, ``AddonUpdaterUpdateNow``).
 """
 
+from velo_tools.i18n import iface_
+
 import bpy
 
 from . import addon_updater_ops
@@ -84,13 +86,13 @@ def draw_update_banner(panel, context):
     col = box.column(align=True)
     title = col.row()
     title.alert = True
-    title.label(text="发现新版本 {}".format(version), icon="ERROR")
+    title.label(text=iface_('New version found {}').format(version), icon="ERROR")
     row = col.row(align=True)
     row.scale_y = 1.3
     row.operator(addon_updater_ops.AddonUpdaterUpdateNow.bl_idname,
-                 text="立即更新", icon="LOOP_FORWARDS")
-    row.operator(VELO_OT_UpdaterSkipSession.bl_idname, text="本次跳过")
-    row.operator(VELO_OT_UpdaterDisableNotify.bl_idname, text="不再自动提醒")
+                 text='Update Immediately', icon="LOOP_FORWARDS")
+    row.operator(VELO_OT_UpdaterSkipSession.bl_idname, text='Skip This Time')
+    row.operator(VELO_OT_UpdaterDisableNotify.bl_idname, text='Disable Automatic Reminders')
 
 
 class VELO_OT_UpdaterSkipSession(bpy.types.Operator):
@@ -100,9 +102,9 @@ class VELO_OT_UpdaterSkipSession(bpy.types.Operator):
     version): this only sets a session flag, so the next session / next elapsed
     interval reminds the user again.
     """
-    bl_label = "本次跳过"
+    bl_label = 'Skip This Time'
     bl_idname = "velo_tools.updater_skip_session"
-    bl_description = "关闭本次更新提示；下个检测周期仍会再提醒"
+    bl_description = 'Turn off this update notification; it will be reminded again in the next check cycle'
     bl_options = {'REGISTER', 'INTERNAL'}
 
     def execute(self, context):
@@ -114,9 +116,9 @@ class VELO_OT_UpdaterSkipSession(bpy.types.Operator):
 
 class VELO_OT_UpdaterDisableNotify(bpy.types.Operator):
     """Turn off the host auto update-notification banner (auto_update_notify)."""
-    bl_label = "不再自动提醒"
+    bl_label = 'Disable Automatic Reminders'
     bl_idname = "velo_tools.updater_disable_notify"
-    bl_description = "关闭面板顶部的自动更新提示；可在偏好设置中重新开启"
+    bl_description = 'Turn off the automatic update prompt at the top of the panel; it can be re-enabled in preferences'
     bl_options = {'REGISTER', 'INTERNAL'}
 
     def execute(self, context):

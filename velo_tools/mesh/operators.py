@@ -7,6 +7,8 @@ Design principles:
 - Skip MMD driver placeholder meshes whose names contain ".placeholder"
 """
 
+from velo_tools.i18n import iface_
+
 import re
 import traceback
 
@@ -1359,10 +1361,9 @@ def _merge_meshes_by_texture_groups(context, meshes, root):
 
 class VELO_OT_add_component_prefix(bpy.types.Operator):
     bl_idname = "velo.add_component_prefix"
-    bl_label = "为选中物体添加 Component 前缀"
+    bl_label = 'Add the Component prefix to the selected object'
     bl_description = (
-        "给所有选中的网格物体添加或更新 `Component N` 前缀, "
-        "方便 EFMI 导出时识别部件归属"
+        'Add or update the `Component N` prefix for all selected grid objects to facilitate identification of component ownership during EFMI export'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -1373,7 +1374,7 @@ class VELO_OT_add_component_prefix(bpy.types.Operator):
     def execute(self, context):
         meshes = _selected_meshes(context)
         if not meshes:
-            self.report({'WARNING'}, "请先选择至少一个网格物体")
+            self.report({'WARNING'}, iface_('Please select at least one mesh object first'))
             return {'CANCELLED'}
 
         settings = getattr(context.scene, "velo_tools", None)
@@ -1393,7 +1394,7 @@ class VELO_OT_add_component_prefix(bpy.types.Operator):
             obj["velo_component_id"] = component_id
             renamed += 1
 
-        self.report({'INFO'}, f"完成: 改名 {renamed} 个物体, 跳过 {unchanged} 个")
+        self.report({'INFO'}, iface_('Completed: Renamed {0} objects, skipped {1}').format(renamed, unchanged))
         return {'FINISHED'}
 
 
@@ -1460,10 +1461,9 @@ def _sync_object_material_name(obj, *, skip_multiple_slots=False):
 
 class VELO_OT_gen_material_for_selected(bpy.types.Operator):
     bl_idname = "velo.gen_material_for_selected"
-    bl_label = "选中物体生成同名材质球"
+    bl_label = 'Create Same-Named Materials for Selected Objects'
     bl_description = (
-        "对每个选中网格: 单用户化 mesh, 把 mesh 改名为物体名, "
-        "若无材质则新建同名材质, 若已有材质且共享则单用户化并改名"
+        'For each selected mesh: make mesh single-user, rename the mesh to the object name, create a new material with the same name if none exists, if material exists and is shared, make it single-user and rename'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -1474,7 +1474,7 @@ class VELO_OT_gen_material_for_selected(bpy.types.Operator):
     def execute(self, context):
         meshes = _selected_meshes(context)
         if not meshes:
-            self.report({'WARNING'}, "请先选择至少一个网格物体")
+            self.report({'WARNING'}, iface_('Please select at least one mesh object first'))
             return {'CANCELLED'}
 
         processed = 0
@@ -1482,20 +1482,19 @@ class VELO_OT_gen_material_for_selected(bpy.types.Operator):
             if _sync_object_material_name(obj):
                 processed += 1
 
-        self.report({'INFO'}, f"完成: 处理 {processed} 个物体")
+        self.report({'INFO'}, iface_('Done: Handle {0} objects').format(processed))
         return {'FINISHED'}
 
 
 # ---------------------------------------------------------------------------
-# 3) Merge selected objects by texture
+# 3) Merge Selected Objects by Material
 # ---------------------------------------------------------------------------
 
 class VELO_OT_merge_by_texture(bpy.types.Operator):
     bl_idname = "velo.merge_by_texture"
-    bl_label = "选中物体按贴图合并"
+    bl_label = 'Merge Selected Objects by Material'
     bl_description = (
-        "把选中网格按 (使用的图像集合) 分组, 同组合并为一个物体; "
-        "材质槽保持原样不会被合并/丢弃"
+        'Group the selected meshes by (used image collection) and merge each group into one object; the material slots remain unchanged and will not be merged or discarded.'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -1507,7 +1506,7 @@ class VELO_OT_merge_by_texture(bpy.types.Operator):
         _ensure_object_mode(context)
         meshes = _selected_meshes(context)
         if len(meshes) < 2:
-            self.report({'WARNING'}, "至少选择 2 个网格物体")
+            self.report({'WARNING'}, iface_('Select at least 2 mesh objects'))
             return {'CANCELLED'}
 
         weight_snapshot = _snapshot_weight_tool_objects(context)
@@ -1538,7 +1537,7 @@ class VELO_OT_merge_by_texture(bpy.types.Operator):
             try:
                 bpy.ops.object.join()
             except RuntimeError as e:
-                self.report({'WARNING'}, f"合并失败 (图像 {sorted(key)}): {e}")
+                self.report({'WARNING'}, iface_('Merge failed (image {0}): {1}').format(sorted(key), e))
                 continue
             _cleanup_join_orphan_meshes(group_meshes)
             merged = context.view_layer.objects.active or group[0]
@@ -1553,7 +1552,7 @@ class VELO_OT_merge_by_texture(bpy.types.Operator):
         msg = f"按贴图合并完成: {merged_groups} 组 / {merged_objs} 个物体"
         if skipped:
             msg += f"; 跳过无贴图 {skipped} 个"
-        self.report({'INFO'}, msg)
+        self.report({'INFO'}, iface_(str(msg)))
         return {'FINISHED'}
 
 
@@ -1753,20 +1752,20 @@ def _split_meshes_by_material(context, sources, *, threshold, preserve_component
 
 class VELO_OT_route_refresh_materials(bpy.types.Operator):
     bl_idname = "velo.route_refresh_materials"
-    bl_label = "刷新材质分组"
-    bl_description = "重新扫描当前终末地导出部件集合里的材质名；若场景里已有拆分后的单材质部件，也会按它们当前所在真实集合同步虚拟材质分组树"
+    bl_label = 'Refresh Material Groups'
+    bl_description = 'Rescan the material names in the exported components set of the current Arknights: Endfield; if there are already split single-material components in the scene, the virtual material grouping tree will also be synchronized according to the actual sets they currently belong to.'
     bl_options = {'REGISTER'}
 
     def execute(self, context):
         count = refresh_material_route_items(context.scene)
-        self.report({'INFO'}, f"已同步 {count} 个材质分组")
+        self.report({'INFO'}, iface_('Synchronized {0} material groups').format(count))
         return {'FINISHED'}
 
 
 class VELO_OT_route_set_active_collection(bpy.types.Operator):
     bl_idname = "velo.route_set_active_collection"
-    bl_label = "选择集合"
-    bl_description = "将该集合设为材质归纳面板的当前集合"
+    bl_label = 'Select collection'
+    bl_description = 'Set this collection as the current collection in the material aggregation panel'
     bl_options = {'INTERNAL'}
 
     collection_name: bpy.props.StringProperty(default="")  # type: ignore
@@ -1785,7 +1784,7 @@ class VELO_OT_route_set_active_collection(bpy.types.Operator):
 
 class VELO_OT_route_select_material_item(bpy.types.Operator):
     bl_idname = "velo.route_select_material_item"
-    bl_label = "选择材质分组"
+    bl_label = 'Select material group'
     bl_options = {'INTERNAL'}
 
     item_index: bpy.props.IntProperty(default=-1)  # type: ignore
@@ -1807,8 +1806,8 @@ class VELO_OT_route_select_material_item(bpy.types.Operator):
 
 class VELO_OT_route_assign_item_to_collection(bpy.types.Operator):
     bl_idname = "velo.route_assign_item_to_collection"
-    bl_label = "移动材质分组"
-    bl_description = "把当前选中的虚拟材质分组归到指定集合"
+    bl_label = 'Move material group'
+    bl_description = 'Group the currently selected virtual materials into the specified collection'
     bl_options = {'REGISTER', 'UNDO'}
 
     collection_name: bpy.props.StringProperty(default="")  # type: ignore
@@ -1821,7 +1820,7 @@ class VELO_OT_route_assign_item_to_collection(bpy.types.Operator):
             return {'CANCELLED'}
         collection = _find_descendant_collection(root, self.collection_name)
         if collection is None:
-            self.report({'ERROR'}, "目标集合不存在")
+            self.report({'ERROR'}, iface_('Target set does not exist'))
             return {'CANCELLED'}
         item = None
         index = self.item_index
@@ -1831,7 +1830,7 @@ class VELO_OT_route_assign_item_to_collection(bpy.types.Operator):
             item = get_active_material_route_item(route_settings)
             index = int(getattr(route_settings, "active_route_index", -1))
         if item is None:
-            self.report({'ERROR'}, "请先选择一个材质分组")
+            self.report({'ERROR'}, iface_('Please select a material group first'))
             return {'CANCELLED'}
         item.target_collection = collection
         route_settings.active_collection = collection
@@ -1842,7 +1841,7 @@ class VELO_OT_route_assign_item_to_collection(bpy.types.Operator):
 
 class VELO_OT_route_toggle_collection(bpy.types.Operator):
     bl_idname = "velo.route_toggle_collection"
-    bl_label = "展开/折叠集合"
+    bl_label = 'Expand/Collapse collection'
     bl_options = {'INTERNAL'}
 
     collection_name: bpy.props.StringProperty(default="")  # type: ignore
@@ -1862,12 +1861,12 @@ class VELO_OT_route_toggle_collection(bpy.types.Operator):
 
 class VELO_OT_route_add_child_collection(bpy.types.Operator):
     bl_idname = "velo.route_add_child_collection"
-    bl_label = "新建子集合"
-    bl_description = "在当前选中的归纳集合下创建新的子集合，可用于 CrossIB 按集合映射"
+    bl_label = 'Create Sub-Collection'
+    bl_description = 'Create a new sub-collection under the currently selected inductive collection, which can be used for CrossIB mapping by collection'
     bl_options = {'REGISTER', 'UNDO'}
 
     parent_name: bpy.props.StringProperty(default="")  # type: ignore
-    child_name: bpy.props.StringProperty(name="子集合名称", default="新集合")  # type: ignore
+    child_name: bpy.props.StringProperty(name='Subset name', default="新集合")  # type: ignore
 
     def invoke(self, context, event):
         route_settings = get_material_route_settings(context.scene)
@@ -1882,28 +1881,28 @@ class VELO_OT_route_add_child_collection(bpy.types.Operator):
         root = get_export_component_root(context.scene)
         route_settings = get_material_route_settings(context.scene)
         if root is None or route_settings is None:
-            self.report({'ERROR'}, f"请先在{get_active_game_display(context.scene)} Export Mod 中指定部件集合")
+            self.report({'ERROR'}, iface_('Please first specify the component set in {0} Export Mod').format(get_active_game_display(context.scene)))
             return {'CANCELLED'}
         parent = _find_descendant_collection(root, self.parent_name) if self.parent_name else route_settings.active_collection
         if parent is None or not _collection_is_descendant(root, parent):
-            self.report({'ERROR'}, "当前集合无效，请先在集合树中选择父集合")
+            self.report({'ERROR'}, iface_('Current collection is invalid, please select a parent collection in the collection tree first'))
             return {'CANCELLED'}
         name = (self.child_name or "").strip()
         if not name:
-            self.report({'ERROR'}, "子集合名称不能为空")
+            self.report({'ERROR'}, iface_('Subset names cannot be empty'))
             return {'CANCELLED'}
         _ensure_nested_export_enabled(context.scene)
         created = _ensure_child_collection(parent, name)
         route_settings.active_collection = created
         refresh_material_route_items(context.scene, apply_actual_targets=False)
-        self.report({'INFO'}, f"已创建子集合 {created.name}")
+        self.report({'INFO'}, iface_('Created sub-collection {0}').format(created.name))
         return {'FINISHED'}
 
 
 class VELO_OT_route_remove_child_collection(bpy.types.Operator):
     bl_idname = "velo.route_remove_child_collection"
-    bl_label = "移除子集合"
-    bl_description = "移除当前选中的子集合，并把虚拟材质分组回收到父集合"
+    bl_label = 'Remove Sub-Collection'
+    bl_description = 'Remove the currently selected subset and recycle the virtual material group back to the parent set'
     bl_options = {'REGISTER', 'UNDO'}
 
     collection_name: bpy.props.StringProperty(default="")  # type: ignore
@@ -1912,18 +1911,18 @@ class VELO_OT_route_remove_child_collection(bpy.types.Operator):
         root = get_export_component_root(context.scene)
         route_settings = get_material_route_settings(context.scene)
         if root is None or route_settings is None:
-            self.report({'ERROR'}, f"请先在{get_active_game_display(context.scene)} Export Mod 中指定部件集合")
+            self.report({'ERROR'}, iface_('Please first specify the component set in {0} Export Mod').format(get_active_game_display(context.scene)))
             return {'CANCELLED'}
         collection = _find_descendant_collection(root, self.collection_name) if self.collection_name else route_settings.active_collection
         if collection is None or collection == root:
-            self.report({'ERROR'}, "根集合不能在这里移除")
+            self.report({'ERROR'}, iface_('The root set cannot be removed here'))
             return {'CANCELLED'}
         parent = _find_parent_collection(root, collection)
         if parent is None:
-            self.report({'ERROR'}, "未找到父集合")
+            self.report({'ERROR'}, iface_('Parent collection not found'))
             return {'CANCELLED'}
         if any(is_real_mesh(obj) for obj in collection.all_objects):
-            self.report({'ERROR'}, "该集合下仍有真实网格；请先在大纲中整理真实对象后再移除")
+            self.report({'ERROR'}, iface_('There are still real meshes in this set; please organize real objects in the outline before removing'))
             return {'CANCELLED'}
 
         removed_tree = set(_iter_collection_tree(collection))
@@ -1940,17 +1939,15 @@ class VELO_OT_route_remove_child_collection(bpy.types.Operator):
         bits = [f"已移除 {removed_count} 个集合"]
         if cleared_mappings:
             bits.append(f"同时移除了 {cleared_mappings} 条 CrossIB 集合映射")
-        self.report({'INFO'}, "；".join(bits))
+        self.report({'INFO'}, iface_(str("；".join(bits))))
         return {'FINISHED'}
 
 
 class VELO_OT_split_by_material_to_collections(bpy.types.Operator):
     bl_idname = "velo.split_by_material_to_collections"
-    bl_label = "按材质分离并归纳到集合"
+    bl_label = 'Split by Material into Collections'
     bl_description = (
-        "手动对当前导出部件集合内选中的网格按材质拆分；"
-        "保持拆分前的边界法向；单材质网格会直接跳过；"
-        "拆分后的单材质部件会自动保留 Component 前缀并归入当前材质树指定的集合"
+        'Manually split the selected meshes in the current exported part collection by material; maintain pre-split boundary normals; single-material meshes will be skipped; the split single-material parts will automatically retain the Component prefix and be assigned to the collection specified by the current material tree'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -1964,7 +1961,7 @@ class VELO_OT_split_by_material_to_collections(bpy.types.Operator):
     def execute(self, context):
         root = get_export_component_root(context.scene)
         if root is None:
-            self.report({'ERROR'}, f"请先在{get_active_game_display(context.scene)} Export Mod 中指定部件集合")
+            self.report({'ERROR'}, iface_('Please first specify the component set in {0} Export Mod').format(get_active_game_display(context.scene)))
             return {'CANCELLED'}
         refresh_material_route_items(context.scene, apply_actual_targets=False)
         sources = [
@@ -1972,7 +1969,7 @@ class VELO_OT_split_by_material_to_collections(bpy.types.Operator):
             if any(_collection_is_descendant(root, collection) for collection in getattr(obj, 'users_collection', ()))
         ]
         if not sources:
-            self.report({'WARNING'}, "请先选择部件集合内至少一个网格物体")
+            self.report({'WARNING'}, iface_('Please select at least one mesh object in the part collection first'))
             return {'CANCELLED'}
         weight_snapshot = _snapshot_weight_tool_objects(context)
         _ROUTE_AUTO_REFRESHING[0] = True
@@ -2013,16 +2010,15 @@ class VELO_OT_split_by_material_to_collections(bpy.types.Operator):
 
         refresh_material_route_items(context.scene)
         _restore_weight_tool_objects(context, weight_snapshot)
-        self.report({'INFO'}, "；".join(return_bits))
+        self.report({'INFO'}, iface_(str("；".join(return_bits))))
         return {'FINISHED'}
 
 
 class VELO_OT_split_by_texture_to_collections(bpy.types.Operator):
     bl_idname = "velo.split_by_texture_to_collections"
-    bl_label = "按贴图分离并归纳到集合"
+    bl_label = 'Split by Material and Sort into Collections'
     bl_description = (
-        "手动对当前导出部件集合内选中的网格先按材质拆开，再按贴图重组；"
-        "同贴图的材质会尽量保留在同一个结果物体里，并按当前材质树归纳到集合"
+        'Manually split the selected meshes in the current exported part collection by material first, then regroup by texture; materials with the same texture will be kept in the same resulting object as much as possible and organized into the collection according to the current material tree'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -2036,7 +2032,7 @@ class VELO_OT_split_by_texture_to_collections(bpy.types.Operator):
     def execute(self, context):
         root = get_export_component_root(context.scene)
         if root is None:
-            self.report({'ERROR'}, f"请先在{get_active_game_display(context.scene)} Export Mod 中指定部件集合")
+            self.report({'ERROR'}, iface_('Please first specify the component set in {0} Export Mod').format(get_active_game_display(context.scene)))
             return {'CANCELLED'}
         refresh_material_route_items(context.scene, apply_actual_targets=False)
         sources = [
@@ -2044,7 +2040,7 @@ class VELO_OT_split_by_texture_to_collections(bpy.types.Operator):
             if any(_collection_is_descendant(root, collection) for collection in getattr(obj, 'users_collection', ()))
         ]
         if not sources:
-            self.report({'WARNING'}, "请先选择部件集合内至少一个网格物体")
+            self.report({'WARNING'}, iface_('Please select at least one mesh object in the part collection first'))
             return {'CANCELLED'}
 
         weight_snapshot = _snapshot_weight_tool_objects(context)
@@ -2088,18 +2084,15 @@ class VELO_OT_split_by_texture_to_collections(bpy.types.Operator):
         ]
         if missing:
             bits.append(f"跳过 {len(missing)} 个未识别 Component 的结果")
-        self.report({'INFO'}, "；".join(bits))
+        self.report({'INFO'}, iface_(str("；".join(bits))))
         return {'FINISHED'}
 
 
 class VELO_OT_split_by_material(bpy.types.Operator):
     bl_idname = "velo.split_by_material"
-    bl_label = "按材质拆分网格"
+    bl_label = 'Split mesh by material'
     bl_description = (
-        "对每个选中网格: 进入编辑模式按材质拆分, "
-        "保持拆分前的边界法向, "
-        "拆分后的每个子物体只保留实际使用的材质槽, "
-        "并清理零位移的形态键"
+        'For each selected mesh: enter edit mode, split by material, keep boundary normals before splitting, for each resulting sub-object retain only actually used material slots, and clean zero-displacement ShapeKey'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -2110,7 +2103,7 @@ class VELO_OT_split_by_material(bpy.types.Operator):
     def execute(self, context):
         sources = _selected_meshes(context)
         if not sources:
-            self.report({'WARNING'}, "请先选择至少一个网格物体")
+            self.report({'WARNING'}, iface_('Please select at least one mesh object first'))
             return {'CANCELLED'}
         stats = _split_meshes_by_material(
             context,
@@ -2121,8 +2114,7 @@ class VELO_OT_split_by_material(bpy.types.Operator):
 
         self.report(
             {'INFO'},
-            f"按材质拆分完成: 结果 {len(stats['targets'])} 个; "
-            f"清理材质槽 {stats['cleaned_slots']}, 清理形态键 {stats['cleaned_keys']}, 同步命名 {stats['renamed']}",
+            iface_('Split by material completed: Result {0}; Cleared material slots {1}, Cleared ShapeKey {2}, Synchronized naming {3}').format(len(stats['targets']), stats['cleaned_slots'], stats['cleaned_keys'], stats['renamed']),
         )
         return {'FINISHED'}
 

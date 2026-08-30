@@ -74,10 +74,9 @@ class CrossIBSettings(bpy.types.PropertyGroup):
     )  # type: ignore
 
     frame_dump_folder: bpy.props.StringProperty(
-        name="上次用于生成 JSON 的帧 Dump",
+        name='Last frame dump used for generating JSON',
         description=(
-            "记录上次用于生成 CrossIB.json v2 的帧 Dump 文件夹。"
-            "导出不会扫描该目录，也不会从其它场景累积 shader。"
+            'Record the folder of the last frame dump used to generate CrossIB.json v2. Exporting will not scan this directory, nor will it accumulate shaders from other scenes.'
         ),
         default="",
         subtype="DIR_PATH",

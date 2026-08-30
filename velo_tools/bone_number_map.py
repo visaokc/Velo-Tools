@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import json
 from pathlib import Path
 import re
@@ -10,27 +12,27 @@ import bpy
 
 
 class VELO_WWMI_BoneMapRow(bpy.types.PropertyGroup):
-    numeric_id: bpy.props.StringProperty(name="数字编号", default="")
-    original_name: bpy.props.StringProperty(name="原始骨骼名", default="")
-    component_name: bpy.props.StringProperty(name="来源 Component", default="")
+    numeric_id: bpy.props.StringProperty(name='Numerical numbering', default="")
+    original_name: bpy.props.StringProperty(name='Original Bone Name', default="")
+    component_name: bpy.props.StringProperty(name='Source Component', default="")
 
 
 class VELO_WWMI_BoneMapSettings(bpy.types.PropertyGroup):
-    unpack_folder: bpy.props.StringProperty(name="解包路径", subtype="DIR_PATH", default="")
+    unpack_folder: bpy.props.StringProperty(name='Unpack path', subtype="DIR_PATH", default="")
     rows: bpy.props.CollectionProperty(type=VELO_WWMI_BoneMapRow)
     active_row: bpy.props.IntProperty(default=0)
-    show_original: bpy.props.BoolProperty(name="当前显示原始名", default=False)
+    show_original: bpy.props.BoolProperty(name='Currently displaying the original name', default=False)
     voxel_size: bpy.props.FloatProperty(
-        name="体素大小", default=0.05, min=0.005, max=0.2, precision=3,
-        description="几何匹配使用的归一化体素大小",
+        name='Voxel size', default=0.05, min=0.005, max=0.2, precision=3,
+        description='Normalized voxel size used for geometry matching',
     )
     similarity_threshold: bpy.props.FloatProperty(
-        name="最低相似度", default=55.0, min=1.0, max=100.0, subtype='PERCENTAGE',
-        description="每个 WWMI Component 必须达到的最低体素相似度",
+        name='Minimum similarity', default=55.0, min=1.0, max=100.0, subtype='PERCENTAGE',
+        description='Minimum voxel similarity that each WWMI Component must reach',
     )
     rename_side_suffix: bpy.props.BoolProperty(
-        name="将骨骼重命名为.L/.R后缀", default=True,
-        description="导入骨架和恢复原始权重组名时，将明确的 _L/_R 等左右后缀统一为 Blender .L/.R",
+        name='Rename the skeleton with .L/.R suffix', default=True,
+        description='When importing a skeleton and restoring the original weight group names, explicit left and right suffixes like _L/_R are unified into Blender .L/.R',
     )
 
 
@@ -63,18 +65,18 @@ def _load_hierarchy_bones(settings, source_folder):
 
 class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
     bl_idname = "velo.wwmi_bone_map_generate"
-    bl_label = "生成映射表"
-    bl_description = "体素匹配解包目录内全部 .uemodel section 与 WWMI Component，再生成全局编号到原始骨骼名的映射"
+    bl_label = 'Generate Mapping Table'
+    bl_description = 'Unpack all .uemodel sections and WWMI Component in the voxel matching directory, then generate a mapping from global IDs to the original skeleton names'
 
     def execute(self, context):
         settings = context.scene.velo_wwmi_bone_map
         cfg = getattr(context.scene, "VTWW_settings", None)
         source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
         if not settings.unpack_folder.strip():
-            self.report({'ERROR'}, "请先填写解包路径")
+            self.report({'ERROR'}, iface_('Please first fill in the unpack path'))
             return {'CANCELLED'}
         if not source_folder.strip():
-            self.report({'ERROR'}, "请先填写 WWMI 对象源目录")
+            self.report({'ERROR'}, iface_('Please first fill in the source directory for the WWMI object'))
             return {'CANCELLED'}
         from .games.wuthering_waves.bone_mapping import BoneMappingError, generate_mapping
         try:
@@ -85,7 +87,7 @@ class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
                 similarity_threshold=settings.similarity_threshold,
             )
         except BoneMappingError as exc:
-            self.report({'ERROR'}, str(exc))
+            self.report({'ERROR'}, iface_(str(str(exc))))
             return {'CANCELLED'}
         settings.rows.clear()
         for number, bone_name, component_name, _support in mapping:
@@ -94,25 +96,25 @@ class VELO_OT_wwmi_bone_map_generate(bpy.types.Operator):
             row.original_name = bone_name
             row.component_name = component_name
         settings.show_original = False
-        self.report({'INFO'}, f"已由 {len(evidence)} 个 Component 的体素匹配生成 {len(mapping)} 行")
+        self.report({'INFO'}, iface_('{1} rows generated from voxel matching of {0} Component').format(len(evidence), len(mapping)))
         return {'FINISHED'}
 
 
 class VELO_OT_wwmi_auto_bind(bpy.types.Operator):
     bl_idname = "velo.wwmi_auto_bind"
-    bl_label = "一键为Mod网格绑骨"
-    bl_description = "生成映射、为当前 WWMI 组件集合改名并导入骨架"
+    bl_label = 'Bind Skeleton to Mod Mesh'
+    bl_description = 'Generate Mapping, Rename Current WWMI Component Set and Import Skeleton'
 
     def execute(self, context):
         settings = context.scene.velo_wwmi_bone_map
         cfg = getattr(context.scene, "VTWW_settings", None)
         source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
         if not source_folder.strip():
-            self.report({'ERROR'}, "请先填写对象源目录")
+            self.report({'ERROR'}, iface_('Please first fill in the source directory of the object'))
             return {'CANCELLED'}
         result_exists = _matching_result_path(source_folder).is_file()
         if not result_exists and not settings.unpack_folder.strip():
-            self.report({'ERROR'}, "源目录没有匹配结果，请先填写解包路径")
+            self.report({'ERROR'}, iface_('No matches found in source directory, please fill in the unpack path first'))
             return {'CANCELLED'}
         component_collection = getattr(cfg, "component_collection", None) if cfg is not None else None
         targets = [
@@ -121,7 +123,7 @@ class VELO_OT_wwmi_auto_bind(bpy.types.Operator):
             and _collection_contains(component_collection, obj)
         ]
         if component_collection is None or not targets:
-            self.report({'ERROR'}, "请先在 WWMI 导出模式中指定有网格的组件集合")
+            self.report({'ERROR'}, iface_('Please first specify the component set with a mesh in WWMI export mode'))
             return {'CANCELLED'}
         previous = [(obj, obj.select_get()) for obj in context.scene.objects]
         active = context.view_layer.objects.active
@@ -148,14 +150,14 @@ class VELO_OT_wwmi_auto_bind(bpy.types.Operator):
                 if obj.name in bpy.context.scene.objects:
                     obj.select_set(selected)
             context.view_layer.objects.active = active
-        self.report({'INFO'}, f"已完成 {len(targets)} 个 Mod 网格的映射改名与骨架绑定")
+        self.report({'INFO'}, iface_('Completed mapping renaming and skeleton binding for {0} Mod meshes').format(len(targets)))
         return {'FINISHED'}
 
 
 class VELO_OT_wwmi_skeleton_import(bpy.types.Operator):
     bl_idname = "velo.wwmi_skeleton_import"
-    bl_label = "导入骨架"
-    bl_description = "优先从解包路径导入骨架；未填写时从对象源目录的匹配结果导入"
+    bl_label = 'Import Skeleton'
+    bl_description = "Prefer importing the armature from the unpack path; if not filled in, import from matching results in the object's source directory"
 
     def execute(self, context):
         settings = context.scene.velo_wwmi_bone_map
@@ -181,23 +183,23 @@ class VELO_OT_wwmi_skeleton_import(bpy.types.Operator):
                 mirror_mesh=bool(getattr(cfg, "mirror_mesh", False)),
                 rename_side_suffix=settings.rename_side_suffix)
         except Exception as exc:
-            self.report({'ERROR'}, f"骨架导入失败：{exc}")
+            self.report({'ERROR'}, iface_('Skeleton import failed: {0}').format(exc))
             return {'CANCELLED'}
-        self.report({'INFO'}, f"已导入 {bone_count} 根骨骼；绑定 {bound_count} 个 Component 网格")
+        self.report({'INFO'}, iface_('Imported {0} root skeletons; bound {1} Component meshes').format(bone_count, bound_count))
         return {'FINISHED'}
 
 
 class VELO_OT_wwmi_bone_map_load_result(bpy.types.Operator):
     bl_idname = "velo.wwmi_bone_map_load_result"
-    bl_label = "从源目录载入映射表"
-    bl_description = "从对象源目录中的 WWMI_MatchingResult.json 恢复映射表"
+    bl_label = 'Load Mapping Table from Source Directory'
+    bl_description = 'Restore mapping table from WWMI_MatchingResult.json in the object source directory.'
 
     def execute(self, context):
         settings = context.scene.velo_wwmi_bone_map
         cfg = getattr(context.scene, "VTWW_settings", None)
         source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
         if not source_folder.strip():
-            self.report({'ERROR'}, "请先填写对象源目录")
+            self.report({'ERROR'}, iface_('Please first fill in the source directory of the object'))
             return {'CANCELLED'}
         try:
             payload = json.loads(_matching_result_path(source_folder).read_text(encoding="utf-8"))
@@ -209,7 +211,7 @@ class VELO_OT_wwmi_bone_map_load_result(bpy.types.Operator):
                 restored.append((str(record["numeric_id"]), str(record["original_name"]),
                                  str(record.get("component_name", ""))))
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            self.report({'ERROR'}, f"载入匹配结果失败：{exc}")
+            self.report({'ERROR'}, iface_('Failed to load match results: {0}').format(exc))
             return {'CANCELLED'}
         settings.rows.clear()
         for numeric_id, original_name, component_name in restored:
@@ -219,28 +221,28 @@ class VELO_OT_wwmi_bone_map_load_result(bpy.types.Operator):
             row.component_name = component_name
         settings.active_row = 0
         settings.show_original = False
-        self.report({'INFO'}, f"已从源目录载入 {len(restored)} 行映射")
+        self.report({'INFO'}, iface_('Loaded {0} lines of mapping from the source directory').format(len(restored)))
         return {'FINISHED'}
 
 
 class VELO_OT_wwmi_bone_map_save_result(bpy.types.Operator):
     bl_idname = "velo.wwmi_bone_map_save_result"
-    bl_label = "将匹配结果保存至源目录"
-    bl_description = "将映射表和解包骨架快照保存到对象源目录"
+    bl_label = 'Save Matching Results to Source Directory'
+    bl_description = 'Save the mapping table and unpacked skeleton snapshot to the object source directory'
 
     def execute(self, context):
         settings = context.scene.velo_wwmi_bone_map
         cfg = getattr(context.scene, "VTWW_settings", None)
         source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
         if not source_folder.strip():
-            self.report({'ERROR'}, "请先填写对象源目录")
+            self.report({'ERROR'}, iface_('Please first fill in the source directory of the object'))
             return {'CANCELLED'}
         rows = [row for row in settings.rows if row.numeric_id and row.original_name]
         if not rows:
-            self.report({'ERROR'}, "映射表没有可保存的完整记录")
+            self.report({'ERROR'}, iface_('The mapping table has no complete records to save'))
             return {'CANCELLED'}
         if not settings.unpack_folder.strip():
-            self.report({'ERROR'}, "保存匹配结果需要填写解包路径，以读取骨架快照")
+            self.report({'ERROR'}, iface_('To save the matching result, you need to fill in the unpacking path to read the skeleton snapshot'))
             return {'CANCELLED'}
         try:
             from .games.wuthering_waves.skeleton_import import _find_skeleton
@@ -270,16 +272,16 @@ class VELO_OT_wwmi_bone_map_save_result(bpy.types.Operator):
             }
             target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         except Exception as exc:
-            self.report({'ERROR'}, f"保存匹配结果失败：{exc}")
+            self.report({'ERROR'}, iface_('Failed to save match result: {0}').format(exc))
             return {'CANCELLED'}
-        self.report({'INFO'}, f"已保存 {len(rows)} 行映射和 {len(bones)} 根骨骼至源目录")
+        self.report({'INFO'}, iface_('Saved {0} lines of mapping and {1} root skeletons to the source directory').format(len(rows), len(bones)))
         return {'FINISHED'}
 
 
 class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
     bl_idname = "velo.wwmi_bone_map_toggle"
-    bl_label = "切换编号显示"
-    target: bpy.props.EnumProperty(items=[("ORIGINAL", "原始名字", ""), ("NUMERIC", "数字编号", "")])
+    bl_label = 'Toggle Name Display'
+    target: bpy.props.EnumProperty(items=[("ORIGINAL", 'Original Name', ""), ("NUMERIC", 'Numerical numbering', "")])
 
     @staticmethod
     def _component_name(obj):
@@ -384,7 +386,7 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
         settings = context.scene.velo_wwmi_bone_map
         rows = [r for r in settings.rows if r.numeric_id and r.original_name]
         if not rows:
-            self.report({'ERROR'}, "映射表没有完整的数字编号与原始骨骼名")
+            self.report({'ERROR'}, iface_('The mapping table does not have complete numeric identifiers and original bone names'))
             return {'CANCELLED'}
         if self.target == 'ORIGINAL':
             try:
@@ -392,13 +394,13 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
                 source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
                 self._hierarchy_sort_key(list(settings.rows), settings, source_folder)
             except Exception as exc:
-                self.report({'ERROR'}, f"映射表重排失败：{exc}")
+                self.report({'ERROR'}, iface_('Mapping table reordering failed: {0}').format(exc))
                 return {'CANCELLED'}
         for obj in _selected_meshes(context):
             try:
                 pairs = self._pairs_for_object(obj, rows, settings.rename_side_suffix)
             except ValueError as exc:
-                self.report({'ERROR'}, str(exc))
+                self.report({'ERROR'}, iface_(str(str(exc))))
                 return {'CANCELLED'}
             renames = [(vg.name, pairs[vg.name]) for vg in obj.vertex_groups if vg.name in pairs and pairs[vg.name] != vg.name]
             used = {vg.name for vg in obj.vertex_groups}
@@ -415,7 +417,7 @@ class VELO_OT_wwmi_bone_map_toggle(bpy.types.Operator):
         try:
             self._sort_rows(settings)
         except Exception as exc:
-            self.report({'ERROR'}, f"映射表重排失败：{exc}")
+            self.report({'ERROR'}, iface_('Mapping table reordering failed: {0}').format(exc))
             return {'CANCELLED'}
         settings.show_original = self.target == "ORIGINAL"
         return {'FINISHED'}
@@ -438,7 +440,7 @@ class VELO_UL_wwmi_bone_map(bpy.types.UIList):
 
 class VELO_OT_wwmi_bone_map_remove(bpy.types.Operator):
     bl_idname = "velo.wwmi_bone_map_remove"
-    bl_label = "删除映射行"
+    bl_label = 'Delete Mapping Row'
     index: bpy.props.IntProperty()
     def execute(self, context):
         rows = context.scene.velo_wwmi_bone_map.rows
@@ -448,7 +450,7 @@ class VELO_OT_wwmi_bone_map_remove(bpy.types.Operator):
 
 class VELO_OT_wwmi_bone_map_add(bpy.types.Operator):
     bl_idname = "velo.wwmi_bone_map_add"
-    bl_label = "新增映射行"
+    bl_label = 'Add Mapping Row'
     def execute(self, context):
         context.scene.velo_wwmi_bone_map.rows.add()
         return {'FINISHED'}
@@ -456,7 +458,7 @@ class VELO_OT_wwmi_bone_map_add(bpy.types.Operator):
 
 class VELO_PT_wwmi_bone_map(bpy.types.Panel):
     bl_idname = "VELO_PT_wwmi_bone_map"
-    bl_label = "WWMI 数字编号 ↔ 原始骨骼名"
+    bl_label = 'WWMI Numeric ID ↔ Original Bone Name'
     bl_space_type = 'VIEW_3D'; bl_region_type = 'UI'; bl_category = 'Velo Tools'
     bl_parent_id = 'VELO_PT_main'; bl_order = 1
     bl_options = {'DEFAULT_CLOSED'}
@@ -469,7 +471,7 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
         layout.prop(settings, "unpack_folder")
         cfg = getattr(context.scene, "VTWW_settings", None)
         if cfg is not None:
-            layout.prop(cfg, "object_source_folder", text="对象源目录")
+            layout.prop(cfg, "object_source_folder", text='Object source directory')
         match_box = layout.box()
         match_box.prop(settings, "similarity_threshold")
         match_box.prop(settings, "voxel_size")
@@ -482,14 +484,14 @@ class VELO_PT_wwmi_bone_map(bpy.types.Panel):
         layout.operator("velo.wwmi_auto_bind", icon='ARMATURE_DATA')
         if cfg is not None:
             row = layout.row(align=True)
-            row.prop(cfg, "mirror_mesh", text="镜像骨架")
-            row.prop(settings, "rename_side_suffix", text="将骨骼重命名为.L/.R后缀")
+            row.prop(cfg, "mirror_mesh", text='Mirror Skeleton')
+            row.prop(settings, "rename_side_suffix", text='Rename the skeleton with .L/.R suffix')
         layout.template_list("VELO_UL_wwmi_bone_map", "", settings, "rows", settings, "active_row", rows=8)
-        layout.operator("velo.wwmi_bone_map_add", text="新增空行", icon='ADD')
+        layout.operator("velo.wwmi_bone_map_add", text='Add a new blank row', icon='ADD')
         row = layout.row(align=True)
-        op = row.operator("velo.wwmi_bone_map_toggle", text="切换至原始名字", icon='FONT_DATA'); op.target = 'ORIGINAL'
-        op = row.operator("velo.wwmi_bone_map_toggle", text="切换至数字编号", icon='SORT_ASC'); op.target = 'NUMERIC'
-        layout.label(text="改名只作用于当前选中的网格对象；未选对象不会修改。", icon='INFO')
+        op = row.operator("velo.wwmi_bone_map_toggle", text='Switch to original name', icon='FONT_DATA'); op.target = 'ORIGINAL'
+        op = row.operator("velo.wwmi_bone_map_toggle", text='Switch to numeric numbering', icon='SORT_ASC'); op.target = 'NUMERIC'
+        layout.label(text='Renaming only affects currently selected mesh objects; unselected objects will not be modified.', icon='INFO')
 
 
 _classes = (VELO_WWMI_BoneMapRow, VELO_WWMI_BoneMapSettings, VELO_OT_wwmi_bone_map_generate,

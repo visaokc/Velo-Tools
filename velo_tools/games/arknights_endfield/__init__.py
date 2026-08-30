@@ -1,5 +1,7 @@
 """Arknights: Endfield integration driver for Velo Tools."""
 
+from velo_tools.i18n import iface_
+
 import bpy
 
 from . import props as _props
@@ -25,7 +27,7 @@ _ORIGINAL_VTEF_IMPORT_EXECUTE = None
 _DESCRIPTOR = _registry.GameDescriptor(
     key="ENDFIELD",
     game_value="ENDFIELD",
-    display_name="终末地",
+    display_name="Arknights: Endfield",
     settings_attr="VTEF_settings",
     adapter_key="EFMI",
     export_op="vtef.export_mod",
@@ -102,7 +104,7 @@ def _patch_single_panel(cls, root_cls):
 
     if cls is root_cls:
         # Structural patch (must run before registration); A2 gating of poll/draw is handled by _a2.gate() at the end of register().
-        cls.bl_label = _zh("终末地 EFMI")
+        cls.bl_label = _zh('Arknights: Endfield EFMI')
         cls.bl_parent_id = "VELO_PT_main"
         cls.bl_options = set(getattr(cls, "bl_options", set())) | {"DEFAULT_CLOSED"}
 
@@ -179,11 +181,11 @@ def _patch_preferences():
     from bpy.props import BoolProperty
 
     _vsettings.Preferences.__annotations__["auto_check_update"] = BoolProperty(
-        name=_zh("自动检查更新"),
-        description=_zh("Velo 内置 EFMI core 禁用在线更新检查。"),
+        name=_zh('Automatically check for updates'),
+        description=_zh('Velo built-in EFMI core has disabled online update checking.'),
         default=False,
     )
-    _vsettings.Preferences.draw = lambda self, context: self.layout.label(text=_zh("Velo 内置 EFMI core 不使用在线更新器。"))
+    _vsettings.Preferences.draw = lambda self, context: self.layout.label(text=iface_('Velo built-in EFMI core does not use the online updater.'))
 
 
 def _translated_items(items):
@@ -499,7 +501,7 @@ def _patch_toolbox_texts():
 
         selected_modifiers = [item.name for item in self.my_collection if item.checked]
         if not selected_modifiers:
-            self.report({"ERROR"}, _zh(dialog_text["no_modifier_selected"]))
+            self.report({"ERROR"}, iface_(str(dialog_text["no_modifier_selected"])))
             return {"FINISHED"}
 
         success, error_info = _toolbox_ui.apply_modifiers_for_object_with_shape_keys(
@@ -508,7 +510,7 @@ def _patch_toolbox_texts():
             self.disable_armatures,
         )
         if not success:
-            self.report({"ERROR"}, error_info)
+            self.report({"ERROR"}, iface_(str(error_info)))
         return {"FINISHED"}
 
     def draw(self, context):
@@ -538,29 +540,29 @@ def _patch_velo_settings():
     _patch_toolbox_texts()
 
     _vsettings.VTEF_Settings.__annotations__["velo_auto_split_by_material"] = BoolProperty(
-        name="导出时自动按材质拆分",
-        description="导出临时对象时按带 Component 前缀的实际材质自动拆分；不会修改场景对象",
+        name='Automatically split by material during export',
+        description='When exporting temporary objects, automatically split according to the actual material with the prefix Component; it will not modify scene objects.',
         default=True,
     )
 
     _vsettings.VTEF_Settings.__annotations__["generate_crossib_json"] = BoolProperty(
-        name=_zh("生成 CrossIB.json"),
-        description=_zh("提取对象时随模型文件夹生成 CrossIB.json v2，只记录 Component 匹配与透明性证据。跨 IB 导出必须使用该文件，并生成规则式 CrossIBClassifier.ini；不再生成 ShaderOverride.ini 或累积多个场景的 VS Hash。"),
+        name=_zh('Generated CrossIB.json'),
+        description=_zh('When extracting objects, generate CrossIB.json v2 along with the model folder, only recording Component matches and transparency evidence. Cross-IB export must use this file and generate the rule-based CrossIBClassifier.ini; no longer generate ShaderOverride.ini or accumulate VS Hash from multiple scenes.'),
         default=True,
     )
     _vsettings.VTEF_Settings.__annotations__["import_as_component_collections"] = BoolProperty(
-        name=_zh("按组件创建子集合"),
-        description=_zh("导入模型时在对象父集合下创建 C0/C1/... 子集合；关闭后沿用上游 EFMI 的单集合导入。"),
+        name=_zh('Create sub-collection by component'),
+        description=_zh("When importing the model, create C0/C1/... sub-collections under the object's parent collection; after turning it off, continue to use the single-collection import from upstream EFMI."),
         default=True,
     )
     _vsettings.VTEF_Settings.__annotations__["extract_components_filter"] = StringProperty(
-        name=_zh("组件过滤"),
-        description=_zh("可选组件范围，例如 0-8 或 0,1,5-7。过滤后输出仍连续编号为 Component 0..N。"),
+        name=_zh('Component Filter'),
+        description=_zh('Optional component range, e.g., 0-8 or 0,1,5-7. After filtering, the output is still continuously numbered as Component 0..N.'),
         default="",
     )
     _vsettings.VTEF_Settings.__annotations__["import_texture"] = BoolProperty(
-        name=_zh("导入贴图"),
-        description=_zh("导入模型后依据 TextureUsage.json 给网格指定源目录内的 .dds 贴图。"),
+        name=_zh('Import Texture'),
+        description=_zh('After importing the model, assign the .dds texture in the source directory to the mesh according to TextureUsage.json.'),
         default=True,
     )
 
@@ -595,7 +597,7 @@ def register():
         traceback.print_exc()
     # For the single container (VELO_PT_game): collapse-header text + body draw (proxies the vendored root panel draw via a Shim).
     from ._efmi_core.addon import ui as _vui_desc
-    _DESCRIPTOR.header_label = _zh("终末地 EFMI")
+    _DESCRIPTOR.header_label = _zh('Arknights: Endfield EFMI')
     _DESCRIPTOR.draw_body = _a2.make_draw_body(_vui_desc.VTEF_PT_SIDEBAR)
     _registry.register_descriptor(_DESCRIPTOR)
     try:

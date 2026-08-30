@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import json
 import os
 
@@ -464,7 +466,7 @@ def restore_general_source_to_original(settings):
 
 class VELO_OT_match_row_add(bpy.types.Operator):
     bl_idname = "velo.match_row_add"
-    bl_label = "新增空行"
+    bl_label = 'Add a new blank row'
     bl_options = {'REGISTER', 'UNDO'}
 
     after_index: IntProperty(default=-1)
@@ -488,7 +490,7 @@ class VELO_OT_match_row_add(bpy.types.Operator):
 
 class VELO_OT_match_row_remove(bpy.types.Operator):
     bl_idname = "velo.match_row_remove"
-    bl_label = "删除当前行"
+    bl_label = 'Delete current row'
     bl_options = {'REGISTER', 'UNDO'}
 
     index: IntProperty(default=-1)
@@ -500,7 +502,7 @@ class VELO_OT_match_row_remove(bpy.types.Operator):
         profile = settings.profile
         idx = self.index if self.index >= 0 else profile.active_row_index
         if not (0 <= idx < len(profile.rows)):
-            self.report({'ERROR'}, "无有效行可删除")
+            self.report({'ERROR'}, iface_('No Valid Row to Delete'))
             return {'CANCELLED'}
         profile.rows.remove(idx)
         profile.active_row_index = max(0, min(idx, len(profile.rows) - 1))
@@ -510,7 +512,7 @@ class VELO_OT_match_row_remove(bpy.types.Operator):
 
 class VELO_OT_clear_mappings(bpy.types.Operator):
     bl_idname = "velo.clear_mappings"
-    bl_label = "清空映射表"
+    bl_label = 'Clear Mapping Table'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -526,14 +528,14 @@ class VELO_OT_clear_mappings(bpy.types.Operator):
 
 class VELO_OT_match_stage_from_source(bpy.types.Operator):
     bl_idname = "velo.match_stage_from_source"
-    bl_label = "从源物体补行"
+    bl_label = 'Fill Rows from Source Object'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         settings = get_settings(context)
         obj = general_source(context)
         if settings is None or settings.profile is None or obj is None:
-            self.report({'ERROR'}, "未指定源物体")
+            self.report({'ERROR'}, iface_('Source object not specified'))
             return {'CANCELLED'}
         profile = settings.profile
         existing = {(row.source_name or "") for row in profile.rows}
@@ -554,16 +556,16 @@ class VELO_OT_match_stage_from_source(bpy.types.Operator):
         finally:
             _props._suspend_general_row_update = prev
         autosync_general_to_text(settings)
-        self.report({'INFO'}, f"补行: 新增 {added} (源={obj.name})")
+        self.report({'INFO'}, iface_('Pad row: added {0} (source={1})').format(added, obj.name))
         return {'FINISHED'}
 
 
 class VELO_OT_match_to_table_lite(bpy.types.Operator):
     bl_idname = "velo.match_to_table_lite"
-    bl_label = "按位置匹配 → 写入本表"
+    bl_label = 'Match by position → write to this table.'
     bl_options = {'REGISTER', 'UNDO'}
 
-    overwrite_existing: BoolProperty(name="覆盖已有目标名", default=True)
+    overwrite_existing: BoolProperty(name='Overwrite existing target name', default=True)
 
     def execute(self, context):
         from mathutils.kdtree import KDTree
@@ -571,22 +573,22 @@ class VELO_OT_match_to_table_lite(bpy.types.Operator):
 
         settings = get_settings(context)
         if settings is None or settings.profile is None:
-            self.report({'ERROR'}, "未找到通用映射数据")
+            self.report({'ERROR'}, iface_('General mapping data not found'))
             return {'CANCELLED'}
         src = general_source(context)
         tgt = general_target(context)
         if src is None or tgt is None:
-            self.report({'ERROR'}, "请先指定源物体与目标物体")
+            self.report({'ERROR'}, iface_('Please specify the source and target objects first'))
             return {'CANCELLED'}
 
         profile = settings.profile
         src_centroids = _compute_centroids_world(src)
         tgt_centroids = _compute_centroids_world(tgt)
         if not src_centroids:
-            self.report({'ERROR'}, f"源物体 {src.name} 没有可用的有权重顶点组")
+            self.report({'ERROR'}, iface_('Source object {0} has no available vertex groups with weights').format(src.name))
             return {'CANCELLED'}
         if not tgt_centroids:
-            self.report({'ERROR'}, f"目标物体 {tgt.name} 没有可用的有权重顶点组")
+            self.report({'ERROR'}, iface_('Target Object {0} has no available vertex groups with weights').format(tgt.name))
             return {'CANCELLED'}
 
         src_local = compute_all_centroids_local(src)
@@ -658,13 +660,13 @@ class VELO_OT_match_to_table_lite(bpy.types.Operator):
             sync_general_source_from_table(settings, save_backup=False)
 
         autosync_general_to_text(settings)
-        self.report({'INFO'}, f"匹配(KDTree): 新增 {added}, 更新 {updated}, 跳过 {skipped}")
+        self.report({'INFO'}, iface_('Match (KDTree): Added {0}, Updated {1}, Skipped {2}').format(added, updated, skipped))
         return {'FINISHED'}
 
 
 class VELO_OT_match_table_to_text(bpy.types.Operator):
     bl_idname = "velo.match_table_to_text"
-    bl_label = "→ 内置文本"
+    bl_label = '→ Built-in Text'
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -673,13 +675,13 @@ class VELO_OT_match_table_to_text(bpy.types.Operator):
             return {'CANCELLED'}
         autosync_general_to_text(settings)
         tb = settings.active_general_text
-        self.report({'INFO'}, f"已写入 Text『{tb.name if tb else '?'}』")
+        self.report({'INFO'}, iface_("Written to Text '{0}'").format(tb.name if tb else '?'))
         return {'FINISHED'}
 
 
 class VELO_OT_match_table_from_text(bpy.types.Operator):
     bl_idname = "velo.match_table_from_text"
-    bl_label = "← 内置文本"
+    bl_label = '← Built-in Text'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -688,18 +690,18 @@ class VELO_OT_match_table_from_text(bpy.types.Operator):
             return {'CANCELLED'}
         tb = settings.active_general_text
         if tb is None:
-            self.report({'ERROR'}, "未选中映射表 Text")
+            self.report({'ERROR'}, iface_('Unselected mapping table Text'))
             return {'CANCELLED'}
         text = tb.as_string()
         load_general_text_into_settings(settings, text)
         autosync_general_to_text(settings)
-        self.report({'INFO'}, f"从 Text 同步: rows={len(settings.profile.rows) if settings.profile else 0}")
+        self.report({'INFO'}, iface_('Sync from Text: rows={0}').format(len(settings.profile.rows) if settings.profile else 0))
         return {'FINISHED'}
 
 
 class VELO_OT_match_table_export(bpy.types.Operator):
     bl_idname = "velo.match_table_export"
-    bl_label = "导出映射表"
+    bl_label = 'Export mapping table'
     bl_options = {'REGISTER'}
 
     filepath: StringProperty(subtype='FILE_PATH')
@@ -723,15 +725,15 @@ class VELO_OT_match_table_export(bpy.types.Operator):
                 handle.write(serialize_general_text(settings))
                 handle.write("\n")
         except Exception as exc:
-            self.report({'ERROR'}, f"写入失败: {exc}")
+            self.report({'ERROR'}, iface_('Write failed: {0}').format(exc))
             return {'CANCELLED'}
-        self.report({'INFO'}, f"已导出到 {self.filepath}")
+        self.report({'INFO'}, iface_('Exported to {0}').format(self.filepath))
         return {'FINISHED'}
 
 
 class VELO_OT_match_table_import(bpy.types.Operator):
     bl_idname = "velo.match_table_import"
-    bl_label = "导入映射表"
+    bl_label = 'Import Mapping Table'
     bl_options = {'REGISTER', 'UNDO'}
 
     filepath: StringProperty(subtype='FILE_PATH')
@@ -744,7 +746,7 @@ class VELO_OT_match_table_import(bpy.types.Operator):
 
     def execute(self, context):
         if not self.filepath or not os.path.exists(self.filepath):
-            self.report({'ERROR'}, "未选择有效文件")
+            self.report({'ERROR'}, iface_('No valid file selected'))
             return {'CANCELLED'}
         settings = get_settings(context)
         if settings is None or settings.profile is None:
@@ -753,11 +755,11 @@ class VELO_OT_match_table_import(bpy.types.Operator):
             with open(self.filepath, 'r', encoding='utf-8') as handle:
                 raw = handle.read()
         except Exception as exc:
-            self.report({'ERROR'}, f"读取失败: {exc}")
+            self.report({'ERROR'}, iface_('Failed to read: {0}').format(exc))
             return {'CANCELLED'}
         load_general_text_into_settings(settings, raw)
         autosync_general_to_text(settings)
-        self.report({'INFO'}, f"导入完成: rows={len(settings.profile.rows)}")
+        self.report({'INFO'}, iface_('Import completed: rows={0}').format(len(settings.profile.rows)))
         return {'FINISHED'}
 
 
@@ -778,100 +780,100 @@ def build_general_ordered_pairs(settings):
 
 class VELO_OT_general_source_to_unified(bpy.types.Operator):
     bl_idname = "velo.general_source_to_unified"
-    bl_label = "将源物体改名为目标名"
+    bl_label = 'Rename the source object to the target name'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         settings = get_settings(context)
         obj = general_source(context)
         if settings is None or obj is None:
-            self.report({'ERROR'}, "未指定源物体")
+            self.report({'ERROR'}, iface_('Source object not specified'))
             return {'CANCELLED'}
         rows = matched_general_rows(settings)
         if not rows:
-            self.report({'ERROR'}, "映射表为空，请先补行并匹配")
+            self.report({'ERROR'}, iface_('The mapping table is empty, please add rows and match first'))
             return {'CANCELLED'}
         report, bone_count = sync_general_source_from_table(settings, save_backup=True)
         refresh_general_runtime(settings, context)
-        self.report({'INFO'}, f"源→目标名: 改名 {report['renamed']} (骨骼 {bone_count})")
+        self.report({'INFO'}, iface_('Source→Target Name: Renamed {0} (Skeleton {1})').format(report['renamed'], bone_count))
         return {'FINISHED'}
 
 
 class VELO_OT_general_source_to_original(bpy.types.Operator):
     bl_idname = "velo.general_source_to_original"
-    bl_label = "将源物体还原为原名字"
+    bl_label = 'Restore the source object to the original name'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         settings = get_settings(context)
         obj = general_source(context)
         if settings is None or obj is None:
-            self.report({'ERROR'}, "未指定源物体")
+            self.report({'ERROR'}, iface_('Source object not specified'))
             return {'CANCELLED'}
         ok, bone_count = restore_general_source_to_original(settings)
         if not ok:
-            self.report({'ERROR'}, "未找到 VG 快照，无法无损还原")
+            self.report({'ERROR'}, iface_('VG snapshot not found, cannot restore losslessly'))
             return {'CANCELLED'}
         refresh_general_runtime(settings, context)
-        self.report({'INFO'}, f"源→原名字: 已用快照无损还原 (骨骼 {bone_count})")
+        self.report({'INFO'}, iface_('Source→Original Name: Restored without loss using snapshot (Skeleton {0})').format(bone_count))
         return {'FINISHED'}
 
 
 class VELO_OT_general_target_to_mmd(bpy.types.Operator):
     bl_idname = "velo.general_target_to_mmd"
-    bl_label = "目标物体改名成源物体名字"
+    bl_label = 'Rename target object to source object name'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         settings = get_settings(context)
         obj = general_target(context)
         if settings is None or obj is None:
-            self.report({'ERROR'}, "未指定目标物体")
+            self.report({'ERROR'}, iface_('Target object not specified'))
             return {'CANCELLED'}
         _src_to_tgt, tgt_to_src, _src_to_tgt_unique = build_general_ordered_pairs(settings)
         if not tgt_to_src:
-            self.report({'ERROR'}, "映射表为空，请先补行并匹配")
+            self.report({'ERROR'}, iface_('The mapping table is empty, please add rows and match first'))
             return {'CANCELLED'}
         report = _algo.rename_no_merge_with_suffix(obj, tgt_to_src, save_backup=True)
         desired = [source_name for _target_name, source_name in tgt_to_src]
         _algo.reorder_vertex_groups_by_order(obj, desired)
         refresh_general_runtime(settings, context)
-        self.report({'INFO'}, f"目标→源名: 改名 {report['renamed']} (目标={obj.name})")
+        self.report({'INFO'}, iface_('Target→Source Name: Rename {0} (Target={1})').format(report['renamed'], obj.name))
         return {'FINISHED'}
 
 
 class VELO_OT_general_target_to_unified(bpy.types.Operator):
     bl_idname = "velo.general_target_to_unified"
-    bl_label = "将目标物体改名为目标名"
+    bl_label = 'Rename the target object to the target name'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         settings = get_settings(context)
         obj = general_target(context)
         if settings is None or obj is None:
-            self.report({'ERROR'}, "未指定目标物体")
+            self.report({'ERROR'}, iface_('Target object not specified'))
             return {'CANCELLED'}
         if _algo.restore_vg_snapshot(obj):
             refresh_general_runtime(settings, context)
-            self.report({'INFO'}, f"目标→目标名: 已用快照无损还原 (目标={obj.name})")
+            self.report({'INFO'}, iface_('Target → Target Name: Restored from used snapshot without loss (Target={0})').format(obj.name))
             return {'FINISHED'}
         _src_to_tgt, _tgt_to_src, src_to_tgt_unique = build_general_ordered_pairs(settings)
         ordered = src_to_tgt_unique
         if not ordered:
-            self.report({'ERROR'}, "映射表为空且无快照可还原")
+            self.report({'ERROR'}, iface_('The mapping table is empty and no snapshot is available to restore'))
             return {'CANCELLED'}
         report = _algo.rename_no_merge_with_suffix(obj, ordered, save_backup=False)
         refresh_general_runtime(settings, context)
-        self.report({'INFO'}, f"目标→目标名: 改名 {report['renamed']} (目标={obj.name})")
+        self.report({'INFO'}, iface_('Target → Target Name: Renamed {0} (Target={1})').format(report['renamed'], obj.name))
         return {'FINISHED'}
 
 
 class VELO_OT_general_text_new(bpy.types.Operator):
     bl_idname = "velo.general_text_new"
-    bl_label = "新建映射表"
+    bl_label = 'Create Mapping Table'
     bl_options = {'REGISTER', 'UNDO'}
 
-    name: StringProperty(name="名称", default="")
+    name: StringProperty(name='Name', default="")
 
     def invoke(self, context, event):
         settings = get_settings(context)
@@ -903,7 +905,7 @@ class VELO_OT_general_text_new(bpy.types.Operator):
                 src["velo_general_text"] = tb.name
             except Exception:
                 pass
-        self.report({'INFO'}, f"已新建并切换到映射表: {tb.name}")
+        self.report({'INFO'}, iface_('Created and switched to mapping table: {0}').format(tb.name))
         return {'FINISHED'}
 
 

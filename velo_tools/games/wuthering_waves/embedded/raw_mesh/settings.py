@@ -7,77 +7,75 @@ import bpy
 
 class VELO_RawMesh_Settings(bpy.types.PropertyGroup):
     tool_mode: bpy.props.EnumProperty(
-        name="模式",
+        name='Mode',
         items=[
-            ('EXTRACT', "提取帧数据", "按 Hash 从 Frame Dump 提取特效/场景网格到整合文件夹。"),
-            ('IMPORT', "导入对象", "把整合文件夹导入 Blender 编辑，保留全部顶点属性。"),
-            ('EXPORT', "导出 Mod", "把编辑后的网格导出为可用 mod（per-component 独立覆盖）。"),
+            ('EXTRACT', 'Extract frame data', 'Extract special effects/scene meshes from Frame Dump to the integrated folder according to Hash.'),
+            ('IMPORT', 'Import Object', 'Import the consolidated folder into Blender for editing, keeping all vertex attributes.'),
+            ('EXPORT', 'Export Mod', 'Export the edited mesh as a usable mod (per-component independent override).'),
         ],
         default='EXTRACT',
     )
 
     # --- Extract ---
     frame_dump_folder: bpy.props.StringProperty(
-        name="Frame Dump 目录",
-        description="包含 Frame Dump 文件和 log.txt 的目录。",
+        name='Frame Dump Directory',
+        description='Directory containing Frame Dump files and log.txt.',
         default='', subtype='DIR_PATH',
     )
     output_folder: bpy.props.StringProperty(
-        name="输出目录",
-        description="提取出的整合网格文件夹的父目录",
+        name='Output directory',
+        description='The parent directory of the extracted integrated mesh folder',
         default='', subtype='DIR_PATH',
     )
     hashes: bpy.props.StringProperty(
-        name="Hash 列表",
-        description=("要提取的 IB/VB Hash，用逗号分隔（如 vb0=358cdfe4, ib=ce56ef1a）。"
-                     "VB Hash 取整个 VB0 对象（自动分 component）；IB Hash 取它锁定的那一个 component"),
+        name='Hash List',
+        description=('IB/VB Hash to extract, separated by commas (e.g., vb0=358cdfe4, ib=ce56ef1a). VB Hash takes the entire VB0 object (automatically split into components); IB Hash takes the component it locks.'),
         default='',
     )
     folder_name: bpy.props.StringProperty(
-        name="文件夹名",
-        description="输出整合文件夹的名字（留空则按首个 VB0 Hash 自动命名）",
+        name='Folder name',
+        description='Name of the consolidated output folder (leave blank to automatically name based on the first VB0 Hash)',
         default='',
     )
     position_override: bpy.props.StringProperty(
-        name="Position 元素",
-        description=("可选：手动指定哪个顶点元素作为 Position（如 ATTRIBUTE0）。"
-                     "留空则自动判定（slot0/offset0 的 3/4 分量 float）"),
+        name='Position Element',
+        description=('Optional: manually specify which vertex element as Position (e.g., ATTRIBUTE0). Leave blank for automatic determination (3rd/4th float components of slot0/offset0).'),
         default='',
     )
     skip_jpg: bpy.props.BoolProperty(
-        name="贴图过滤：跳过 .jpg", description="跳过 .jpg 贴图；这类文件通常是渐变图或遮罩。", default=False,
+        name='Texture filtering: skip .jpg', description='Skip .jpg textures; these files are usually gradients or masks.', default=False,
     )
     skip_small: bpy.props.BoolProperty(
-        name="贴图过滤：跳过小贴图", description="跳过低于指定大小的贴图文件。", default=False,
+        name='Texture filtering: skip small textures', description='Skip texture files smaller than the specified size.', default=False,
     )
     skip_small_kb: bpy.props.IntProperty(
-        name="最小大小 KB", description="贴图文件小于该 KB 数时会被跳过；默认 256KB。", default=256, min=0,
+        name='Minimum size KB', description='Texture files smaller than this KB will be skipped; default is 256KB.', default=256, min=0,
     )
 
     # --- Import (Phase 2) ---
     import_folder: bpy.props.StringProperty(
-        name="对象源目录",
-        description="要导入的、由本工具提取出的整合网格文件夹。",
+        name='Object source directory',
+        description='Folder of integrated mesh files extracted by this tool to import.',
         default='', subtype='DIR_PATH',
     )
 
     # --- Export (Phase 3) ---
     export_collection: bpy.props.PointerProperty(
-        name="组件集合",
-        description="包含本工具导入的 raw-mesh 对象的集合。",
+        name='Component Set',
+        description='Collection containing raw-mesh objects imported by this tool.',
         type=bpy.types.Collection,
     )
     mod_output_folder: bpy.props.StringProperty(
-        name="Mod 输出目录",
-        description="导出生成的 mod 文件夹",
+        name='Mod Output Directory',
+        description='Export the generated mod folder',
         default='', subtype='DIR_PATH',
     )
     export_mode: bpy.props.EnumProperty(
-        name="导出模式",
+        name='Export mode',
         items=[
-            ('AUTO', "自动", "未改拓扑走 Faithful（字节保真），改了拓扑走 Rebuild"),
-            ('FAITHFUL', "保真直通", "原始字节直通；仅回写编辑过的 Position（不可改拓扑）"),
-            ('REBUILD', "重建", "按布局重建；标准语义从 Blender 取，其余重算/填默认（可改拓扑，有损）"),
+            ('AUTO', 'Automatic', 'Topology unchanged, using Faithful (byte-accurate); topology changed, using Rebuild'),
+            ('FAITHFUL', 'Guarantee the authenticity and direct passage', 'Original Bytes Pass-through; only rewrites edited Position (cannot change topology)'),
+            ('REBUILD', 'Rebuild', 'Rebuild according to layout; take standard semantics from Blender, recalculate/fill defaults for the rest (topology can be changed, lossy).'),
         ],
         default='AUTO',
     )

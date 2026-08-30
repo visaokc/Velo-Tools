@@ -8,6 +8,8 @@ schema-v3 direct compiler without child output folders.
 There are three roles: ``Fold``, ``Editable``, and same-VB0 texture-form merge.
 Registration is handled by this module's register()/unregister() (new classes + Scene properties), not via _wwmi_core's auto_load.
 """
+
+from velo_tools.i18n import iface_
 import traceback
 from pathlib import Path
 
@@ -24,12 +26,12 @@ _ROLES = [
 
 
 class VTWW_XSceneIB(bpy.types.PropertyGroup):
-    folder: bpy.props.StringProperty(name="IB 文件夹", subtype='DIR_PATH',
-                                     description="某 IB 的提取文件夹（文件夹名即其 hash）")
-    role: bpy.props.EnumProperty(name="角色", items=_ROLES, default='fold')
+    folder: bpy.props.StringProperty(name='IB Folder', subtype='DIR_PATH',
+                                     description='Extraction folder of a certain IB (the folder name is its hash)')
+    role: bpy.props.EnumProperty(name='Role', items=_ROLES, default='fold')
     form_label: bpy.props.StringProperty(
-        name="形态标签",
-        description="形态合并分支标签；留空时自动使用 form2、form3……")
+        name='Morph Tag',
+        description='Form merge branch label; leave empty to automatically use form2, form3…')
 
 
 class VTWW_UL_xscene_ibs(bpy.types.UIList):
@@ -43,8 +45,8 @@ class VTWW_UL_xscene_ibs(bpy.types.UIList):
 
 class VTWW_OT_xscene_ib_add(bpy.types.Operator):
     bl_idname = "vtww.xscene_ib_add"
-    bl_label = "添加 IB"
-    bl_description = "新增一条 IB"
+    bl_label = 'Add IB'
+    bl_description = 'Add a new IB'
 
     def execute(self, context):
         s = context.scene
@@ -55,8 +57,8 @@ class VTWW_OT_xscene_ib_add(bpy.types.Operator):
 
 class VTWW_OT_xscene_ib_remove(bpy.types.Operator):
     bl_idname = "vtww.xscene_ib_remove"
-    bl_label = "移除 IB"
-    bl_description = "移除选中的 IB"
+    bl_label = 'Remove IB'
+    bl_description = 'Remove selected IB'
 
     def execute(self, context):
         s = context.scene
@@ -69,18 +71,18 @@ class VTWW_OT_xscene_ib_remove(bpy.types.Operator):
 
 class VTWW_OT_xscene_merge(bpy.types.Operator):
     bl_idname = "vtww.xscene_merge"
-    bl_label = "合并跨场景"
-    bl_description = "合并基底 + 各 IB → 自包含聚合根 + CrossSceneManifest.json"
+    bl_label = 'Merge across scenes'
+    bl_description = 'Merge bases + each IB → self-contained aggregate root + CrossSceneManifest.json'
 
     def execute(self, context):
         s = context.scene
         base = bpy.path.abspath(s.vtww_xscene_base) if s.vtww_xscene_base else ""
         out = bpy.path.abspath(s.vtww_xscene_out) if s.vtww_xscene_out else ""
         if not base or not Path(base).is_dir():
-            self.report({'ERROR'}, "请设置有效的基底文件夹（整角色基底提取）")
+            self.report({'ERROR'}, iface_('Please set a valid base folder (full character base extraction)'))
             return {'CANCELLED'}
         if not out:
-            self.report({'ERROR'}, "请设置输出文件夹")
+            self.report({'ERROR'}, iface_('Please set the output folder'))
             return {'CANCELLED'}
         specs, editable, forms = [], [], []
         for ib in s.vtww_xscene_ibs:
@@ -96,7 +98,7 @@ class VTWW_OT_xscene_merge(bpy.types.Operator):
             else:
                 specs.append(rec)
         if not specs and not editable:
-            self.report({'ERROR'}, "请至少添加一条有效的 IB")
+            self.report({'ERROR'}, iface_('Please add at least one valid IB'))
             return {'CANCELLED'}
         try:
             from ... import xscene_merge
@@ -105,24 +107,24 @@ class VTWW_OT_xscene_merge(bpy.types.Operator):
                 form_ibs=forms or None)
         except Exception as exc:
             traceback.print_exc()
-            self.report({'ERROR'}, "合并失败：%s（详见系统控制台）" % exc)
+            self.report({'ERROR'}, iface_('Merge failed: %s (see system console for details)') % exc)
             return {'CANCELLED'}
         # Sanity hints: producer detected IBs that "look like an independent form but were not set to Editable" -> emit one WARNING each.
         for w in rep.get("warnings", []):
-            self.report({'WARNING'}, w)
+            self.report({'WARNING'}, iface_(str(w)))
         pruned = rep.get("root_textures_pruned") or []
         msg = "合并完成 → %s | components=%d splits=%d fold=%d editable=%d forms=%d" % (
             out, rep.get("base_components", 0), len(rep.get("splits", [])),
             len(specs), len(editable), len(forms))
         if pruned:
             msg += " | pruned %d redundant root texture(s)" % len(pruned)
-        self.report({'INFO'}, msg)
+        self.report({'INFO'}, iface_(str(msg)))
         return {'FINISHED'}
 
 
 class VELO_PT_xscene(bpy.types.Panel):
     bl_idname = "VELO_PT_xscene"
-    bl_label = "跨场景折叠合并"
+    bl_label = 'Cross-Scene Merge'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Velo Tools"
@@ -142,22 +144,22 @@ class VELO_PT_xscene(bpy.types.Panel):
         s = context.scene
         layout = self.layout
         col = layout.column(align=True)
-        col.label(text="1) 合并：基底 + IB → 合并文件夹")
-        col.prop(s, "vtww_xscene_base", text="基底")
+        col.label(text='1) Merge: Base + IB → Merged Folder')
+        col.prop(s, "vtww_xscene_base", text='Base')
         box = layout.box()
-        box.label(text="IB 列表（含角色）")
+        box.label(text='IB List (including roles)')
         row = box.row()
         row.template_list("VTWW_UL_xscene_ibs", "", s, "vtww_xscene_ibs", s, "vtww_xscene_ib_index", rows=4)
         bcol = row.column(align=True)
         bcol.operator("vtww.xscene_ib_add", text="", icon='ADD')
         bcol.operator("vtww.xscene_ib_remove", text="", icon='REMOVE')
-        layout.prop(s, "vtww_xscene_out", text="输出")
+        layout.prop(s, "vtww_xscene_out", text='Output')
         layout.operator("vtww.xscene_merge", icon='AUTOMERGE_ON')
         layout.separator()
         col2 = layout.column(align=True)
-        col2.label(text="2) 用上方「导入对象」导入合并文件夹")
-        col2.label(text="3) 编辑一份网格")
-        col2.label(text="4) 点「导出 Mod」→ 自动折叠出多场景 mod")
+        col2.label(text='2) Use the above "Import Object" to import the merged folder')
+        col2.label(text='3) Edit a mesh')
+        col2.label(text='4) Click "Export Mod" → Automatically fold out multi-scene mod')
 
 
 _CLASSES = (
@@ -177,11 +179,11 @@ def register():
         except Exception:
             traceback.print_exc()
     bpy.types.Scene.vtww_xscene_base = bpy.props.StringProperty(
-        name="基底文件夹", subtype='DIR_PATH',
-        description="整角色基底的提取文件夹（单 IB）")
+        name='Base folder', subtype='DIR_PATH',
+        description='Extraction folder for the entire character base (single IB)')
     bpy.types.Scene.vtww_xscene_out = bpy.props.StringProperty(
-        name="输出文件夹", subtype='DIR_PATH',
-        description="合并提取文件夹的输出位置")
+        name='Output folder', subtype='DIR_PATH',
+        description='Merge output location of extracted folder')
     bpy.types.Scene.vtww_xscene_ibs = bpy.props.CollectionProperty(type=VTWW_XSceneIB)
     bpy.types.Scene.vtww_xscene_ib_index = bpy.props.IntProperty(default=0)
 

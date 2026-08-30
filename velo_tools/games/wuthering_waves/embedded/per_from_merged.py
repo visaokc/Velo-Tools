@@ -20,6 +20,8 @@ duplicate pause).
 """
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import json
 import re
 import sys
@@ -344,7 +346,7 @@ def _make_patched(orig_execute):
 
         base_col = getattr(cfg, "component_collection", None)
         if base_col is None:
-            self.report({'ERROR'}, "Per-Component (from Merged)：未选择 component collection。")
+            self.report({'ERROR'}, iface_('Per-Component (from Merged): No component collection selected.'))
             return {'CANCELLED'}
         src = bpy.path.abspath(getattr(cfg, "object_source_folder", "") or "")
         if ((Path(src) / "CrossSceneManifest.json").is_file()
@@ -353,7 +355,7 @@ def _make_patched(orig_execute):
         try:
             vg_maps = _load_vg_maps(src)
         except Exception as e:
-            self.report({'ERROR'}, "Per-Component (from Merged)：读取 Metadata.json 失败：%s" % e)
+            self.report({'ERROR'}, iface_('Per-Component (from Merged): Failed to read Metadata.json: %s') % e)
             return {'CANCELLED'}
 
         tmp_col = bpy.data.collections.new("vpfm_export")
@@ -373,8 +375,7 @@ def _make_patched(orig_execute):
             if (not base_meshes and cfg.ignore_nested_collections
                     and any(o.type == 'MESH' for o in base_col.all_objects)):
                 self.report({'ERROR'},
-                            "Per-Component (from Merged)：组件网格都在子集合里，但勾选了"
-                            "「忽略嵌套集合」(Ignore Nested Collections)，一个都取不到。请取消勾选后重试。")
+                            iface_('Per-Component (from Merged): All component meshes are in sub-collections, but "Ignore Nested Collections" is checked, so none can be retrieved. Please uncheck and try again.'))
                 return {'CANCELLED'}
             for o in base_meshes:
                 orig_name = o.name
@@ -395,9 +396,7 @@ def _make_patched(orig_execute):
                     if stray:
                         from .crossscene import vg_translate
                         self.report({'ERROR'},
-                                    "导出失败：物体 `%s` (Component %s) 的顶点组 %s 权重越界——它们对应的统一骨不在"
-                                    "该部件的 vg_map 内（COMPONENT 运行期无法表达跨部件权重）。请把这些权重转回本部件"
-                                    "的骨，或刷零后再导出。" % (
+                                    iface_('Export failed: The vertex group %s of object `%s` (Component %s) is out of range — their corresponding unified bone is not in the vg_map of this component (COMPONENT runtime cannot express cross-component weights). Please transfer these weights back to the bones of this component, or zero them out before exporting.') % (
                                         orig_name,
                                         cid,
                                         vg_translate.format_vertex_group_labels(

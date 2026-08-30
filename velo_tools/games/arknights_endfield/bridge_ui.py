@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from velo_tools.i18n import iface_
+
 import bpy
 
 from . import import_textures
@@ -34,7 +36,7 @@ def _draw_velo_inline_controls(layout, cfg, mode: str) -> None:
     if not controls:
         return
     box = layout.box()
-    box.label(text=_zh("Velo 兼容选项"), icon="TOOL_SETTINGS")
+    box.label(text=iface_('Velo Compatibility Options'), icon="TOOL_SETTINGS")
     if "generate_crossib_json" in controls and hasattr(cfg, "generate_crossib_json"):
         box.prop(cfg, "generate_crossib_json")
     if "extract_components_filter" in controls and hasattr(cfg, "extract_components_filter"):
@@ -49,13 +51,13 @@ def _draw_velo_inline_controls(layout, cfg, mode: str) -> None:
 def draw_export_mode_selector(layout, cfg) -> bool:
     if not hasattr(cfg, "mod_skeleton_type"):
         return False
-    layout.row().prop(cfg, "mod_skeleton_type", text=_zh("导出骨架模式"))
+    layout.row().prop(cfg, "mod_skeleton_type", text=iface_('Export skeleton mode'))
     return True
 
 
 class VTEF_PT_VeloBridgeOptions(bpy.types.Panel):
     bl_idname = "VTEF_PT_VELO_BRIDGE_OPTIONS"
-    bl_label = _zh("Velo 兼容选项")
+    bl_label = _zh('Velo Compatibility Options')
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "Velo Tools"
@@ -99,13 +101,13 @@ def _patch_sidebar_menus() -> None:
         layout.row()
 
         row = add_row(layout, cfg, "component_collection")
-        row.prop(cfg, "component_collection", text=_zh("组件集合"))
+        row.prop(cfg, "component_collection", text=iface_('Component Set'))
 
         row = add_row(layout, cfg, "object_source_folder")
-        row.prop(cfg, "object_source_folder", text=_zh("对象源目录"))
+        row.prop(cfg, "object_source_folder", text=iface_('Object source directory'))
 
         row = add_row(layout, cfg, "mod_output_folder")
-        row.prop(cfg, "mod_output_folder", text=_zh("Mod 输出目录"))
+        row.prop(cfg, "mod_output_folder", text=iface_('Mod Output Directory'))
 
         draw_export_mode_selector(layout, cfg)
         _draw_velo_inline_controls(layout, cfg, "EXPORT_MOD")
@@ -113,28 +115,28 @@ def _patch_sidebar_menus() -> None:
         if not cfg.partial_export:
             layout.row()
 
-            layout.row().prop(cfg, "mirror_mesh", text=_zh("镜像网格"))
-            layout.row().prop(cfg, "apply_all_modifiers", text=_zh("应用所有修改器"))
-            layout.row().prop(cfg, "copy_textures", text=_zh("复制贴图"))
+            layout.row().prop(cfg, "mirror_mesh", text=iface_('Mirror Mesh'))
+            layout.row().prop(cfg, "apply_all_modifiers", text=iface_('Apply all modifiers'))
+            layout.row().prop(cfg, "copy_textures", text=iface_('Copy the sticker'))
 
             col = layout.column(align=True)
             grid = col.grid_flow(columns=2, align=True)
             grid.alignment = "LEFT"
-            grid.prop(cfg, "write_ini", text=_zh("写出 mod.ini"))
+            grid.prop(cfg, "write_ini", text=iface_('Write out mod.ini'))
             if cfg.write_ini:
-                grid.prop(cfg, "comment_ini", text=_zh("写入注释"))
+                grid.prop(cfg, "comment_ini", text=iface_('Write comment'))
 
             layout.row()
             layout.row()
 
             if bpy.app.version >= (3, 5):
                 row = layout.row()
-                row.prop(cfg, "ignore_nested_collections", text=_zh("忽略嵌套集合"))
+                row.prop(cfg, "ignore_nested_collections", text=iface_('Ignore Nested Sets'))
                 if not cfg.ignore_nested_collections:
-                    row.prop(cfg, "ignore_hidden_collections", text=_zh("忽略隐藏集合"))
+                    row.prop(cfg, "ignore_hidden_collections", text=iface_('Ignore hidden collection'))
 
-            layout.row().prop(cfg, "ignore_hidden_objects", text=_zh("忽略隐藏对象"))
-            layout.row().prop(cfg, "ignore_muted_shape_keys", text=_zh("忽略禁用形态键"))
+            layout.row().prop(cfg, "ignore_hidden_objects", text=iface_('Ignore hidden object'))
+            layout.row().prop(cfg, "ignore_muted_shape_keys", text=iface_('Ignore disabling ShapeKey'))
 
     def draw_menu_import_object(self, context):
         cfg = context.scene.VTEF_settings
@@ -144,16 +146,16 @@ def _patch_sidebar_menus() -> None:
         layout.row()
 
         row = add_row(layout, cfg, "object_source_folder")
-        row.prop(cfg, "object_source_folder", text=_zh("对象源目录"))
+        row.prop(cfg, "object_source_folder", text=iface_('Object source directory'))
 
-        layout.row().prop(cfg, "color_storage", text=_zh("顶点色"))
-        layout.row().prop(cfg, "import_skeleton_type", text=_zh("导入骨架模式"))
+        layout.row().prop(cfg, "color_storage", text=iface_('Vertex Color'))
+        layout.row().prop(cfg, "import_skeleton_type", text=iface_('Import skeleton mode'))
         _draw_velo_inline_controls(layout, cfg, "IMPORT_OBJECT")
         if cfg.import_skeleton_type == "MERGED":
-            layout.row().prop(cfg, "skip_empty_vertex_groups", text=_zh("跳过空顶点组"))
-        layout.row().prop(cfg, "mirror_mesh", text=_zh("镜像网格"))
+            layout.row().prop(cfg, "skip_empty_vertex_groups", text=iface_('Skip empty vertex group'))
+        layout.row().prop(cfg, "mirror_mesh", text=iface_('Mirror Mesh'))
         if hasattr(cfg, "import_texture"):
-            layout.row().prop(cfg, "import_texture", text=_zh("导入贴图"))
+            layout.row().prop(cfg, "import_texture", text=iface_('Import Texture'))
 
         layout.row()
 
@@ -167,35 +169,35 @@ def _patch_sidebar_menus() -> None:
         layout.row()
 
         row = add_row(layout, cfg, "frame_dump_folder")
-        row.prop(cfg, "frame_dump_folder", text=_zh("Frame Dump 目录"))
+        row.prop(cfg, "frame_dump_folder", text=iface_('Frame Dump Directory'))
 
-        layout.row().prop(cfg, "extract_output_folder", text=_zh("输出目录"))
+        layout.row().prop(cfg, "extract_output_folder", text=iface_('Output directory'))
 
         layout.row()
         _draw_velo_inline_controls(layout, cfg, "EXTRACT_FRAME_DATA")
 
-        layout.row().prop(cfg, "import_extracted_objects", text=_zh("提取后导入 Blender"))
-        layout.row().prop(cfg, "tolerate_extraction_errors", text=_zh("容忍提取错误"))
-        layout.row().prop(cfg, "verbose_logging", text=_zh("详细日志"))
+        layout.row().prop(cfg, "import_extracted_objects", text=iface_('Import Blender after extraction'))
+        layout.row().prop(cfg, "tolerate_extraction_errors", text=iface_('Tolerate extraction errors'))
+        layout.row().prop(cfg, "verbose_logging", text=iface_('Detailed log'))
 
         layout.row()
 
-        layout.row().prop(cfg, "skip_static_objects", text=_zh("对象过滤：跳过静态对象"))
+        layout.row().prop(cfg, "skip_static_objects", text=iface_('Object Filtering: Skip Static Objects'))
 
         row = layout.row(align=True)
-        row.prop(cfg, "skip_object_min_component_count_enabled", text=_zh("对象过滤：最少组件数"))
+        row.prop(cfg, "skip_object_min_component_count_enabled", text=iface_('Object filtering: Minimum component count'))
         sub = row.row()
         sub.enabled = cfg.skip_object_min_component_count_enabled
-        sub.prop(cfg, "skip_object_min_component_count", text=_zh("最少组件数"))
+        sub.prop(cfg, "skip_object_min_component_count", text=iface_('Minimum number of components'))
 
         row = layout.row(align=True)
-        row.prop(cfg, "skip_object_min_texture_count_enabled", text=_zh("对象过滤：最少贴图数"))
+        row.prop(cfg, "skip_object_min_texture_count_enabled", text=iface_('Object filtering: Minimum texture count'))
         sub = row.row()
         sub.enabled = cfg.skip_object_min_texture_count_enabled
-        sub.prop(cfg, "skip_object_min_texture_count", text=_zh("最少贴图数"))
+        sub.prop(cfg, "skip_object_min_texture_count", text=iface_('Minimum number of textures'))
 
         row = layout.row(align=True)
-        row.prop(cfg, "skip_object_resource_hashes_enabled", text=_zh("对象过滤：资源 Hash"))
+        row.prop(cfg, "skip_object_resource_hashes_enabled", text=iface_('Object filtering: Resource Hash'))
         sub = row.row()
         sub.enabled = cfg.skip_object_resource_hashes_enabled
         sub.prop(cfg, "skip_object_resource_hashes")
@@ -203,7 +205,7 @@ def _patch_sidebar_menus() -> None:
         layout.row()
 
         row = layout.row(align=True)
-        row.prop(cfg, "skip_draw_resource_hashes_enabled", text=_zh("组件过滤：黑名单 Hash"))
+        row.prop(cfg, "skip_draw_resource_hashes_enabled", text=iface_('Component Filter: Blacklist Hash'))
         sub = row.row()
         sub.enabled = cfg.skip_draw_resource_hashes_enabled
         sub.prop(cfg, "skip_draw_resource_hashes")
@@ -211,12 +213,12 @@ def _patch_sidebar_menus() -> None:
         layout.row()
 
         row = layout.row(align=True)
-        row.prop(cfg, "skip_small_textures", text=_zh("贴图过滤：跳过小贴图"))
+        row.prop(cfg, "skip_small_textures", text=iface_('Texture filtering: skip small textures'))
         sub = row.row()
         sub.enabled = cfg.skip_small_textures
-        sub.prop(cfg, "skip_small_textures_size", text=_zh("最小大小 KB"))
+        sub.prop(cfg, "skip_small_textures_size", text=iface_('Minimum size KB'))
 
-        layout.row().prop(cfg, "skip_jpg_textures", text=_zh("贴图过滤：跳过 .jpg"))
+        layout.row().prop(cfg, "skip_jpg_textures", text=iface_('Texture filtering: skip .jpg'))
 
         layout.row()
 
@@ -230,35 +232,35 @@ def _patch_sidebar_menus() -> None:
         layout.row()
 
         row = add_row(layout, cfg, "lod_frame_dump_folder")
-        row.prop(cfg, "lod_frame_dump_folder", text=_zh("LOD Frame Dump 目录"))
+        row.prop(cfg, "lod_frame_dump_folder", text=iface_('LOD Frame Dump Table of Contents'))
 
         row = add_row(layout, cfg, "object_source_folder")
-        row.prop(cfg, "object_source_folder", text=_zh("对象源目录"))
+        row.prop(cfg, "object_source_folder", text=iface_('Object source directory'))
 
         layout.row()
         _draw_velo_inline_controls(layout, cfg, "EXTRACT_LOD_DATA")
 
-        layout.row().prop(cfg, "tolerate_extraction_errors", text=_zh("容忍提取错误"))
-        layout.row().prop(cfg, "verbose_logging", text=_zh("详细日志"))
+        layout.row().prop(cfg, "tolerate_extraction_errors", text=iface_('Tolerate extraction errors'))
+        layout.row().prop(cfg, "verbose_logging", text=iface_('Detailed log'))
 
         layout.row()
 
-        layout.row().prop(cfg, "skip_static_objects", text=_zh("对象过滤：跳过静态对象"))
+        layout.row().prop(cfg, "skip_static_objects", text=iface_('Object Filtering: Skip Static Objects'))
 
         row = layout.row(align=True)
-        row.prop(cfg, "skip_object_min_component_count_enabled", text=_zh("对象过滤：最少组件数"))
+        row.prop(cfg, "skip_object_min_component_count_enabled", text=iface_('Object filtering: Minimum component count'))
         sub = row.row()
         sub.enabled = cfg.skip_object_min_component_count_enabled
-        sub.prop(cfg, "skip_object_min_component_count", text=_zh("最少组件数"))
+        sub.prop(cfg, "skip_object_min_component_count", text=iface_('Minimum number of components'))
 
         row = layout.row(align=True)
-        row.prop(cfg, "skip_object_min_texture_count_enabled", text=_zh("对象过滤：最少贴图数"))
+        row.prop(cfg, "skip_object_min_texture_count_enabled", text=iface_('Object filtering: Minimum texture count'))
         sub = row.row()
         sub.enabled = cfg.skip_object_min_texture_count_enabled
-        sub.prop(cfg, "skip_object_min_texture_count", text=_zh("最少贴图数"))
+        sub.prop(cfg, "skip_object_min_texture_count", text=iface_('Minimum number of textures'))
 
         row = layout.row(align=True)
-        row.prop(cfg, "skip_object_resource_hashes_enabled", text=_zh("对象过滤：资源 Hash"))
+        row.prop(cfg, "skip_object_resource_hashes_enabled", text=iface_('Object filtering: Resource Hash'))
         sub = row.row()
         sub.enabled = cfg.skip_object_resource_hashes_enabled
         sub.prop(cfg, "skip_object_resource_hashes")
@@ -266,13 +268,13 @@ def _patch_sidebar_menus() -> None:
         layout.row()
 
         row = layout.row(align=True)
-        row.prop(cfg, "skip_component_below_vertex_count_enabled", text=_zh("组件过滤：最少顶点数"))
+        row.prop(cfg, "skip_component_below_vertex_count_enabled", text=iface_('Component Filter: Minimum Number of Vertices'))
         sub = row.row()
         sub.enabled = cfg.skip_component_below_vertex_count_enabled
-        sub.prop(cfg, "skip_component_below_vertex_count", text=_zh("最少顶点数"))
+        sub.prop(cfg, "skip_component_below_vertex_count", text=iface_('Minimum number of vertices'))
 
         row = layout.row(align=True)
-        row.prop(cfg, "skip_component_hashes_enabled", text=_zh("组件过滤：黑名单 Hash"))
+        row.prop(cfg, "skip_component_hashes_enabled", text=iface_('Component Filter: Blacklist Hash'))
         sub = row.row()
         sub.enabled = cfg.skip_component_hashes_enabled
         sub.prop(cfg, "skip_component_hashes")
@@ -282,9 +284,9 @@ def _patch_sidebar_menus() -> None:
         row = add_row(layout, cfg, "geo_matcher_error_threshold")
 
         if cfg.geo_matcher_method == "VOXEL":
-            row.prop(cfg, "geo_matcher_voxel_error_threshold", text=_zh("几何匹配误差阈值"))
+            row.prop(cfg, "geo_matcher_voxel_error_threshold", text=iface_('Geometric Matching Error Threshold'))
         elif cfg.geo_matcher_method == "POINT_CLOUD":
-            row.prop(cfg, "geo_matcher_error_threshold", text=_zh("几何匹配误差阈值"))
+            row.prop(cfg, "geo_matcher_error_threshold", text=iface_('Geometric Matching Error Threshold'))
 
         layout.row()
 
@@ -326,10 +328,10 @@ def _patch_import_texture_operator() -> None:
         try:
             summary = import_textures.assign_textures(cfg.object_source_folder, objects=new_objects)
         except Exception as exc:
-            self.report({"WARNING"}, _zh(f"导入贴图失败：{exc}"))
+            self.report({"WARNING"}, iface_('Failed to import texture: {0}').format(exc))
             return result
         if summary.assigned:
-            self.report({"INFO"}, _zh(f"已为 {summary.assigned} 个导入网格指定贴图"))
+            self.report({"INFO"}, iface_('Assigned textures for {0} imported meshes').format(summary.assigned))
         return result
 
     _vui.VTEF_Import.execute = execute_with_texture_import
