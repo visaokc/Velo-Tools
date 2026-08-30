@@ -13,24 +13,17 @@ _ORIGINAL_IMPORT_LODS = None
 
 
 def _component_map(merger, component_id, attribute="vg_map"):
-    from ._efmi_core.addon.exceptions import ConfigError
-
     component = merger.extracted_object.components[component_id]
     mapping = getattr(component, attribute, None) or {}
     if mapping:
         return {int(local): int(global_id) for local, global_id in mapping.items()}
+    from ._efmi_core.addon.exceptions import ConfigError
+
     field_name = "runtime_vg_map" if attribute == "runtime_vg_map" else "vg_map"
     raise ConfigError(
         "object_source_folder",
         f"Metadata.json Component {component_id} 缺少 {field_name}。请使用当前版本重新提取模型文件夹。",
     )
-
-
-def _lod_is_present(component, lod):
-    explicit = getattr(lod, "present", None)
-    if explicit is not None:
-        return bool(explicit)
-    return True
 
 
 def _write_lod_presence(metadata_path, lod_object_name, matched_component_ids):
@@ -121,96 +114,6 @@ def _read_metadata_with_lod_presence(metadata_path):
     return extracted_object
 
 
-def _metadata_map(component, attribute):
-    mapping = getattr(component, attribute, None) or {}
-    return {int(local): int(value) for local, value in mapping.items()}
-
-
-def _local_lod_coverage(component, local_id):
-    coverage = set()
-    for lod in (getattr(component, "lods", None) or []):
-        if not _lod_is_present(component, lod):
-            continue
-        remap = _metadata_map(lod, "vg_map")
-        if remap and (local_id not in remap or remap[local_id] < 0):
-            continue
-        coverage.add(str(lod.lod_object_name))
-    return coverage
-
-
-def _lod_aware_compact_to_runtime(components, required_lods_by_compact):
-    candidates = {}
-    preferred = {}
-    for component in components:
-        if bool(getattr(component, "cpu_posed", False)):
-            continue
-        local_to_compact = _metadata_map(component, "vg_map")
-        local_to_runtime = _metadata_map(component, "runtime_vg_map")
-        if set(local_to_compact) != set(local_to_runtime):
-            continue
-        source_valid = bool(getattr(component, "runtime_source_valid", True))
-        source_weights = getattr(component, "runtime_source_weights", None) or {}
-        if isinstance(source_weights, list):
-            source_weights = {local: weight for local, weight in enumerate(source_weights)}
-        source_weights = {int(local): int(weight) for local, weight in source_weights.items()}
-        offset = int(component.vg_offset)
-        for local_id, compact_id in local_to_compact.items():
-            runtime_id = local_to_runtime[local_id]
-            coverage = _local_lod_coverage(component, local_id)
-            preferred.setdefault(compact_id, runtime_id)
-            candidates.setdefault(compact_id, []).append(
-                (
-                    source_valid,
-                    coverage,
-                    source_weights.get(local_id, 0),
-                    offset + local_id,
-                )
-            )
-
-    mapping = {}
-    unsupported = {}
-    for compact_id, compact_candidates in candidates.items():
-        required_lods = required_lods_by_compact.get(compact_id, set())
-        eligible = [
-            candidate
-            for candidate in compact_candidates
-            if candidate[0] and required_lods.issubset(candidate[1])
-        ]
-        if not eligible:
-            best_coverage = max((candidate[1] for candidate in compact_candidates), key=len, default=set())
-            unsupported[compact_id] = tuple(sorted(required_lods - best_coverage))
-            continue
-        preferred_runtime = preferred.get(compact_id)
-        selected = max(
-            eligible,
-            key=lambda candidate: (
-                candidate[3] == preferred_runtime,
-                candidate[2],
-                -candidate[3],
-            ),
-        )
-        mapping[compact_id] = selected[3]
-    return mapping, unsupported
-
-
-def _weighted_compact_lod_requirements(metadata_components, temp_components):
-    requirements = {}
-    for component in temp_components:
-        metadata = metadata_components[component.id]
-        required_lods = {
-            str(lod.lod_object_name)
-            for lod in (getattr(metadata, "lods", None) or [])
-            if _lod_is_present(metadata, lod)
-        }
-        for temp_object in component.objects:
-            obj = temp_object.object
-            for group in obj.vertex_groups:
-                name = (group.name or "").strip()
-                if name.isdigit() and _has_weight(obj, group.index):
-                    requirements.setdefault(int(name), set()).update(required_lods)
-    return requirements
-
-
 def _has_weight(obj, group_index):
     for vertex in obj.data.vertices:
         for assignment in vertex.groups:
@@ -282,51 +185,26 @@ def _translate_object_to_local(merger, obj, component_id):
     )
 
 
-def _compact_to_runtime_map(merger):
-    from ._efmi_core.addon.exceptions import ConfigError
+def _component_compact_to_runtime_map(merger, component_id):
+    component = merger.extracted_object.components[component_id]
+    local_to_compact = _component_map(merger, component_id)
+    offset = int(component.vg_offset)
+    compact_to_runtime = {}
+    for local_id, compact_id in local_to_compact.items():
+        runtime_id = offset + local_id
+        previous = compact_to_runtime.setdefault(compact_id, runtime_id)
+        if previous != runtime_id:
+            from ._efmi_core.addon.exceptions import ConfigError
 
-    components = merger.extracted_object.components
-    metadata_runtime_by_compact = {}
-    for component_id, component in enumerate(components):
-        if bool(getattr(component, "cpu_posed", False)):
-            continue
-        local_to_compact = _component_map(merger, component_id)
-        local_to_runtime = _component_map(merger, component_id, "runtime_vg_map")
-        if set(local_to_compact) != set(local_to_runtime):
             raise ConfigError(
                 "object_source_folder",
-                f"Metadata.json Component {component_id} 的 vg_map 与 runtime_vg_map 骨骼集合不一致。请重新提取。",
+                f"Metadata.json Component {component_id} 的紧凑顶点组 {compact_id} 对应多个运行时编号。请重新提取。",
             )
-        for local_id, compact_id in local_to_compact.items():
-            runtime_id = local_to_runtime[local_id]
-            previous = metadata_runtime_by_compact.setdefault(compact_id, runtime_id)
-            if previous != runtime_id:
-                raise ConfigError(
-                    "object_source_folder",
-                    f"Metadata.json 的紧凑顶点组 {compact_id} 对应多个运行时编号。请重新提取。",
-                )
-
-    required_lods_by_compact = _weighted_compact_lod_requirements(components, merger.components)
-    compact_to_runtime, unsupported = _lod_aware_compact_to_runtime(
-        components,
-        required_lods_by_compact,
-    )
-    return compact_to_runtime, unsupported
+    return compact_to_runtime
 
 
-def _weighted_compact_ids(components):
-    result = set()
-    for component in components:
-        for temp_object in component.objects:
-            obj = temp_object.object
-            for group in obj.vertex_groups:
-                name = (group.name or "").strip()
-                if name.isdigit() and _has_weight(obj, group.index):
-                    result.add(int(name))
-    return result
-
-
-def _translate_object_to_runtime(merger, obj, component_id, compact_to_runtime):
+def _translate_object_to_runtime(merger, obj, component_id):
+    compact_to_runtime = _component_compact_to_runtime_map(merger, component_id)
     runtime_count = sum(int(component.vg_count) for component in merger.extracted_object.components)
     _translate_numeric_groups(
         merger,
@@ -348,28 +226,12 @@ def _finalize_unified_vertex_groups(self):
     if not intermediate and not full_merged:
         return _ORIGINAL_FINALIZE_DATA(self)
 
-    compact_to_runtime = None
-    if full_merged:
-        compact_to_runtime, unsupported = _compact_to_runtime_map(self)
-        blockers = sorted(_weighted_compact_ids(self.components) & set(unsupported))
-        if blockers:
-            preview = ", ".join(
-                f"{compact_id} (缺少 {', '.join(unsupported[compact_id])})"
-                for compact_id in blockers[:12]
-            )
-            if len(blockers) > 12:
-                preview += f", ... (+{len(blockers) - 12})"
-            from ._efmi_core.addon.exceptions import ConfigError
-            raise ConfigError(
-                "object_source_folder",
-                f"以下统一顶点组没有覆盖全部 LOD 的骨骼来源：{preview}。请重新提取 LOD 或调整权重。",
-            )
     for component in self.components:
         for temp_object in component.objects:
             if intermediate:
                 _translate_object_to_local(self, temp_object.object, component.id)
             else:
-                _translate_object_to_runtime(self, temp_object.object, component.id, compact_to_runtime)
+                _translate_object_to_runtime(self, temp_object.object, component.id)
 
     if full_merged:
         return _ORIGINAL_FINALIZE_DATA(self)

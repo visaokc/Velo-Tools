@@ -32,8 +32,7 @@ def _build_matrix_signature_vg_map(self, migoto_object):
         )
         return
     try:
-        checker = getattr(self.merged_skeleton_filter, "is_valid_bone_source", None)
-        result = apply_to_metadata(migoto_object, checker)
+        result = apply_to_metadata(migoto_object)
         runtime_count = sum(result.vg_counts)
         print(
             f"[{migoto_object.id}]: Built matrix-signature VG map: "
