@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+
+import numpy
 
 from .bone_signature import (
     _build_bone_signature_from_blob,
@@ -13,6 +15,7 @@ from .bone_signature import (
     parse_vs_cb_first_constants,
 )
 from ._efmi_core.migoto_io.object_extractor.migoto_object.migoto_object import MigotoObject
+from ._efmi_core.migoto_io.data_model.byte_buffer import Semantic
 from ._efmi_core.migoto_io.migoto_model.frame_model.resources import ConstantBuffer, Resource
 from ._efmi_core.migoto_io.migoto_model.types import ShaderType
 from .unified_vg_signature import (
@@ -134,8 +137,9 @@ def _fallback_first_constant(component: _SignatureComponent) -> int | None:
     )
 
 
-def build_component_maps(migoto_object: MigotoObject) -> list[dict[int, int]]:
-    """Return dense per-component local-to-authoring vertex-group maps."""
+def _build_component_maps_and_signatures(
+    migoto_object: MigotoObject,
+) -> tuple[list[dict[int, int]], list[_BoneSignatureRecord]]:
     adapters = [_component_signature_adapter(component) for component in migoto_object.components]
     signature_to_canonical: dict[bytes, int] = {}
     next_global_id = 0
@@ -204,15 +208,34 @@ def build_component_maps(migoto_object: MigotoObject) -> list[dict[int, int]]:
             missing = sorted(expected - actual)
             raise ValueError(f"Component_{component_id} has incomplete bone signatures: {missing[:12]}")
 
-    return [dict(adapter.vg_map) for adapter in adapters]
+    return [dict(adapter.vg_map) for adapter in adapters], signature_records
 
 
-def build_unified_maps(migoto_object: MigotoObject) -> UnifiedVertexGroupMaps:
+def build_component_maps(migoto_object: MigotoObject) -> list[dict[int, int]]:
+    """Return dense per-component local-to-authoring vertex-group maps."""
+    maps, _records = _build_component_maps_and_signatures(migoto_object)
+    return maps
+
+
+def _weighted_vertex_counts(component, count: int) -> list[int]:
+    vg_ids = component.mesh.get_data(Semantic.Blendindices)
+    vg_weights = component.mesh.get_data(Semantic.Blendweights)
+    if vg_weights is None:
+        vg_weights = numpy.zeros_like(vg_ids, dtype=numpy.float32)
+        vg_weights[..., 0] = 1.0
+    counts = numpy.bincount(vg_ids[vg_weights != 0], minlength=count)
+    return [int(value) for value in counts[:count]]
+
+
+def build_unified_maps(
+    migoto_object: MigotoObject,
+    valid_source_checker: Callable[[object], bool] | None = None,
+) -> UnifiedVertexGroupMaps:
     """Build compact authoring IDs plus valid merged-skeleton runtime IDs."""
     if migoto_object.metadata is None:
         migoto_object.build_metadata()
 
-    authoring_maps = build_component_maps(migoto_object)
+    authoring_maps, signature_records = _build_component_maps_and_signatures(migoto_object)
     counts: list[int] = []
     offsets: list[int] = []
     next_offset = 0
@@ -224,16 +247,43 @@ def build_unified_maps(migoto_object: MigotoObject) -> UnifiedVertexGroupMaps:
         if not cpu_posed:
             next_offset += count
 
+    signatures = {
+        (record.component_id, record.local_bone): record.signature
+        for record in signature_records
+    }
+    runtime_candidates: dict[tuple[int, bytes], list[tuple[bool, int, int]]] = {}
+    for component_id, (component, mapping) in enumerate(zip(migoto_object.components, authoring_maps)):
+        offset = offsets[component_id]
+        weighted_counts = _weighted_vertex_counts(component, counts[component_id]) if mapping else []
+        valid_source = True if valid_source_checker is None else bool(valid_source_checker(component))
+        for local_id, compact_id in sorted(mapping.items()):
+            identity = (compact_id, signatures[(component_id, local_id)])
+            runtime_candidates.setdefault(identity, []).append(
+                (valid_source, weighted_counts[local_id], offset + local_id)
+            )
+
+    identity_to_runtime = {}
+    for identity, candidates in runtime_candidates.items():
+        valid_candidates = [candidate for candidate in candidates if candidate[0]]
+        source = max(valid_candidates or candidates, key=lambda candidate: candidate[1])
+        identity_to_runtime[identity] = source[2]
+
     runtime_maps = [
-        {local_id: offsets[component_id] + local_id for local_id in mapping}
+        {
+            local_id: identity_to_runtime[(compact_id, signatures[(component_id, local_id)])]
+            for local_id, compact_id in mapping.items()
+        }
         for component_id, mapping in enumerate(authoring_maps)
     ]
     return UnifiedVertexGroupMaps(authoring_maps, runtime_maps, offsets, counts)
 
 
-def apply_to_metadata(migoto_object: MigotoObject) -> UnifiedVertexGroupMaps:
+def apply_to_metadata(
+    migoto_object: MigotoObject,
+    valid_source_checker: Callable[[object], bool] | None = None,
+) -> UnifiedVertexGroupMaps:
     """Replace extraction metadata maps with the matrix-signature mapping."""
-    result = build_unified_maps(migoto_object)
+    result = build_unified_maps(migoto_object, valid_source_checker)
     for component, authoring_map, runtime_map, offset, count in zip(
         migoto_object.metadata.components,
         result.authoring_maps,
