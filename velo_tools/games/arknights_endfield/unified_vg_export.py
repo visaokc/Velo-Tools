@@ -264,6 +264,8 @@ def _finalize_unified_vertex_groups(self):
     if full_merged:
         compact_to_runtime = _compact_to_runtime_map(self)
     for component in self.components:
+        if bool(getattr(self.extracted_object.components[component.id], "cpu_posed", False)):
+            continue
         for temp_object in component.objects:
             if intermediate:
                 _translate_object_to_local(self, temp_object.object, component.id)
