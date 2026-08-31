@@ -6,6 +6,7 @@ import traceback
 
 import bpy
 
+from velo_tools.core.component_selection import apply_bulk_selection
 from velo_tools.i18n import iface_
 
 from . import slot_texture_export
@@ -106,6 +107,24 @@ class SLOT_TEXTURE_OT_ListComponents(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class SLOT_TEXTURE_OT_SelectComponents(bpy.types.Operator):
+    bl_idname = "slot_texture.select_components"
+    bl_label = "Change Component selection"
+    bl_description = "Apply a bulk selection operation to the listed Components"
+
+    action: bpy.props.StringProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        settings = getattr(context.scene, _SETTINGS_ATTR)
+        if not apply_bulk_selection(settings.rules, self.action):
+            self.report(
+                {"WARNING"},
+                iface_("Check at least two Components to define the range endpoints"),
+            )
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
 def selected_components(context) -> set[int] | None:
     settings = getattr(context.scene, _SETTINGS_ATTR, None)
     if settings is None or not len(settings.rules):
@@ -138,6 +157,19 @@ def draw_component_selector(layout, context) -> None:
         text="",
         icon="FILE_REFRESH",
     )
+    controls = sub.row(align=True)
+    controls.enabled = bool(len(settings.rules))
+    for text, action in (
+        ("Select All", "SELECT_ALL"),
+        ("Select None", "SELECT_NONE"),
+        ("Invert Selection", "INVERT"),
+        ("Fill Range", "FILL_RANGE"),
+    ):
+        operator = controls.operator(
+            SLOT_TEXTURE_OT_SelectComponents.bl_idname,
+            text=iface_(text),
+        )
+        operator.action = action
     if not len(settings.rules):
         sub.label(
             text=iface_(
@@ -161,6 +193,7 @@ _CLASSES = (
     SLOT_TEXTURE_PG_ComponentSettings,
     SLOT_TEXTURE_UL_Components,
     SLOT_TEXTURE_OT_ListComponents,
+    SLOT_TEXTURE_OT_SelectComponents,
 )
 
 

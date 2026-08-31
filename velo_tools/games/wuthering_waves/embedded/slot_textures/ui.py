@@ -15,6 +15,8 @@ import traceback
 
 import bpy
 
+from velo_tools.core.component_selection import apply_bulk_selection
+
 _MISSING = object()
 _orig_slot_style_annotation = _MISSING
 _orig_asset_name_annotation = _MISSING
@@ -675,6 +677,24 @@ class VTWW_OT_slot_populate_components(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class VTWW_OT_slot_select_components(bpy.types.Operator):
+    bl_idname = "vtww.slot_select_components"
+    bl_label = "Change Component selection"
+    bl_description = "Apply a bulk selection operation to the listed Components"
+
+    action: bpy.props.StringProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        slot_cfg = context.scene.vtww_slot_settings
+        if not apply_bulk_selection(slot_cfg.slot_component_rules, self.action):
+            self.report(
+                {'WARNING'},
+                iface_('Check at least two Components to define the range endpoints'),
+            )
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
 def _draw_slot_components(box, slot_cfg):
     sub = box.box()
     sub.label(text='Select slot style by component', icon="TEXTURE")
@@ -684,6 +704,19 @@ def _draw_slot_components(box, slot_cfg):
                       "slot_component_rules_index", rows=4)
     col = row.column(align=True)
     col.operator("vtww.slot_populate_components", text="", icon='FILE_REFRESH')
+    controls = sub.row(align=True)
+    controls.enabled = bool(len(slot_cfg.slot_component_rules))
+    for text, action in (
+        ('Select All', 'SELECT_ALL'),
+        ('Select None', 'SELECT_NONE'),
+        ('Invert Selection', 'INVERT'),
+        ('Fill Range', 'FILL_RANGE'),
+    ):
+        operator = controls.operator(
+            VTWW_OT_slot_select_components.bl_idname,
+            text=iface_(text),
+        )
+        operator.action = action
     if not len(slot_cfg.slot_component_rules):
         sub.label(text='Not listed: defaults to using all slots. After listing points from the source folder, components can be individually deselected',
                   icon='INFO')
@@ -704,6 +737,7 @@ _CLASSES = (
     VTWW_OT_apply_form_anchor,
     VTWW_UL_slot_components,
     VTWW_OT_slot_populate_components,
+    VTWW_OT_slot_select_components,
     VELO_PT_wwmi_slot_forms,
 )
 
