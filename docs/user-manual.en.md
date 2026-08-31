@@ -1,6 +1,6 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.6.2. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.6.4. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
@@ -32,7 +32,7 @@ Use a fresh Frame Dump for any workflow that depends on current runtime Hash, sh
 
 Install and enable **Velo-Tools**, then open the 3D Viewport sidebar with `N`. Select the **Velo Tools** tab.
 
-The add-on uses Simplified Chinese UI labels. This manual shows the exact Chinese label first, followed by its English meaning.
+Velo Tools follows Blender's interface language. Simplified and Traditional Chinese use the Simplified Chinese catalog; every other Blender language uses the canonical English UI. This applies to labels, tooltips, operator messages, and updater controls. Existing bilingual label notation in this manual shows the Chinese catalog text and its English equivalent so the same procedure can be followed in either UI.
 
 | Exact UI label | English meaning | Use it for |
 | --- | --- | --- |
@@ -271,7 +271,8 @@ Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
 Important Velo extraction options:
 
-- Velo's EFMI Tools v0.6.2 integration writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and keeps the official MergedSkeleton source slots in `runtime_vg_map`; no sidecar mapping file is used.
+- Velo 1.6.4 embeds EFMI Tools v0.6.4 / runtime 1.4.3. Extraction writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and keeps exact-matrix runtime source evidence in `runtime_vg_map`; no sidecar mapping file is used.
+- Authoring and runtime identity are separate. Equivalent bones may share a compact Blender vertex-group ID, while export resolves each `(Component, compact VG)` through its exact matrix class and current LOD coverage. Do not hand-copy `vg_map` or `runtime_vg_map` between different object sources.
 - **生成 CrossIB.json** writes the v2 Component-match and transparency evidence used by later CrossIB exports.
 - **组件过滤 (Component Filter)** accepts ranges such as `0-8` or `0,1,5-7`.
 
@@ -320,13 +321,13 @@ EFMI exposes three export choices:
 | --- | --- |
 | **Merged（统一顶点组）** | Uses compact unified authoring IDs in Blender, translates them back to each Component-local palette, and emits the Per-Component runtime. |
 | **Per-Component（部件独立）** | Keeps Component-local IDs from authoring through runtime. |
-| **Merged（合并骨架）** | Uses the preserved `runtime_vg_map` source slots and emits the official EFMI v1.4.1 per-instance MergedSkeleton remap/callback contract. |
+| **Merged（合并骨架）** | Resolves exact-matrix runtime classes from `runtime_vg_map` and emits the official EFMI runtime 1.4.3 per-instance MergedSkeleton remap/callback contract. |
 
 Velo records `present: true/false` in each imported LOD Component entry: a Component matched from the LOD dump is present, while the full-detail fallback written for an unmatched Component is absent. During **Merged（合并骨架）** export, absent Components are not selected as runtime bone sources for LOD consumers. Legacy Metadata without `present` remains compatible and defaults to `true`, matching the pre-v1.6.2 export behavior; add `"present": false` manually only for a confirmed missing Component or re-import the LOD with the current extractor to generate explicit markers.
 
 Selecting or importing with **Merged（统一顶点组）** automatically makes **Merged（合并骨架）** the default follow-up export. Choose **Merged（统一顶点组）** manually only when you intentionally want unified authoring with the older Per-Component runtime.
 
-Older EFMI extraction folders without Metadata v4 `components[*].vg_map` must be re-extracted with EFMI Tools v0.6.2+ before either Merged mode can be exported.
+Older EFMI extraction folders without Metadata v4 `components[*].vg_map` must be re-extracted with EFMI Tools v0.6.2+ before either Merged mode can be exported. Re-extract with the current Velo release when reliable matrix signatures or LOD runtime-source selection matter.
 
 > **Nested collection warning:** if component objects are inside `C0/C1/...` children, enabling **忽略嵌套集合 (Ignore Nested Collections)** can produce an empty export.
 
@@ -340,6 +341,8 @@ EFMI LOD mapping remains separate from each component's main `vg_map` and is sto
 4. Select the LOD dump and existing object source folder.
 5. Tune geometry filters only if the default match fails.
 6. Run **从 Dump 提取 LOD (Extract LOD from Dump)**, then export normally.
+
+Existing LOD data is protected by default. When overwrite is enabled, Velo replaces the complete colliding LOD dataset when the object identity or Component vertex-count evidence matches; it does not retain stale records from the previous dump. Unrelated LOD layers remain intact.
 
 **允许无 LOD 导出 (Allow Export without LODs)** bypasses the metadata requirement. In open-world use, a mod without required LOD data may fail to load correctly at distance.
 
@@ -406,7 +409,7 @@ Every exported ID uses a stable numeric global and keeps its source name only as
 global persist $ShapeKey_12 = 0.375
 ```
 
-The initial value is the ShapeKey value authored in Blender at export time; the add-on temporarily zeroes it only while calculating the Basis and runtime delta. The exported base `VB0` therefore remains Deform-neutral, while the authored Blender value only initializes `$ShapeKey_<slot>` and is applied once by the official runtime. If one runtime ID has conflicting authored values across objects, export stops instead of choosing an ambiguous global default.
+The initial value is the ShapeKey value authored in Blender at export time; the add-on temporarily zeroes it only while calculating the Basis and runtime delta. The exported base `VB0` therefore remains Deform-neutral, while the authored Blender value initializes `$ShapeKey_<slot>`. Runtime 1.4.3 caches unchanged submissions internally, while Velo resubmits the persistent control every frame so the current value is restored after a runtime reset. If one runtime ID has conflicting authored values across objects, export stops instead of choosing an ambiguous global default.
 
 With buffer merging on, each component receives two extra merged buffer files regardless of its Deform-key count. The default position buffer is never merged.
 
@@ -513,6 +516,8 @@ Existing LOD data is protected unless overwrite is enabled.
 Start with the default voxel matcher. If matching fails, tune the error threshold, voxel size, prefilter candidates, or switch to point-cloud matching.
 
 LOD evidence can flow through a WWMI cross-scene merged source. Capture each LOD while that geometry is visible, not at the main model's distance.
+
+Velo 1.6.4 maps WWMI LOD weights through stable canonical Blend IDs and compact per-LOD source dictionaries for MERGED, COMPONENT, and Cross-Scene exports. Keep the source skeleton and current LOD Metadata together; after replacing a dump, skeleton map, or cross-scene source, re-extract the affected LOD instead of copying old remap data.
 
 ### WWMI Cross-Scene Multi-IB
 
@@ -878,11 +883,11 @@ Also check hidden collection, hidden object, and muted ShapeKey filters.
 
 ### EFMI Merged Import or Export Reports a Missing Map
 
-Use Velo's EFMI Tools v0.6.2+ extraction so Metadata v4 contains compact `components[*].vg_map` authoring IDs and `runtime_vg_map` source slots; older sidecar-only sources are no longer supported.
+Use Velo's current EFMI Tools extraction so Metadata v4 contains compact `components[*].vg_map` authoring IDs and exact-matrix `runtime_vg_map` source evidence; older sidecar-only sources are no longer supported.
 
 The component `vg_map` is not LOD data; extract LOD data separately when required.
 
-`Merged（合并骨架）` additionally validates Component/LOD remaps and rejects missing or inconsistent data instead of silently falling back to Per-Component output. Custom templates must contain the EFMI v1.4.1 MergedSkeleton contract.
+`Merged（合并骨架）` additionally validates Component/LOD remaps and rejects missing or inconsistent data instead of silently falling back to Per-Component output. Custom templates must contain the EFMI runtime 1.4.3 MergedSkeleton and ShapeKey contract.
 
 ### Per-Component (from Merged) Rejects Stray Weights
 

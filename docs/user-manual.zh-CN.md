@@ -1,6 +1,6 @@
 # Velo Tools 中文使用手册
 
-> 适用版本：Velo Tools v1.6.2。本文以当前中文 UI 为准；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
+> 适用版本：Velo Tools v1.6.4。Velo Tools 自动跟随 Blender 界面语言：简体中文与繁体中文使用当前简体中文 catalog，其它语言回退英文；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
 
 Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI 工作流、鸣潮 WWMI 工作流放在同一个 **Velo Tools** 面板中。
 
@@ -339,7 +339,7 @@ EFMI 面板提供四种模式：
 1. 设置有效的 **Frame Dump 目录**，其中应包含 `log.txt`。
 2. 设置 **输出目录**。
 3. 按需启用对象、Component 和贴图过滤。
-4. 如需使用任一 Merged 模式，请用当前 Velo/EFMI Tools v0.6.2+ 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与官方 MergedSkeleton 来源槽 `runtime_vg_map`。
+4. 如需使用任一 Merged 模式，请用当前 Velo 1.6.4 内置的 EFMI Tools v0.6.4 / runtime 1.4.3 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与 exact-matrix runtime source 证据 `runtime_vg_map`。
 5. 如需快速查看，可启用 **提取后导入 Blender**。
 6. 执行提取。
 
@@ -355,7 +355,7 @@ EFMI 面板提供四种模式：
 
 **容忍提取错误**会跳过单个失败对象并继续，不代表被跳过的对象已经正确提取。需要目标对象时，应查看日志并修复证据问题。
 
-对象源目录通常包含组件 Buffer、`Metadata.json` 和 `TextureUsage.json`。Velo 将 current+previous 骨骼矩阵签名生成的紧凑统一编号写入 `components[*].vg_map`，并在 `runtime_vg_map` 中保留官方 MergedSkeleton runtime 使用的来源槽；不再生成独立映射 sidecar。
+对象源目录通常包含组件 Buffer、`Metadata.json` 和 `TextureUsage.json`。Velo 将 current+previous 骨骼矩阵签名生成的紧凑统一编号写入 `components[*].vg_map`，并在 `runtime_vg_map` 中保留 exact-matrix runtime source 证据；不再生成独立映射 sidecar。Authoring identity 与 runtime identity 分层处理：等价骨骼可以共享 Blender 中的 compact VG，但导出会按 `(Component, compact VG)`、精确矩阵 class 与当前 LOD coverage 解析 runtime source。不要在不同对象源之间手工复制 `vg_map` 或 `runtime_vg_map`。
 
 ### 5.3 导入对象
 
@@ -400,6 +400,8 @@ EFMI 面板提供四种模式：
 7. 执行提取，再检查 `Metadata.json` 和可选导入的 LOD 对象。
 
 已有 LOD 数据默认受保护。只有明确希望替换时才启用 **允许覆盖 LOD 数据**。
+
+启用覆盖后，只要 object identity 或 Component 顶点数证据发生碰撞，Velo 会替换完整的旧 LOD dataset，不会保留上一份 Dump 的残留记录；无碰撞的其它 LOD layer 继续保留。
 
 如果启用 **低于阈值的 LOD 跳过**，低置信候选会被跳过，而不是中止整次提取。跳过并不等于匹配成功。
 
@@ -455,7 +457,7 @@ Deform12 CapeLift
 global persist $ShapeKey_12 = 0.375
 ```
 
-变量初始值继承导出时 Blender 中对应 ShapeKey 的值；插件只在计算 Basis 和运行时 delta 时临时将标准 Deform 归零。导出的基础 `VB0` 始终保持 Deform-neutral，Blender 中设定的值只用于初始化 `$ShapeKey_<编号>`，再由官方运行时应用一次。如果同一运行时 ID 在不同物体上的导出前值不一致，导出会停止，而不是选择一个含糊的全局默认值。
+变量初始值继承导出时 Blender 中对应 ShapeKey 的值；插件只在计算 Basis 和运行时 delta 时临时将标准 Deform 归零。导出的基础 `VB0` 始终保持 Deform-neutral，Blender 中设定的值用于初始化 `$ShapeKey_<编号>`。Runtime 1.4.3 会在内部缓存未变化的提交值，Velo 则每帧重新提交 persistent control，因此 runtime reset 后会恢复当前值。如果同一运行时 ID 在不同物体上的导出前值不一致，导出会停止，而不是选择一个含糊的全局默认值。
 
 外部 INI 逻辑应引用 `$ShapeKey_<编号>`，不要再引用由 Blender 名称清理得到的旧变量名。
 
@@ -478,7 +480,7 @@ EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导�
 | --- | --- |
 | **Merged（统一顶点组）** | Blender 使用紧凑统一编号；导出时按各 Component 的 `vg_map` 回译为局部编号，运行端仍为 Per-Component。 |
 | **Per-Component（部件独立）** | 制作、Buffer 与运行端始终使用 Component 局部编号。 |
-| **Merged（合并骨架）** | 通过 `runtime_vg_map` 输出统一编号，并使用 EFMI v1.4.1 官方按实例 MergedSkeleton runtime。 |
+| **Merged（合并骨架）** | 通过 `runtime_vg_map` 解析 exact-matrix runtime class，并使用 EFMI runtime 1.4.3 官方按实例 MergedSkeleton contract。 |
 
 Velo 现在会在导入 LOD 时为每条 Component 记录写入 `present: true/false`：从 LOD Dump 实际匹配到的 Component 为存在，matcher 未命中后写入的主模型回退记录为缺失。执行 **Merged（合并骨架）** 导出时，缺失 Component 不会被选作 LOD 消费者的运行时骨骼来源。旧 Metadata 没有 `present` 时保持兼容并默认按 `true` 处理，等同 v1.6.2 以前的导出行为；只有已经确认某个 Component 在 LOD 中缺失时才手动添加 `"present": false`，也可使用当前版本重新导入 LOD 自动生成显式标记。
 
@@ -701,6 +703,8 @@ WWMI 的 **Mod 信息**、**INI 模板** 和 **INI 开关**与 EFMI 使用相同
 - **允许覆盖 LOD 数据**
 
 LOD 支持 Merged、Per-Component，以及内部转换后的 Per-Component (from Merged)。启用自定义 INI 模板时，默认 LOD 模板注入会跳过；模板作者必须自行提供等价 LOD 逻辑。
+
+Velo 1.6.4 在 MERGED、COMPONENT 与 Cross-Scene 导出中统一使用稳定 canonical Blend ID 和每个 LOD 的紧凑 source dictionary 映射权重。对象源骨架与当前 LOD Metadata 必须配套；替换 Dump、骨架 map 或跨场景 source 后，应重新提取受影响的 LOD，不要复制旧 remap 数据。
 
 跨场景对象源目录也可以携带 LOD 数据。改变来源 Dump、拆分对象或路由后，应重新匹配并重新导出。
 
@@ -1090,9 +1094,9 @@ ps-tN = ref ResourceTexture...
 
 ### 9.2 Merged 导入或导出失败
 
-EFMI 两类 Merged 都需要当前 Velo/EFMI Tools v0.6.2+ 生成的 Metadata v4：`components[*].vg_map` 保存紧凑 authoring ID，`runtime_vg_map` 保存官方 MergedSkeleton 来源槽。旧 sidecar-only 对象源必须重新提取，不要复制其它对象的映射。
+EFMI 两类 Merged 都需要当前 Velo/EFMI Tools 生成的 Metadata v4：`components[*].vg_map` 保存紧凑 authoring ID，`runtime_vg_map` 保存 exact-matrix runtime source 证据。旧 sidecar-only 对象源必须重新提取，不要复制其它对象的映射。
 
-选择 `Merged（合并骨架）` 时还必须使用 EFMI v1.4.1+；自定义模板必须包含官方 MergedSkeleton contract，否则应改用内置模板或修复模板。
+选择 `Merged（合并骨架）` 时还必须使用 EFMI runtime 1.4.3；自定义模板必须包含当前官方 MergedSkeleton 与 ShapeKey contract，否则应改用内置模板或修复模板。
 
 WWMI 应确认导入和导出的骨架模式一致。若使用 Per-Component (from Merged)，检查是否有顶点权重越过所属 Component 的允许骨骼范围。
 
