@@ -217,48 +217,24 @@ def _translate_object_to_local(merger, obj, component_id):
 
 
 def _compact_to_runtime_map(merger):
-    from ._efmi_core.addon.exceptions import ConfigError
-
     components = merger.extracted_object.components
-    runtime_ids_by_compact = {}
-    local_component_maps = {}
+    component_maps = {}
     for component_id, component in enumerate(components):
         if bool(getattr(component, "cpu_posed", False)):
-            local_component_maps[component_id] = {}
+            component_maps[component_id] = {}
             continue
         local_to_compact = _component_map(merger, component_id)
         local_to_runtime = _component_map(merger, component_id, "runtime_vg_map")
         if set(local_to_compact) != set(local_to_runtime):
+            from ._efmi_core.addon.exceptions import ConfigError
             raise ConfigError(
                 "object_source_folder",
                 f"Metadata.json Component {component_id} 的 vg_map 与 runtime_vg_map 骨骼集合不一致。请重新提取。",
             )
         compact_to_runtime = {}
-        for local_id, compact_id in local_to_compact.items():
-            runtime_id = local_to_runtime[local_id]
-            existing = compact_to_runtime.get(compact_id)
-            if existing is not None and existing != runtime_id:
-                from velo_tools.i18n import iface_
-                raise ConfigError(
-                    "object_source_folder",
-                    iface_(
-                        "Metadata.json Component {0} maps unified vertex group {1} to multiple runtime IDs. Split the incorrectly merged vertex group first."
-                    ).format(component_id, compact_id),
-                )
-            compact_to_runtime[compact_id] = runtime_id
-            runtime_ids_by_compact.setdefault(compact_id, set()).add(runtime_id)
-        local_component_maps[component_id] = compact_to_runtime
-
-    global_fallbacks = {
-        compact_id: next(iter(runtime_ids))
-        for compact_id, runtime_ids in runtime_ids_by_compact.items()
-        if len(runtime_ids) == 1
-    }
-    component_maps = {}
-    for component_id in range(len(components)):
-        mapping = dict(global_fallbacks)
-        mapping.update(local_component_maps.get(component_id, {}))
-        component_maps[component_id] = mapping
+        for local_id, compact_id in sorted(local_to_compact.items()):
+            compact_to_runtime.setdefault(compact_id, local_to_runtime[local_id])
+        component_maps[component_id] = compact_to_runtime
     return component_maps
 
 
