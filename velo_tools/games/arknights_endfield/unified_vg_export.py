@@ -175,12 +175,16 @@ def _translate_numeric_groups(merger, obj, component_id, source_to_target, prefi
         group.name = f"{prefix}{target_id}"
 
     if unmatched:
+        from velo_tools.i18n import iface_
+
         preview = ", ".join(unmatched[:12])
         if len(unmatched) > 12:
             preview += f", ... (+{len(unmatched) - 12})"
         raise ConfigError(
             "component_collection",
-            f"物体 `{obj.name}` (Component {component_id}) 的统一顶点组不属于该部件骨表：{preview}。",
+            iface_(
+                "Object `{0}` (Component {1}) uses unified vertex groups without runtime mappings in Metadata.json: {2}."
+            ).format(obj.name, component_id, preview),
         )
 
     for group in to_remove:
@@ -218,10 +222,12 @@ def _translate_object_to_local(merger, obj, component_id):
 
 def _compact_to_runtime_map(merger):
     components = merger.extracted_object.components
-    component_maps = {}
+    global_fallbacks = {}
+    local_component_maps = {}
+    cpu_posed_components = set()
     for component_id, component in enumerate(components):
         if bool(getattr(component, "cpu_posed", False)):
-            component_maps[component_id] = {}
+            cpu_posed_components.add(component_id)
             continue
         local_to_compact = _component_map(merger, component_id)
         local_to_runtime = _component_map(merger, component_id, "runtime_vg_map")
@@ -233,8 +239,19 @@ def _compact_to_runtime_map(merger):
             )
         compact_to_runtime = {}
         for local_id, compact_id in sorted(local_to_compact.items()):
-            compact_to_runtime.setdefault(compact_id, local_to_runtime[local_id])
-        component_maps[component_id] = compact_to_runtime
+            runtime_id = local_to_runtime[local_id]
+            compact_to_runtime.setdefault(compact_id, runtime_id)
+            global_fallbacks.setdefault(compact_id, runtime_id)
+        local_component_maps[component_id] = compact_to_runtime
+
+    component_maps = {}
+    for component_id in range(len(components)):
+        if component_id in cpu_posed_components:
+            component_maps[component_id] = {}
+            continue
+        mapping = dict(global_fallbacks)
+        mapping.update(local_component_maps.get(component_id, {}))
+        component_maps[component_id] = mapping
     return component_maps
 
 

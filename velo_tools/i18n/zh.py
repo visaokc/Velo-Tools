@@ -743,6 +743,7 @@ ZH_TRANSLATIONS = {
     'Object Filtering: Skip Static Objects': '对象过滤：跳过静态对象',
     'Object source directory': '对象源目录',
     'Object source folder (object_source_folder) not set': '未设置对象源文件夹（object_source_folder）',
+    'Object `{0}` (Component {1}) uses unified vertex groups without runtime mappings in Metadata.json: {2}.': '物体 `{0}`（Component {1}）使用了 Metadata.json 中没有运行时映射的统一顶点组：{2}。',
     'Object vb0 Hash to be excluded from candidates matched from LOD, supporting separation by commas, semicolons, or spaces.': '要从 LOD 匹配候选中排除的对象 vb0 Hash，支持用逗号、分号或空格分隔',
     'Objects': '对象',
     'Old General Mapping Visualization Toggle; The current general mapping has been migrated to a separate panel, and this no longer automatically disables any other visualization features': '旧通用映射可视化开关；当前通用映射已迁移到独立面板，此项不再自动关闭任何其它可视化功能',
