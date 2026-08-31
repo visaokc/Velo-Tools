@@ -57,6 +57,10 @@ VTEF_PROPERTY_TEXTS = {
     "skip_small_textures": ('Texture filtering: skip small textures', 'Skip texture files smaller than the specified size.'),
     "skip_small_textures_size": ('Minimum size KB', 'Texture files smaller than this KB will be skipped.'),
     "skip_jpg_textures": ('Texture filtering: skip .jpg', 'Skip .jpg textures; these files are usually gradients or masks.'),
+    "skip_slot_residual_textures": (
+        'Texture filtering: skip Dirty Slot',
+        'Retain slots explicitly bound by PSSetShaderResources in the log.txt; stale inherited bindings are removed from STU, TextureUsage.json, texture ownership, and extracted files. If there is no usable log evidence, legacy output is retained and deletion is not guessed.',
+    ),
     "object_source_folder": ('Object source directory', 'Directory of EFMI objects containing components .fmt/.ib/.vb, Metadata.json, TextureUsage.json.'),
     "color_storage": ('Vertex Color', 'Control how vertex color data of COLOR is saved and displayed during import.'),
     "import_skeleton_type": ('Skeleton', 'Vertex group naming method. Merged uses Metadata v4 built-in vg_map; Per-Component uses local numbering of each component.'),

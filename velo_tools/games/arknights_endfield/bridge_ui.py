@@ -219,6 +219,11 @@ def _patch_sidebar_menus() -> None:
         sub.prop(cfg, "skip_small_textures_size", text=iface_('Minimum size KB'))
 
         layout.row().prop(cfg, "skip_jpg_textures", text=iface_('Texture filtering: skip .jpg'))
+        layout.row().prop(
+            cfg,
+            "skip_slot_residual_textures",
+            text=iface_('Texture filtering: skip Dirty Slot'),
+        )
 
         layout.row()
 

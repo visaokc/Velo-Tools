@@ -12,6 +12,7 @@ from . import ui_l10n as _ui_l10n
 from . import lod_debug_import as _lod_debug_import
 from . import unified_vg_extract as _unified_vg_extract
 from . import unified_vg_export as _unified_vg_export
+from . import _shader_texture_usage as _shader_texture_usage
 from ._efmi_core import auto_load as _al
 from ._efmi_core.addon import settings as _vsettings
 from .. import registry as _registry
@@ -539,6 +540,12 @@ def _patch_velo_settings():
     _patch_shapekey_texts()
     _patch_toolbox_texts()
 
+    _patch_vtef_property(
+        BoolProperty,
+        "skip_slot_residual_textures",
+        default=True,
+    )
+
     _vsettings.VTEF_Settings.__annotations__["velo_auto_split_by_material"] = BoolProperty(
         name='Automatically split by material during export',
         description='When exporting temporary objects, automatically split according to the actual material with the prefix Component; it will not modify scene objects.',
@@ -583,6 +590,7 @@ def register():
     bpy.types.Scene.VTEF_settings = bpy.props.PointerProperty(type=_vsettings.VTEF_Settings)
     _unified_vg_extract.install_patches()
     _unified_vg_export.install_patches()
+    _shader_texture_usage.install_patches()
     try:
         from ...core.export import material_partition as _material_partition
         from ._efmi_core.blender_export.blender_export import ObjectMergerEFMI
@@ -669,6 +677,10 @@ def unregister():
         pass
     try:
         _embedded.unregister()
+    except Exception:
+        pass
+    try:
+        _shader_texture_usage.uninstall_patches()
     except Exception:
         pass
     try:

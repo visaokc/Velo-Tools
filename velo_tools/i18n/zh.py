@@ -916,6 +916,7 @@ ZH_TRANSLATIONS = {
     'Restore unified numbering names of target objects; prioritize lossless restoration using snapshots, if no snapshot is available, rename according to the mapping table in reverse': '还原目标物体统一编号命名；优先用快照无损还原，无快照时按映射表反向改名',
     'Restore: Lossless restoration using snapshot (source={0}; skeleton {1})': '还原: 已用快照无损还原 (源={0}; 骨骼 {1})',
     'Result': '结果',
+    'Retain slots explicitly bound by PSSetShaderResources in the log.txt; stale inherited bindings are removed from STU, TextureUsage.json, texture ownership, and extracted files. If there is no usable log evidence, legacy output is retained and deletion is not guessed.': '保留 log.txt 中由 PSSetShaderResources 明确绑定的槽位；从 STU、TextureUsage.json、贴图归属和提取文件中移除脏的继承绑定。没有可用 log 证据时保留 legacy 输出，不猜测删除。',
     'Retain slots explicitly bound by PSSetShaderResources in the log.txt, as well as write/consume draws that are color passes, belong to different vb0s, and have the same role cb4 and cb5/cb6 material evidence as cross-object service slot inheritance; Component residues, depth-only, and main material slot inheritance within the same vb0 are still filtered by residue; If there is no available log evidence, legacy STU is retained and deletion is not speculated.': '保留 log.txt 中由 PSSetShaderResources 明确绑定的槽位，以及写入/消费 draw 均为彩色 pass、属于不同 vb0、具有相同角色 cb4 与相同材质 cb5/cb6 证据的跨对象 service slot 继承；同一 vb0 内的 Component 残留、depth-only 和主材质槽继承仍按残留过滤；没有可用 log 证据时保持 legacy STU，不猜测删除。',
     'Reuse already has an acceptance group': '复用已有承接组',
     'Revert all to original names': '全部回原名',

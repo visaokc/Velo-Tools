@@ -114,7 +114,7 @@ For WWMI cross-scene work, the merged source folder becomes the object source. I
 | --- | --- | --- |
 | `Metadata.json` | EFMI/WWMI extraction | Import/export geometry, component, skeleton, and LOD metadata |
 | `TextureUsage.json` | EFMI/WWMI extraction | Basic texture attribution and import-time material assignment |
-| `ShaderTextureUsage.json` | Velo WWMI extraction | Shader-pair, `ps-tN`, format, freshness, form, and captured Unreal asset-path evidence |
+| `ShaderTextureUsage.json` | Velo WWMI/EFMI extraction | Component, shader-pair, `ps-tN`, Hash, format/size, freshness, and captured Unreal asset-path evidence; WWMI additionally records form evidence |
 | `Metadata.json` `components[*].vg_map` | Official EFMI extraction | Unified-to-component-local vertex-group mapping for both Merged export modes |
 | `CrossIB.json` | Velo EFMI extraction or CrossIB panel | EFMI Component match, pass topology, transparency, and input-compatibility evidence consumed by CrossIB export |
 | `CrossSceneManifest.json` | Velo WWMI cross-scene merge | Runtime IB ownership and component/VG/LOD/fold/morph routing not derivable from root Metadata/STU |
@@ -275,6 +275,7 @@ Important Velo extraction options:
 - Authoring and runtime identity are separate. Equivalent bones may share a compact Blender vertex-group ID, while export resolves each `(Component, compact VG)` through its exact matrix class and current LOD coverage. Do not hand-copy `vg_map` or `runtime_vg_map` between different object sources.
 - **生成 CrossIB.json** writes the v2 Component-match and transparency evidence used by later CrossIB exports.
 - **组件过滤 (Component Filter)** accepts ranges such as `0-8` or `0,1,5-7`.
+- Extraction also writes `ShaderTextureUsage.json` from the final retained EFMI texture set. It records each Component's `(vs, ps, ps-tN)` binding with the exact exported filename, resource Hash, format, and dimensions. **贴图过滤：跳过 Dirty Slot (Skip Dirty Slots)** is enabled by default: when `log.txt` supplies usable `PSSetShaderResources` evidence, inherited stale bindings are removed from STU, `TextureUsage.json`, texture-file ownership, and extracted files, while retained records carry schema-v4 freshness evidence. Disabling the option preserves inherited records and the original EFMI texture outputs. If no usable log evidence exists, Velo preserves legacy unfiltered output rather than guessing deletions. If a future EFMI dump contains the same `TextureAssetManifest.jsonl` contract used by WWMI, only records backed by a retained texture that was actually written receive the captured Unreal `asset_path`; current EFMI dumps without that manifest simply omit the field.
 
 Filtered EFMI output is renumbered continuously as `Component 0..N`. Do not assume the output component number is still the capture's original ordinal.
 
@@ -871,7 +872,7 @@ Do not use the updater from a junction/source-link install. Remove the developme
 
 Confirm texture import was enabled and the object source still contains its DDS files.
 
-EFMI uses `TextureUsage.json`. WWMI prefers `ShaderTextureUsage.json` and falls back to `TextureUsage.json`.
+EFMI texture import continues to use `TextureUsage.json`; EFMI extraction also writes `ShaderTextureUsage.json` as richer shader/slot evidence. WWMI texture import prefers `ShaderTextureUsage.json` and falls back to `TextureUsage.json`.
 
 ### Export Finds No Component Objects
 

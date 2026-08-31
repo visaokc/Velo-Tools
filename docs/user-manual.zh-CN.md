@@ -352,10 +352,13 @@ EFMI 面板提供四种模式：
 - **组件过滤：黑名单 Hash**
 - **贴图过滤：跳过小贴图**
 - **贴图过滤：跳过 .jpg**
+- **贴图过滤：跳过 Dirty Slot**
 
 **容忍提取错误**会跳过单个失败对象并继续，不代表被跳过的对象已经正确提取。需要目标对象时，应查看日志并修复证据问题。
 
-对象源目录通常包含组件 Buffer、`Metadata.json` 和 `TextureUsage.json`。Velo 将 current+previous 骨骼矩阵签名生成的紧凑统一编号写入 `components[*].vg_map`，并在 `runtime_vg_map` 中保留 exact-matrix runtime source 证据；不再生成独立映射 sidecar。Authoring identity 与 runtime identity 分层处理：等价骨骼可以共享 Blender 中的 compact VG，但导出会按 `(Component, compact VG)`、精确矩阵 class 与当前 LOD coverage 解析 runtime source。不要在不同对象源之间手工复制 `vg_map` 或 `runtime_vg_map`。
+对象源目录通常包含组件 Buffer、`Metadata.json`、`TextureUsage.json` 和 `ShaderTextureUsage.json`。Velo 将 current+previous 骨骼矩阵签名生成的紧凑统一编号写入 `components[*].vg_map`，并在 `runtime_vg_map` 中保留 exact-matrix runtime source 证据；不再生成独立映射 sidecar。Authoring identity 与 runtime identity 分层处理：等价骨骼可以共享 Blender 中的 compact VG，但导出会按 `(Component, compact VG)`、精确矩阵 class 与当前 LOD coverage 解析 runtime source。不要在不同对象源之间手工复制 `vg_map` 或 `runtime_vg_map`。
+
+EFMI 提取生成的 `ShaderTextureUsage.json` 与 WWMI 使用相同的核心嵌套语义：按 Component、`vs` / `ps` shader pair 和 `ps-tN` 记录最终保留贴图的准确输出文件名、资源 Hash、格式与尺寸。默认开启的 **贴图过滤：跳过 Dirty Slot** 会在 `log.txt` 提供可用 `PSSetShaderResources` 证据时，过滤继承而来的脏槽位，并同步收窄 STU、`TextureUsage.json`、贴图文件的 Component ownership 和实际提取文件；保留记录使用 schema v4 新鲜度证据。关闭该选项会保留继承记录和 EFMI 原始贴图产物；没有可用 log 证据时保留 legacy 未过滤输出，不猜测删除。如果未来 EFMI Dump 提供与 WWMI 相同合同的 `TextureAssetManifest.jsonl`，只有既通过过滤、又确实写入对象源目录的贴图记录会额外带完整 Unreal `asset_path`；当前没有该 manifest 的 EFMI Dump 会自然省略此字段。
 
 ### 5.3 导入对象
 
