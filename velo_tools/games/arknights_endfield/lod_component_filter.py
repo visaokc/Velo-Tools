@@ -17,8 +17,7 @@ from ._efmi_core.migoto_io.object_extractor.migoto_object.migoto_object_builder 
 _INSTALLED = False
 _ORIGINAL_BUILD_VG_MAP = None
 _VOXEL_SIZE = 0.01
-_SIMILARITY_THRESHOLD = 55.0
-_FORWARD_DRAW_WINDOW = 12
+_SIMILARITY_THRESHOLD = 80.0
 
 
 @dataclass(frozen=True)
@@ -32,12 +31,6 @@ class FilteredLODComponent:
 
 def _face_count(component) -> int:
     return int(component.mesh.format.index_count) // 3
-
-
-def _first_draw_id(component, fallback: int) -> int:
-    shader_calls = getattr(getattr(component, "raw_data", None), "shader_calls", ())
-    draw_ids = [int(call.id) for call in shader_calls if getattr(call, "id", None) is not None]
-    return min(draw_ids, default=fallback)
 
 
 def filter_lower_detail_components(
@@ -60,34 +53,47 @@ def filter_lower_detail_components(
             )
         )
 
-    draw_order_ids = sorted(
-        range(len(components)),
-        key=lambda component_id: (_first_draw_id(components[component_id], component_id), component_id),
-    )
-    filtered = []
-
-    for draw_position, component_id in enumerate(draw_order_ids):
-        component = components[component_id]
-        face_count = _face_count(component)
-        best_match = None
-        for candidate_id in draw_order_ids[
-            draw_position + 1:draw_position + 1 + _FORWARD_DRAW_WINDOW
-        ]:
+    best_matches = {}
+    for component_id, component in enumerate(components):
+        for candidate_id in range(component_id + 1, len(components)):
             candidate = components[candidate_id]
-            candidate_face_count = _face_count(candidate)
-            if candidate_face_count <= face_count:
+            if _face_count(component) == _face_count(candidate):
                 continue
             similarity = float(matcher.calculate_similarity(component.mesh, candidate.mesh))
-            if best_match is None or similarity > best_match.similarity:
-                best_match = FilteredLODComponent(
-                    component_id=component_id,
-                    matched_component_id=candidate_id,
-                    face_count=face_count,
-                    matched_face_count=candidate_face_count,
-                    similarity=similarity,
-                )
-        if best_match is not None and best_match.similarity >= similarity_threshold:
-            filtered.append(best_match)
+            for source_id, target_id in ((component_id, candidate_id), (candidate_id, component_id)):
+                current = best_matches.get(source_id)
+                if current is None or similarity > current[1]:
+                    best_matches[source_id] = (target_id, similarity)
+
+    filtered = []
+    paired_ids = set()
+    for component_id in range(len(components)):
+        if component_id in paired_ids or component_id not in best_matches:
+            continue
+        candidate_id, similarity = best_matches[component_id]
+        reverse = best_matches.get(candidate_id)
+        if (
+            reverse is None
+            or reverse[0] != component_id
+            or similarity < similarity_threshold
+        ):
+            continue
+        paired_ids.update((component_id, candidate_id))
+        component_faces = _face_count(components[component_id])
+        candidate_faces = _face_count(components[candidate_id])
+        if component_faces < candidate_faces:
+            lower_id, higher_id = component_id, candidate_id
+            lower_faces, higher_faces = component_faces, candidate_faces
+        else:
+            lower_id, higher_id = candidate_id, component_id
+            lower_faces, higher_faces = candidate_faces, component_faces
+        filtered.append(FilteredLODComponent(
+            component_id=lower_id,
+            matched_component_id=higher_id,
+            face_count=lower_faces,
+            matched_face_count=higher_faces,
+            similarity=similarity,
+        ))
 
     if not filtered:
         return []
@@ -110,7 +116,7 @@ def _enabled_for_current_extraction() -> bool:
         if (
             cfg is None
             or getattr(cfg, "tool_mode", None) != "EXTRACT_FRAME_DATA"
-            or not getattr(cfg, "auto_skip_lod_components", True)
+            or not getattr(cfg, "auto_skip_lod_components", False)
         ):
             return False
         explicit_hash_filter = bool(

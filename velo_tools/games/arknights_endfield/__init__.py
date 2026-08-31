@@ -556,12 +556,12 @@ def _patch_velo_settings():
     _patch_vtef_property(
         BoolProperty,
         "auto_skip_lod_components",
-        default=True,
+        default=False,
     )
     _patch_vtef_property(
         FloatProperty,
         "auto_skip_lod_similarity_threshold",
-        default=55,
+        default=80,
         min=25,
         max=100,
         precision=0,
