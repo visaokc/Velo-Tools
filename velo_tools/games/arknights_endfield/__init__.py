@@ -15,6 +15,7 @@ from . import unified_vg_export as _unified_vg_export
 from . import _shader_texture_usage as _shader_texture_usage
 from . import slot_texture_export as _slot_texture_export
 from . import slot_component_ui as _slot_component_ui
+from . import lod_component_filter as _lod_component_filter
 from ._efmi_core import auto_load as _al
 from ._efmi_core.addon import settings as _vsettings
 from .. import registry as _registry
@@ -533,7 +534,7 @@ def _patch_toolbox_texts():
 
 
 def _patch_velo_settings():
-    from bpy.props import BoolProperty, StringProperty
+    from bpy.props import BoolProperty, FloatProperty, StringProperty
 
     _patch_preferences()
     _patch_vtef_visible_property_texts()
@@ -551,6 +552,20 @@ def _patch_velo_settings():
         BoolProperty,
         "slot_style_textures",
         default=False,
+    )
+    _patch_vtef_property(
+        BoolProperty,
+        "auto_skip_lod_components",
+        default=True,
+    )
+    _patch_vtef_property(
+        FloatProperty,
+        "auto_skip_lod_similarity_threshold",
+        default=55,
+        min=25,
+        max=100,
+        precision=0,
+        subtype="PERCENTAGE",
     )
 
     _vsettings.VTEF_Settings.__annotations__["velo_auto_split_by_material"] = BoolProperty(
@@ -599,6 +614,7 @@ def register():
     _unified_vg_extract.install_patches()
     _unified_vg_export.install_patches()
     _shader_texture_usage.install_patches()
+    _lod_component_filter.install()
     try:
         from ...core.export import material_partition as _material_partition
         from ._efmi_core.blender_export.blender_export import ObjectMergerEFMI
@@ -661,6 +677,10 @@ def unregister_embedded_late():
 
 
 def unregister():
+    try:
+        _lod_component_filter.remove()
+    except Exception:
+        pass
     try:
         _slot_texture_export.remove()
     except Exception:

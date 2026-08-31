@@ -23,7 +23,11 @@ def _zh(text: str) -> str:
 def velo_controls_for_mode(mode: str) -> tuple[str, ...]:
     """Return Velo-only controls that should be drawn inline for a tool mode."""
     if mode == "EXTRACT_FRAME_DATA":
-        return ("generate_crossib_json", "extract_components_filter")
+        return (
+            "generate_crossib_json",
+            "auto_skip_lod_components",
+            "extract_components_filter",
+        )
     if mode == "IMPORT_OBJECT":
         return ("import_as_component_collections",)
     if mode == "EXPORT_MOD":
@@ -39,6 +43,14 @@ def _draw_velo_inline_controls(layout, cfg, mode: str, context=None) -> None:
     box.label(text=iface_('Velo Compatibility Options'), icon="TOOL_SETTINGS")
     if "generate_crossib_json" in controls and hasattr(cfg, "generate_crossib_json"):
         box.prop(cfg, "generate_crossib_json")
+    if "auto_skip_lod_components" in controls and hasattr(cfg, "auto_skip_lod_components"):
+        box.prop(cfg, "auto_skip_lod_components")
+        if cfg.auto_skip_lod_components and hasattr(cfg, "auto_skip_lod_similarity_threshold"):
+            box.prop(
+                cfg,
+                "auto_skip_lod_similarity_threshold",
+                text=iface_('LOD voxel similarity threshold'),
+            )
     if "extract_components_filter" in controls and hasattr(cfg, "extract_components_filter"):
         box.prop(cfg, "extract_components_filter")
     if "import_as_component_collections" in controls and hasattr(cfg, "import_as_component_collections"):
