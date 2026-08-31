@@ -568,7 +568,7 @@ def _patch_velo_settings():
     _vsettings.VTEF_Settings.__annotations__["generate_crossib_json"] = BoolProperty(
         name=_zh('Generated CrossIB.json'),
         description=_zh('When extracting objects, generate CrossIB.json v2 along with the model folder, only recording Component matches and transparency evidence. Cross-IB export must use this file and generate the rule-based CrossIBClassifier.ini; no longer generate ShaderOverride.ini or accumulate VS Hash from multiple scenes.'),
-        default=True,
+        default=False,
     )
     _vsettings.VTEF_Settings.__annotations__["import_as_component_collections"] = BoolProperty(
         name=_zh('Create sub-collection by component'),
