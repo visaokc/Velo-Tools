@@ -271,8 +271,8 @@ Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
 Important Velo extraction options:
 
-- Velo 1.6.4 embeds EFMI Tools v0.6.4 / runtime 1.4.3. Extraction writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and keeps exact-matrix runtime source evidence in `runtime_vg_map`; no sidecar mapping file is used.
-- Authoring and runtime identity are separate. Equivalent bones may share a compact Blender vertex-group ID, while export resolves each `(Component, compact VG)` through its exact matrix class and current LOD coverage. Do not hand-copy `vg_map` or `runtime_vg_map` between different object sources.
+- Velo 1.6.4 embeds EFMI Tools v0.6.4 / runtime 1.4.3. Extraction writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and writes the extraction-selected EFMI-style local-to-runtime mapping to `runtime_vg_map`; no sidecar mapping file is used.
+- Authoring and runtime identity are separate. Equivalent bones may share a compact Blender vertex-group ID, while extraction selects each exact-matrix canonical runtime source once with EFMI's valid-source and weighted-use preference. Export directly translates each `(Component, compact VG)` through the stored `runtime_vg_map`; it does not reselect runtime sources. Do not hand-copy either map between different object sources.
 - **生成 CrossIB.json** writes the v2 Component-match and transparency evidence used by later CrossIB exports.
 - **Automatically skip LOD components** is opt-in and disabled by default because normal character-screen dumps usually do not contain inactive LOD draws. Enable it for open-world, instance, or other scene dumps. Before unified-VG analysis or any JSON/file output, Velo removes every Component whose raw draw data has no PS texture bindings, then renumbers the survivors continuously. This uses raw bindings observed before texture filtering, not whether Blender eventually creates a material. Enabling **Object filtering: Resource Hash** with a non-empty Hash bypasses this automatic filter entirely, so an explicitly targeted LOD Hash retains native EFMI extraction behavior.
 - **Component Filter (Keep)** accepts Component indices or ranges such as `0-8` or `0,1,5-7` and retains only those Components for downstream analysis and output.
@@ -330,13 +330,13 @@ EFMI exposes three export choices:
 | --- | --- |
 | **Merged（统一顶点组）** | Uses compact unified authoring IDs in Blender, translates them back to each Component-local palette, and emits the Per-Component runtime. |
 | **Per-Component（部件独立）** | Keeps Component-local IDs from authoring through runtime. |
-| **Merged（合并骨架）** | Resolves exact-matrix runtime classes from `runtime_vg_map` and emits the official EFMI runtime 1.4.3 per-instance MergedSkeleton remap/callback contract. |
+| **Merged（合并骨架）** | Translates compact authoring IDs through the extraction-finalized `runtime_vg_map`, then emits the official EFMI runtime 1.4.3 per-instance MergedSkeleton remap/callback contract. |
 
-Velo records `present: true/false` in each imported LOD Component entry: a Component matched from the LOD dump is present, while the full-detail fallback written for an unmatched Component is absent. During **Merged（合并骨架）** export, absent Components are not selected as runtime bone sources for LOD consumers. Legacy Metadata without `present` remains compatible and defaults to `true`, matching the pre-v1.6.2 export behavior; add `"present": false` manually only for a confirmed missing Component or re-import the LOD with the current extractor to generate explicit markers.
+Velo records `present: true/false` in each imported LOD Component entry: a Component matched from the LOD dump is present, while the full-detail fallback written for an unmatched Component is absent. This preserves the otherwise-lost distinction between a real reused full-detail mesh and a matcher fallback. Runtime source selection is finalized during extraction and is not repeated during export. Legacy Metadata without `present` remains compatible; add `"present": false` manually only for a confirmed missing Component or re-import the LOD with the current extractor to generate explicit markers.
 
 Selecting or importing with **Merged（统一顶点组）** automatically makes **Merged（合并骨架）** the default follow-up export. Choose **Merged（统一顶点组）** manually only when you intentionally want unified authoring with the older Per-Component runtime.
 
-Older EFMI extraction folders without Metadata v4 `components[*].vg_map` must be re-extracted with EFMI Tools v0.6.2+ before either Merged mode can be exported. Re-extract with the current Velo release when reliable matrix signatures or LOD runtime-source selection matter.
+Older EFMI extraction folders without Metadata v4 `components[*].vg_map` must be re-extracted with EFMI Tools v0.6.2+ before either Merged mode can be exported. Re-extract with the current Velo release when reliable matrix signatures or finalized runtime mappings matter.
 
 > **Nested collection warning:** if component objects are inside `C0/C1/...` children, enabling **忽略嵌套集合 (Ignore Nested Collections)** can produce an empty export.
 
@@ -892,7 +892,7 @@ Also check hidden collection, hidden object, and muted ShapeKey filters.
 
 ### EFMI Merged Import or Export Reports a Missing Map
 
-Use Velo's current EFMI Tools extraction so Metadata v4 contains compact `components[*].vg_map` authoring IDs and exact-matrix `runtime_vg_map` source evidence; older sidecar-only sources are no longer supported.
+Use Velo's current EFMI Tools extraction so Metadata v4 contains compact `components[*].vg_map` authoring IDs and the extraction-finalized EFMI-style `runtime_vg_map`; older sidecar-only sources are no longer supported.
 
 The component `vg_map` is not LOD data; extract LOD data separately when required.
 

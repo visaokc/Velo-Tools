@@ -19,8 +19,6 @@ def _clear_maps(migoto_object):
         component.vg_offset = 0
         component.vg_count = 0
         component.runtime_vg_map = {}
-        component.runtime_source_valid = False
-        component.runtime_source_weights = {}
 
 
 def _build_matrix_signature_vg_map(self, migoto_object):
@@ -56,11 +54,6 @@ def _from_dict_with_runtime_map(cls, data):
     if cls is metadata_format.ExtractedObjectComponent and isinstance(data, dict):
         runtime_map = data.get("runtime_vg_map") or {}
         result.runtime_vg_map = {int(local): int(runtime) for local, runtime in runtime_map.items()}
-        result.runtime_source_valid = bool(data.get("runtime_source_valid", True))
-        source_weights = data.get("runtime_source_weights") or {}
-        result.runtime_source_weights = {
-            int(local): int(weight) for local, weight in source_weights.items()
-        }
     return result
 
 
@@ -75,13 +68,6 @@ def _export_metadata_with_runtime_map(self, folder_path):
             component_data["runtime_vg_map"] = {
                 str(local): int(runtime) for local, runtime in sorted(runtime_map.items())
             }
-        component_data["runtime_source_valid"] = bool(
-            getattr(component, "runtime_source_valid", True)
-        )
-        source_weights = getattr(component, "runtime_source_weights", None) or {}
-        component_data["runtime_source_weights"] = {
-            str(local): int(weight) for local, weight in sorted(source_weights.items())
-        }
     with open(metadata_path, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(data, fh, indent=4)
         fh.write("\n")

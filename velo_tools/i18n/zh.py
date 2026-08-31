@@ -402,6 +402,7 @@ ZH_TRANSLATIONS = {
     'Export UV and COLOR1 vertex color buffer.': '导出 UV 和 COLOR1 顶点色 buffer。',
     'Export vertex color buffer named COLOR.': '导出名为 COLOR 的顶点色 buffer。',
     'Export vertex group numbers and weights buffer.': '导出顶点组编号和权重 buffer。',
+    'Metadata.json Component {0} maps unified vertex group {1} to multiple runtime IDs. Split the incorrectly merged vertex group first.': 'Metadata.json Component {0} 的统一顶点组 {1} 对应多个 runtime ID。请先拆分误合并的顶点组。',
     'Exported to {0}': '已导出到 {0}',
     'External files': '外部文件',
     'External mod.ini template file path. When creating a new template, you can first copy the default content from the built-in editor.': '外部 mod.ini 模板文件路径。新建模板时可先从内置编辑器复制默认内容。',

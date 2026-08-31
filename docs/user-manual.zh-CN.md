@@ -339,7 +339,7 @@ EFMI 面板提供四种模式：
 1. 设置有效的 **Frame Dump 目录**，其中应包含 `log.txt`。
 2. 设置 **输出目录**。
 3. 按需启用对象、Component 和贴图过滤。
-4. 如需使用任一 Merged 模式，请用当前 Velo 1.6.4 内置的 EFMI Tools v0.6.4 / runtime 1.4.3 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与 exact-matrix runtime source 证据 `runtime_vg_map`。
+4. 如需使用任一 Merged 模式，请用当前 Velo 1.6.4 内置的 EFMI Tools v0.6.4 / runtime 1.4.3 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与提取阶段最终确定的 EFMI-style `runtime_vg_map`。
 5. 如需快速查看，可启用 **提取后导入 Blender**。
 6. 执行提取。
 
@@ -359,7 +359,7 @@ EFMI 面板提供四种模式：
 
 **容忍提取错误**会跳过单个失败对象并继续，不代表被跳过的对象已经正确提取。需要目标对象时，应查看日志并修复证据问题。
 
-对象源目录通常包含组件 Buffer、`Metadata.json`、`TextureUsage.json` 和 `ShaderTextureUsage.json`。Velo 将 current+previous 骨骼矩阵签名生成的紧凑统一编号写入 `components[*].vg_map`，并在 `runtime_vg_map` 中保留 exact-matrix runtime source 证据；不再生成独立映射 sidecar。Authoring identity 与 runtime identity 分层处理：等价骨骼可以共享 Blender 中的 compact VG，但导出会按 `(Component, compact VG)`、精确矩阵 class 与当前 LOD coverage 解析 runtime source。不要在不同对象源之间手工复制 `vg_map` 或 `runtime_vg_map`。
+对象源目录通常包含组件 Buffer、`Metadata.json`、`TextureUsage.json` 和 `ShaderTextureUsage.json`。Velo 将 current+previous 骨骼矩阵签名生成的紧凑统一编号写入 `components[*].vg_map`；提取阶段按 EFMI 原版的 valid-source 与 weighted-use 优先规则一次性选择 exact-matrix canonical runtime source，并把最终 local-to-runtime 结果写入 `runtime_vg_map`，不再生成独立映射 sidecar。导出只按 `(Component, compact VG)` 消费已经固化的 `runtime_vg_map`，不会重新选择 runtime source。不要在不同对象源之间手工复制这两张 map。
 
 EFMI 提取生成的 `ShaderTextureUsage.json` 与 WWMI 使用相同的核心嵌套语义：按 Component、`vs` / `ps` shader pair 和 `ps-tN` 记录最终保留贴图的准确输出文件名、资源 Hash、格式与尺寸。默认开启的 **贴图过滤：跳过 Dirty Slot** 会在 `log.txt` 提供可用 `PSSetShaderResources` 证据时，过滤继承而来的脏槽位，并同步收窄 STU、`TextureUsage.json`、贴图文件的 Component ownership 和实际提取文件；保留记录使用 schema v4 新鲜度证据。关闭该选项会保留继承记录和 EFMI 原始贴图产物；没有可用 log 证据时保留 legacy 未过滤输出，不猜测删除。如果未来 EFMI Dump 提供与 WWMI 相同合同的 `TextureAssetManifest.jsonl`，只有既通过过滤、又确实写入对象源目录的贴图记录会额外带完整 Unreal `asset_path`；当前没有该 manifest 的 EFMI Dump 会自然省略此字段。
 
@@ -492,9 +492,9 @@ EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导�
 | --- | --- |
 | **Merged（统一顶点组）** | Blender 使用紧凑统一编号；导出时按各 Component 的 `vg_map` 回译为局部编号，运行端仍为 Per-Component。 |
 | **Per-Component（部件独立）** | 制作、Buffer 与运行端始终使用 Component 局部编号。 |
-| **Merged（合并骨架）** | 通过 `runtime_vg_map` 解析 exact-matrix runtime class，并使用 EFMI runtime 1.4.3 官方按实例 MergedSkeleton contract。 |
+| **Merged（合并骨架）** | 通过提取阶段已固化的 `runtime_vg_map` 把 compact authoring ID 翻译为 runtime ID，并使用 EFMI runtime 1.4.3 官方按实例 MergedSkeleton contract。 |
 
-Velo 现在会在导入 LOD 时为每条 Component 记录写入 `present: true/false`：从 LOD Dump 实际匹配到的 Component 为存在，matcher 未命中后写入的主模型回退记录为缺失。执行 **Merged（合并骨架）** 导出时，缺失 Component 不会被选作 LOD 消费者的运行时骨骼来源。旧 Metadata 没有 `present` 时保持兼容并默认按 `true` 处理，等同 v1.6.2 以前的导出行为；只有已经确认某个 Component 在 LOD 中缺失时才手动添加 `"present": false`，也可使用当前版本重新导入 LOD 自动生成显式标记。
+Velo 现在会在导入 LOD 时为每条 Component 记录写入 `present: true/false`：从 LOD Dump 实际匹配到的 Component 为存在，matcher 未命中后写入的主模型回退记录为缺失。它保留“LOD 真实复用主模型网格”与“matcher 未命中后的主模型回退”之间原本会丢失的区别；runtime source 在提取阶段一次性确定，导出时不再重选。旧 Metadata 没有 `present` 时继续兼容；只有已经确认某个 Component 在 LOD 中缺失时才手动添加 `"present": false`，也可使用当前版本重新导入 LOD 自动生成显式标记。
 
 ### 5.9 Mod 信息、INI 模板与 INI 开关
 
@@ -1106,7 +1106,7 @@ ps-tN = ref ResourceTexture...
 
 ### 9.2 Merged 导入或导出失败
 
-EFMI 两类 Merged 都需要当前 Velo/EFMI Tools 生成的 Metadata v4：`components[*].vg_map` 保存紧凑 authoring ID，`runtime_vg_map` 保存 exact-matrix runtime source 证据。旧 sidecar-only 对象源必须重新提取，不要复制其它对象的映射。
+EFMI 两类 Merged 都需要当前 Velo/EFMI Tools 生成的 Metadata v4：`components[*].vg_map` 保存紧凑 authoring identity，`runtime_vg_map` 保存提取阶段一次性确定的 EFMI-style local-to-runtime 映射。旧 sidecar-only 对象源必须重新提取，不要复制其它对象的映射。
 
 选择 `Merged（合并骨架）` 时还必须使用 EFMI runtime 1.4.3；自定义模板必须包含当前官方 MergedSkeleton 与 ShapeKey contract，否则应改用内置模板或修复模板。
 

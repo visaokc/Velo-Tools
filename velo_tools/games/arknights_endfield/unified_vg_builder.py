@@ -58,8 +58,6 @@ class UnifiedVertexGroupMaps:
     runtime_maps: list[dict[int, int]]
     vg_offsets: list[int]
     vg_counts: list[int]
-    runtime_source_valid: list[bool]
-    runtime_source_weights: list[dict[int, int]]
 
     @property
     def authoring_group_count(self) -> int:
@@ -298,16 +296,12 @@ def build_unified_maps(
         for record in signature_records
     }
     runtime_candidates: dict[tuple[int, bytes], list[tuple[bool, int, int]]] = {}
-    source_validity: list[bool] = []
-    source_weights: list[dict[int, int]] = []
     for component_id, (component, mapping) in enumerate(zip(migoto_object.components, authoring_maps)):
         offset = offsets[component_id]
         weighted_counts = _weighted_vertex_counts(component, counts[component_id]) if mapping else []
         valid_source = bool(mapping) and (
             True if valid_source_checker is None else bool(valid_source_checker(component))
         )
-        source_validity.append(valid_source)
-        source_weights.append({local_id: weighted_counts[local_id] for local_id in sorted(mapping)})
         for local_id, compact_id in sorted(mapping.items()):
             identity = (compact_id, signatures[(component_id, local_id)])
             runtime_candidates.setdefault(identity, []).append(
@@ -317,7 +311,10 @@ def build_unified_maps(
     identity_to_runtime = {}
     for identity, candidates in runtime_candidates.items():
         valid_candidates = [candidate for candidate in candidates if candidate[0]]
-        source = max(valid_candidates or candidates, key=lambda candidate: candidate[1])
+        if valid_candidates:
+            source = max(valid_candidates, key=lambda candidate: candidate[1])
+        else:
+            source = candidates[0]
         identity_to_runtime[identity] = source[2]
 
     runtime_maps = [
@@ -332,8 +329,6 @@ def build_unified_maps(
         runtime_maps,
         offsets,
         counts,
-        source_validity,
-        source_weights,
     )
 
 
@@ -343,19 +338,15 @@ def apply_to_metadata(
 ) -> UnifiedVertexGroupMaps:
     """Replace extraction metadata maps with the matrix-signature mapping."""
     result = build_unified_maps(migoto_object, valid_source_checker)
-    for component, authoring_map, runtime_map, offset, count, source_valid, source_weights in zip(
+    for component, authoring_map, runtime_map, offset, count in zip(
         migoto_object.metadata.components,
         result.authoring_maps,
         result.runtime_maps,
         result.vg_offsets,
         result.vg_counts,
-        result.runtime_source_valid,
-        result.runtime_source_weights,
     ):
         component.vg_map = authoring_map
         component.vg_offset = offset
         component.vg_count = count
         component.runtime_vg_map = runtime_map
-        component.runtime_source_valid = source_valid
-        component.runtime_source_weights = source_weights
     return result
