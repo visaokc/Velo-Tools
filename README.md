@@ -4,7 +4,7 @@ A Blender add-on that hosts mod-making workflows for several games on top of the
 GIMI-ecosystem tools, with shared, game-agnostic helpers. Currently supported games:
 
 - **Arknights: Endfield** - a vendored fork of EFMI-Tools, plus Velo extensions:
-  Cross Index Buffer (CrossIB) and ShapeKey export.
+  Cross Index Buffer (CrossIB), ShapeKey and slot-style texture export.
 - **Wuthering Waves** - a vendored fork of WWMI-Tools (including the
   COLOR1 -> TEXCOORD1 fix), plus cross-scene multi-IB, LOD, slot-style texture
   export and Raw Mesh workflows.
@@ -33,6 +33,7 @@ Quick guide:
 | Install or update Velo Tools | Blender Preferences -> Add-ons -> Velo-Tools |
 | Choose EFMI or WWMI | 3D Viewport -> `N` -> Velo Tools -> Game |
 | Arknights: Endfield mod workflow | EFMI panels, CrossIB and ShapeKey tools |
+| EFMI texture-streaming compatibility | Export Mod -> Velo compatibility options -> slot-style texture export |
 | Wuthering Waves character workflow | WWMI Import Object and Export Mod |
 | WWMI cross-scene or LOD workflow | Cross-scene fold merge and LOD Data Extraction |
 | WWMI texture-streaming compatibility | Export Mod -> Velo compatibility options -> slot-style texture export |

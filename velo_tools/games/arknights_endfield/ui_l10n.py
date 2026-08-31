@@ -61,6 +61,10 @@ VTEF_PROPERTY_TEXTS = {
         'Texture filtering: skip Dirty Slot',
         'Retain slots explicitly bound by PSSetShaderResources in the log.txt; stale inherited bindings are removed from STU, TextureUsage.json, texture ownership, and extracted files. If there is no usable log evidence, legacy output is retained and deletion is not guessed.',
     ),
+    "slot_style_textures": (
+        'Slot-style textures',
+        'Replace texture Hash overrides with Component-local ps-t slot bindings built from fresh ShaderTextureUsage.json evidence. Export stops if the slot layouts cannot safely distinguish all assignments.',
+    ),
     "object_source_folder": ('Object source directory', 'Directory of EFMI objects containing components .fmt/.ib/.vb, Metadata.json, TextureUsage.json.'),
     "color_storage": ('Vertex Color', 'Control how vertex color data of COLOR is saved and displayed during import.'),
     "import_skeleton_type": ('Skeleton', 'Vertex group naming method. Merged uses Metadata v4 built-in vg_map; Per-Component uses local numbering of each component.'),

@@ -13,6 +13,7 @@ from . import lod_debug_import as _lod_debug_import
 from . import unified_vg_extract as _unified_vg_extract
 from . import unified_vg_export as _unified_vg_export
 from . import _shader_texture_usage as _shader_texture_usage
+from . import slot_texture_export as _slot_texture_export
 from ._efmi_core import auto_load as _al
 from ._efmi_core.addon import settings as _vsettings
 from .. import registry as _registry
@@ -545,6 +546,11 @@ def _patch_velo_settings():
         "skip_slot_residual_textures",
         default=True,
     )
+    _patch_vtef_property(
+        BoolProperty,
+        "slot_style_textures",
+        default=False,
+    )
 
     _vsettings.VTEF_Settings.__annotations__["velo_auto_split_by_material"] = BoolProperty(
         name='Automatically split by material during export',
@@ -619,6 +625,11 @@ def register():
         import traceback
         traceback.print_exc()
     try:
+        _slot_texture_export.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    try:
         from ...core.export import hook as _hook
         _hook.install_export_hook()
     except Exception:
@@ -648,6 +659,10 @@ def unregister_embedded_late():
 
 
 def unregister():
+    try:
+        _slot_texture_export.remove()
+    except Exception:
+        pass
     try:
         _remove_import_export_mode_sync()
     except Exception:
