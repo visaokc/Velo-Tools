@@ -16,6 +16,7 @@ from . import _shader_texture_usage as _shader_texture_usage
 from . import slot_texture_export as _slot_texture_export
 from . import slot_component_ui as _slot_component_ui
 from . import lod_component_filter as _lod_component_filter
+from . import extraction_component_filter as _extraction_component_filter
 from ._efmi_core import auto_load as _al
 from ._efmi_core.addon import settings as _vsettings
 from .. import registry as _registry
@@ -534,7 +535,7 @@ def _patch_toolbox_texts():
 
 
 def _patch_velo_settings():
-    from bpy.props import BoolProperty, FloatProperty, StringProperty
+    from bpy.props import BoolProperty, StringProperty
 
     _patch_preferences()
     _patch_vtef_visible_property_texts()
@@ -558,16 +559,6 @@ def _patch_velo_settings():
         "auto_skip_lod_components",
         default=False,
     )
-    _patch_vtef_property(
-        FloatProperty,
-        "auto_skip_lod_similarity_threshold",
-        default=80,
-        min=25,
-        max=100,
-        precision=0,
-        subtype="PERCENTAGE",
-    )
-
     _vsettings.VTEF_Settings.__annotations__["velo_auto_split_by_material"] = BoolProperty(
         name='Automatically split by material during export',
         description='When exporting temporary objects, automatically split according to the actual material with the prefix Component; it will not modify scene objects.',
@@ -584,9 +575,14 @@ def _patch_velo_settings():
         description=_zh("When importing the model, create C0/C1/... sub-collections under the object's parent collection; after turning it off, continue to use the single-collection import from upstream EFMI."),
         default=True,
     )
-    _vsettings.VTEF_Settings.__annotations__["extract_components_filter"] = StringProperty(
-        name=_zh('Component Filter'),
-        description=_zh('Optional component range, e.g., 0-8 or 0,1,5-7. After filtering, the output is still continuously numbered as Component 0..N.'),
+    _patch_vtef_property(
+        StringProperty,
+        "extract_components_filter",
+        default="",
+    )
+    _patch_vtef_property(
+        StringProperty,
+        "extract_components_skip_filter",
         default="",
     )
     _vsettings.VTEF_Settings.__annotations__["import_texture"] = BoolProperty(
@@ -615,6 +611,7 @@ def register():
     _unified_vg_export.install_patches()
     _shader_texture_usage.install_patches()
     _lod_component_filter.install()
+    _extraction_component_filter.install()
     try:
         from ...core.export import material_partition as _material_partition
         from ._efmi_core.blender_export.blender_export import ObjectMergerEFMI
@@ -677,6 +674,10 @@ def unregister_embedded_late():
 
 
 def unregister():
+    try:
+        _extraction_component_filter.remove()
+    except Exception:
+        pass
     try:
         _lod_component_filter.remove()
     except Exception:

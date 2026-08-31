@@ -63,11 +63,7 @@ VTEF_PROPERTY_TEXTS = {
     ),
     "auto_skip_lod_components": (
         'Automatically skip LOD components',
-        'Before analysis and JSON output, pair only components that mutually select each other as their highest voxel-similarity match, keep the higher-face component, and renumber the remainder continuously. For an equal-face pair, a component with PS texture bindings is kept only when its partner has none; otherwise both are retained. Each component can belong to at most one pair. An explicit Object filtering: Resource Hash selection bypasses this automatic filter and preserves native EFMI extraction.',
-    ),
-    "auto_skip_lod_similarity_threshold": (
-        'LOD voxel similarity threshold',
-        'Minimum voxel similarity required for a mutually highest one-to-one component pair to be treated as duplicate LOD geometry.',
+        'Before analysis and JSON output, remove components whose raw draw data contains no PS texture bindings, then renumber the remainder continuously. An explicit Object filtering: Resource Hash selection bypasses this automatic filter and preserves native EFMI extraction.',
     ),
     "slot_style_textures": (
         'Slot-style textures',
@@ -134,7 +130,8 @@ VTEF_PROPERTY_TEXTS = {
     "custom_template_path": ('Template file', 'External mod.ini template file path. When creating a new template, you can first copy the default content from the built-in editor.'),
     "use_ini_toggles": ('Use INI switch', 'Write the configured INI switch logic into mod.ini.'),
     "import_as_component_collections": ('Create sub-collection by component', "When importing the model, create C0/C1/... sub-collections under the object's parent collection; after turning it off, continue to use the single-collection import from upstream EFMI."),
-    "extract_components_filter": ('Component Filter', 'Optional component range, e.g., 0-8 or 0,1,5-7. After filtering, the output is still continuously numbered as Component 0..N.'),
+    "extract_components_filter": ('Component Filter (Keep)', 'Optional Component indices or ranges to retain for downstream analysis and output, for example 0-8 or 0,1,5-7. Indices are evaluated after automatic LOD filtering.'),
+    "extract_components_skip_filter": ('Component Filter (Skip)', 'Optional Component indices or ranges to exclude from downstream analysis and output, for example 4,6 or 4-6. Indices are evaluated after automatic LOD filtering, and Skip takes precedence over Keep.'),
     "import_texture": ('Import Texture', 'After importing the model, assign the .dds texture in the source directory to the mesh according to TextureUsage.json.'),
 }
 

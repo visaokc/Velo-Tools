@@ -27,6 +27,7 @@ def velo_controls_for_mode(mode: str) -> tuple[str, ...]:
             "generate_crossib_json",
             "auto_skip_lod_components",
             "extract_components_filter",
+            "extract_components_skip_filter",
         )
     if mode == "IMPORT_OBJECT":
         return ("import_as_component_collections",)
@@ -45,14 +46,10 @@ def _draw_velo_inline_controls(layout, cfg, mode: str, context=None) -> None:
         box.prop(cfg, "generate_crossib_json")
     if "auto_skip_lod_components" in controls and hasattr(cfg, "auto_skip_lod_components"):
         box.prop(cfg, "auto_skip_lod_components")
-        if cfg.auto_skip_lod_components and hasattr(cfg, "auto_skip_lod_similarity_threshold"):
-            box.prop(
-                cfg,
-                "auto_skip_lod_similarity_threshold",
-                text=iface_('LOD voxel similarity threshold'),
-            )
     if "extract_components_filter" in controls and hasattr(cfg, "extract_components_filter"):
         box.prop(cfg, "extract_components_filter")
+    if "extract_components_skip_filter" in controls and hasattr(cfg, "extract_components_skip_filter"):
+        box.prop(cfg, "extract_components_skip_filter")
     if "import_as_component_collections" in controls and hasattr(cfg, "import_as_component_collections"):
         box.prop(cfg, "import_as_component_collections")
     if "auto_split_by_material" in controls and hasattr(cfg, "velo_auto_split_by_material"):
