@@ -14,6 +14,7 @@ from . import unified_vg_extract as _unified_vg_extract
 from . import unified_vg_export as _unified_vg_export
 from . import _shader_texture_usage as _shader_texture_usage
 from . import slot_texture_export as _slot_texture_export
+from . import slot_component_ui as _slot_component_ui
 from ._efmi_core import auto_load as _al
 from ._efmi_core.addon import settings as _vsettings
 from .. import registry as _registry
@@ -594,6 +595,7 @@ def register():
     _install_import_export_mode_sync()
     _al.register()
     bpy.types.Scene.VTEF_settings = bpy.props.PointerProperty(type=_vsettings.VTEF_Settings)
+    _slot_component_ui.register()
     _unified_vg_extract.install_patches()
     _unified_vg_export.install_patches()
     _shader_texture_usage.install_patches()
@@ -708,6 +710,10 @@ def unregister():
         pass
     try:
         _bridge_ui.unregister()
+    except Exception:
+        pass
+    try:
+        _slot_component_ui.unregister()
     except Exception:
         pass
     try:

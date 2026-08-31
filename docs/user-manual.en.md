@@ -320,6 +320,8 @@ Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
 
 Keep **Skip Dirty Slots** enabled when extracting sources for this mode. Export stops instead of guessing when STU is missing or not schema v4, a required format is absent, two assignments cannot be distinguished by their observable slot formats, or the rendered default INI lacks a safe draw anchor. Hash overrides without complete slot evidence remain unchanged. Custom-template and live-template-update exports bypass this transformation.
 
+To mix slot-style and Hash-style Components, enable **Slot-style textures**, click **List components**, and uncheck every Component that should retain Hash matching. An empty, never-populated list means all eligible Components use slot style. Refreshing preserves existing choices and selects newly discovered Components by default. When a texture Hash is shared with an unchecked Component, its native Hash override is retained globally; selected Components still apply their slot setter after EFMI's normal override stage.
+
 EFMI exposes three export choices:
 
 | Export mode | Result |

@@ -188,8 +188,30 @@ def _is_subset(
     return set(subset).issubset(set(superset))
 
 
-def build_plan(source_folder: Path, textures, extracted_object) -> SlotExportPlan:
+def component_texture_counts(source_folder: Path) -> dict[int, int]:
+    hashes: dict[int, set[str]] = {}
+    for pair in _load_observed_pairs(Path(source_folder)):
+        bucket = hashes.setdefault(pair.component_id, set())
+        bucket.update(record.texture_hash for _slot, record in pair.slots)
+    return {
+        component_id: len(values)
+        for component_id, values in sorted(hashes.items())
+    }
+
+
+def build_plan(
+        source_folder: Path,
+        textures,
+        extracted_object,
+        eligible_components: set[int] | None = None,
+) -> SlotExportPlan:
     pairs = _load_observed_pairs(Path(source_folder))
+    observed_components_by_hash: dict[str, set[int]] = {}
+    for pair in pairs:
+        for _slot, record in pair.slots:
+            observed_components_by_hash.setdefault(
+                record.texture_hash, set()
+            ).add(pair.component_id)
     resource_by_hash = {
         str(texture.hash).strip().lower(): f"Resource_Texture{index}"
         for index, texture in enumerate(textures)
@@ -203,6 +225,9 @@ def build_plan(source_folder: Path, textures, extracted_object) -> SlotExportPla
     assigned_occurrences: set[tuple[int, str, int, str]] = set()
     required_occurrences: set[tuple[int, str, int, str]] = set()
     for pair in pairs:
+        if (eligible_components is not None
+                and pair.component_id not in eligible_components):
+            continue
         slot_map = dict(pair.slots)
         assignments: list[tuple[int, str]] = []
         assignment_hashes: list[str] = []
@@ -323,7 +348,7 @@ def build_plan(source_folder: Path, textures, extracted_object) -> SlotExportPla
         "; Conditions use fresh schema-v4 STU format-family evidence.",
         "; ============================================================",
     ]
-    covered_hashes: set[str] = set()
+    assigned_hashes: set[str] = set()
     for component_id in sorted(branches_by_component):
         name = f"CommandListSetTexturesComponent{component_id}"
         component_lists[component_id] = name
@@ -344,7 +369,7 @@ def build_plan(source_folder: Path, textures, extracted_object) -> SlotExportPla
                 block.append(f"    ps-t{slot} = ref {resource}")
                 assignment_slots.add(slot)
                 used_slots.add(slot)
-            covered_hashes.update(branch.assignment_hashes)
+            assigned_hashes.update(branch.assignment_hashes)
             for _slot, tag in branch.signature + branch.negative_signature:
                 format_name = format_by_component_tag.get((component_id, tag))
                 if format_name:
@@ -382,6 +407,14 @@ def build_plan(source_folder: Path, textures, extracted_object) -> SlotExportPla
                     format_sections += 1
     block.append("")
 
+    slotted_components = set(branches_by_component)
+    covered_hashes = {
+        texture_hash
+        for texture_hash in assigned_hashes
+        if observed_components_by_hash.get(texture_hash, set()).issubset(
+            slotted_components
+        )
+    }
     covered_resource_indices = {
         index
         for index, texture in enumerate(textures)
@@ -397,7 +430,8 @@ def build_plan(source_folder: Path, textures, extracted_object) -> SlotExportPla
         stats={
             "components": len(component_lists),
             "branches": sum(len(value) for value in branches_by_component.values()),
-            "textures": len(covered_hashes),
+            "textures": len(assigned_hashes),
+            "hash_fallbacks": len(assigned_hashes - covered_hashes),
             "slots": len(used_slots),
             "format_sections": format_sections,
         },
@@ -521,6 +555,17 @@ def install() -> None:
                 template_string=template_string,
                 with_checksum=with_checksum,
             )
+        from . import slot_component_ui
+
+        eligible_components = slot_component_ui.selected_components(context)
+        if eligible_components == set():
+            return _ORIGINAL_BUILD_FROM_TEMPLATE(
+                self,
+                context,
+                cfg,
+                template_string=template_string,
+                with_checksum=with_checksum,
+            )
         result = _ORIGINAL_BUILD_FROM_TEMPLATE(
             self,
             context,
@@ -534,6 +579,7 @@ def install() -> None:
                 resolve_path(cfg.object_source_folder),
                 self.textures,
                 self.extracted_object,
+                eligible_components=eligible_components,
             )
             result = transform_ini(result, plan)
             message = f"[SlotTextures] EFMI Slot-style texture layer applied: {plan.stats}"

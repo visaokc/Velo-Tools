@@ -479,6 +479,8 @@ global persist $ShapeKey_12 = 0.375
 
 为该模式准备对象源时应保持 **贴图过滤：跳过 Dirty Slot** 开启。STU 缺失或不是 schema v4、必需格式缺失、多个赋值无法通过可观察槽位格式安全区分，或默认 INI 中找不到安全 draw anchor 时，导出会停止而不是猜测。没有完整 slot 证据的 Hash override 保持原样。自定义模板与模板实时更新会绕过此转换。
 
+需要让部分 Component 走 slot-style、其余 Component 保留 Hash-style 时，先启用 **插槽风格贴图**，点击 **列出组件**，再取消勾选需要保留 Hash 匹配的 Component。列表从未生成、保持为空时，表示全部具备证据的 Component 默认走 slot-style；刷新列表会保留已有选择，新发现的 Component 默认勾选。若某个贴图 Hash 同时属于取消勾选的 Component，其原生 Hash override 会全局保留；已勾选 Component 仍会在 EFMI 原 override 阶段之后执行自己的 slot setter。
+
 EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导出** 才能继续；这种输出在开放世界可能无法正确加载。
 
 三种导出模式的边界：

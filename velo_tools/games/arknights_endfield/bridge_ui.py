@@ -31,7 +31,7 @@ def velo_controls_for_mode(mode: str) -> tuple[str, ...]:
     return ()
 
 
-def _draw_velo_inline_controls(layout, cfg, mode: str) -> None:
+def _draw_velo_inline_controls(layout, cfg, mode: str, context=None) -> None:
     controls = velo_controls_for_mode(mode)
     if not controls:
         return
@@ -47,6 +47,9 @@ def _draw_velo_inline_controls(layout, cfg, mode: str) -> None:
         box.prop(cfg, "velo_auto_split_by_material")
     if "slot_style_textures" in controls and hasattr(cfg, "slot_style_textures"):
         box.prop(cfg, "slot_style_textures")
+        if cfg.slot_style_textures and context is not None:
+            from . import slot_component_ui
+            slot_component_ui.draw_component_selector(box, context)
     layout.row()
 
 
@@ -112,7 +115,7 @@ def _patch_sidebar_menus() -> None:
         row.prop(cfg, "mod_output_folder", text=iface_('Mod Output Directory'))
 
         draw_export_mode_selector(layout, cfg)
-        _draw_velo_inline_controls(layout, cfg, "EXPORT_MOD")
+        _draw_velo_inline_controls(layout, cfg, "EXPORT_MOD", context)
 
         if not cfg.partial_export:
             layout.row()
@@ -152,7 +155,7 @@ def _patch_sidebar_menus() -> None:
 
         layout.row().prop(cfg, "color_storage", text=iface_('Vertex Color'))
         layout.row().prop(cfg, "import_skeleton_type", text=iface_('Import skeleton mode'))
-        _draw_velo_inline_controls(layout, cfg, "IMPORT_OBJECT")
+        _draw_velo_inline_controls(layout, cfg, "IMPORT_OBJECT", context)
         if cfg.import_skeleton_type == "MERGED":
             layout.row().prop(cfg, "skip_empty_vertex_groups", text=iface_('Skip empty vertex group'))
         layout.row().prop(cfg, "mirror_mesh", text=iface_('Mirror Mesh'))
@@ -176,7 +179,7 @@ def _patch_sidebar_menus() -> None:
         layout.row().prop(cfg, "extract_output_folder", text=iface_('Output directory'))
 
         layout.row()
-        _draw_velo_inline_controls(layout, cfg, "EXTRACT_FRAME_DATA")
+        _draw_velo_inline_controls(layout, cfg, "EXTRACT_FRAME_DATA", context)
 
         layout.row().prop(cfg, "import_extracted_objects", text=iface_('Import Blender after extraction'))
         layout.row().prop(cfg, "tolerate_extraction_errors", text=iface_('Tolerate extraction errors'))
@@ -245,7 +248,7 @@ def _patch_sidebar_menus() -> None:
         row.prop(cfg, "object_source_folder", text=iface_('Object source directory'))
 
         layout.row()
-        _draw_velo_inline_controls(layout, cfg, "EXTRACT_LOD_DATA")
+        _draw_velo_inline_controls(layout, cfg, "EXTRACT_LOD_DATA", context)
 
         layout.row().prop(cfg, "tolerate_extraction_errors", text=iface_('Tolerate extraction errors'))
         layout.row().prop(cfg, "verbose_logging", text=iface_('Detailed log'))
