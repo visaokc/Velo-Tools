@@ -63,7 +63,7 @@ VTEF_PROPERTY_TEXTS = {
     ),
     "auto_skip_lod_components": (
         'Automatically skip LOD components',
-        'Before analysis and JSON output, pair only components that mutually select each other as their highest voxel-similarity match, keep the higher-face component, and renumber the remainder continuously. Each component can belong to at most one pair. An explicit Object filtering: Resource Hash selection bypasses this automatic filter and preserves native EFMI extraction.',
+        'Before analysis and JSON output, pair only components that mutually select each other as their highest voxel-similarity match, keep the higher-face component, and renumber the remainder continuously. For an equal-face pair, a component with PS texture bindings is kept only when its partner has none; otherwise both are retained. Each component can belong to at most one pair. An explicit Object filtering: Resource Hash selection bypasses this automatic filter and preserves native EFMI extraction.',
     ),
     "auto_skip_lod_similarity_threshold": (
         'LOD voxel similarity threshold',

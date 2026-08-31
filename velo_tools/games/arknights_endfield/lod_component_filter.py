@@ -9,6 +9,7 @@ from ._efmi_core.migoto_io.migoto_model.migoto_mesh import (
     GeometryMatcherConfig,
     GeometryMatcherMethod,
 )
+from ._efmi_core.migoto_io.migoto_model.types import ShaderType
 from ._efmi_core.migoto_io.object_extractor.migoto_object.migoto_object_builder import (
     MigotoObjectBuilder,
 )
@@ -31,6 +32,13 @@ class FilteredLODComponent:
 
 def _face_count(component) -> int:
     return int(component.mesh.format.index_count) // 3
+
+
+def _has_pixel_texture_evidence(component) -> bool:
+    return any(
+        slot.shader_type == ShaderType.Pixel and bool(resources)
+        for slot, resources in getattr(component, "textures", {}).items()
+    )
 
 
 def filter_lower_detail_components(
@@ -57,8 +65,6 @@ def filter_lower_detail_components(
     for component_id, component in enumerate(components):
         for candidate_id in range(component_id + 1, len(components)):
             candidate = components[candidate_id]
-            if _face_count(component) == _face_count(candidate):
-                continue
             similarity = float(matcher.calculate_similarity(component.mesh, candidate.mesh))
             for source_id, target_id in ((component_id, candidate_id), (candidate_id, component_id)):
                 current = best_matches.get(source_id)
@@ -81,7 +87,17 @@ def filter_lower_detail_components(
         paired_ids.update((component_id, candidate_id))
         component_faces = _face_count(components[component_id])
         candidate_faces = _face_count(components[candidate_id])
-        if component_faces < candidate_faces:
+        if component_faces == candidate_faces:
+            component_has_textures = _has_pixel_texture_evidence(components[component_id])
+            candidate_has_textures = _has_pixel_texture_evidence(components[candidate_id])
+            if component_has_textures == candidate_has_textures:
+                continue
+            if component_has_textures:
+                lower_id, higher_id = candidate_id, component_id
+            else:
+                lower_id, higher_id = component_id, candidate_id
+            lower_faces = higher_faces = component_faces
+        elif component_faces < candidate_faces:
             lower_id, higher_id = component_id, candidate_id
             lower_faces, higher_faces = component_faces, candidate_faces
         else:
@@ -145,11 +161,16 @@ def _build_vg_map_after_lod_filter(self, migoto_object):
             similarity_threshold=_configured_similarity_threshold(),
         )
         for item in filtered:
+            evidence_note = (
+                "; equal-face pair resolved by one-sided PS texture bindings"
+                if item.face_count == item.matched_face_count
+                else ""
+            )
             print(
                 f"[LOD Filter] {migoto_object.id}: skipped Component {item.component_id} "
                 f"({item.face_count} faces); voxel-matched Component "
                 f"{item.matched_component_id} ({item.matched_face_count} faces) "
-                f"at {item.similarity:.2f}%"
+                f"at {item.similarity:.2f}%{evidence_note}"
             )
     return _ORIGINAL_BUILD_VG_MAP(self, migoto_object)
 

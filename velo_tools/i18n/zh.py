@@ -223,7 +223,7 @@ ZH_TRANSLATIONS = {
     'Completely New Installation After Clearing': '清空后全新安装',
     'Component Filter': '组件过滤',
     'Automatically skip LOD components': '自动跳过 LOD 组件',
-    'Before analysis and JSON output, pair only components that mutually select each other as their highest voxel-similarity match, keep the higher-face component, and renumber the remainder continuously. Each component can belong to at most one pair. An explicit Object filtering: Resource Hash selection bypasses this automatic filter and preserves native EFMI extraction.': '在分析和写入 JSON 前，只将互相选择对方为体素相似度最高匹配的组件配对，保留面数更多的组件，并连续重排剩余组件。每个组件最多只能属于一组。显式选择“对象过滤：资源 Hash”会绕过该自动过滤，并保持原生 EFMI 提取。',
+    'Before analysis and JSON output, pair only components that mutually select each other as their highest voxel-similarity match, keep the higher-face component, and renumber the remainder continuously. For an equal-face pair, a component with PS texture bindings is kept only when its partner has none; otherwise both are retained. Each component can belong to at most one pair. An explicit Object filtering: Resource Hash selection bypasses this automatic filter and preserves native EFMI extraction.': '在分析和写入 JSON 前，只将互相选择对方为体素相似度最高匹配的组件配对，保留面数更多的组件，并连续重排剩余组件。面数相同的一对只有在一方存在 PS 贴图绑定、另一方完全没有时才保留前者；其它情况两者都保留。每个组件最多只能属于一组。显式选择“对象过滤：资源 Hash”会绕过该自动过滤，并保持原生 EFMI 提取。',
     'LOD voxel similarity threshold': 'LOD 体素相似度阈值',
     'Minimum voxel similarity required for a mutually highest one-to-one component pair to be treated as duplicate LOD geometry.': '将互为最高匹配的一对一组件组视为重复 LOD 几何所需的最低体素相似度。',
     'Automatically skip LOD components': '自动跳过 LOD 组件',
