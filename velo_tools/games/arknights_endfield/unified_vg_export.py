@@ -153,26 +153,58 @@ def _has_weight(obj, group_index):
     return False
 
 
-def _translate_numeric_groups(merger, obj, component_id, source_to_target, prefix, target_count):
+def _translate_numeric_groups(
+    merger,
+    obj,
+    component_id,
+    source_to_target,
+    prefix,
+    target_count,
+    named_source_to_target=None,
+    ambiguous_names=None,
+):
     from ._efmi_core.addon.exceptions import ConfigError
     from ._efmi_core.migoto_io.blender_tools.vertex_groups import remove_unused_vertex_groups
     from ...core.mapping.algorithms import reorder_numeric_vertex_groups_first
 
     remove_unused_vertex_groups(merger.context, obj)
+    named_source_to_target = named_source_to_target or {}
+    ambiguous_names = ambiguous_names or set()
     unmatched = []
     to_remove = []
+    translated = {}
     for group in list(obj.vertex_groups):
         name = (group.name or "").strip()
-        if not name.isdigit():
+        if name.isdigit():
+            target_id = source_to_target.get(int(name))
+        elif name in ambiguous_names:
+            target_id = None
+        elif name in named_source_to_target:
+            target_id = named_source_to_target[name]
+        else:
+            if _has_weight(obj, group.index):
+                unmatched.append(name)
+            else:
+                to_remove.append(group)
             continue
-        target_id = source_to_target.get(int(name))
         if target_id is None:
             if _has_weight(obj, group.index):
                 unmatched.append(name)
             else:
                 to_remove.append(group)
             continue
-        group.name = f"{prefix}{target_id}"
+        group.name = f"{prefix}{target_id}_{group.index}"
+        keeper = translated.get(target_id)
+        if keeper is None:
+            translated[target_id] = group
+            continue
+        source_index = group.index
+        for vertex in obj.data.vertices:
+            for assignment in vertex.groups:
+                if assignment.group == source_index and assignment.weight > 1.0e-6:
+                    keeper.add((vertex.index,), assignment.weight, "ADD")
+                    break
+        to_remove.append(group)
 
     if unmatched:
         from velo_tools.i18n import iface_
@@ -183,15 +215,14 @@ def _translate_numeric_groups(merger, obj, component_id, source_to_target, prefi
         raise ConfigError(
             "component_collection",
             iface_(
-                "Object `{0}` (Component {1}) uses unified vertex groups without runtime mappings in Metadata.json: {2}."
+                "Object `{0}` (Component {1}) uses vertex groups without Component-local runtime mappings: {2}."
             ).format(obj.name, component_id, preview),
         )
 
     for group in to_remove:
         obj.vertex_groups.remove(group)
-    for group in obj.vertex_groups:
-        if group.name.startswith(prefix):
-            group.name = group.name[len(prefix):]
+    for target_id, group in translated.items():
+        group.name = str(target_id)
 
     names = {group.name for group in obj.vertex_groups}
     for target_id in range(target_count):
@@ -203,6 +234,8 @@ def _translate_numeric_groups(merger, obj, component_id, source_to_target, prefi
 
 
 def _translate_object_to_local(merger, obj, component_id):
+    from .named_bone_mapping import component_name_maps, load_mapping
+
     local_to_compact = _component_map(merger, component_id)
     compact_to_local = {}
     for local_id, compact_id in local_to_compact.items():
@@ -210,6 +243,13 @@ def _translate_object_to_local(merger, obj, component_id):
         if current is None or local_id < current:
             compact_to_local[compact_id] = local_id
     local_count = max(local_to_compact, default=-1) + 1
+    cfg = getattr(merger.context.scene, "VTEF_settings", None)
+    source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
+    payload = load_mapping(Path(source_folder)) if source_folder else None
+    name_to_local = None
+    ambiguous_names = None
+    if payload is not None:
+        _local_to_name, name_to_local, ambiguous_names = component_name_maps(payload, component_id)
     _translate_numeric_groups(
         merger,
         obj,
@@ -217,6 +257,8 @@ def _translate_object_to_local(merger, obj, component_id):
         compact_to_local,
         "__compact_to_local_",
         local_count,
+        named_source_to_target=name_to_local,
+        ambiguous_names=ambiguous_names,
     )
 
 
@@ -255,7 +297,58 @@ def _compact_to_runtime_map(merger):
     return component_maps
 
 
-def _translate_object_to_runtime(merger, obj, component_id, compact_to_runtime):
+def _name_to_runtime_maps(merger):
+    from .named_bone_mapping import component_name_maps, load_mapping
+
+    cfg = getattr(merger.context.scene, "VTEF_settings", None)
+    source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
+    payload = load_mapping(Path(source_folder)) if source_folder else None
+    if payload is None:
+        return None
+
+    global_names = {}
+    local_names = {}
+    ambiguous_by_component = {}
+    for component_id, component in enumerate(payload.get("components", [])):
+        local_to_name, _name_to_local, ambiguous = component_name_maps(payload, component_id)
+        runtime_map = {
+            int(local): int(runtime)
+            for local, runtime in (component.get("runtime_vg_map") or {}).items()
+        }
+        if set(local_to_name) != set(runtime_map):
+            from ._efmi_core.addon.exceptions import ConfigError
+            from velo_tools.i18n import iface_
+
+            raise ConfigError(
+                "object_source_folder",
+                iface_(
+                    "BoneNameMapping.json Component {0} bone-name and runtime_vg_map local keys do not match."
+                ).format(component_id),
+            )
+        current = {}
+        for local_id, name in sorted(local_to_name.items()):
+            runtime_id = runtime_map[local_id]
+            current[name] = runtime_id
+            global_names.setdefault(name, runtime_id)
+        local_names[component_id] = current
+        ambiguous_by_component[component_id] = ambiguous
+
+    result = {}
+    for component_id in range(len(merger.extracted_object.components)):
+        mapping = dict(global_names)
+        mapping.update(local_names.get(component_id, {}))
+        result[component_id] = mapping
+    return result, ambiguous_by_component
+
+
+def _translate_object_to_runtime(
+    merger,
+    obj,
+    component_id,
+    compact_to_runtime,
+    name_to_runtime=None,
+    ambiguous_names=None,
+):
     runtime_count = sum(int(component.vg_count) for component in merger.extracted_object.components)
     _translate_numeric_groups(
         merger,
@@ -264,6 +357,8 @@ def _translate_object_to_runtime(merger, obj, component_id, compact_to_runtime):
         compact_to_runtime,
         "__compact_to_runtime_",
         runtime_count,
+        named_source_to_target=name_to_runtime,
+        ambiguous_names=ambiguous_names,
     )
 
 
@@ -278,20 +373,31 @@ def _finalize_unified_vertex_groups(self):
         return _ORIGINAL_FINALIZE_DATA(self)
 
     compact_to_runtime = None
+    named_runtime = None
     if full_merged:
         compact_to_runtime = _compact_to_runtime_map(self)
+        named_runtime = _name_to_runtime_maps(self)
     for component in self.components:
         if bool(getattr(self.extracted_object.components[component.id], "cpu_posed", False)):
             continue
         for temp_object in component.objects:
             if intermediate:
                 _translate_object_to_local(self, temp_object.object, component.id)
+            elif named_runtime is None:
+                _translate_object_to_runtime(
+                    self,
+                    temp_object.object,
+                    component.id,
+                    compact_to_runtime[component.id],
+                )
             else:
                 _translate_object_to_runtime(
                     self,
                     temp_object.object,
                     component.id,
                     compact_to_runtime[component.id],
+                    name_to_runtime=(named_runtime[0][component.id] if named_runtime else None),
+                    ambiguous_names=(named_runtime[1][component.id] if named_runtime else None),
                 )
 
     if full_merged:

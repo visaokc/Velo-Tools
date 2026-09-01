@@ -17,6 +17,7 @@ from . import slot_texture_export as _slot_texture_export
 from . import slot_component_ui as _slot_component_ui
 from . import lod_component_filter as _lod_component_filter
 from . import extraction_component_filter as _extraction_component_filter
+from . import named_bone_ui as _named_bone_ui
 from ._efmi_core import auto_load as _al
 from ._efmi_core.addon import settings as _vsettings
 from .. import registry as _registry
@@ -157,8 +158,27 @@ def _sync_import_export_mode(cfg, context=None):
 
 
 def _execute_import_with_merged_export_default(self, context):
+    cfg = context.scene.VTEF_settings
+    previous_collection = getattr(cfg, "component_collection", None)
     result = _ORIGINAL_VTEF_IMPORT_EXECUTE(self, context)
-    _sync_import_export_mode(context.scene.VTEF_settings)
+    _sync_import_export_mode(cfg)
+    current_collection = getattr(cfg, "component_collection", None)
+    if current_collection is not None and current_collection is not previous_collection:
+        try:
+            from .named_bone_runtime import apply_after_merged_import
+
+            applied = apply_after_merged_import(context)
+            if applied is not None:
+                _armature, renamed, bound = applied
+                self.report(
+                    {"INFO"},
+                    iface_("Restored {0} bone-name groups and bound {1} Component meshes").format(
+                        renamed, bound
+                    ),
+                )
+        except Exception as exc:
+            self.report({"ERROR"}, iface_("Named bone import failed: {0}").format(exc))
+            return {"CANCELLED"}
     return result
 
 
@@ -635,6 +655,11 @@ def register():
         import traceback
         traceback.print_exc()
     try:
+        _named_bone_ui.register()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    try:
         _embedded.register()
     except Exception:
         import traceback
@@ -715,6 +740,10 @@ def unregister():
         pass
     try:
         _embedded.unregister()
+    except Exception:
+        pass
+    try:
+        _named_bone_ui.unregister()
     except Exception:
         pass
     try:
