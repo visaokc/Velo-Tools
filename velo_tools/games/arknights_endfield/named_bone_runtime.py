@@ -112,16 +112,9 @@ def _import_and_bind_skeleton(source_folder: Path, collection):
             bpy.data.objects.remove(obj, do_unlink=True)
             if mesh.users == 0:
                 bpy.data.meshes.remove(mesh)
-    component_children = list(collection.children)
-    armature_collection = bpy.data.collections.new("Armature")
-    for child in component_children:
-        collection.children.unlink(child)
-    collection.children.link(armature_collection)
-    for child in component_children:
-        collection.children.link(child)
     for owner in list(armature.users_collection):
         owner.objects.unlink(armature)
-    armature_collection.objects.link(armature)
+    collection.objects.link(armature)
     imported_collections.update(
         imported_collection
         for imported_collection in bpy.data.collections
@@ -146,9 +139,6 @@ def _import_and_bind_skeleton(source_folder: Path, collection):
         if modifier is None:
             modifier = obj.modifiers.new(name="Armature", type="ARMATURE")
         modifier.object = armature
-        matrix_world = obj.matrix_world.copy()
-        obj.parent = armature
-        obj.matrix_world = matrix_world
         bound += 1
     return armature, bound
 

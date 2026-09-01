@@ -10,6 +10,24 @@ _ORIGINAL_EXPORT_MOD = None
 _ORIGINAL_FINALIZE_DATA = None
 _ORIGINAL_READ_METADATA = None
 _ORIGINAL_IMPORT_LODS = None
+_MIRROR_ALIAS_CACHE = {}
+
+
+def _source_mirror_aliases(source_folder, fallback_names):
+    from .named_bone_mapping import SKELETON_FILE_NAME, load_glb_bone_names
+    from .mirror_bone_names import mirror_suffix_aliases
+
+    skeleton_path = Path(source_folder) / SKELETON_FILE_NAME
+    if not skeleton_path.is_file():
+        return mirror_suffix_aliases(fallback_names)
+    stat = skeleton_path.stat()
+    cache_key = (str(skeleton_path.resolve()), stat.st_mtime_ns, stat.st_size)
+    aliases = _MIRROR_ALIAS_CACHE.get(cache_key)
+    if aliases is None:
+        aliases = mirror_suffix_aliases(load_glb_bone_names(skeleton_path))
+        _MIRROR_ALIAS_CACHE.clear()
+        _MIRROR_ALIAS_CACHE[cache_key] = aliases
+    return aliases
 
 
 def _component_map(merger, component_id, attribute="vg_map"):
@@ -250,6 +268,11 @@ def _translate_object_to_local(merger, obj, component_id):
     ambiguous_names = None
     if payload is not None:
         _local_to_name, name_to_local, ambiguous_names = component_name_maps(payload, component_id)
+        for original, alias in _source_mirror_aliases(source_folder, name_to_local).items():
+            if original in name_to_local:
+                name_to_local.setdefault(alias, name_to_local[original])
+            if original in ambiguous_names:
+                ambiguous_names.add(alias)
     _translate_numeric_groups(
         merger,
         obj,
@@ -298,8 +321,10 @@ def _compact_to_runtime_map(merger):
 
 
 def _name_to_runtime_maps(merger):
-    from .named_bone_mapping import component_name_maps, load_mapping
-    from .mirror_bone_names import mirror_suffix_aliases
+    from .named_bone_mapping import (
+        component_name_maps,
+        load_mapping,
+    )
 
     cfg = getattr(merger.context.scene, "VTEF_settings", None)
     source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
@@ -334,8 +359,10 @@ def _name_to_runtime_maps(merger):
         local_names[component_id] = current
         ambiguous_by_component[component_id] = ambiguous
 
-    aliases = mirror_suffix_aliases(global_names)
+    aliases = _source_mirror_aliases(source_folder, global_names)
     for original, alias in aliases.items():
+        if original not in global_names:
+            continue
         global_names.setdefault(alias, global_names[original])
         for component_id, current in local_names.items():
             if original in current:

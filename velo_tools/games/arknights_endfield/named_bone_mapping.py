@@ -212,6 +212,20 @@ def load_glb_lod0_meshes(path: Path) -> list[SkinMesh]:
     return result
 
 
+def load_glb_bone_names(path: Path) -> tuple[str, ...]:
+    document, _binary = _read_glb(path)
+    nodes = document.get("nodes", [])
+    joint_ids = {
+        int(joint_id)
+        for skin in document.get("skins", [])
+        for joint_id in skin.get("joints", [])
+    }
+    return tuple(
+        str(nodes[joint_id].get("name") or f"Bone_{joint_id}")
+        for joint_id in sorted(joint_ids)
+    )
+
+
 def _load_dump_components(source_folder: Path):
     from ._efmi_core.migoto_io.data_model.byte_buffer import NumpyBuffer, Semantic
     from ._efmi_core.migoto_io.migoto_model.migoto_format import MigotoFormat
