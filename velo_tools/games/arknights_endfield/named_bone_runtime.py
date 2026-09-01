@@ -87,8 +87,14 @@ def _import_and_bind_skeleton(source_folder: Path, collection):
     if not skeleton_path.is_file():
         raise NamedBoneMappingError(f"{MAPPING_FILE_NAME} exists but {SKELETON_FILE_NAME} is missing")
     before = set(bpy.data.objects)
+    before_collections = set(bpy.data.collections)
     bpy.ops.import_scene.gltf(filepath=str(skeleton_path))
     imported = [obj for obj in bpy.data.objects if obj not in before]
+    imported_collections = {
+        imported_collection
+        for imported_collection in bpy.data.collections
+        if imported_collection not in before_collections
+    }
     armatures = [obj for obj in imported if obj.type == "ARMATURE"]
     if not armatures:
         raise NamedBoneMappingError(f"{SKELETON_FILE_NAME} contains no Armature")
@@ -106,6 +112,32 @@ def _import_and_bind_skeleton(source_folder: Path, collection):
             bpy.data.objects.remove(obj, do_unlink=True)
             if mesh.users == 0:
                 bpy.data.meshes.remove(mesh)
+    component_children = list(collection.children)
+    armature_collection = bpy.data.collections.new("Armature")
+    for child in component_children:
+        collection.children.unlink(child)
+    collection.children.link(armature_collection)
+    for child in component_children:
+        collection.children.link(child)
+    for owner in list(armature.users_collection):
+        owner.objects.unlink(armature)
+    armature_collection.objects.link(armature)
+    imported_collections.update(
+        imported_collection
+        for imported_collection in bpy.data.collections
+        if imported_collection.name.startswith("glTF_not_exported")
+    )
+    while imported_collections:
+        empty = {
+            imported_collection
+            for imported_collection in imported_collections
+            if not imported_collection.objects and not imported_collection.children
+        }
+        if not empty:
+            break
+        for imported_collection in empty:
+            bpy.data.collections.remove(imported_collection)
+        imported_collections.difference_update(empty)
     bound = 0
     for obj in _collection_objects(collection):
         if obj.type != "MESH" or "velo_component_id" not in obj:

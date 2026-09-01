@@ -80,7 +80,10 @@ def _asset_inventory(path: Path):
         raise ValueError("No LOD0 mesh .asset files were found inside the selected directory")
     avatar_files = sorted(root.rglob("*Avatar.asset"))
     if len(avatar_files) != 1:
-        raise ValueError(f"Expected one Avatar.asset inside the selected directory, found {len(avatar_files)}")
+        raise ValueError(
+            "Select the unpacked character root containing both one Avatar.asset and the LOD0 assets; "
+            f"the selected directory contains {len(avatar_files)} Avatar.asset files"
+        )
     prefab_files = sorted(root.rglob("*.prefab"))
     postmodels = [candidate for candidate in prefab_files if "postmodel" in candidate.stem.lower()]
     if len(postmodels) == 1:
