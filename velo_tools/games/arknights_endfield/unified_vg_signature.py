@@ -25,6 +25,7 @@ class _BoneSignatureRecord:
     global_id: int
     signature: bytes
     matrix_values: numpy.ndarray
+    weighted_bounds: tuple[numpy.ndarray, numpy.ndarray] | None = None
 
 
 _BoneRef = tuple[int, int]
@@ -495,9 +496,110 @@ def _apply_guarded_near_signature_aliases(records: list[_BoneSignatureRecord], o
             _split_duplicate_component_globals(component_records, atlas_by_global_id, next_global_id)
             next_global_id = max(atlas_by_global_id) + 1
 
+    next_global_id, spatial_splits = _split_spatially_isolated_near_aliases(
+        atlas_by_global_id,
+        next_global_id,
+        object_id,
+    )
+    if spatial_splits:
+        log.info(
+            "Split %s spatially isolated near-signature VG aliases for %s",
+            spatial_splits,
+            object_id,
+        )
+
     if _compact_component_vg_maps([record.component for record in records]):
         log.info("Compacted learned-matrix VG atlas into dense global ids (object %s)", object_id)
     return aliases_applied
+
+
+def _weighted_bounds_overlap(
+    left: tuple[numpy.ndarray, numpy.ndarray] | None,
+    right: tuple[numpy.ndarray, numpy.ndarray] | None,
+) -> bool:
+    if left is None or right is None:
+        return False
+    return bool(numpy.all(left[0] <= right[1]) and numpy.all(right[0] <= left[1]))
+
+
+def _split_spatially_isolated_near_aliases(
+    atlas_by_global_id: dict[int, _AtlasBone],
+    next_global_id: int,
+    object_id: Optional[str],
+) -> tuple[int, int]:
+    split_count = 0
+    for global_id, atlas_bone in list(sorted(atlas_by_global_id.items())):
+        records = list(atlas_bone.records)
+        if len(records) < 4:
+            continue
+
+        parents = list(range(len(records)))
+
+        def find(index: int) -> int:
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(left_index: int, right_index: int) -> None:
+            left_root = find(left_index)
+            right_root = find(right_index)
+            if left_root != right_root:
+                parents[right_root] = left_root
+
+        for left_index, left in enumerate(records):
+            for right_index in range(left_index + 1, len(records)):
+                right = records[right_index]
+                if left.signature == right.signature or _weighted_bounds_overlap(
+                    left.weighted_bounds,
+                    right.weighted_bounds,
+                ):
+                    union(left_index, right_index)
+
+        clusters_by_root: dict[int, list[_BoneSignatureRecord]] = {}
+        for index, record in enumerate(records):
+            clusters_by_root.setdefault(find(index), []).append(record)
+        clusters = list(clusters_by_root.values())
+        if len(clusters) < 2:
+            continue
+
+        ranked = sorted(
+            clusters,
+            key=lambda cluster: (
+                len({record.component_id for record in cluster}),
+                len(cluster),
+                tuple(sorted(_bone_ref(record) for record in cluster)),
+            ),
+            reverse=True,
+        )
+        dominant = ranked[0]
+        dominant_component_count = len({record.component_id for record in dominant})
+        runner_up_component_count = len({record.component_id for record in ranked[1]})
+        if dominant_component_count < 3 or dominant_component_count == runner_up_component_count:
+            continue
+
+        atlas_bone.records = list(dominant)
+        atlas_bone.signatures = {record.signature for record in dominant}
+        for isolated in ranked[1:]:
+            new_global_id = next_global_id
+            next_global_id += 1
+            atlas_by_global_id[new_global_id] = _AtlasBone(
+                global_id=new_global_id,
+                records=list(isolated),
+                signatures={record.signature for record in isolated},
+            )
+            for record in isolated:
+                record.component.vg_map[record.local_bone] = new_global_id
+            split_count += len(isolated)
+            log.info(
+                "Split spatially isolated VG matrix alias for %s: G%s %s -> G%s",
+                object_id,
+                global_id,
+                sorted(_bone_ref(record) for record in isolated),
+                new_global_id,
+            )
+
+    return next_global_id, split_count
 
 
 def _build_atlas_assignment_candidates(

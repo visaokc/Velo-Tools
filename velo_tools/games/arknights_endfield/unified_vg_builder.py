@@ -179,6 +179,39 @@ def _candidate_signatures(
     )
 
 
+def _weighted_position_bounds(component, bone_count: int):
+    positions = component.mesh.get_data(Semantic.Position)
+    vg_ids = component.mesh.get_data(Semantic.Blendindices)
+    vg_weights = component.mesh.get_data(Semantic.Blendweights)
+    if positions is None or vg_ids is None:
+        return [None] * bone_count
+
+    positions = numpy.asarray(positions, dtype=numpy.float64)[..., :3]
+    vg_ids = numpy.asarray(vg_ids)
+    if vg_ids.ndim == 1:
+        vg_ids = vg_ids[:, None]
+    if vg_weights is None:
+        vg_weights = numpy.zeros_like(vg_ids, dtype=numpy.float32)
+        vg_weights[..., 0] = 1.0
+    else:
+        vg_weights = numpy.asarray(vg_weights)
+        if vg_weights.ndim == 1:
+            vg_weights = vg_weights[:, None]
+
+    row_ids = numpy.broadcast_to(numpy.arange(len(positions))[:, None], vg_ids.shape)
+    active = (vg_weights != 0) & (vg_ids >= 0) & (vg_ids < bone_count)
+    active_bones = vg_ids[active].astype(numpy.intp, copy=False)
+    active_positions = positions[row_ids[active]]
+    minimums = numpy.full((bone_count, 3), numpy.inf, dtype=numpy.float64)
+    maximums = numpy.full((bone_count, 3), -numpy.inf, dtype=numpy.float64)
+    numpy.minimum.at(minimums, active_bones, active_positions)
+    numpy.maximum.at(maximums, active_bones, active_positions)
+    return [
+        None if not numpy.isfinite(minimums[local_bone]).all() else (minimums[local_bone], maximums[local_bone])
+        for local_bone in range(bone_count)
+    ]
+
+
 def _build_component_maps_and_signatures(
     migoto_object: MigotoObject,
 ) -> tuple[list[dict[int, int]], list[_BoneSignatureRecord]]:
@@ -220,6 +253,7 @@ def _build_component_maps_and_signatures(
             adapter.instance_config_first_constant,
             adapter.instance_config_slot,
         ) = selected_candidate
+        weighted_bounds = _weighted_position_bounds(component, adapter.bone_count)
 
         for local_bone, signature in enumerate(selected_signatures):
             canonical = signature_to_canonical.get(signature)
@@ -236,6 +270,7 @@ def _build_component_maps_and_signatures(
                     global_id=canonical,
                     signature=signature,
                     matrix_values=_signature_matrix_values(signature),
+                    weighted_bounds=weighted_bounds[local_bone],
                 )
             )
 
