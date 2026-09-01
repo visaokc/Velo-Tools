@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import struct
 from dataclasses import dataclass, field
@@ -276,11 +277,40 @@ def _group_clouds(mesh, max_points=128):
     return clouds
 
 
-def _match_vertex_groups(component_mesh, source_mesh, candidates_count=6):
-    from ._efmi_core.migoto_io.migoto_model.migoto_mesh import ChamferMixin
+def _calculate_min_distances(points_a, points_b, chunk_size=1024):
+    points_a = numpy.asarray(points_a, dtype=numpy.float32)
+    points_b = numpy.asarray(points_b, dtype=numpy.float32)
+    max_chunk_elements = 16 * 1024 * 1024
+    chunk_size = min(chunk_size, max(1, max_chunk_elements // max(1, len(points_b))))
+    squared_b = numpy.einsum("ij,ij->i", points_b, points_b)
+    result = []
+    for start in range(0, len(points_a), chunk_size):
+        chunk = points_a[start:start + chunk_size]
+        squared = -2.0 * (chunk @ points_b.T)
+        squared += numpy.einsum("ij,ij->i", chunk, chunk)[:, None]
+        squared += squared_b[None, :]
+        minimum = numpy.min(squared, axis=1)
+        result.append(numpy.sqrt(numpy.maximum(minimum, 0.0)))
+    return numpy.concatenate(result)
 
-    target_clouds = _group_clouds(component_mesh)
-    source_clouds = _group_clouds(source_mesh)
+
+def _linear_chamfer_distance(points_a, points_b):
+    return float(
+        _calculate_min_distances(points_a, points_b).mean()
+        + _calculate_min_distances(points_b, points_a).mean()
+    )
+
+
+def _match_vertex_groups(
+    component_mesh,
+    source_mesh,
+    candidates_count=6,
+    *,
+    target_clouds=None,
+    source_clouds=None,
+):
+    target_clouds = target_clouds if target_clouds is not None else _group_clouds(component_mesh)
+    source_clouds = source_clouds if source_clouds is not None else _group_clouds(source_mesh)
     if len(target_clouds) > len(source_clouds):
         raise NamedBoneMappingError(
             f"Component uses {len(target_clouds)} weighted local groups but {source_mesh.label} has only "
@@ -293,7 +323,7 @@ def _match_vertex_groups(component_mesh, source_mesh, candidates_count=6):
     def edge(target_id, source_index):
         key = (target_id, source_index)
         if key not in edge_cache:
-            edge_cache[key] = ChamferMixin.calculate_linear_chamfer_distance(
+            edge_cache[key] = _linear_chamfer_distance(
                 target_clouds[target_id], source_clouds[source_ids[source_index]])
         return edge_cache[key]
 
@@ -376,7 +406,57 @@ def generate_mapping(unpack_path: Path, source_folder: Path, *, voxel_size=0.01,
     glb_path = _find_glb(unpack_path)
     source_meshes = load_glb_lod0_meshes(glb_path)
     metadata, components = _load_dump_components(Path(source_folder))
-    geometry = GeometryMatcher(GeometryMatcherConfig(voxel_size=voxel_size, sensitivity=0.5))
+    class CachedGeometryMatcher(GeometryMatcher):
+        def __init__(self, cfg, point_limit=512):
+            super().__init__(cfg)
+            self.point_limit = point_limit
+            self.point_cache = {}
+
+        def voxel_sample_mesh(self, mesh, voxel_size=0.05):
+            key = (id(mesh), float(voxel_size))
+            points = self.point_cache.get(key)
+            if points is None:
+                points = super().voxel_sample_mesh(mesh, voxel_size=voxel_size)
+                if self.point_limit and len(points) > self.point_limit:
+                    voxels = numpy.rint(points / float(voxel_size)).astype(numpy.int32)
+                    order = numpy.lexsort((voxels[:, 2], voxels[:, 1], voxels[:, 0]))
+                    points = points[order]
+                    keep = numpy.linspace(0, len(points) - 1, self.point_limit, dtype=numpy.int64)
+                    points = points[keep]
+                self.point_cache[key] = points
+            return points
+
+        calculate_min_distances = staticmethod(_calculate_min_distances)
+
+    geometry_prefilter = CachedGeometryMatcher(
+        GeometryMatcherConfig(voxel_size=voxel_size, sensitivity=0.5),
+        point_limit=512,
+    )
+    geometry = CachedGeometryMatcher(
+        GeometryMatcherConfig(voxel_size=voxel_size, sensitivity=0.5),
+        point_limit=0,
+    )
+    unique_meshes = []
+    seen_signatures = set()
+    for source_mesh in source_meshes:
+        points = geometry_prefilter.voxel_sample_mesh(source_mesh, voxel_size=voxel_size)
+        signature = hashlib.sha1(
+            points.tobytes()
+            + source_mesh.positions().tobytes()
+            + source_mesh.triangles().tobytes()
+            + source_mesh.blend_indices().tobytes()
+            + source_mesh.blend_weights().tobytes()
+            + "\0".join(source_mesh.bone_names).encode("utf-8")
+        ).digest()
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        unique_meshes.append(source_mesh)
+    source_meshes = unique_meshes
+    source_cloud_cache = {
+        id(source_mesh): _group_clouds(source_mesh)
+        for source_mesh in source_meshes
+    }
     component_maps = {}
     evidence = []
     for component in components:
@@ -384,25 +464,76 @@ def generate_mapping(unpack_path: Path, source_folder: Path, *, voxel_size=0.01,
             component_maps[component.index] = {}
             evidence.append((component.index, "CPU-posed", 100.0, 0.0, 0))
             continue
-        scores = sorted(
-            ((geometry.calculate_similarity(source_mesh, component.mesh), source_mesh.label, source_mesh)
+        prefilter_scores = sorted(
+            ((geometry_prefilter.calculate_similarity(source_mesh, component.mesh), source_mesh.label, source_mesh)
              for source_mesh in source_meshes),
             reverse=True,
             key=lambda item: (item[0], item[1]),
         )
+        shortlist = prefilter_scores[:min(3, len(prefilter_scores))]
+        scores = sorted(
+            ((geometry.calculate_similarity(source_mesh, component.mesh), label, source_mesh)
+             for _prefilter_score, label, source_mesh in shortlist),
+            reverse=True,
+            key=lambda item: (item[0], item[1]),
+        )
         viable = [item for item in scores if item[0] >= similarity_threshold]
+        if not viable and len(shortlist) < len(prefilter_scores):
+            scores = sorted(
+                ((geometry.calculate_similarity(source_mesh, component.mesh), label, source_mesh)
+                 for _prefilter_score, label, source_mesh in prefilter_scores),
+                reverse=True,
+                key=lambda item: (item[0], item[1]),
+            )
+            viable = [item for item in scores if item[0] >= similarity_threshold]
         if not viable:
             best_score, best_label, _mesh = scores[0]
             raise NamedBoneMappingError(
                 f"Component {component.index} best voxel similarity is only {best_score:.2f}% ({best_label})"
             )
+        target_clouds = _group_clouds(component.mesh)
         candidates = []
+        first_compatible = None
         for score, label, source_mesh in viable:
             try:
-                local_to_source, skin_cost = _match_vertex_groups(component.mesh, source_mesh, vg_candidates)
+                local_to_source, skin_cost = _match_vertex_groups(
+                    component.mesh,
+                    source_mesh,
+                    vg_candidates,
+                    target_clouds=target_clouds,
+                    source_clouds=source_cloud_cache[id(source_mesh)],
+                )
             except NamedBoneMappingError:
                 continue
-            candidates.append((skin_cost, -score, label, local_to_source, source_mesh))
+            first_compatible = (skin_cost, -score, label, local_to_source, source_mesh)
+            candidates.append(first_compatible)
+            break
+        geometry_score = -first_compatible[1] if first_compatible is not None else 0.0
+        competing_score = max(
+            (score for score, _label, source_mesh in viable
+             if first_compatible is None or source_mesh is not first_compatible[4]),
+            default=-1.0,
+        )
+        geometry_is_decisive = geometry_score >= 99.0 and geometry_score - competing_score > 0.01
+        if (
+            first_compatible is not None
+            and first_compatible[0] > 0.001
+            and not geometry_is_decisive
+        ):
+            for score, label, source_mesh in viable:
+                if source_mesh is first_compatible[4]:
+                    continue
+                try:
+                    local_to_source, skin_cost = _match_vertex_groups(
+                        component.mesh,
+                        source_mesh,
+                        vg_candidates,
+                        target_clouds=target_clouds,
+                        source_clouds=source_cloud_cache[id(source_mesh)],
+                    )
+                except NamedBoneMappingError:
+                    continue
+                candidates.append((skin_cost, -score, label, local_to_source, source_mesh))
         if not candidates:
             raise NamedBoneMappingError(f"Component {component.index} has no skin-compatible GLB mesh candidate")
         candidates.sort(key=lambda item: item[:3])
