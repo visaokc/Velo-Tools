@@ -14,6 +14,7 @@ from .named_bone_mapping import (
     component_name_maps,
     load_mapping,
 )
+from .mirror_bone_names import mirror_suffix_aliases
 
 
 def _collection_objects(collection):
@@ -120,9 +121,50 @@ def _import_and_bind_skeleton(source_folder: Path, collection):
     return armature, bound
 
 
+def _rename_mirror_pairs(armature, collection, payload):
+    source_names = []
+    for component in payload.get("components", []):
+        source_names.extend((component.get("vg_map") or {}).values())
+    source_names.extend(bone.name for bone in armature.data.bones)
+    aliases = mirror_suffix_aliases(source_names)
+    if not aliases:
+        return 0
+
+    existing_bones = {bone.name for bone in armature.data.bones}
+    applicable = {
+        original: alias
+        for original, alias in aliases.items()
+        if alias not in existing_bones or alias == original
+    }
+    renamed_bones = 0
+    for bone in armature.data.bones:
+        alias = applicable.get(bone.name)
+        if alias:
+            bone.name = alias
+            renamed_bones += 1
+    for obj in _collection_objects(collection):
+        if obj.type != "MESH" or "velo_component_id" not in obj:
+            continue
+        existing_groups = {group.name for group in obj.vertex_groups}
+        pending = [
+            (group, applicable[group.name])
+            for group in obj.vertex_groups
+            if group.name in applicable and applicable[group.name] not in existing_groups
+        ]
+        for index, (group, _alias) in enumerate(pending):
+            group.name = f"__mirror_bone_import_{index}"
+        for group, alias in pending:
+            group.name = alias
+    return renamed_bones
+
+
 def apply_after_merged_import(context):
     cfg = getattr(context.scene, "VTEF_settings", None)
-    if cfg is None or getattr(cfg, "import_skeleton_type", "") != "MERGED":
+    if (
+        cfg is None
+        or getattr(cfg, "import_skeleton_type", "") != "MERGED"
+        or not getattr(cfg, "import_named_skeleton", False)
+    ):
         return None
     source_folder = Path(bpy.path.abspath(cfg.object_source_folder)).resolve()
     payload = load_mapping(source_folder)
@@ -138,4 +180,7 @@ def apply_after_merged_import(context):
         dedupe_bones=bool(getattr(cfg, "dedupe_bones", True)),
     )
     armature, bound = _import_and_bind_skeleton(source_folder, collection)
-    return armature, renamed, bound
+    mirror_renamed = 0
+    if getattr(cfg, "rename_mirror_pairs", False):
+        mirror_renamed = _rename_mirror_pairs(armature, collection, payload)
+    return armature, renamed, bound, mirror_renamed

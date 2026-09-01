@@ -169,11 +169,11 @@ def _execute_import_with_merged_export_default(self, context):
 
             applied = apply_after_merged_import(context)
             if applied is not None:
-                _armature, renamed, bound = applied
+                _armature, renamed, bound, mirror_renamed = applied
                 self.report(
                     {"INFO"},
-                    iface_("Restored {0} bone-name groups and bound {1} Component meshes").format(
-                        renamed, bound
+                    iface_("Restored {0} bone-name groups, renamed {1} mirror bone names, and bound {2} Component meshes").format(
+                        renamed, mirror_renamed, bound
                     ),
                 )
         except Exception as exc:
@@ -595,6 +595,8 @@ def _patch_velo_settings():
         description=_zh("When importing the model, create C0/C1/... sub-collections under the object's parent collection; after turning it off, continue to use the single-collection import from upstream EFMI."),
         default=True,
     )
+    _patch_vtef_property(BoolProperty, "import_named_skeleton", default=False)
+    _patch_vtef_property(BoolProperty, "rename_mirror_pairs", default=False)
     _patch_vtef_property(
         StringProperty,
         "extract_components_filter",

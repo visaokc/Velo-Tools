@@ -130,6 +130,8 @@ VTEF_PROPERTY_TEXTS = {
     "custom_template_path": ('Template file', 'External mod.ini template file path. When creating a new template, you can first copy the default content from the built-in editor.'),
     "use_ini_toggles": ('Use INI switch', 'Write the configured INI switch logic into mod.ini.'),
     "import_as_component_collections": ('Create sub-collection by component', "When importing the model, create C0/C1/... sub-collections under the object's parent collection; after turning it off, continue to use the single-collection import from upstream EFMI."),
+    "import_named_skeleton": ('Import bone-name mapping and skeleton', 'Use BoneNameMapping.json and BoneNameSkeleton.glb to replace numeric vertex groups with original bone names and bind the complete skeleton. When disabled, both sidecars are ignored.'),
+    "rename_mirror_pairs": ('Rename mirrored bones to .L/.R suffixes', 'For unambiguous mirror pairs whose names differ only by one L/R character, rename both bones and vertex groups to Blender-compatible .L/.R suffixes.'),
     "extract_components_filter": ('Component Filter (Keep)', 'Optional Component indices or ranges to retain for downstream analysis and output, for example 0-8 or 0,1,5-7. Indices are evaluated after automatic LOD filtering.'),
     "extract_components_skip_filter": ('Component Filter (Skip)', 'Optional Component indices or ranges to exclude from downstream analysis and output, for example 4,6 or 4-6. Indices are evaluated after automatic LOD filtering, and Skip takes precedence over Keep.'),
     "import_texture": ('Import Texture', 'After importing the model, assign the .dds texture in the source directory to the mesh according to TextureUsage.json.'),

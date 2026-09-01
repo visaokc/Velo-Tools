@@ -299,6 +299,7 @@ def _compact_to_runtime_map(merger):
 
 def _name_to_runtime_maps(merger):
     from .named_bone_mapping import component_name_maps, load_mapping
+    from .mirror_bone_names import mirror_suffix_aliases
 
     cfg = getattr(merger.context.scene, "VTEF_settings", None)
     source_folder = getattr(cfg, "object_source_folder", "") if cfg is not None else ""
@@ -332,6 +333,15 @@ def _name_to_runtime_maps(merger):
             global_names.setdefault(name, runtime_id)
         local_names[component_id] = current
         ambiguous_by_component[component_id] = ambiguous
+
+    aliases = mirror_suffix_aliases(global_names)
+    for original, alias in aliases.items():
+        global_names.setdefault(alias, global_names[original])
+        for component_id, current in local_names.items():
+            if original in current:
+                current.setdefault(alias, current[original])
+            if original in ambiguous_by_component.get(component_id, set()):
+                ambiguous_by_component[component_id].add(alias)
 
     result = {}
     for component_id in range(len(merger.extracted_object.components)):

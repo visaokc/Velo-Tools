@@ -30,7 +30,11 @@ def velo_controls_for_mode(mode: str) -> tuple[str, ...]:
             "extract_components_skip_filter",
         )
     if mode == "IMPORT_OBJECT":
-        return ("import_as_component_collections",)
+        return (
+            "import_as_component_collections",
+            "import_named_skeleton",
+            "rename_mirror_pairs",
+        )
     if mode == "EXPORT_MOD":
         return ("auto_split_by_material", "slot_style_textures")
     return ()
@@ -52,6 +56,17 @@ def _draw_velo_inline_controls(layout, cfg, mode: str, context=None) -> None:
         box.prop(cfg, "extract_components_skip_filter")
     if "import_as_component_collections" in controls and hasattr(cfg, "import_as_component_collections"):
         box.prop(cfg, "import_as_component_collections")
+    if "import_named_skeleton" in controls and hasattr(cfg, "import_named_skeleton"):
+        row = box.row()
+        row.enabled = getattr(cfg, "import_skeleton_type", "") == "MERGED"
+        row.prop(cfg, "import_named_skeleton")
+    if "rename_mirror_pairs" in controls and hasattr(cfg, "rename_mirror_pairs"):
+        row = box.row()
+        row.enabled = (
+            getattr(cfg, "import_skeleton_type", "") == "MERGED"
+            and bool(getattr(cfg, "import_named_skeleton", False))
+        )
+        row.prop(cfg, "rename_mirror_pairs")
     if "auto_split_by_material" in controls and hasattr(cfg, "velo_auto_split_by_material"):
         box.prop(cfg, "velo_auto_split_by_material")
     if "slot_style_textures" in controls and hasattr(cfg, "slot_style_textures"):
