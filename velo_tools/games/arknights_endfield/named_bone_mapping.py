@@ -362,40 +362,7 @@ def _find_glb(unpack_path: Path) -> Path:
     unpack_path = Path(unpack_path)
     if unpack_path.is_file() and unpack_path.suffix.lower() == ".glb":
         return unpack_path
-    if unpack_path.is_file() and unpack_path.suffix.lower() == ".asset":
-        lowered = {part.lower() for part in unpack_path.parts}
-        if "lod0" not in unpack_path.name.lower() and "lod0" not in lowered:
-            raise NamedBoneMappingError("Only LOD0 .asset model inputs are supported")
-    search_root = unpack_path.parent if unpack_path.is_file() else unpack_path
-    if not search_root.is_dir():
-        raise NamedBoneMappingError("The unpack path does not exist")
-    candidates = []
-    current = search_root
-    for _depth in range(4):
-        candidates = sorted(
-            path for path in current.rglob("*.glb")
-            if "otherlod" not in {part.lower() for part in path.parts}
-        )
-        if candidates:
-            break
-        if current.parent == current:
-            break
-        current = current.parent
-    candidates = [
-        path for path in candidates
-        if "lod0" in path.name.lower() or "lod0" in {part.lower() for part in path.parts}
-    ]
-    if not candidates:
-        assets = list(search_root.rglob("*.asset"))
-        if assets:
-            raise NamedBoneMappingError(
-                "The raw asset path has no sibling LOD0 GLB from the standard Endfield character output"
-            )
-        raise NamedBoneMappingError("No LOD0 GLB was found in the unpack path")
-    if len(candidates) != 1:
-        names = ", ".join(path.name for path in candidates[:4])
-        raise NamedBoneMappingError(f"Multiple LOD0 GLBs were found; specify one GLB directly: {names}")
-    return candidates[0]
+    raise NamedBoneMappingError("A GLB input must be selected as the GLB file itself")
 
 
 def generate_mapping(unpack_path: Path, source_folder: Path, *, voxel_size=0.01,
@@ -403,8 +370,26 @@ def generate_mapping(unpack_path: Path, source_folder: Path, *, voxel_size=0.01,
     """Match each dump Component to a GLB mesh and write local-to-name mappings."""
     from ._efmi_core.migoto_io.migoto_model.migoto_mesh import GeometryMatcher, GeometryMatcherConfig
 
-    glb_path = _find_glb(unpack_path)
-    source_meshes = load_glb_lod0_meshes(glb_path)
+    unpack_path = Path(unpack_path)
+    if uses_asset_input(unpack_path):
+        from .asset_model import load_asset_model
+
+        asset_model = load_asset_model(unpack_path)
+        source_path = asset_model.root
+        source_meshes = [
+            SkinMesh(
+                label=mesh.label,
+                bone_names=mesh.bone_names,
+                _positions=mesh.positions,
+                _triangles=mesh.triangles,
+                _blend_indices=mesh.blend_indices,
+                _blend_weights=mesh.blend_weights,
+            )
+            for mesh in asset_model.meshes
+        ]
+    else:
+        source_path = _find_glb(unpack_path)
+        source_meshes = load_glb_lod0_meshes(source_path)
     metadata, components = _load_dump_components(Path(source_folder))
     class CachedGeometryMatcher(GeometryMatcher):
         def __init__(self, cfg, point_limit=512):
@@ -558,10 +543,10 @@ def generate_mapping(unpack_path: Path, source_folder: Path, *, voxel_size=0.01,
             )
         component_maps[component.index] = local_to_name
         evidence.append((component.index, label, -negative_score, skin_cost, len(local_to_name)))
-    return glb_path, metadata, component_maps, evidence
+    return source_path, metadata, component_maps, evidence
 
 
-def write_mapping(source_folder: Path, glb_path: Path, metadata: dict, component_maps: dict) -> Path:
+def write_mapping(source_folder: Path, _source_path: Path, metadata: dict, component_maps: dict) -> Path:
     payload = copy.deepcopy(metadata)
     components = payload.get("components", [])
     if len(components) != len(component_maps):
@@ -572,7 +557,7 @@ def write_mapping(source_folder: Path, glb_path: Path, metadata: dict, component
         }
     payload["bone_name_mapping_version"] = MAPPING_VERSION
     payload["skeleton_file"] = SKELETON_FILE_NAME
-    payload["source_glb"] = Path(glb_path).name
+    payload["source_glb"] = SKELETON_FILE_NAME
     target = Path(source_folder) / MAPPING_FILE_NAME
     temporary = target.with_suffix(target.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=4) + "\n", encoding="utf-8")

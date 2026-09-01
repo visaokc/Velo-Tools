@@ -1,6 +1,7 @@
 """Blender UI for Endfield Component-local bone-name mapping generation."""
 
 from pathlib import Path
+import tempfile
 
 import bpy
 from mathutils import Matrix, Vector
@@ -80,7 +81,7 @@ def _orient_armature_from_structure(armature):
 class ComponentBoneMappingSettings(bpy.types.PropertyGroup):
     unpack_path: bpy.props.StringProperty(
         name="LOD0 GLB or unpacked asset path",
-        description="Direct GLB keeps its bone orientation; asset input uses only LOD0 and rebuilds bone orientation from the hierarchy",
+        description="Use a selected GLB directly, or rebuild LOD0 only from raw files inside the selected asset directory",
         subtype="FILE_PATH",
         default="",
     )
@@ -102,7 +103,55 @@ class ComponentBoneMappingSettings(bpy.types.PropertyGroup):
     )
 
 
-def _write_skeleton_glb(source_glb: Path, target: Path, *, correct_asset_orientation=False):
+def _export_armatures_glb(armatures, target):
+    bpy.ops.object.select_all(action="DESELECT")
+    for index, armature in enumerate(armatures):
+        carrier_mesh = bpy.data.meshes.new(f"Skeleton Carrier {index}")
+        carrier_mesh.from_pydata(((0.0, 0.0, 0.0), (0.0001, 0.0, 0.0), (0.0, 0.0001, 0.0)), (), ((0, 1, 2),))
+        carrier = bpy.data.objects.new(f"Skeleton Carrier {index}", carrier_mesh)
+        bpy.context.scene.collection.objects.link(carrier)
+        carrier.parent = armature
+        group = carrier.vertex_groups.new(name=armature.data.bones[0].name)
+        group.add((0, 1, 2), 1.0, "REPLACE")
+        modifier = carrier.modifiers.new(name="Armature", type="ARMATURE")
+        modifier.object = armature
+        armature.select_set(True)
+        carrier.select_set(True)
+    bpy.context.view_layer.objects.active = armatures[0]
+    bpy.ops.export_scene.gltf(
+        filepath=str(target),
+        export_format="GLB",
+        use_selection=True,
+        export_animations=False,
+        export_materials="NONE",
+    )
+    if not target.is_file() or target.stat().st_size == 0:
+        raise NamedBoneMappingError(f"Failed to create {target.name}")
+
+
+def _export_armature_glb(armature, target):
+    _export_armatures_glb((armature,), target)
+
+
+def _restore_scene(before, before_meshes, before_armatures, previous_selection, previous_active):
+    bpy.ops.object.select_all(action="DESELECT")
+    for obj in list(bpy.data.objects):
+        if obj not in before:
+            bpy.data.objects.remove(obj, do_unlink=True)
+    for mesh in list(bpy.data.meshes):
+        if mesh not in before_meshes and mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+    for armature in list(bpy.data.armatures):
+        if armature not in before_armatures and armature.users == 0:
+            bpy.data.armatures.remove(armature)
+    for obj, selected in previous_selection.items():
+        if obj.name in bpy.context.scene.objects:
+            obj.select_set(selected)
+    if previous_active is not None and previous_active.name in bpy.context.scene.objects:
+        bpy.context.view_layer.objects.active = previous_active
+
+
+def _write_skeleton_glb(source_glb: Path, target: Path):
     before = set(bpy.data.objects)
     before_meshes = set(bpy.data.meshes)
     before_armatures = set(bpy.data.armatures)
@@ -126,46 +175,57 @@ def _write_skeleton_glb(source_glb: Path, target: Path, *, correct_asset_orienta
             bpy.ops.object.join()
         armature = bpy.context.view_layer.objects.active
         armature.name = "Named Skeleton"
-        if correct_asset_orientation:
-            _orient_armature_from_structure(armature)
-        carrier_mesh = bpy.data.meshes.new("Skeleton Carrier")
-        carrier_mesh.from_pydata(((0.0, 0.0, 0.0), (0.0001, 0.0, 0.0), (0.0, 0.0001, 0.0)), (), ((0, 1, 2),))
-        carrier = bpy.data.objects.new("Skeleton Carrier", carrier_mesh)
-        bpy.context.scene.collection.objects.link(carrier)
-        carrier.parent = armature
-        group = carrier.vertex_groups.new(name=armature.data.bones[0].name)
-        group.add((0, 1, 2), 1.0, "REPLACE")
-        modifier = carrier.modifiers.new(name="Armature", type="ARMATURE")
-        modifier.object = armature
-        bpy.ops.object.select_all(action="DESELECT")
-        armature.select_set(True)
-        carrier.select_set(True)
-        bpy.context.view_layer.objects.active = armature
-        bpy.ops.export_scene.gltf(
-            filepath=str(target),
-            export_format="GLB",
-            use_selection=True,
-            export_animations=False,
-            export_materials="NONE",
-        )
-        if not target.is_file() or target.stat().st_size == 0:
-            raise NamedBoneMappingError(f"Failed to create {target.name}")
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+        _orient_armature_from_structure(armature)
+        _export_armature_glb(armature, target)
     finally:
-        bpy.ops.object.select_all(action="DESELECT")
-        for obj in list(bpy.data.objects):
-            if obj not in before:
-                bpy.data.objects.remove(obj, do_unlink=True)
-        for mesh in list(bpy.data.meshes):
-            if mesh not in before_meshes and mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
-        for armature in list(bpy.data.armatures):
-            if armature not in before_armatures and armature.users == 0:
-                bpy.data.armatures.remove(armature)
-        for obj, selected in previous_selection.items():
-            if obj.name in bpy.context.scene.objects:
-                obj.select_set(selected)
-        if previous_active is not None and previous_active.name in bpy.context.scene.objects:
-            bpy.context.view_layer.objects.active = previous_active
+        _restore_scene(
+            before, before_meshes, before_armatures, previous_selection, previous_active
+        )
+
+
+def _write_asset_skeleton_glb(asset_path: Path, target: Path):
+    from .asset_model import load_asset_model
+
+    model = load_asset_model(asset_path)
+    before = set(bpy.data.objects)
+    before_meshes = set(bpy.data.meshes)
+    before_armatures = set(bpy.data.armatures)
+    previous_active = bpy.context.view_layer.objects.active
+    previous_selection = {obj: obj.select_get() for obj in bpy.context.scene.objects}
+    try:
+        armatures = []
+        for armature_name, matrix in model.armature_matrices.items():
+            armature_data = bpy.data.armatures.new(armature_name)
+            armature = bpy.data.objects.new(armature_name, armature_data)
+            bpy.context.scene.collection.objects.link(armature)
+            armature.matrix_world = Matrix(matrix)
+            bpy.context.view_layer.objects.active = armature
+            armature.select_set(True)
+            bpy.ops.object.mode_set(mode="EDIT")
+            by_name = {}
+            inverse = armature.matrix_world.inverted()
+            for source_bone in (bone for bone in model.bones if bone.armature == armature_name):
+                edit_bone = armature_data.edit_bones.new(source_bone.name)
+                edit_bone.head = inverse @ Vector(source_bone.head)
+                edit_bone.tail = edit_bone.head + Vector((0.0, 0.0, 0.01))
+                if source_bone.parent is not None:
+                    edit_bone.parent = by_name[source_bone.parent]
+                by_name[source_bone.name] = edit_bone
+            bpy.ops.object.mode_set(mode="OBJECT")
+            _orient_armature_from_structure(armature)
+            armatures.append(armature)
+        with tempfile.TemporaryDirectory(prefix="component_bone_asset_") as temporary:
+            intermediate = Path(temporary) / "asset_lod0.glb"
+            _export_armatures_glb(armatures, intermediate)
+            _restore_scene(
+                before, before_meshes, before_armatures, previous_selection, previous_active
+            )
+            _write_skeleton_glb(intermediate, target)
+    finally:
+        _restore_scene(
+            before, before_meshes, before_armatures, previous_selection, previous_active
+        )
 
 
 class COMPONENTBONE_OT_generate_mapping(bpy.types.Operator):
@@ -192,13 +252,11 @@ class COMPONENTBONE_OT_generate_mapping(bpy.types.Operator):
                 similarity_threshold=settings.similarity_threshold,
             )
             mapping_path = write_mapping(source_folder, glb_path, metadata, component_maps)
-            _write_skeleton_glb(
-                glb_path,
-                source_folder / SKELETON_FILE_NAME,
-                correct_asset_orientation=uses_asset_input(
-                    Path(bpy.path.abspath(settings.unpack_path)).resolve()
-                ),
-            )
+            input_path = Path(bpy.path.abspath(settings.unpack_path)).resolve()
+            if uses_asset_input(input_path):
+                _write_asset_skeleton_glb(input_path, source_folder / SKELETON_FILE_NAME)
+            else:
+                _write_skeleton_glb(glb_path, source_folder / SKELETON_FILE_NAME)
         except (NamedBoneMappingError, OSError, ValueError, RuntimeError) as exc:
             self.report({"ERROR"}, iface_("Bone name mapping failed: {0}").format(exc))
             return {"CANCELLED"}

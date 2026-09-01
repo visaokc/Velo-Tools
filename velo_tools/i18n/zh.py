@@ -1304,7 +1304,7 @@ ZH_TRANSLATIONS = {
     'Match LOD0 meshes, write local-to-bone-name Metadata, and create an oriented skeleton GLB': '匹配 LOD0 网格，写入 local 到骨骼名的 Metadata，并创建方向正确的骨架 GLB',
     'Named Bone Mapping': '骨骼名称映射',
     'LOD0 GLB or unpacked asset path': 'LOD0 GLB 或解包 asset 路径',
-    'Direct GLB keeps its bone orientation; asset input uses only LOD0 and rebuilds bone orientation from the hierarchy': '直接提供 GLB 时保留其骨骼朝向；asset 输入仅使用 LOD0，并按层级重建骨骼朝向',
+    'Use a selected GLB directly, or rebuild LOD0 only from raw files inside the selected asset directory': '直接使用所选 GLB，或仅从所选 asset 目录内部的原始文件重建 LOD0',
     'Normalized voxel size used to match LOD0 GLB meshes to EFMI Components': '用于把 LOD0 GLB 网格匹配到 EFMI Component 的归一化体素大小',
     'Minimum voxel similarity required for every EFMI Component': '每个 EFMI Component 必须达到的最低体素相似度',
     'Generated {0} local bone-name mappings for {1} Components in {2}': '已在 {2} 中为 {1} 个 Component 生成 {0} 条 local 骨骼名映射',
