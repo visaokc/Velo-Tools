@@ -70,6 +70,50 @@ def _write_lod_presence(metadata_path, lod_object_name, matched_component_ids):
     temp_path.replace(metadata_path)
 
 
+def _load_named_mapping_for_lod_sync(source_folder, component_count):
+    from .named_bone_mapping import MAPPING_FILE_NAME, NamedBoneMappingError, load_mapping
+
+    payload = load_mapping(Path(source_folder))
+    if payload is None:
+        return None
+    components = payload.get("components")
+    if not isinstance(components, list) or len(components) != component_count:
+        raise NamedBoneMappingError(
+            f"{MAPPING_FILE_NAME} Component count does not match Metadata.json"
+        )
+    return payload
+
+
+def _write_named_mapping_lods(metadata_path, payload):
+    from .named_bone_mapping import MAPPING_FILE_NAME, NamedBoneMappingError
+
+    metadata_path = Path(metadata_path)
+    with metadata_path.open("r", encoding="utf-8") as handle:
+        metadata = json.load(handle)
+
+    metadata_components = metadata.get("components")
+    mapping_components = payload.get("components")
+    if (
+        not isinstance(metadata_components, list)
+        or not isinstance(mapping_components, list)
+        or len(metadata_components) != len(mapping_components)
+    ):
+        raise NamedBoneMappingError(
+            f"{MAPPING_FILE_NAME} Component count does not match Metadata.json"
+        )
+
+    for metadata_component, mapping_component in zip(metadata_components, mapping_components):
+        mapping_component["lods"] = metadata_component.get("lods", [])
+
+    target = metadata_path.parent / MAPPING_FILE_NAME
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=4) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(target)
+
+
 def _remove_lod_overwrite_collisions(full_object, lod_object, matched_components):
     incoming_name = str(lod_object.id)
     replacement_names = {incoming_name}
@@ -95,18 +139,26 @@ def _remove_lod_overwrite_collisions(full_object, lod_object, matched_components
 
 
 def _import_lods_with_presence(context, cfg, full_object, lod_object, matched_components):
+    from ._efmi_core.migoto_io.blender_interface.utility import resolve_path
+
+    source_folder = resolve_path(cfg.object_source_folder)
+    named_mapping = _load_named_mapping_for_lod_sync(
+        source_folder,
+        len(full_object.components),
+    )
     if getattr(cfg, "allow_lod_overwrite", False):
         _remove_lod_overwrite_collisions(full_object, lod_object, matched_components)
     result = _ORIGINAL_IMPORT_LODS(context, cfg, full_object, lod_object, matched_components)
-    from ._efmi_core.migoto_io.blender_interface.utility import resolve_path
 
     matched_component_ids = {
         component_id
         for component_id, component in enumerate(full_object.components)
         if component in matched_components
     }
-    metadata_path = resolve_path(cfg.object_source_folder) / "Metadata.json"
+    metadata_path = source_folder / "Metadata.json"
     _write_lod_presence(metadata_path, lod_object.id, matched_component_ids)
+    if named_mapping is not None:
+        _write_named_mapping_lods(metadata_path, named_mapping)
     return result
 
 
