@@ -52,6 +52,7 @@ class _ObservedPair:
 @dataclass(frozen=True)
 class _Branch:
     signature: tuple[tuple[int, str], ...]
+    observed_signatures: tuple[tuple[tuple[int, str], ...], ...]
     assignments: tuple[tuple[int, str], ...]
     assignment_hashes: tuple[str, ...]
     source: str
@@ -236,6 +237,28 @@ def _is_subset(
     return set(subset).issubset(set(superset))
 
 
+def _signature_matches(
+        signature: tuple[tuple[int, str], ...],
+        observed: tuple[tuple[int, str], ...],
+) -> bool:
+    observed_map = dict(observed)
+    return all(observed_map.get(slot) == tag for slot, tag in signature)
+
+
+def _common_observed_terms(branch: _Branch) -> set[tuple[int, str]]:
+    common = set(branch.observed_signatures[0])
+    for observed in branch.observed_signatures[1:]:
+        common.intersection_update(observed)
+    return common
+
+
+def _negative_is_safe(candidate: tuple[int, str], branch: _Branch) -> bool:
+    return not any(
+        _signature_matches((candidate,), observed)
+        for observed in branch.observed_signatures
+    )
+
+
 def component_texture_counts(source_folder: Path) -> dict[int, int]:
     hashes: dict[int, set[str]] = {}
     for pair in _load_observed_pairs(Path(source_folder)):
@@ -320,7 +343,7 @@ def build_plan(
         if not assignments:
             continue
 
-        signature: list[tuple[int, str]] = []
+        observed_signature: list[tuple[int, str]] = []
         for slot, format_name in pair.signature_formats:
             if not format_name:
                 continue
@@ -328,19 +351,23 @@ def build_plan(
                 tag = slot_formats.filter_index_text(format_name)
             except ValueError:
                 continue
-            signature.append((slot, tag))
+            observed_signature.append((slot, tag))
             format_by_component_tag.setdefault(
                 (pair.component_id, tag), set()
             ).add(format_name)
+        observed_map = dict(observed_signature)
         assignment_slots = {slot for slot, _resource in assignments}
-        missing = assignment_slots - {slot for slot, _tag in signature}
+        missing = assignment_slots - set(observed_map)
         if missing:
             raise SlotStyleExportError(
                 f"{pair.source} has no recorded DXGI format for assignment slot(s): "
                 + ", ".join(f"ps-t{slot}" for slot in sorted(missing))
             )
         branch = _Branch(
-            signature=tuple(signature),
+            signature=tuple(
+                (slot, observed_map[slot]) for slot, _resource in assignments
+            ),
+            observed_signatures=(tuple(observed_signature),),
             assignments=tuple(assignments),
             assignment_hashes=tuple(assignment_hashes),
             source=pair.source,
@@ -376,7 +403,20 @@ def build_plan(
                     "with the same Slot-style format signature"
                 )
             signatures[branch.signature] = branch.assignments
-            unique.setdefault((branch.signature, branch.assignments), branch)
+            key = (branch.signature, branch.assignments)
+            existing = unique.get(key)
+            if existing is None:
+                unique[key] = branch
+            else:
+                unique[key] = replace(
+                    existing,
+                    observed_signatures=tuple(dict.fromkeys(
+                        existing.observed_signatures + branch.observed_signatures
+                    )),
+                    complete_signature=(
+                        existing.complete_signature and branch.complete_signature
+                    ),
+                )
         branches = sorted(
             unique.values(),
             key=lambda branch: (
@@ -393,9 +433,37 @@ def build_plan(
                     continue
                 if not _signatures_overlap(left.signature, right.signature):
                     continue
+                candidates = sorted(set(right.signature) - set(left.signature))
+                if left.complete_signature and right.complete_signature:
+                    valid_candidates = [
+                        candidate
+                        for candidate in candidates
+                        if _negative_is_safe(candidate, left)
+                    ]
+                    if valid_candidates:
+                        negative_terms.add(valid_candidates[0])
+                        continue
+                    if not any(
+                            _signature_matches(left.signature, observed)
+                            for observed in right.observed_signatures):
+                        continue
+                    observed_candidates = sorted(
+                        _common_observed_terms(right) - set(left.signature)
+                    )
+                    observed_candidates = [
+                        candidate
+                        for candidate in observed_candidates
+                        if _negative_is_safe(candidate, left)
+                    ]
+                    if observed_candidates:
+                        negative_terms.add(observed_candidates[0])
+                        continue
+                    raise SlotStyleExportError(
+                        f"Component {component_id} has no valid Slot-style "
+                        f"discriminator: {left.source} / {right.source}"
+                    )
                 if _is_subset(right.signature, left.signature):
                     continue
-                candidates = sorted(set(right.signature) - set(left.signature))
                 if not candidates:
                     raise SlotStyleExportError(
                         f"Component {component_id} has indistinguishable "

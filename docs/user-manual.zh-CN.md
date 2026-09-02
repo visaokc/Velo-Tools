@@ -494,7 +494,7 @@ global persist $ShapeKey_12 = 0.375
 
 使用默认模板导出的 EFMI INI 会直接以八位贴图 Hash 命名生成标识符，例如 `[Resource_Texture_ab9de26a]` 和 `[TextureOverride_Texture_ab9de26a]`，不再使用容易随贴图顺序变化的 `Resource_Texture10`。所有引用会同步改名，因而可以直接把 Resource、override、源 DDS 文件名和 STU 记录对应起来。用户自行控制的自定义模板保留其原有标识符。
 
-**Velo 兼容选项 -> 插槽风格贴图**为可选功能，默认关闭。使用默认 INI 模板时，它读取同一对象源目录中的 fresh schema-v4/v5 `ShaderTextureUsage.json`，把证据完整的贴图 Hash override 改为 Component-local `ps-tN` 绑定。当分支区分需要完整绑定槽格式，或 CPU-posed Component 需要原始精确 draw range 时，必须使用 schema v5。生成的 draw transaction 会先运行 EFMI 原有贴图 override 阶段，以各条证据记录的具体 DXGI format 建立 tag、再用共用的 format-family 值判断分支；只有实际命中的分支才备份它将要赋值的槽位并绑定导出 Resource。Component draw 结束后，Component-local restore command 会逐项检查 backup 是否为 `null`，恢复有效备份并立即清空，避免下一次 draw 复用残留状态；不会依赖一个 `*_TYPELESS` matcher 代替 EFMI 中的 typed Resource。槽位号完全来自 Dump，不写死固定范围；现有 EFMI Dump 已验证 `ps-t0`、`ps-t1` 与 `ps-t11..22`。
+**Velo 兼容选项 -> 插槽风格贴图**为可选功能，默认关闭。使用默认 INI 模板时，它读取同一对象源目录中的 fresh schema-v4/v5 `ShaderTextureUsage.json`，把证据完整的贴图 Hash override 改为 Component-local `ps-tN` 绑定。当分支区分需要完整绑定槽格式，或 CPU-posed Component 需要原始精确 draw range 时，必须使用 schema v5。每个实际赋值的 `ps-tN` 只生成一个对应的正向条件；完整观测槽位证据只用于验证负向 discriminator。旧 discriminator 对目标分支为真时原样保留；发生冲突时改选下一个有效候选；若正向 signature 已经排除竞争分支则不强加无效 guard；仍无法区分时 fail closed。生成的 draw transaction 会先运行 EFMI 原有贴图 override 阶段，只有实际命中的分支才备份它将要赋值的槽位并绑定导出 Resource。Component draw 结束后，Component-local restore command 会逐项检查 backup 是否为 `null`，恢复有效备份并立即清空，避免下一次 draw 复用残留状态；不会依赖一个 `*_TYPELESS` matcher 代替 EFMI 中的 typed Resource。槽位号完全来自 Dump，不写死固定范围；现有 EFMI Dump 已验证 `ps-t0`、`ps-t1` 与 `ps-t11..22`。
 
 为该模式准备对象源时应保持 **贴图过滤：跳过 Dirty Slot** 开启。STU 缺失或没有所需 schema-v4/v5 证据、必需格式缺失、多个赋值无法通过可观察槽位格式安全区分、CPU-posed draw range 缺失，或默认 INI 中找不到安全 draw anchor 时，导出会停止而不是猜测。收到提示时需重新提取旧对象源以生成 schema v5。没有完整 slot 证据的 Hash override 保持原样。自定义模板与模板实时更新会绕过此转换。
 
@@ -875,6 +875,7 @@ match_asset_name = T_Example_D
 #### slot-style 的安全边界
 
 - 每个写入的 `ps-tN` 都必须出现在该分支完整、正向的 assignment signature 中。
+- 完整 `slot_formats` 只用于验证和选择最少的排他 guard，不会把未赋值槽机械加入正向条件；与目标分支真实绑定冲突的 `!=` 不得输出。
 - 同一贴图在同一 Component、同一形态的多个可安全区分 shader branch 中使用不同 service slot 时，各 branch 分别按自身条件和槽位写入，并使用完整槽位备份/恢复，不因多槽本身退回 Hash fallback。
 - 多形态分支必须能由最终槽位证据区分。
 - 证据弱、冲突或不完整时停止导出，不生成猜测条件。
