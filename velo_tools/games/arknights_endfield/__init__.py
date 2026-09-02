@@ -17,6 +17,7 @@ from . import slot_texture_export as _slot_texture_export
 from . import slot_component_ui as _slot_component_ui
 from . import lod_component_filter as _lod_component_filter
 from . import extraction_component_filter as _extraction_component_filter
+from . import explicit_tangent_extraction as _explicit_tangent_extraction
 from . import named_bone_ui as _named_bone_ui
 from ._efmi_core import auto_load as _al
 from ._efmi_core.addon import settings as _vsettings
@@ -627,6 +628,7 @@ def register():
     _patch_velo_settings()
     _install_import_export_mode_sync()
     _al.register()
+    _explicit_tangent_extraction.install_patch()
     bpy.types.Scene.VTEF_settings = bpy.props.PointerProperty(type=_vsettings.VTEF_Settings)
     _slot_component_ui.register()
     _unified_vg_extract.install_patches()
@@ -742,6 +744,10 @@ def unregister():
         pass
     try:
         _embedded.unregister()
+    except Exception:
+        pass
+    try:
+        _explicit_tangent_extraction.remove_patch()
     except Exception:
         pass
     try:

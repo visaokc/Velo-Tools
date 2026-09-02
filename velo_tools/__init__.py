@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Velo-Tools",
     "author": "Velo",
-    "version": (1, 6, 5),
+    "version": (1, 6, 6),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar (N) > Velo Tools",
     "description": "Mod Authoring Toolset — Vertex Group, Mesh, Weight, Arknights: Endfield EFMI, and Wuthering Waves WWMI workflows",
