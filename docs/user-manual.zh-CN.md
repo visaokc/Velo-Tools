@@ -1,6 +1,6 @@
 # Velo Tools 中文使用手册
 
-> 适用版本：Velo Tools v1.6.5。Velo Tools 自动跟随 Blender 界面语言：简体中文与繁体中文使用当前简体中文 catalog，其它语言回退英文；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
+> 适用版本：Velo Tools v1.6.6。Velo Tools 自动跟随 Blender 界面语言：简体中文与繁体中文使用当前简体中文 catalog，其它语言回退英文；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
 
 Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI 工作流、鸣潮 WWMI 工作流放在同一个 **Velo Tools** 面板中。
 
@@ -349,7 +349,7 @@ EFMI 面板提供四种模式：
 1. 设置有效的 **Frame Dump 目录**，其中应包含 `log.txt`。
 2. 设置 **输出目录**。
 3. 按需启用对象、Component 和贴图过滤。
-4. 如需使用任一 Merged 模式，请用当前 Velo 1.6.5 内置的 EFMI Tools v0.6.4 / runtime 1.4.3 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与提取阶段最终确定的 EFMI-style `runtime_vg_map`。
+4. 如需使用任一 Merged 模式，请用当前 Velo 1.6.6 内置的 EFMI Tools v0.6.4 / runtime 1.4.3 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与提取阶段最终确定的 EFMI-style `runtime_vg_map`。
 5. 如需快速查看，可启用 **提取后导入 Blender**。
 6. 执行提取。
 

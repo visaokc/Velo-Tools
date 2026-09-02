@@ -1,6 +1,6 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.6.5. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.6.6. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
@@ -281,7 +281,7 @@ Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
 Important Velo extraction options:
 
-- Velo 1.6.5 embeds EFMI Tools v0.6.4 / runtime 1.4.3. Extraction writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and writes the extraction-selected EFMI-style local-to-runtime mapping to `runtime_vg_map`.
+- Velo 1.6.6 embeds EFMI Tools v0.6.4 / runtime 1.4.3. Extraction writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and writes the extraction-selected EFMI-style local-to-runtime mapping to `runtime_vg_map`.
 - Authoring and runtime identity are separate. Equivalent bones may share a compact Blender vertex-group ID, while extraction selects each exact-matrix canonical runtime source once with EFMI's valid-source and weighted-use preference. Export directly translates each `(Component, compact VG)` through the stored `runtime_vg_map`; it does not reselect runtime sources. Do not hand-copy either map between different object sources.
 - **Named Bone Mapping** is an optional post-extraction workflow. Select either one LOD0 GLB or an unpacked character root containing one Avatar plus raw Unity YAML LOD0 Mesh/prefab assets, select the matching EFMI object source, and run **Generate Bone Name Mapping**. Velo matches only LOD0 meshes and writes `BoneNameMapping.json` plus an oriented `BoneNameSkeleton.glb`; it does not search parent or sibling folders for a fallback GLB. Keep these sidecars with the object source. Later LOD extraction synchronizes complete `lods` records into the named mapping without replacing its bone-name identities.
 - When a later draw uniquely identifies a semantic omitted by an earlier layout, Velo restores that field without reordering draw calls. The recovered field keeps its original input slot and byte offset; this is required for the game to decode `NORMAL`, `TANGENT`, and other packed vertex fields correctly.
