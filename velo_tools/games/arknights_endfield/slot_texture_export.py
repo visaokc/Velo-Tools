@@ -366,7 +366,9 @@ def build_plan(
                 condition += " && " + negative
             block.append(f"{'if' if branch_index == 0 else 'else if'} {condition}")
             for slot, resource in branch.assignments:
-                block.append(f"    ps-t{slot} = ref {resource}")
+                backup = f"ResourceSlotBackupC{component_id}T{slot}"
+                block.append(f"    {backup} = reference ps-t{slot}")
+                block.append(f"    ps-t{slot} = {resource}")
                 assignment_slots.add(slot)
                 used_slots.add(slot)
             assigned_hashes.update(branch.assignment_hashes)
@@ -379,9 +381,20 @@ def build_plan(
         block.append("endif")
         component_assignment_slots[component_id] = tuple(sorted(assignment_slots))
 
-    block.extend(("", "; -- Slot backup resources"))
-    for slot in sorted(used_slots):
-        block.extend(("", f"[ResourceSlotBackupT{slot}]"))
+    block.extend(("", "; -- Component-local slot backup resources and restore commands"))
+    for component_id in sorted(component_assignment_slots):
+        slots = component_assignment_slots[component_id]
+        for slot in slots:
+            block.extend(("", f"[ResourceSlotBackupC{component_id}T{slot}]"))
+        block.extend(("", f"[CommandListRestoreTexturesComponent{component_id}]"))
+        for slot in slots:
+            backup = f"ResourceSlotBackupC{component_id}T{slot}"
+            block.extend((
+                f"if {backup} !== null",
+                f"    ps-t{slot} = reference {backup}",
+                f"    {backup} = null",
+                "endif",
+            ))
 
     block.extend(("", "; -- Format-family tags"))
     format_sections = 0
@@ -457,7 +470,6 @@ def transform_ini(ini_text: str, plan: SlotExportPlan) -> str:
         )
 
     deleted: set[int] = set()
-    insert_before: dict[int, list[str]] = {}
     insert_after: dict[int, list[str]] = {}
     removed_indices: set[int] = set()
     transformed_components: set[int] = set()
@@ -492,19 +504,13 @@ def transform_ini(ini_text: str, plan: SlotExportPlan) -> str:
                 "in the rendered default EFMI INI"
             )
         trigger = triggers[0]
-        slots = plan.component_assignment_slots[component_id]
         indent = lines[trigger][:len(lines[trigger]) - len(lines[trigger].lstrip())]
-        insert_before[trigger] = [
-            f"{indent}ResourceSlotBackupT{slot} = ref ps-t{slot}"
-            for slot in slots
-        ]
         insert_after[trigger] = [f"{indent}run = {list_name}"]
         section_tail = max(
             index for index in range(start + 1, end) if lines[index].strip()
         )
         insert_after[section_tail] = [
-            f"ps-t{slot} = ref ResourceSlotBackupT{slot}"
-            for slot in slots
+            f"{indent}run = CommandListRestoreTexturesComponent{component_id}"
         ]
         transformed_components.add(component_id)
 
@@ -523,8 +529,6 @@ def transform_ini(ini_text: str, plan: SlotExportPlan) -> str:
 
     output: list[str] = []
     for index, line in enumerate(lines):
-        if index in insert_before:
-            output.extend(insert_before[index])
         if index not in deleted:
             output.append(line)
         if index in insert_after:
