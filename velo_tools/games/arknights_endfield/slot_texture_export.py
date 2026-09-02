@@ -221,7 +221,7 @@ def build_plan(
         raise SlotStyleExportError("the EFMI export contains no texture resources")
 
     raw_by_component: dict[int, list[_Branch]] = {}
-    format_by_component_tag: dict[tuple[int, str], str] = {}
+    format_by_component_tag: dict[tuple[int, str], set[str]] = {}
     assigned_occurrences: set[tuple[int, str, int, str]] = set()
     required_occurrences: set[tuple[int, str, int, str]] = set()
     for pair in pairs:
@@ -252,8 +252,8 @@ def build_plan(
                 continue
             signature.append((slot, tag))
             format_by_component_tag.setdefault(
-                (pair.component_id, tag), record.format_name
-            )
+                (pair.component_id, tag), set()
+            ).add(record.format_name)
         assignment_slots = {slot for slot, _resource in assignments}
         missing = assignment_slots - {slot for slot, _tag in signature}
         if missing:
@@ -340,7 +340,7 @@ def build_plan(
     component_lists: dict[int, str] = {}
     component_assignment_slots: dict[int, tuple[int, ...]] = {}
     used_slots: set[int] = set()
-    used_formats: dict[int, dict[str, str]] = {}
+    used_formats: dict[int, dict[str, set[str]]] = {}
     block: list[str] = [
         "",
         "; ============================================================",
@@ -371,11 +371,11 @@ def build_plan(
                 used_slots.add(slot)
             assigned_hashes.update(branch.assignment_hashes)
             for _slot, tag in branch.signature + branch.negative_signature:
-                format_name = format_by_component_tag.get((component_id, tag))
-                if format_name:
+                format_names = format_by_component_tag.get((component_id, tag))
+                if format_names:
                     used_formats.setdefault(component_id, {}).setdefault(
-                        tag, format_name
-                    )
+                        tag, set()
+                    ).update(format_names)
         block.append("endif")
         component_assignment_slots[component_id] = tuple(sorted(assignment_slots))
 
@@ -391,8 +391,8 @@ def build_plan(
             (f"Lod{level}", first, count)
             for level, first, count in lod_ranges.get(component_id, ())
         )
-        for tag, format_name in sorted(used_formats[component_id].items()):
-            for member in slot_formats.emitted_format_members(format_name):
+        for tag, format_names in sorted(used_formats[component_id].items()):
+            for member in sorted(format_names):
                 for range_name, first, count in ranges:
                     safe_member = re.sub(r"[^A-Za-z0-9]", "", member)
                     block.extend((
