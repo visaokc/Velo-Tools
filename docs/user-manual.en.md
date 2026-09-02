@@ -1,6 +1,6 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.6.4. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.6.5. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
@@ -271,8 +271,9 @@ Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
 Important Velo extraction options:
 
-- Velo 1.6.4 embeds EFMI Tools v0.6.4 / runtime 1.4.3. Extraction writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and writes the extraction-selected EFMI-style local-to-runtime mapping to `runtime_vg_map`; no sidecar mapping file is used.
+- Velo 1.6.5 embeds EFMI Tools v0.6.4 / runtime 1.4.3. Extraction writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and writes the extraction-selected EFMI-style local-to-runtime mapping to `runtime_vg_map`.
 - Authoring and runtime identity are separate. Equivalent bones may share a compact Blender vertex-group ID, while extraction selects each exact-matrix canonical runtime source once with EFMI's valid-source and weighted-use preference. Export directly translates each `(Component, compact VG)` through the stored `runtime_vg_map`; it does not reselect runtime sources. Do not hand-copy either map between different object sources.
+- **Named Bone Mapping** is an optional post-extraction workflow. Select either one LOD0 GLB or an unpacked character root containing one Avatar plus raw Unity YAML LOD0 Mesh/prefab assets, select the matching EFMI object source, and run **Generate Bone Name Mapping**. Velo matches only LOD0 meshes and writes `BoneNameMapping.json` plus an oriented `BoneNameSkeleton.glb`; it does not search parent or sibling folders for a fallback GLB. Keep these sidecars with the object source. Later LOD extraction synchronizes complete `lods` records into the named mapping without replacing its bone-name identities.
 - **生成 CrossIB.json** writes the v2 Component-match and transparency evidence used by later CrossIB exports.
 - **Automatically skip LOD components** is opt-in and disabled by default because normal character-screen dumps usually do not contain inactive LOD draws. Enable it for open-world, instance, or other scene dumps. Before unified-VG analysis or any JSON/file output, Velo removes every Component whose raw draw data has no PS texture bindings, then renumbers the survivors continuously. This uses raw bindings observed before texture filtering, not whether Blender eventually creates a material. Enabling **Object filtering: Resource Hash** with a non-empty Hash bypasses this automatic filter entirely, so an explicitly targeted LOD Hash retains native EFMI extraction behavior.
 - **Component Filter (Keep)** accepts Component indices or ranges such as `0-8` or `0,1,5-7` and retains only those Components for downstream analysis and output.
@@ -297,6 +298,8 @@ Set **模式 (Mode)** to **导入对象 (Import Object)**.
 | --- | --- | --- |
 | **Merged（统一顶点组）** | You want unified cross-component bone names | Requires Velo/EFMI Tools v0.6.2+ Metadata v4 with `components[*].vg_map` |
 | **Per-Component（部件独立）** | You want component-local vertex groups | Uses each component's local numbering |
+
+For an object source that contains `BoneNameMapping.json` and `BoneNameSkeleton.glb`, expand **Velo Compatibility Options** and enable **Import bone-name mapping and skeleton** before a Merged import. Velo then imports the complete oriented hierarchy, replaces numeric unified groups with Component-local bone names, binds each mesh through an Armature modifier, and removes the temporary glTF carrier. **Rename mirrored bones to .L/.R suffixes** is a separate opt-in: it converts only unique names whose detected pair differs by exactly one uppercase `L`/`R`, leaving ambiguous names unchanged. Both options are disabled by default; with named import disabled, the sidecars are ignored and the native numeric route is unchanged.
 
 **按组件创建子集合 (Create Component Sub-Collections)** creates `C0`, `C1`, and later children. It also keeps nested collection export enabled.
 
@@ -330,7 +333,9 @@ EFMI exposes three export choices:
 | --- | --- |
 | **Merged（统一顶点组）** | Uses compact unified authoring IDs in Blender, translates them back to each Component-local palette, and emits the Per-Component runtime. |
 | **Per-Component（部件独立）** | Keeps Component-local IDs from authoring through runtime. |
-| **Merged（合并骨架）** | Translates compact authoring IDs through the extraction-finalized `runtime_vg_map`, then emits the official EFMI runtime 1.4.3 per-instance MergedSkeleton remap/callback contract. |
+| **Merged（合并骨架）** | Translates compact IDs or Component-local bone names through the extraction-finalized `runtime_vg_map`, then emits the official EFMI runtime 1.4.3 per-instance MergedSkeleton remap/callback contract. |
+
+Named Merged projects can mix original bone names, generated `.L/.R` aliases, and numeric unified groups. Every name first resolves to its owning Component/local VG and then to the stored runtime ID; the exporter prefers the current Component and uses a deterministic cross-Component fallback when a valid global Merged weight belongs to another Component. CPU-posed, texture-only Components bypass VG translation and keep EFMI's original-mesh draw path. MMD mapping targets may likewise use an original or generated bone name instead of a numeric unified ID. Weighted groups that cannot be resolved fail closed; unrelated unweighted groups are ignored.
 
 Velo records `present: true/false` in each imported LOD Component entry: a Component matched from the LOD dump is present, while the full-detail fallback written for an unmatched Component is absent. This preserves the otherwise-lost distinction between a real reused full-detail mesh and a matcher fallback. Runtime source selection is finalized during extraction and is not repeated during export. Legacy Metadata without `present` remains compatible; add `"present": false` manually only for a confirmed missing Component or re-import the LOD with the current extractor to generate explicit markers.
 
@@ -526,7 +531,7 @@ Start with the default voxel matcher. If matching fails, tune the error threshol
 
 LOD evidence can flow through a WWMI cross-scene merged source. Capture each LOD while that geometry is visible, not at the main model's distance.
 
-Velo 1.6.4 maps WWMI LOD weights through stable canonical Blend IDs and compact per-LOD source dictionaries for MERGED, COMPONENT, and Cross-Scene exports. Keep the source skeleton and current LOD Metadata together; after replacing a dump, skeleton map, or cross-scene source, re-extract the affected LOD instead of copying old remap data.
+Velo 1.6.5 maps WWMI LOD weights through stable canonical Blend IDs and compact per-LOD source dictionaries for MERGED, COMPONENT, and Cross-Scene exports. Keep the source skeleton and current LOD Metadata together; after replacing a dump, skeleton map, or cross-scene source, re-extract the affected LOD instead of copying old remap data.
 
 ### WWMI Cross-Scene Multi-IB
 

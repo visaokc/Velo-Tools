@@ -1,6 +1,6 @@
 # Velo Tools 中文使用手册
 
-> 适用版本：Velo Tools v1.6.4。Velo Tools 自动跟随 Blender 界面语言：简体中文与繁体中文使用当前简体中文 catalog，其它语言回退英文；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
+> 适用版本：Velo Tools v1.6.5。Velo Tools 自动跟随 Blender 界面语言：简体中文与繁体中文使用当前简体中文 catalog，其它语言回退英文；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
 
 Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI 工作流、鸣潮 WWMI 工作流放在同一个 **Velo Tools** 面板中。
 
@@ -339,7 +339,7 @@ EFMI 面板提供四种模式：
 1. 设置有效的 **Frame Dump 目录**，其中应包含 `log.txt`。
 2. 设置 **输出目录**。
 3. 按需启用对象、Component 和贴图过滤。
-4. 如需使用任一 Merged 模式，请用当前 Velo 1.6.4 内置的 EFMI Tools v0.6.4 / runtime 1.4.3 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与提取阶段最终确定的 EFMI-style `runtime_vg_map`。
+4. 如需使用任一 Merged 模式，请用当前 Velo 1.6.5 内置的 EFMI Tools v0.6.4 / runtime 1.4.3 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与提取阶段最终确定的 EFMI-style `runtime_vg_map`。
 5. 如需快速查看，可启用 **提取后导入 Blender**。
 6. 执行提取。
 
@@ -361,6 +361,8 @@ EFMI 面板提供四种模式：
 
 对象源目录通常包含组件 Buffer、`Metadata.json`、`TextureUsage.json` 和 `ShaderTextureUsage.json`。Velo 将 current+previous 骨骼矩阵签名生成的紧凑统一编号写入 `components[*].vg_map`；提取阶段按 EFMI 原版的 valid-source 与 weighted-use 优先规则一次性选择 exact-matrix canonical runtime source，并把最终 local-to-runtime 结果写入 `runtime_vg_map`，不再生成独立映射 sidecar。导出只按 `(Component, compact VG)` 消费已经固化的 `runtime_vg_map`，不会重新选择 runtime source。不要在不同对象源之间手工复制这两张 map。
 
+如需用真实骨骼名制作 Merged 项目，可在完成 EFMI 提取后展开 **Named Bone Mapping**：选择单个 LOD0 GLB，或包含唯一 Avatar、原始 Unity YAML LOD0 Mesh 与 prefab 的角色解包根目录；同时选择匹配的 EFMI 对象源目录，再执行 **Generate Bone Name Mapping**。Velo 只匹配 LOD0，不会到父级或同级目录借用 GLB；输出 `BoneNameMapping.json` 与带完整朝向层级的 `BoneNameSkeleton.glb`。两份 sidecar 必须与对象源一起保存。后续提取 LOD 时会把完整 `lods` 记录同步进骨骼名映射，但不会替换其中的 bone-name identity。
+
 EFMI 提取生成的 `ShaderTextureUsage.json` 与 WWMI 使用相同的核心嵌套语义：按 Component、`vs` / `ps` shader pair 和 `ps-tN` 记录最终保留贴图的准确输出文件名、资源 Hash、格式与尺寸。默认开启的 **贴图过滤：跳过 Dirty Slot** 会在 `log.txt` 提供可用 `PSSetShaderResources` 证据时，过滤继承而来的脏槽位，并同步收窄 STU、`TextureUsage.json`、贴图文件的 Component ownership 和实际提取文件；保留记录使用 schema v4 新鲜度证据。关闭该选项会保留继承记录和 EFMI 原始贴图产物；没有可用 log 证据时保留 legacy 未过滤输出，不猜测删除。如果未来 EFMI Dump 提供与 WWMI 相同合同的 `TextureAssetManifest.jsonl`，只有既通过过滤、又确实写入对象源目录的贴图记录会额外带完整 Unreal `asset_path`；当前没有该 manifest 的 EFMI Dump 会自然省略此字段。
 
 ### 5.3 导入对象
@@ -378,6 +380,8 @@ EFMI 提取生成的 `ShaderTextureUsage.json` 与 WWMI 使用相同的核心嵌
 | --- | --- |
 | **Merged（统一顶点组）** | 把各 Component 的局部顶点组映射为紧凑统一编号；需要当前 Velo/EFMI Tools v0.6.2+ 生成的 Metadata v4。 |
 | **Per-Component（部件独立）** | 保持每个 Component 的局部顶点组编号。 |
+
+对象源同时存在 `BoneNameMapping.json` 与 `BoneNameSkeleton.glb` 时，可在 Merged 导入前展开 **Velo Compatibility Options**，启用 **Import bone-name mapping and skeleton**。Velo 会导入完整定向骨架层级，把数字统一组替换为 Component-local 骨骼名，以 Armature modifier 绑定各网格，并清理临时 glTF carrier。**Rename mirrored bones to .L/.R suffixes** 是独立的可选项，只转换恰好有一处大写 `L` / `R` 差异且配对唯一的名称；歧义名称保持原样。两项默认都关闭；未启用骨骼名导入时，即使 sidecar 存在也会被忽略，原生数字路线完全不变。
 
 **按组件创建子集合**会创建 `C0`、`C1` 等子集合，并连接到导出集合。关闭后使用更接近上游 EFMI 的单集合导入方式。
 
@@ -492,7 +496,9 @@ EFMI 开放世界项目没有 LOD 数据时，只有启用 **允许无 LOD 导�
 | --- | --- |
 | **Merged（统一顶点组）** | Blender 使用紧凑统一编号；导出时按各 Component 的 `vg_map` 回译为局部编号，运行端仍为 Per-Component。 |
 | **Per-Component（部件独立）** | 制作、Buffer 与运行端始终使用 Component 局部编号。 |
-| **Merged（合并骨架）** | 通过提取阶段已固化的 `runtime_vg_map` 把 compact authoring ID 翻译为 runtime ID，并使用 EFMI runtime 1.4.3 官方按实例 MergedSkeleton contract。 |
+| **Merged（合并骨架）** | 通过提取阶段已固化的 `runtime_vg_map` 把 compact ID 或 Component-local 骨骼名翻译为 runtime ID，并使用 EFMI runtime 1.4.3 官方按实例 MergedSkeleton contract。 |
+
+骨骼名 Merged 项目可混用原始骨骼名、生成的 `.L/.R` 别名和数字统一组。名称先回译到 owning Component/local VG，再进入已固化 runtime ID；导出优先当前 Component，当合法的全局 Merged 权重属于其它 Component 时使用确定性 cross-Component fallback。CPU-posed、仅贴图 Component 会跳过 VG 翻译并保留 EFMI 原始 mesh draw 路线。MMD mapping 的目标也可直接填写原始骨骼名或生成的别名，不必限定为数字统一 ID。无法解析的有权重组会 fail-closed；无关的无权重组会忽略。
 
 Velo 现在会在导入 LOD 时为每条 Component 记录写入 `present: true/false`：从 LOD Dump 实际匹配到的 Component 为存在，matcher 未命中后写入的主模型回退记录为缺失。它保留“LOD 真实复用主模型网格”与“matcher 未命中后的主模型回退”之间原本会丢失的区别；runtime source 在提取阶段一次性确定，导出时不再重选。旧 Metadata 没有 `present` 时继续兼容；只有已经确认某个 Component 在 LOD 中缺失时才手动添加 `"present": false`，也可使用当前版本重新导入 LOD 自动生成显式标记。
 
@@ -716,7 +722,7 @@ WWMI 的 **Mod 信息**、**INI 模板** 和 **INI 开关**与 EFMI 使用相同
 
 LOD 支持 Merged、Per-Component，以及内部转换后的 Per-Component (from Merged)。启用自定义 INI 模板时，默认 LOD 模板注入会跳过；模板作者必须自行提供等价 LOD 逻辑。
 
-Velo 1.6.4 在 MERGED、COMPONENT 与 Cross-Scene 导出中统一使用稳定 canonical Blend ID 和每个 LOD 的紧凑 source dictionary 映射权重。对象源骨架与当前 LOD Metadata 必须配套；替换 Dump、骨架 map 或跨场景 source 后，应重新提取受影响的 LOD，不要复制旧 remap 数据。
+Velo 1.6.5 在 MERGED、COMPONENT 与 Cross-Scene 导出中统一使用稳定 canonical Blend ID 和每个 LOD 的紧凑 source dictionary 映射权重。对象源骨架与当前 LOD Metadata 必须配套；替换 Dump、骨架 map 或跨场景 source 后，应重新提取受影响的 LOD，不要复制旧 remap 数据。
 
 跨场景对象源目录也可以携带 LOD 数据。改变来源 Dump、拆分对象或路由后，应重新匹配并重新导出。
 
