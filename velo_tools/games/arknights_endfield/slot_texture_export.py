@@ -230,13 +230,6 @@ def _signatures_overlap(
     )
 
 
-def _is_subset(
-        subset: tuple[tuple[int, str], ...],
-        superset: tuple[tuple[int, str], ...],
-) -> bool:
-    return set(subset).issubset(set(superset))
-
-
 def _signature_matches(
         signature: tuple[tuple[int, str], ...],
         observed: tuple[tuple[int, str], ...],
@@ -252,11 +245,37 @@ def _common_observed_terms(branch: _Branch) -> set[tuple[int, str]]:
     return common
 
 
-def _negative_is_safe(candidate: tuple[int, str], branch: _Branch) -> bool:
-    return not any(
+def _negative_is_invalid(candidate: tuple[int, str], branch: _Branch) -> bool:
+    return any(
         _signature_matches((candidate,), observed)
         for observed in branch.observed_signatures
     )
+
+
+def _negative_is_proven_safe(
+        candidate: tuple[int, str], branch: _Branch) -> bool:
+    slot, tag = candidate
+    for observed in branch.observed_signatures:
+        observed_map = dict(observed)
+        if observed_map.get(slot) == tag:
+            return False
+        if slot not in observed_map and not branch.complete_signature:
+            return False
+    return True
+
+
+def _signature_cannot_match(
+        signature: tuple[tuple[int, str], ...], branch: _Branch) -> bool:
+    for observed in branch.observed_signatures:
+        observed_map = dict(observed)
+        contradicted = any(
+            (slot in observed_map and observed_map[slot] != tag)
+            or (slot not in observed_map and branch.complete_signature)
+            for slot, tag in signature
+        )
+        if not contradicted:
+            return False
+    return True
 
 
 def component_texture_counts(source_folder: Path) -> dict[int, int]:
@@ -434,46 +453,30 @@ def build_plan(
                 if not _signatures_overlap(left.signature, right.signature):
                     continue
                 candidates = sorted(set(right.signature) - set(left.signature))
-                if left.complete_signature and right.complete_signature:
-                    valid_candidates = [
-                        candidate
-                        for candidate in candidates
-                        if _negative_is_safe(candidate, left)
-                    ]
-                    if valid_candidates:
-                        negative_terms.add(valid_candidates[0])
-                        continue
-                    if not any(
-                            _signature_matches(left.signature, observed)
-                            for observed in right.observed_signatures):
-                        continue
-                    observed_candidates = sorted(
-                        _common_observed_terms(right) - set(left.signature)
-                    )
-                    observed_candidates = [
-                        candidate
-                        for candidate in observed_candidates
-                        if _negative_is_safe(candidate, left)
-                    ]
-                    if observed_candidates:
-                        negative_terms.add(observed_candidates[0])
-                        continue
-                    raise SlotStyleExportError(
-                        f"Component {component_id} has no valid Slot-style "
-                        f"discriminator: {left.source} / {right.source}"
-                    )
-                if _is_subset(right.signature, left.signature):
+                valid_candidates = [
+                    candidate
+                    for candidate in candidates
+                    if not _negative_is_invalid(candidate, left)
+                ]
+                if valid_candidates:
+                    negative_terms.add(valid_candidates[0])
                     continue
-                if not candidates:
-                    raise SlotStyleExportError(
-                        f"Component {component_id} has indistinguishable "
-                        f"Slot-style assignments: {left.source} / {right.source}"
-                    )
-                negative_terms.add(candidates[0])
-            if negative_terms and not left.complete_signature:
+                if _signature_cannot_match(left.signature, right):
+                    continue
+                observed_candidates = sorted(
+                    _common_observed_terms(right) - set(left.signature)
+                )
+                observed_candidates = [
+                    candidate
+                    for candidate in observed_candidates
+                    if _negative_is_proven_safe(candidate, left)
+                ]
+                if observed_candidates:
+                    negative_terms.add(observed_candidates[0])
+                    continue
                 raise SlotStyleExportError(
-                    f"Component {component_id} needs complete schema-v5 slot-format "
-                    "evidence to distinguish texture branches; re-extract the EFMI object"
+                    f"Component {component_id} has no valid Slot-style "
+                    f"discriminator: {left.source} / {right.source}"
                 )
             resolved.append(replace(
                 left,
