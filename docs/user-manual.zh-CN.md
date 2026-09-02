@@ -371,6 +371,8 @@ EFMI 面板提供四种模式：
 
 对象源目录通常包含组件 Buffer、`Metadata.json`、`TextureUsage.json` 和 `ShaderTextureUsage.json`。Velo 将 current+previous 骨骼矩阵签名生成的紧凑统一编号写入 `components[*].vg_map`；提取阶段按 EFMI 原版的 valid-source 与 weighted-use 优先规则一次性选择 exact-matrix canonical runtime source，并把最终 local-to-runtime 结果写入 `runtime_vg_map`，不再生成独立映射 sidecar。导出只按 `(Component, compact VG)` 消费已经固化的 `runtime_vg_map`，不会重新选择 runtime source。不要在不同对象源之间手工复制这两张 map。
 
+如果较晚 draw 唯一识别出较早布局遗漏的 semantic，Velo 会在不调整 draw 顺序的前提下恢复该字段。恢复字段必须保留原始 input slot 与 byte offset，游戏才能按正确位置解码 `NORMAL`、`TANGENT` 和其它紧凑顶点字段。
+
 如需用真实骨骼名制作 Merged 项目，可在完成 EFMI 提取后展开 **Named Bone Mapping**：选择单个 LOD0 GLB，或包含唯一 Avatar、原始 Unity YAML LOD0 Mesh 与 prefab 的角色解包根目录；同时选择匹配的 EFMI 对象源目录，再执行 **Generate Bone Name Mapping**。Velo 只匹配 LOD0，不会到父级或同级目录借用 GLB；输出 `BoneNameMapping.json` 与带完整朝向层级的 `BoneNameSkeleton.glb`。两份 sidecar 必须与对象源一起保存。后续提取 LOD 时会把完整 `lods` 记录同步进骨骼名映射，但不会替换其中的 bone-name identity。
 
 EFMI 提取生成的 `ShaderTextureUsage.json` 与 WWMI 使用相同的核心嵌套语义：按 Component、`vs` / `ps` shader pair 和 `ps-tN` 记录最终保留贴图的准确输出文件名、资源 Hash、格式与尺寸。默认开启的 **贴图过滤：跳过 Dirty Slot** 会在 `log.txt` 提供可用 `PSSetShaderResources` 证据时，过滤继承而来的脏槽位，并同步收窄 `TextureUsage.json`、贴图文件的 Component ownership 和实际提取文件；保留记录使用 schema v5 新鲜度证据。schema v5 还保留每个实际绑定贴图槽的仅签名格式，以及精确 draw range；前者避免无关继承贴图错误否决 slot 分支，后者保留 CPU-posed Component 使用的非零 `first_index`。关闭该选项会保留继承记录和 EFMI 原始贴图产物；没有可用 log 证据时保留 legacy 未过滤输出，不猜测删除。如果未来 EFMI Dump 提供与 WWMI 相同合同的 `TextureAssetManifest.jsonl`，只有既通过过滤、又确实写入对象源目录的贴图记录会额外带完整 Unreal `asset_path`；当前没有该 manifest 的 EFMI Dump 会自然省略此字段。

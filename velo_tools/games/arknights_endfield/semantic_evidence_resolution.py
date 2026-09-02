@@ -135,7 +135,7 @@ def _isolate_semantic_data(candidate, raw_component):
     resource.build_numpy_buffer(migoto_format=migoto_format)
     data = numpy.array(resource.buffer.get_field(semantic.abstract), copy=True)
 
-    isolated_layout = BufferLayout([semantic])
+    isolated_layout = BufferLayout([copy.deepcopy(semantic)])
     isolated_buffer = NumpyBuffer(isolated_layout, size=len(data))
     isolated_buffer.set_field(semantic.abstract, data)
     resource.buffer = isolated_buffer
