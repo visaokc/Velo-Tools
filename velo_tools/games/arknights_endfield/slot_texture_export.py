@@ -1,6 +1,6 @@
 """EFMI driver-layer Slot-style texture export.
 
-The pure planner consumes schema-v4 ShaderTextureUsage.json evidence and the
+The pure planner consumes schema-v4/v5 ShaderTextureUsage.json evidence and the
 textures already collected by EFMI. The reversible hook post-processes the
 rendered default INI without modifying the vendored core.
 """
@@ -44,6 +44,9 @@ class _ObservedPair:
     component_id: int
     source: str
     slots: tuple[tuple[int, _Record], ...]
+    signature_formats: tuple[tuple[int, str], ...]
+    draw_range: tuple[int, int] | None = None
+    complete_signature: bool = False
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,7 @@ class _Branch:
     assignment_hashes: tuple[str, ...]
     source: str
     negative_signature: tuple[tuple[int, str], ...] = ()
+    complete_signature: bool = False
 
 
 @dataclass
@@ -96,9 +100,10 @@ def _load_observed_pairs(source_folder: Path) -> list[_ObservedPair]:
         raise SlotStyleExportError(
             f"failed to read ShaderTextureUsage.json: {exc}"
         ) from exc
-    if not isinstance(payload, dict) or payload.get("version") != 4:
+    version = payload.get("version") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or version not in {4, 5}:
         raise SlotStyleExportError(
-            "EFMI Slot-style export requires schema-v4 ShaderTextureUsage.json "
+            "EFMI Slot-style export requires schema-v4/v5 ShaderTextureUsage.json "
             "with log-backed freshness evidence; re-extract with Skip Dirty Slot enabled"
         )
 
@@ -123,7 +128,7 @@ def _load_observed_pairs(source_folder: Path) -> list[_ObservedPair]:
                     if not isinstance(fresh, bool):
                         raise SlotStyleExportError(
                             f"{component_key}/{vs_key}/{ps_key}/{slot_key} has no "
-                            "schema-v4 freshness flag; re-extract the object"
+                            "schema-v4/v5 freshness flag; re-extract the object"
                         )
                     if not fresh:
                         continue
@@ -136,10 +141,41 @@ def _load_observed_pairs(source_folder: Path) -> list[_ObservedPair]:
                         _Record(texture_hash=texture_hash, format_name=format_name),
                     ))
                 if slots:
+                    signature_formats = []
+                    raw_formats = ps_block.get("slot_formats")
+                    if version == 5 and isinstance(raw_formats, dict):
+                        for slot_key, format_name in raw_formats.items():
+                            slot_match = _SLOT_RE.match(str(slot_key))
+                            format_name = str(format_name or "").strip().upper()
+                            if slot_match is not None and format_name:
+                                signature_formats.append((
+                                    int(slot_match.group(1)), format_name
+                                ))
+                    if not signature_formats:
+                        signature_formats = [
+                            (slot, record.format_name)
+                            for slot, record in slots if record.format_name
+                        ]
+                    draw_range = None
+                    if version == 5:
+                        try:
+                            first_index = int(ps_block["first_index"])
+                            index_count = int(ps_block["index_count"])
+                            if first_index >= 0 and index_count > 0:
+                                draw_range = (first_index, index_count)
+                        except (KeyError, TypeError, ValueError):
+                            pass
                     pairs.append(_ObservedPair(
                         component_id=component_id,
                         source=f"{component_key}/{vs_key}/{ps_key}",
                         slots=tuple(sorted(slots)),
+                        signature_formats=tuple(sorted(signature_formats)),
+                        draw_range=draw_range,
+                        complete_signature=(
+                            version == 5
+                            and isinstance(raw_formats, dict)
+                            and ps_block.get("slot_formats_complete") is True
+                        ),
                     ))
     if not pairs:
         raise SlotStyleExportError(
@@ -148,7 +184,7 @@ def _load_observed_pairs(source_folder: Path) -> list[_ObservedPair]:
     return pairs
 
 
-def _ranges_from_extracted_object(extracted_object) -> tuple[
+def _ranges_from_extracted_object(extracted_object, pairs) -> tuple[
         dict[int, tuple[int, int]], dict[int, list[tuple[int, int, int]]]]:
     base: dict[int, tuple[int, int]] = {}
     lods: dict[int, list[tuple[int, int, int]]] = {}
@@ -158,6 +194,18 @@ def _ranges_from_extracted_object(extracted_object) -> tuple[
             int(getattr(component, "index_offset")),
             int(getattr(component, "index_count")),
         )
+        if bool(getattr(component, "cpu_posed", False)):
+            observed_ranges = {
+                pair.draw_range
+                for pair in pairs
+                if pair.component_id == component_id and pair.draw_range is not None
+            }
+            if len(observed_ranges) != 1:
+                raise SlotStyleExportError(
+                    f"Component {component_id} is CPU-posed and requires one exact "
+                    "schema-v5 draw range; re-extract the EFMI object"
+                )
+            base[component_id] = observed_ranges.pop()
         for level, lod in enumerate(getattr(component, "lods", ()) or (), start=1):
             if getattr(lod, "present", True) is False:
                 continue
@@ -273,17 +321,17 @@ def build_plan(
             continue
 
         signature: list[tuple[int, str]] = []
-        for slot, record in pair.slots:
-            if not record.format_name:
+        for slot, format_name in pair.signature_formats:
+            if not format_name:
                 continue
             try:
-                tag = slot_formats.filter_index_text(record.format_name)
+                tag = slot_formats.filter_index_text(format_name)
             except ValueError:
                 continue
             signature.append((slot, tag))
             format_by_component_tag.setdefault(
                 (pair.component_id, tag), set()
-            ).add(record.format_name)
+            ).add(format_name)
         assignment_slots = {slot for slot, _resource in assignments}
         missing = assignment_slots - {slot for slot, _tag in signature}
         if missing:
@@ -296,6 +344,7 @@ def build_plan(
             assignments=tuple(assignments),
             assignment_hashes=tuple(assignment_hashes),
             source=pair.source,
+            complete_signature=pair.complete_signature,
         )
         raw_by_component.setdefault(pair.component_id, []).append(branch)
         assigned_occurrences.update(
@@ -353,13 +402,18 @@ def build_plan(
                         f"Slot-style assignments: {left.source} / {right.source}"
                     )
                 negative_terms.add(candidates[0])
+            if negative_terms and not left.complete_signature:
+                raise SlotStyleExportError(
+                    f"Component {component_id} needs complete schema-v5 slot-format "
+                    "evidence to distinguish texture branches; re-extract the EFMI object"
+                )
             resolved.append(replace(
                 left,
                 negative_signature=tuple(sorted(negative_terms)),
             ))
         branches_by_component[component_id] = resolved
 
-    base_ranges, lod_ranges = _ranges_from_extracted_object(extracted_object)
+    base_ranges, lod_ranges = _ranges_from_extracted_object(extracted_object, pairs)
     missing_ranges = set(branches_by_component) - set(base_ranges)
     if missing_ranges:
         raise SlotStyleExportError(
@@ -375,7 +429,7 @@ def build_plan(
         "",
         "; ============================================================",
         "; Slot-style texture layer",
-        "; Conditions use fresh schema-v4 STU format-family evidence.",
+        "; Conditions use fresh schema-v4/v5 STU format-family evidence.",
         "; ============================================================",
     ]
     assigned_hashes: set[str] = set()

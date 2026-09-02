@@ -373,7 +373,7 @@ EFMI 面板提供四种模式：
 
 如需用真实骨骼名制作 Merged 项目，可在完成 EFMI 提取后展开 **Named Bone Mapping**：选择单个 LOD0 GLB，或包含唯一 Avatar、原始 Unity YAML LOD0 Mesh 与 prefab 的角色解包根目录；同时选择匹配的 EFMI 对象源目录，再执行 **Generate Bone Name Mapping**。Velo 只匹配 LOD0，不会到父级或同级目录借用 GLB；输出 `BoneNameMapping.json` 与带完整朝向层级的 `BoneNameSkeleton.glb`。两份 sidecar 必须与对象源一起保存。后续提取 LOD 时会把完整 `lods` 记录同步进骨骼名映射，但不会替换其中的 bone-name identity。
 
-EFMI 提取生成的 `ShaderTextureUsage.json` 与 WWMI 使用相同的核心嵌套语义：按 Component、`vs` / `ps` shader pair 和 `ps-tN` 记录最终保留贴图的准确输出文件名、资源 Hash、格式与尺寸。默认开启的 **贴图过滤：跳过 Dirty Slot** 会在 `log.txt` 提供可用 `PSSetShaderResources` 证据时，过滤继承而来的脏槽位，并同步收窄 STU、`TextureUsage.json`、贴图文件的 Component ownership 和实际提取文件；保留记录使用 schema v4 新鲜度证据。关闭该选项会保留继承记录和 EFMI 原始贴图产物；没有可用 log 证据时保留 legacy 未过滤输出，不猜测删除。如果未来 EFMI Dump 提供与 WWMI 相同合同的 `TextureAssetManifest.jsonl`，只有既通过过滤、又确实写入对象源目录的贴图记录会额外带完整 Unreal `asset_path`；当前没有该 manifest 的 EFMI Dump 会自然省略此字段。
+EFMI 提取生成的 `ShaderTextureUsage.json` 与 WWMI 使用相同的核心嵌套语义：按 Component、`vs` / `ps` shader pair 和 `ps-tN` 记录最终保留贴图的准确输出文件名、资源 Hash、格式与尺寸。默认开启的 **贴图过滤：跳过 Dirty Slot** 会在 `log.txt` 提供可用 `PSSetShaderResources` 证据时，过滤继承而来的脏槽位，并同步收窄 `TextureUsage.json`、贴图文件的 Component ownership 和实际提取文件；保留记录使用 schema v5 新鲜度证据。schema v5 还保留每个实际绑定贴图槽的仅签名格式，以及精确 draw range；前者避免无关继承贴图错误否决 slot 分支，后者保留 CPU-posed Component 使用的非零 `first_index`。关闭该选项会保留继承记录和 EFMI 原始贴图产物；没有可用 log 证据时保留 legacy 未过滤输出，不猜测删除。如果未来 EFMI Dump 提供与 WWMI 相同合同的 `TextureAssetManifest.jsonl`，只有既通过过滤、又确实写入对象源目录的贴图记录会额外带完整 Unreal `asset_path`；当前没有该 manifest 的 EFMI Dump 会自然省略此字段。
 
 ### 5.3 导入对象
 
@@ -494,9 +494,9 @@ global persist $ShapeKey_12 = 0.375
 
 使用默认模板导出的 EFMI INI 会直接以八位贴图 Hash 命名生成标识符，例如 `[Resource_Texture_ab9de26a]` 和 `[TextureOverride_Texture_ab9de26a]`，不再使用容易随贴图顺序变化的 `Resource_Texture10`。所有引用会同步改名，因而可以直接把 Resource、override、源 DDS 文件名和 STU 记录对应起来。用户自行控制的自定义模板保留其原有标识符。
 
-**Velo 兼容选项 -> 插槽风格贴图**为可选功能，默认关闭。使用默认 INI 模板时，它读取同一对象源目录中的 fresh schema-v4 `ShaderTextureUsage.json`，把证据完整的贴图 Hash override 改为 Component-local `ps-tN` 绑定。生成的 draw transaction 会先运行 EFMI 原有贴图 override 阶段，以各条证据记录的具体 DXGI format 建立 tag、再用共用的 format-family 值判断分支；只有实际命中的分支才备份它将要赋值的槽位并绑定导出 Resource。Component draw 结束后，Component-local restore command 会逐项检查 backup 是否为 `null`，恢复有效备份并立即清空，避免下一次 draw 复用残留状态；不会依赖一个 `*_TYPELESS` matcher 代替 EFMI 中的 typed Resource。槽位号完全来自 Dump，不写死固定范围；现有 EFMI Dump 已验证 `ps-t0`、`ps-t1` 与 `ps-t11..22`。
+**Velo 兼容选项 -> 插槽风格贴图**为可选功能，默认关闭。使用默认 INI 模板时，它读取同一对象源目录中的 fresh schema-v4/v5 `ShaderTextureUsage.json`，把证据完整的贴图 Hash override 改为 Component-local `ps-tN` 绑定。当分支区分需要完整绑定槽格式，或 CPU-posed Component 需要原始精确 draw range 时，必须使用 schema v5。生成的 draw transaction 会先运行 EFMI 原有贴图 override 阶段，以各条证据记录的具体 DXGI format 建立 tag、再用共用的 format-family 值判断分支；只有实际命中的分支才备份它将要赋值的槽位并绑定导出 Resource。Component draw 结束后，Component-local restore command 会逐项检查 backup 是否为 `null`，恢复有效备份并立即清空，避免下一次 draw 复用残留状态；不会依赖一个 `*_TYPELESS` matcher 代替 EFMI 中的 typed Resource。槽位号完全来自 Dump，不写死固定范围；现有 EFMI Dump 已验证 `ps-t0`、`ps-t1` 与 `ps-t11..22`。
 
-为该模式准备对象源时应保持 **贴图过滤：跳过 Dirty Slot** 开启。STU 缺失或不是 schema v4、必需格式缺失、多个赋值无法通过可观察槽位格式安全区分，或默认 INI 中找不到安全 draw anchor 时，导出会停止而不是猜测。没有完整 slot 证据的 Hash override 保持原样。自定义模板与模板实时更新会绕过此转换。
+为该模式准备对象源时应保持 **贴图过滤：跳过 Dirty Slot** 开启。STU 缺失或没有所需 schema-v4/v5 证据、必需格式缺失、多个赋值无法通过可观察槽位格式安全区分、CPU-posed draw range 缺失，或默认 INI 中找不到安全 draw anchor 时，导出会停止而不是猜测。收到提示时需重新提取旧对象源以生成 schema v5。没有完整 slot 证据的 Hash override 保持原样。自定义模板与模板实时更新会绕过此转换。
 
 需要让部分 Component 走 slot-style、其余 Component 保留 Hash-style 时，先启用 **插槽风格贴图**，点击 **列出组件**，再取消勾选需要保留 Hash 匹配的 Component。列表从未生成、保持为空时，表示全部具备证据的 Component 默认走 slot-style；刷新列表会保留已有选择，新发现的 Component 默认勾选。若某个贴图 Hash 同时属于取消勾选的 Component，其原生 Hash override 会全局保留；已勾选 Component 仍会在 EFMI 原 override 阶段之后执行自己的 slot setter。
 

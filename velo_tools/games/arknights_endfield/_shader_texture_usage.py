@@ -7,9 +7,10 @@ resources into the WWMI-compatible nested STU shape:
 
     Component -> vertex shader -> pixel shader -> ps-tN -> texture record
 
-When ``log.txt`` exposes usable ``PSSetShaderResources`` evidence, schema v4
-marks fresh slots and the default-on Dirty Slot filter removes inherited stale
-records from STU, TextureUsage.json, texture ownership, and extracted files.
+When ``log.txt`` exposes usable ``PSSetShaderResources`` evidence, schema v5
+marks fresh slots, retains complete bound-slot format evidence and exact draw
+ranges, and lets the default-on Dirty Slot filter remove inherited stale records
+from TextureUsage.json, texture ownership, and extracted files.
 Without usable evidence the original output is retained rather than guessed.
 
 The vendored core remains untouched, and install/remove are idempotent.
@@ -18,6 +19,7 @@ The vendored core remains untouched, and install/remove are idempotent.
 from __future__ import annotations
 
 import json
+import re
 from collections import OrderedDict
 from pathlib import Path
 
@@ -34,6 +36,8 @@ from . import _log_freshness
 _INSTALLED = False
 _ORIG_EXPORT = None
 _ASSET_PATH_MANIFEST = "TextureAssetManifest.jsonl"
+_FIRST_INDEX_RE = re.compile(r"^first index:\s*(\d+)\s*$", re.I)
+_INDEX_COUNT_RE = re.compile(r"^index count:\s*(\d+)\s*$", re.I)
 
 
 class AssetPathManifestError(ValueError):
@@ -136,6 +140,38 @@ def _texture_size(texture) -> tuple[int, int]:
     return 0, 0
 
 
+def _draw_range(dump_root: Path | None, call_id, cache) -> tuple[int, int] | None:
+    if dump_root is None or call_id is None:
+        return None
+    try:
+        call_id = int(call_id)
+    except (TypeError, ValueError):
+        return None
+    if call_id in cache:
+        return cache[call_id]
+    result = None
+    paths = sorted(dump_root.glob(f"{call_id:06d}-ib=*.txt"))
+    if len(paths) == 1:
+        first_index = None
+        index_count = None
+        try:
+            for line in paths[0].read_text(encoding="utf-8").splitlines():
+                match = _FIRST_INDEX_RE.match(line)
+                if match:
+                    first_index = int(match.group(1))
+                    continue
+                match = _INDEX_COUNT_RE.match(line)
+                if match:
+                    index_count = int(match.group(1))
+                if first_index is not None and index_count is not None:
+                    result = (first_index, index_count)
+                    break
+        except OSError:
+            pass
+    cache[call_id] = result
+    return result
+
+
 def build_shader_texture_usage(
         migoto_object,
         textures_descriptor,
@@ -155,27 +191,74 @@ def build_shader_texture_usage(
     )
     skip_dirty_slot = _skip_dirty_slot_enabled()
     if evidence is not None:
-        usage["version"] = 4
+        usage["version"] = 5
     elif retained_textures and skip_dirty_slot:
         print(
             "[velo efmi-stu] Skip Dirty Slot is enabled but no usable "
             "log.txt freshness evidence was found; legacy STU kept unfiltered"
         )
     skipped_dirty_slots = 0
+    draw_range_cache = {}
     for component_id, component in enumerate(migoto_object.components):
         seats = {}
+        pair_formats = {}
+        pair_formats_complete = {}
+        pair_ranges = {}
         pair_depth_only = {}
         for slot, textures in component.textures.items():
             slot_key = str(slot)
             if not slot_key.startswith("ps-t"):
                 continue
             for texture in textures:
+                vs_key, ps_key = _shader_keys(texture)
+                data_format = getattr(texture.data_descriptor, "data_format", None)
+                usage_descriptor = getattr(texture, "usage_descriptor", None)
+                call_id = getattr(usage_descriptor, "call_id", None)
+                fresh = None
+                if evidence is not None:
+                    pair_key = (vs_key, ps_key)
+                    pair_formats_complete.setdefault(pair_key, True)
+                    fresh = bool(
+                        call_id is not None
+                        and _log_freshness.slot_is_fresh(
+                            evidence,
+                            call_id,
+                            slot.slot_id,
+                            texture.hash,
+                            getattr(usage_descriptor, "original_hash", None),
+                        )
+                    )
+                    color_rt = _log_freshness.call_has_color_rt(evidence, call_id)
+                    depth_only = color_rt is False
+                    previous_depth = pair_depth_only.get((vs_key, ps_key))
+                    pair_depth_only[(vs_key, ps_key)] = (
+                        depth_only
+                        if previous_depth is None
+                        else previous_depth and depth_only
+                    )
+                    if data_format:
+                        format_map = pair_formats.setdefault(pair_key, {})
+                        current_format = format_map.get(slot_key)
+                        candidate = (str(data_format), bool(fresh))
+                        if current_format is not None and current_format[0] != candidate[0]:
+                            pair_formats_complete[pair_key] = False
+                        if current_format is None or candidate[1] or not current_format[1]:
+                            format_map[slot_key] = candidate
+                    else:
+                        pair_formats_complete[pair_key] = False
+                    draw_range = _draw_range(dump_root, call_id, draw_range_cache)
+                    if draw_range is not None:
+                        range_key = (vs_key, ps_key)
+                        previous_range = pair_ranges.get(range_key)
+                        pair_ranges[range_key] = (
+                            draw_range
+                            if previous_range is None or previous_range == draw_range
+                            else False
+                        )
                 retained = textures_descriptor.textures.get(texture.hash)
                 if retained is None or retained.bin_path_deduped != texture.bin_path_deduped:
                     continue
-                vs_key, ps_key = _shader_keys(texture)
                 width, height = _texture_size(texture)
-                data_format = getattr(texture.data_descriptor, "data_format", None)
                 filename = _texture_filename(
                     texture.hash, texture, textures_descriptor)
                 record = OrderedDict((
@@ -201,28 +284,7 @@ def build_shader_texture_usage(
                     asset_paths_by_hash[texture.hash] = asset_path
                     if output_folder is not None and (output_folder / filename).is_file():
                         record["asset_path"] = asset_path
-                usage_descriptor = getattr(texture, "usage_descriptor", None)
-                call_id = getattr(usage_descriptor, "call_id", None)
-                fresh = None
                 if evidence is not None:
-                    fresh = bool(
-                        call_id is not None
-                        and _log_freshness.slot_is_fresh(
-                            evidence,
-                            call_id,
-                            slot.slot_id,
-                            texture.hash,
-                            getattr(usage_descriptor, "original_hash", None),
-                        )
-                    )
-                    color_rt = _log_freshness.call_has_color_rt(evidence, call_id)
-                    depth_only = color_rt is False
-                    previous_depth = pair_depth_only.get((vs_key, ps_key))
-                    pair_depth_only[(vs_key, ps_key)] = (
-                        depth_only
-                        if previous_depth is None
-                        else previous_depth and depth_only
-                    )
                     if skip_dirty_slot and not fresh:
                         skipped_dirty_slots += 1
                         continue
@@ -247,6 +309,18 @@ def build_shader_texture_usage(
                         record["fresh"] = bool(fresh)
                     ps_out[slot_key] = record
                 if evidence is not None:
+                    formats = pair_formats.get((vs_key, ps_key), {})
+                    ps_out["slot_formats"] = OrderedDict(
+                        (slot_key, value[0])
+                        for slot_key, value in sorted(formats.items())
+                    )
+                    ps_out["slot_formats_complete"] = bool(
+                        pair_formats_complete.get((vs_key, ps_key), False)
+                    )
+                    draw_range = pair_ranges.get((vs_key, ps_key))
+                    if draw_range:
+                        ps_out["first_index"] = draw_range[0]
+                        ps_out["index_count"] = draw_range[1]
                     ps_out["depth_only"] = bool(
                         pair_depth_only.get((vs_key, ps_key), False)
                     )
@@ -279,7 +353,7 @@ def _iter_texture_records(usage):
 
 
 def _synchronize_filtered_outputs(folder_path, usage, textures_descriptor) -> None:
-    if not _skip_dirty_slot_enabled() or usage.get("version") != 4:
+    if not _skip_dirty_slot_enabled() or usage.get("version") not in {4, 5}:
         return
     folder_path = Path(folder_path)
     allowed_usage = {}
