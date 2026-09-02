@@ -482,6 +482,8 @@ global persist $ShapeKey_12 = 0.375
 
 **Velo 兼容选项 -> 导出时自动按材质拆分**默认开启。一个已合并对象实际使用两个以上 `Component N` 前缀材质时，Velo 只在导出临时副本上按材质拆分，场景对象与 ShapeKey 不变。所有实际使用材质必须与对象的 Component 一致；冲突或材质名模式中的无前缀材质会阻止导出，并报告集合、对象和材质槽。无材质、单材质或仅有多个预览材质的对象仍按对象名导出。关闭该选项会完整保留旧导出行为。
 
+使用默认模板导出的 EFMI INI 会直接以八位贴图 Hash 命名生成标识符，例如 `[Resource_Texture_ab9de26a]` 和 `[TextureOverride_Texture_ab9de26a]`，不再使用容易随贴图顺序变化的 `Resource_Texture10`。所有引用会同步改名，因而可以直接把 Resource、override、源 DDS 文件名和 STU 记录对应起来。用户自行控制的自定义模板保留其原有标识符。
+
 **Velo 兼容选项 -> 插槽风格贴图**为可选功能，默认关闭。使用默认 INI 模板时，它读取同一对象源目录中的 fresh schema-v4 `ShaderTextureUsage.json`，把证据完整的贴图 Hash override 改为 Component-local `ps-tN` 绑定。生成的 draw transaction 会先运行 EFMI 原有贴图 override 阶段，以各条证据记录的具体 DXGI format 建立 tag、再用共用的 format-family 值判断分支；只有实际命中的分支才备份它将要赋值的槽位并绑定导出 Resource。Component draw 结束后，Component-local restore command 会逐项检查 backup 是否为 `null`，恢复有效备份并立即清空，避免下一次 draw 复用残留状态；不会依赖一个 `*_TYPELESS` matcher 代替 EFMI 中的 typed Resource。槽位号完全来自 Dump，不写死固定范围；现有 EFMI Dump 已验证 `ps-t0`、`ps-t1` 与 `ps-t11..22`。
 
 为该模式准备对象源时应保持 **贴图过滤：跳过 Dirty Slot** 开启。STU 缺失或不是 schema v4、必需格式缺失、多个赋值无法通过可观察槽位格式安全区分，或默认 INI 中找不到安全 draw anchor 时，导出会停止而不是猜测。没有完整 slot 证据的 Hash override 保持原样。自定义模板与模板实时更新会绕过此转换。

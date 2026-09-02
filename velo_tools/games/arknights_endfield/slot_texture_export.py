@@ -199,6 +199,36 @@ def component_texture_counts(source_folder: Path) -> dict[int, int]:
     }
 
 
+def rename_texture_sections(ini_text: str, textures) -> str:
+    replacements: dict[str, str] = {}
+    seen_hashes: set[str] = set()
+    for index, texture in enumerate(textures):
+        texture_hash = str(getattr(texture, "hash", "")).strip().lower()
+        if not _HEX8_RE.fullmatch(texture_hash):
+            continue
+        if texture_hash in seen_hashes:
+            raise SlotStyleExportError(
+                f"duplicate EFMI texture hash cannot form a unique section name: "
+                f"{texture_hash}"
+            )
+        seen_hashes.add(texture_hash)
+        replacements[f"Resource_Texture{index}"] = (
+            f"Resource_Texture_{texture_hash}"
+        )
+        replacements[f"TextureOverride_Texture{index}"] = (
+            f"TextureOverride_Texture_{texture_hash}"
+        )
+    if not replacements:
+        return ini_text
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_])(" + "|".join(
+            re.escape(name)
+            for name in sorted(replacements, key=len, reverse=True)
+        ) + r")(?![A-Za-z0-9_])"
+    )
+    return pattern.sub(lambda match: replacements[match.group(1)], ini_text)
+
+
 def build_plan(
         source_folder: Path,
         textures,
@@ -549,20 +579,11 @@ def install() -> None:
     _ORIGINAL_BUILD_FROM_TEMPLATE = module.IniMaker.build_from_template
 
     def wrapped(self, context, cfg, template_string=None, with_checksum=False):
-        if (not getattr(cfg, "slot_style_textures", False)
-                or getattr(cfg, "use_custom_template", False)
-                or getattr(cfg, "custom_template_live_update", False)):
-            return _ORIGINAL_BUILD_FROM_TEMPLATE(
-                self,
-                context,
-                cfg,
-                template_string=template_string,
-                with_checksum=with_checksum,
-            )
-        from . import slot_component_ui
-
-        eligible_components = slot_component_ui.selected_components(context)
-        if eligible_components == set():
+        custom_template = (
+            getattr(cfg, "use_custom_template", False)
+            or getattr(cfg, "custom_template_live_update", False)
+        )
+        if custom_template:
             return _ORIGINAL_BUILD_FROM_TEMPLATE(
                 self,
                 context,
@@ -577,23 +598,35 @@ def install() -> None:
             template_string=template_string,
             with_checksum=False,
         )
-        del last_report[:]
-        try:
-            plan = build_plan(
-                resolve_path(cfg.object_source_folder),
-                self.textures,
-                self.extracted_object,
-                eligible_components=eligible_components,
-            )
-            result = transform_ini(result, plan)
-            message = f"[SlotTextures] EFMI Slot-style texture layer applied: {plan.stats}"
-            print(message)
-            last_report.append(message)
-        except SlotStyleExportError as exc:
-            message = f"[SlotTextures] ERROR: EFMI Slot-style export aborted: {exc}"
-            print(message)
-            last_report.append(message)
-            raise
+        if getattr(cfg, "slot_style_textures", False):
+            from . import slot_component_ui
+
+            eligible_components = slot_component_ui.selected_components(context)
+            if eligible_components != set():
+                del last_report[:]
+                try:
+                    plan = build_plan(
+                        resolve_path(cfg.object_source_folder),
+                        self.textures,
+                        self.extracted_object,
+                        eligible_components=eligible_components,
+                    )
+                    result = transform_ini(result, plan)
+                    message = (
+                        "[SlotTextures] EFMI Slot-style texture layer applied: "
+                        f"{plan.stats}"
+                    )
+                    print(message)
+                    last_report.append(message)
+                except SlotStyleExportError as exc:
+                    message = (
+                        "[SlotTextures] ERROR: EFMI Slot-style export aborted: "
+                        f"{exc}"
+                    )
+                    print(message)
+                    last_report.append(message)
+                    raise
+        result = rename_texture_sections(result, self.textures)
         if with_checksum:
             result = module.IniMaker.with_checksum(result)
         self.ini_string = result
