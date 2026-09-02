@@ -183,6 +183,16 @@ Set **形态键清理阈值 (ShapeKey Cleanup Threshold)** before split/merge op
 
 Open **UV工具 (UV Tools)** and run **平滑法线-八面体UV (Smooth Normal - Octahedral UV)** to encode tangent-space smooth normals for every selected mesh into the `TEXCOORD1.xy` UV layer. Each mesh must already have a first UV layer because it defines the tangent basis. The operation creates or replaces `TEXCOORD1.xy`; preserve any author-edited data from that layer before running it, then validate the result with the target shader/export convention.
 
+#### Endfield Smooth-Normal Auxiliary Data
+
+For an Endfield Component whose extracted layout uses `TEXCOORD4.xy` for tangent-space smooth-normal X/Y, select the mesh and run **Generate Smooth Normal TEXCOORD4** under **UV工具 (UV Tools)**. The tool welds exact-position duplicates while calculating the smooth direction, then uses `TEXCOORD.xy` to construct the tangent basis and writes the EFMI-import-space representation into `TEXCOORD4.xy`.
+
+This generator is for newly authored geometry; it is not a bit-exact recovery tool for deleted source-asset bake data. Preserve the extracted layer on original vertices, and generate the auxiliary layer on a new mesh before joining it to the Component whenever possible.
+
+If the target Component layout instead maps the same representation to packed `COLOR`, use **Generate Smooth Normal COLOR** under **顶点色工具 (Vertex Color Tools)**. Do not apply this operation to an arbitrary COLOR Component: Endfield COLOR is a storage carrier, not a universal semantic, and some source Components contain different authored data. Check the source `.fmt` and retained reference data first.
+
+UV islands do not need to be joined. Exact-position duplicates are smoothed together across UV seams, but changing the orientation or geometry of the primary `TEXCOORD.xy` UV changes the tangent basis and therefore changes the generated values. Existing `TEXCOORD4.xy` or `COLOR` data is overwritten.
+
 #### Material-to-Collection Routing
 
 Use **按材质分离所属集合 (Route Material Splits to Collections)** after selecting the game export component collection.

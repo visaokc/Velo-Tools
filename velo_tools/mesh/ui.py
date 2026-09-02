@@ -302,6 +302,33 @@ class MESH_PT_octahedral_uv(bpy.types.Panel):
             "mesh_tools.smooth_normals_octahedral_uv",
             icon='UV',
         )
+        column.operator(
+            "mesh_tools.generate_smooth_normal_uv",
+            icon='UV',
+        )
+
+
+class MESH_PT_vertex_color_tools(bpy.types.Panel):
+    bl_label = 'Vertex Color Tool'
+    bl_idname = "MESH_PT_vertex_color_tools"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Velo Tools'
+    bl_parent_id = 'VELO_PT_main'
+    bl_order = 3
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _is_mesh_tab(context)
+
+    def draw(self, context):
+        column = self.layout.column(align=True)
+        column.scale_y = 1.1
+        column.operator(
+            "mesh_tools.generate_smooth_normal_color",
+            icon='COLOR',
+        )
 
 
 class VELO_PT_shapekey_panel(bpy.types.Panel):
@@ -431,6 +458,7 @@ _classes = (
     VELO_PT_mesh_sculpt,
     VELO_PT_mesh_actions,
     MESH_PT_octahedral_uv,
+    MESH_PT_vertex_color_tools,
     VELO_PT_mesh_material_routing,
     VELO_PT_shapekey_panel,
 )
