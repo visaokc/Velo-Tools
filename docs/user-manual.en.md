@@ -274,7 +274,7 @@ Choose **游戏 (Game) -> 终末地 (Arknights: Endfield)**.
 Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
 1. Select a valid **Frame Dump 目录 (Frame Dump Folder)**.
-2. Select an **输出目录 (Output Folder)**.
+2. Select an **输出目录 (Output Folder)**, or leave it blank to write into the Frame Dump folder.
 3. Configure object, component, and texture filters.
 4. Configure the Velo compatibility options.
 5. Run **从 Dump 提取模型 (Extract Model from Dump)**.
@@ -453,7 +453,7 @@ Choose **游戏 (Game) -> 鸣潮 (Wuthering Waves)**.
 Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
 1. Select a Frame Dump containing the target at the required distance and form.
-2. Select an output folder.
+2. Select an output folder, or leave it blank to write into the Frame Dump folder.
 3. Configure texture filters.
 4. Run **从 Dump 提取模型 (Extract Model from Dump)**.
 

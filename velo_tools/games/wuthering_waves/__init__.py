@@ -28,6 +28,7 @@ from ._wwmi_core import addon_updater_ops as _updater_ops
 from ._wwmi_core.addon import settings as _wsettings
 from ._wwmi_core.addon import ui as _wui
 from . import ui_l10n as _ui_l10n
+from ...core import extract_output_fallback as _extract_output_fallback
 from .. import registry as _registry
 from .. import _a2_panels as _a2
 
@@ -344,6 +345,10 @@ def register():
     _patch_l10n_properties()
     _strip_unwanted_vendor_panels()
     _patch_panels_for_velo_tools()
+    _extract_output_fallback.install(
+        _wui.VTWW_ExtractFrameData,
+        "VTWW_settings",
+    )
     _al.register()
     # Register scene properties ourselves (don't call the upstream top-level register(), so the trigger_mod_export timer isn't wired up).
     # The scene property name also uses the fork namespace, avoiding conflicts with standalone WWMI-Tools' Scene.wwmi_tools_settings.
@@ -489,6 +494,10 @@ def register():
 
 
 def unregister():
+    try:
+        _extract_output_fallback.remove(_wui.VTWW_ExtractFrameData)
+    except Exception:
+        pass
     try:
         from ...core.export import material_partition as _material_partition
         from ._wwmi_core.blender_export.blender_export import ObjectMergerWWMI

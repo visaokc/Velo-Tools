@@ -41,7 +41,7 @@ MOD_SKELETON_ITEMS = [
 VTEF_PROPERTY_TEXTS = {
     "tool_mode": ('Mode', 'Toggle current Arknights: Endfield EFMI/Velo tool functionality.'),
     "frame_dump_folder": ('Frame Dump Directory', 'Directory containing Frame Dump files and log.txt.'),
-    "extract_output_folder": ('Output directory', 'The extracted EFMI objects, textures, and the write directory of Metadata.json.'),
+    "extract_output_folder": ('Output directory', 'The extracted EFMI objects, textures, and the write directory of Metadata.json. Leave blank to use the Frame Dump directory.'),
     "import_extracted_objects": ('Import Blender after extraction', 'After extraction is completed, automatically import the object into Blender for quick browsing of the Dump.'),
     "tolerate_extraction_errors": ('Tolerate extraction errors', 'If a single object error occurs during extraction, processing will continue, and the erroneous object will be skipped.'),
     "verbose_logging": ('Detailed log', 'Output more detailed debugging information to the console.'),

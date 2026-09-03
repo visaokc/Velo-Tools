@@ -22,7 +22,7 @@ WWMI_PROPERTY_TEXTS = {
         'Texture filtering: skip known Cubemap',
         'Skip Hash textures that are in the known cubemap list; these textures often fail to load correctly.',
     ),
-    "extract_output_folder": ('Output directory', 'The write directory of the extracted WWMI objects.'),
+    "extract_output_folder": ('Output directory', 'The write directory of the extracted WWMI objects. Leave blank to use the Frame Dump directory.'),
     # Object Import
     "object_source_folder": ('Object source directory', 'Directory containing WWMI object components and textures.'),
     "color_storage": ('Vertex Color', 'Control how vertex color data is saved and displayed during import.'),

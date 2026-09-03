@@ -347,7 +347,7 @@ EFMI 面板提供四种模式：
 ### 5.2 提取帧数据
 
 1. 设置有效的 **Frame Dump 目录**，其中应包含 `log.txt`。
-2. 设置 **输出目录**。
+2. 设置 **输出目录**；如果留空，提取时直接使用上方的 **Frame Dump 目录**。
 3. 按需启用对象、Component 和贴图过滤。
 4. 如需使用任一 Merged 模式，请用当前 Velo 1.6.6 内置的 EFMI Tools v0.6.4 / runtime 1.4.3 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与提取阶段最终确定的 EFMI-style `runtime_vg_map`。
 5. 如需快速查看，可启用 **提取后导入 Blender**。
@@ -568,7 +568,7 @@ Velo 现在会在导入 LOD 时为每条 Component 记录写入 `present: true/f
 
 1. 切换到 **提取帧数据**。
 2. 设置包含 `log.txt` 的 **Frame Dump 目录**。
-3. 设置 **输出目录**。
+3. 设置 **输出目录**；如果留空，提取时直接使用上方的 **Frame Dump 目录**。
 4. 按需选择贴图过滤。
 5. 执行提取。
 

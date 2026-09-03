@@ -19,6 +19,7 @@ from . import lod_component_filter as _lod_component_filter
 from . import extraction_component_filter as _extraction_component_filter
 from . import semantic_evidence_resolution as _semantic_evidence_resolution
 from . import named_bone_ui as _named_bone_ui
+from ...core import extract_output_fallback as _extract_output_fallback
 from ._efmi_core import auto_load as _al
 from ._efmi_core.addon import settings as _vsettings
 from .. import registry as _registry
@@ -627,6 +628,11 @@ def register():
     _patch_panels_for_velo_tools()
     _patch_velo_settings()
     _install_import_export_mode_sync()
+    from ._efmi_core.addon import ui as _vui
+    _extract_output_fallback.install(
+        _vui.VTEF_ExtractFrameData,
+        "VTEF_settings",
+    )
     _al.register()
     _semantic_evidence_resolution.install_patch()
     bpy.types.Scene.VTEF_settings = bpy.props.PointerProperty(type=_vsettings.VTEF_Settings)
@@ -703,6 +709,11 @@ def unregister_embedded_late():
 
 
 def unregister():
+    try:
+        from ._efmi_core.addon import ui as _vui
+        _extract_output_fallback.remove(_vui.VTEF_ExtractFrameData)
+    except Exception:
+        pass
     try:
         _extraction_component_filter.remove()
     except Exception:
