@@ -498,7 +498,7 @@ global persist $ShapeKey_12 = 0.375
 
 **Velo 兼容选项 -> 插槽风格贴图**为可选功能，默认关闭。使用默认 INI 模板时，它读取同一对象源目录中的 fresh schema-v4/v5 `ShaderTextureUsage.json`，把证据完整的贴图 Hash override 改为 Component-local `ps-tN` 绑定。当分支区分需要观测绑定槽格式，或 CPU-posed Component 需要原始精确 draw range 时，必须使用 schema v5。每个实际赋值的 `ps-tN` 只生成一个对应的正向条件。即使无 DXGI texture format 的 buffer 绑定使整个 pair 标为不完整，已经记录的逐槽证据仍可验证负向 discriminator：明确冲突的旧 guard 会被淘汰，证据未知的旧 guard 保持原样；只有完整 pair 中缺失的槽才能解释为确定不匹配。需要时改选下一个有明确证据的 discriminator；正向 signature 已经排除竞争分支时不强加无效 guard；仍无法区分则 fail closed。生成的 draw transaction 会先运行 EFMI 原有贴图 override 阶段，只有实际命中的分支才备份它将要赋值的槽位并绑定导出 Resource。Component draw 结束后，Component-local restore command 会逐项检查 backup 是否为 `null`，恢复有效备份并立即清空，避免下一次 draw 复用残留状态；不会依赖一个 `*_TYPELESS` matcher 代替 EFMI 中的 typed Resource。槽位号完全来自 Dump，不写死固定范围；现有 EFMI Dump 已验证 `ps-t0`、`ps-t1` 与 `ps-t11..22`。
 
-为该模式准备对象源时应保持 **贴图过滤：跳过 Dirty Slot** 开启。STU 缺失或没有所需 schema-v4/v5 证据、必需格式缺失、多个赋值无法通过可观察槽位格式安全区分、CPU-posed draw range 缺失，或默认 INI 中找不到安全 draw anchor 时，导出会停止而不是猜测。收到提示时需重新提取旧对象源以生成 schema v5。没有足够 slot 证据的 Hash override 保持原样。自定义模板与模板实时更新会绕过此转换。
+为该模式准备对象源时应保持 **贴图过滤：跳过 Dirty Slot** 开启。被勾选但没有任何实际导出 draw 的 Component 会自动回退到 Hash-style，因为它没有需要执行的 Slot 事务；若 Component 已有 draw 却缺少安全贴图 trigger、STU 缺失或没有所需 schema-v4/v5 证据、必需格式缺失、多个赋值无法通过可观察槽位格式安全区分，或 CPU-posed draw range 缺失，导出仍会停止而不是猜测。收到提示时需重新提取旧对象源以生成 schema v5。没有足够 slot 证据的 Hash override 保持原样。自定义模板与模板实时更新会绕过此转换。
 
 需要让部分 Component 走 slot-style、其余 Component 保留 Hash-style 时，先启用 **插槽风格贴图**，点击 **列出组件**，再取消勾选需要保留 Hash 匹配的 Component。列表从未生成、保持为空时，表示全部具备证据的 Component 默认走 slot-style；刷新列表会保留已有选择，新发现的 Component 默认勾选。若某个贴图 Hash 同时属于取消勾选的 Component，其原生 Hash override 会全局保留；已勾选 Component 仍会在 EFMI 原 override 阶段之后执行自己的 slot setter。
 

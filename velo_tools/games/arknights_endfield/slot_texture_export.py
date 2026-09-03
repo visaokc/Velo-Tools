@@ -606,6 +606,42 @@ def build_plan(
     )
 
 
+def build_plan_for_rendered_ini(
+        source_folder: Path,
+        textures,
+        extracted_object,
+        ini_text: str,
+        eligible_components: set[int] | None = None,
+) -> tuple[SlotExportPlan | None, set[int]]:
+    drawable_components: set[int] = set()
+    lines = ini_text.split("\n")
+    for name, start, end in _section_spans(lines):
+        draw_match = _DRAW_SECTION_RE.match(name.strip())
+        if draw_match is None:
+            continue
+        if any(_DRAW_RE.match(lines[index]) for index in range(start + 1, end)):
+            drawable_components.add(int(draw_match.group(1)))
+
+    if eligible_components is None:
+        effective_components = drawable_components
+        hash_fallback_components: set[int] = set()
+    else:
+        requested_components = set(eligible_components)
+        hash_fallback_components = requested_components - drawable_components
+        effective_components = requested_components & drawable_components
+    if not effective_components:
+        return None, hash_fallback_components
+    return (
+        build_plan(
+            source_folder,
+            textures,
+            extracted_object,
+            eligible_components=effective_components,
+        ),
+        hash_fallback_components,
+    )
+
+
 def transform_ini(ini_text: str, plan: SlotExportPlan) -> str:
     lines = ini_text.split("\n")
     spans = _section_spans(lines)
@@ -730,19 +766,31 @@ def install() -> None:
             if eligible_components != set():
                 del last_report[:]
                 try:
-                    plan = build_plan(
+                    plan, hash_fallback_components = build_plan_for_rendered_ini(
                         resolve_path(cfg.object_source_folder),
                         self.textures,
                         self.extracted_object,
+                        result,
                         eligible_components=eligible_components,
                     )
-                    result = transform_ini(result, plan)
-                    message = (
-                        "[SlotTextures] EFMI Slot-style texture layer applied: "
-                        f"{plan.stats}"
-                    )
-                    print(message)
-                    last_report.append(message)
+                    if hash_fallback_components:
+                        message = (
+                            "[SlotTextures] INFO: Components without rendered draws "
+                            "use Hash-style fallback: "
+                            + ", ".join(
+                                map(str, sorted(hash_fallback_components))
+                            )
+                        )
+                        print(message)
+                        last_report.append(message)
+                    if plan is not None:
+                        result = transform_ini(result, plan)
+                        message = (
+                            "[SlotTextures] EFMI Slot-style texture layer applied: "
+                            f"{plan.stats}"
+                        )
+                        print(message)
+                        last_report.append(message)
                 except SlotStyleExportError as exc:
                     message = (
                         "[SlotTextures] ERROR: EFMI Slot-style export aborted: "
