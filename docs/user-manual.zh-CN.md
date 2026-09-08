@@ -496,7 +496,7 @@ global persist $ShapeKey_12 = 0.375
 
 使用默认模板导出的 EFMI INI 会直接以八位贴图 Hash 命名生成标识符，例如 `[Resource_Texture_ab9de26a]` 和 `[TextureOverride_Texture_ab9de26a]`，不再使用容易随贴图顺序变化的 `Resource_Texture10`。所有引用会同步改名，因而可以直接把 Resource、override、源 DDS 文件名和 STU 记录对应起来。用户自行控制的自定义模板保留其原有标识符。
 
-勾选 **插槽风格贴图** 后显示 **Slot 导出模式**（EFMI、WWMI 及跨场景导出均适用）。默认选择 **原生格式读取**，写出 `ps-tN->Format` 与 `DXGI_FORMAT_*` 枚举比较，需要 [XXMI Libs 1.1.0 或更新版本](https://github.com/SpectrumQT/XXMI-Libs-Package/releases/tag/v1.1.0)。**模糊格式匹配** 保留旧版 `match_format` / `filter_index` 写法。新模式把 typeless 资源格式族展开为对应的 typed SRV 格式比较，不再写出格式标记段；不改变 Component 取消勾选、Hash 回退和贴图备份/恢复逻辑。关闭 Slot 导出仍使用原有 Hash 写法。
+勾选 **插槽风格贴图** 后显示 **Slot 导出模式**（EFMI、WWMI 及跨场景导出均适用）。默认选择 **原生格式读取**，写出 `ps-tN->Format` 与 `DXGI_FORMAT_*` 枚举比较，需要 [XXMI Libs 1.1.0 或更新版本](https://github.com/SpectrumQT/XXMI-Libs-Package/releases/tag/v1.1.0)。**模糊格式匹配** 保留旧版 `match_format` / `filter_index` 写法。新模式直接使用每个 Component、每个 Slot 记录的具体格式，不展开 TYPELESS 格式族；仅实际记录了多种格式的槽位保留 OR，且不再写出格式标记段。EFMI 旧模糊模式也只生成实际参与条件判断的槽位所需的格式标记；不改变 Component 取消勾选、Hash 回退和贴图备份/恢复逻辑。关闭 Slot 导出仍使用原有 Hash 写法。
 
 **Velo 兼容选项 -> 插槽风格贴图**为可选功能，默认关闭。使用默认 INI 模板时，它读取同一对象源目录中的 fresh schema-v4/v5 `ShaderTextureUsage.json`，把证据完整的贴图 Hash override 改为 Component-local `ps-tN` 绑定。当分支区分需要观测绑定槽格式，或 CPU-posed Component 需要原始精确 draw range 时，必须使用 schema v5。每个实际赋值的 `ps-tN` 只生成一个对应的正向条件。即使无 DXGI texture format 的 buffer 绑定使整个 pair 标为不完整，已经记录的逐槽证据仍可验证负向 discriminator：明确冲突的旧 guard 会被淘汰，证据未知的旧 guard 保持原样；只有完整 pair 中缺失的槽才能解释为确定不匹配。需要时改选下一个有明确证据的 discriminator；正向 signature 已经排除竞争分支时不强加无效 guard；仍无法区分则 fail closed。生成的 draw transaction 会先运行 EFMI 原有贴图 override 阶段，只有实际命中的分支才备份它将要赋值的槽位并绑定导出 Resource。Component draw 结束后，Component-local restore command 会逐项检查 backup 是否为 `null`，恢复有效备份并立即清空，避免下一次 draw 复用残留状态；不会依赖一个 `*_TYPELESS` matcher 代替 EFMI 中的 typed Resource。槽位号完全来自 Dump，不写死固定范围；现有 EFMI Dump 已验证 `ps-t0`、`ps-t1` 与 `ps-t11..22`。
 
@@ -876,7 +876,7 @@ match_asset_name = T_Example_D
 
 取消勾选是绝对选择：该 Component 不应再生成 slot setter，而是保留原生 Hash override。跨场景组装只会把它门控到所属 IB 的 object-detected 状态，不会额外创建 Component 生命周期变量。
 
-勾选 **插槽风格贴图** 后显示 **Slot 导出模式**（EFMI、WWMI 及跨场景导出均适用）。默认选择 **原生格式读取**，写出 `ps-tN->Format` 与 `DXGI_FORMAT_*` 枚举比较，需要 [XXMI Libs 1.1.0 或更新版本](https://github.com/SpectrumQT/XXMI-Libs-Package/releases/tag/v1.1.0)。**模糊格式匹配** 保留旧版 `match_format` / `filter_index` 写法。新模式把 typeless 资源格式族展开为对应的 typed SRV 格式比较，不再写出格式标记段；不改变 Component 取消勾选、Hash 回退和贴图备份/恢复逻辑。关闭 Slot 导出仍使用原有 Hash 写法。
+勾选 **插槽风格贴图** 后显示 **Slot 导出模式**（EFMI、WWMI 及跨场景导出均适用）。默认选择 **原生格式读取**，写出 `ps-tN->Format` 与 `DXGI_FORMAT_*` 枚举比较，需要 [XXMI Libs 1.1.0 或更新版本](https://github.com/SpectrumQT/XXMI-Libs-Package/releases/tag/v1.1.0)。**模糊格式匹配** 保留旧版 `match_format` / `filter_index` 写法。新模式直接使用每个 Component、每个 Slot 记录的具体格式，不展开 TYPELESS 格式族；仅实际记录了多种格式的槽位保留 OR，且不再写出格式标记段。EFMI 旧模糊模式也只生成实际参与条件判断的槽位所需的格式标记；不改变 Component 取消勾选、Hash 回退和贴图备份/恢复逻辑。关闭 Slot 导出仍使用原有 Hash 写法。
 
 #### slot-style 的安全边界
 

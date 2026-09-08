@@ -113,7 +113,9 @@ def install():
             from velo_tools.core.export import slot_syntax
             slot_mode = getattr(cfg, "slot_export_mode", "NATIVE")
             result = slot_syntax.lower_ini(
-                result, slot_mode, component_markers=[
+                result, slot_mode,
+                format_evidence=slot_syntax.formats_from_forms(forms, texture_info),
+                component_markers=[
                     (section.component_id, section.name, section.lines)
                     for section in plan.sections if section.kind == "format_tag"
                 ])

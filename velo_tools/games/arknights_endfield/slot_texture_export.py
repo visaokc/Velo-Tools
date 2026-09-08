@@ -70,6 +70,7 @@ class SlotExportPlan:
     used_slots: tuple[int, ...]
     warnings: list[str] = field(default_factory=list)
     stats: dict[str, int] = field(default_factory=dict)
+    format_evidence: tuple[tuple[int, int, str], ...] = ()
 
 
 _INSTALLED = False
@@ -341,7 +342,7 @@ def build_plan(
         raise SlotStyleExportError("the EFMI export contains no texture resources")
 
     raw_by_component: dict[int, list[_Branch]] = {}
-    format_by_component_tag: dict[tuple[int, str], set[str]] = {}
+    format_by_component_slot_tag: dict[tuple[int, int, str], set[str]] = {}
     assigned_occurrences: set[tuple[int, str, int, str]] = set()
     required_occurrences: set[tuple[int, str, int, str]] = set()
     for pair in pairs:
@@ -371,8 +372,8 @@ def build_plan(
             except ValueError:
                 continue
             observed_signature.append((slot, tag))
-            format_by_component_tag.setdefault(
-                (pair.component_id, tag), set()
+            format_by_component_slot_tag.setdefault(
+                (pair.component_id, slot, tag), set()
             ).add(format_name)
         observed_map = dict(observed_signature)
         assignment_slots = {slot for slot, _resource in assignments}
@@ -527,8 +528,8 @@ def build_plan(
                 assignment_slots.add(slot)
                 used_slots.add(slot)
             assigned_hashes.update(branch.assignment_hashes)
-            for _slot, tag in branch.signature + branch.negative_signature:
-                format_names = format_by_component_tag.get((component_id, tag))
+            for slot, tag in branch.signature + branch.negative_signature:
+                format_names = format_by_component_slot_tag.get((component_id, slot, tag))
                 if format_names:
                     used_formats.setdefault(component_id, {}).setdefault(
                         tag, set()
@@ -590,6 +591,11 @@ def build_plan(
     }
     return SlotExportPlan(
         block_text="\n".join(block),
+        format_evidence=tuple(sorted({
+            (pair.component_id, slot, format_name)
+            for pair in pairs for slot, format_name in pair.signature_formats
+            if format_name
+        })),
         component_lists=component_lists,
         component_assignment_slots=component_assignment_slots,
         covered_resource_indices=covered_resource_indices,
@@ -787,7 +793,8 @@ def install() -> None:
                         result = transform_ini(result, plan)
                         from ...core.export import slot_syntax
                         slot_mode = getattr(cfg, "slot_export_mode", "NATIVE")
-                        result = slot_syntax.lower_ini(result, slot_mode)
+                        result = slot_syntax.lower_ini(
+                            result, slot_mode, format_evidence=plan.format_evidence)
                         if slot_mode == "NATIVE":
                             plan.stats["format_sections"] = 0
                         message = (

@@ -1275,6 +1275,8 @@ def _slot_plan(
             "slot branches; explicitly uncheck the Component to use Hash "
             "fallback"
         ) from exc
+    from velo_tools.core.export import slot_syntax
+    plan.format_evidence = slot_syntax.formats_from_forms(forms, texture_info)
     plan.root_catalog_hash_fallback_components = ()
     issues = (list(getattr(plan, "unsafe_fallback", None) or [])
               + list(getattr(plan, "slot_unrepresented", None) or []))
@@ -3706,7 +3708,8 @@ def _add_footer(ir: CrossSceneIR, cfg: Any) -> None:
     ])
 
 
-def _apply_slot_format_mode(ir: CrossSceneIR, cfg: Any, format_sections=()) -> None:
+def _apply_slot_format_mode(ir: CrossSceneIR, cfg: Any, format_sections=(),
+                            format_evidence=()) -> None:
     """Lower slot syntax after routing while preserving typed IR metadata."""
     if (not getattr(cfg, "velo_slot_style_textures", False)
             or getattr(cfg, "use_asset_name_matching", False)
@@ -3723,7 +3726,7 @@ def _apply_slot_format_mode(ir: CrossSceneIR, cfg: Any, format_sections=()) -> N
     ]
     lowered = slot_syntax.lower_ini(
         source, getattr(cfg, "slot_export_mode", "NATIVE"),
-        component_markers=markers)
+        component_markers=markers, format_evidence=format_evidence)
     if lowered == source:
         return
     replacements = {section.name: section.lines
@@ -3914,7 +3917,8 @@ def _compile_cross_scene_legacy(units: Sequence[Any], manifest: Mapping[str, Any
     final_ir.assert_unique()
     _assert_object_domain_isolation(final_ir.render(), units)
     from ..._wwmi_core.blender_export.ini_maker import IniMaker
-    _apply_slot_format_mode(final_ir, cfg, getattr(plan, "sections", ()))
+    _apply_slot_format_mode(final_ir, cfg, getattr(plan, "sections", ()),
+                            getattr(plan, "format_evidence", ()))
     text = IniMaker.with_checksum(final_ir.render())
     final_ir = CrossSceneIR.parse(text)
     text = final_ir.render()
@@ -4100,7 +4104,9 @@ def compile_cross_scene(units: Sequence[Any], root: Any,
     _add_texture_sections(ir, root, units, texture_plan, ini_textures)
     _add_footer(ir, cfg)
 
-    _apply_slot_format_mode(ir, cfg, texture_plan.format_sections)
+    _apply_slot_format_mode(
+        ir, cfg, texture_plan.format_sections,
+        getattr(texture_plan.raw_plan, "format_evidence", ()))
     report = _validate_ir(ir, buffers, textures, logo_source, mode)
     rendered = ir.render()
     text = _with_checksum(rendered)

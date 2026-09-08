@@ -46,12 +46,24 @@ def _format_marker(name, body):
     return fields["filter_index"], member
 
 
-def lower_ini(text: str, mode: str, *, component_markers=()) -> str:
+def formats_from_forms(forms, texture_info):
+    """Keep observed WWMI formats at component/slot granularity."""
+    return tuple(sorted({
+        (component_id, slot, texture_info[texture_hash]["format"])
+        for _label, components in forms
+        for component_id, shaders in components.items()
+        for slots in shaders.values()
+        for slot, texture_hash in slots.items()
+        if texture_hash in texture_info and texture_info[texture_hash].get("format")
+    }))
+
+
+def lower_ini(text: str, mode: str, *, component_markers=(), format_evidence=()) -> str:
     """Change only generated format markers and their component-local readers.
 
-    Planning remains family-based. A typeless resource marker must expand to
-    its typed views because ->Format prefers the bound SRV format. Typed
-    markers retain their exact observed formats, including sRGB distinctions.
+    Planning remains family-based, but native conditions use recorded formats
+    for each component/slot. Never expand TYPELESS into unobserved formats.
+    Multiple actually observed formats remain alternatives, not guessed types.
     Hash fallbacks, assignments, backups and restore transactions stay intact.
     """
     if mode == "FUZZY":
@@ -78,18 +90,17 @@ def lower_ini(text: str, mode: str, *, component_markers=()) -> str:
     if not members:
         return text
 
+    observed = {}
+    for component_id, slot, format_name in format_evidence:
+        if format_name in slot_formats.DXGI_FORMAT_NAMES:
+            key = (component_id, slot, slot_formats.filter_index_text(format_name))
+            observed.setdefault(key, set()).add(format_name)
+
     def native_term(match):
         slot, operator, tag = match.groups()
         if tag not in active_members:
             raise ValueError(f"Slot condition has no generated format marker: {tag}")
-        formats = set()
-        for member in active_members[tag]:
-            if member.endswith("_TYPELESS"):
-                prefix = slot_formats.format_prefix(member)
-                formats.update(value for value in slot_formats.DXGI_FORMAT_NAMES
-                               if slot_formats.format_prefix(value) == prefix)
-            else:
-                formats.add(member)
+        formats = observed.get((component_id, int(slot), tag), active_members[tag])
         terms = [f"ps-t{slot}->Format {operator} DXGI_FORMAT_{value}"
                  for value in sorted(formats)]
         if len(terms) == 1:
@@ -104,7 +115,8 @@ def lower_ini(text: str, mode: str, *, component_markers=()) -> str:
         block = text[header.start():end]
         setter = _SETTER_HEADER.match(header.group(1))
         if setter:
-            active_members = members.get(int(setter.group(1)), {})
+            component_id = int(setter.group(1))
+            active_members = members.get(component_id, {})
             lines = block.splitlines(keepends=True)
             block = "".join(
                 _TERM.sub(native_term, line)
