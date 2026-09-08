@@ -18,6 +18,7 @@ from . import slot_component_ui as _slot_component_ui
 from . import lod_component_filter as _lod_component_filter
 from . import extraction_component_filter as _extraction_component_filter
 from . import semantic_evidence_resolution as _semantic_evidence_resolution
+from . import tangent_space_export as _tangent_space_export
 from . import named_bone_ui as _named_bone_ui
 from ...core import extract_output_fallback as _extract_output_fallback
 from ._efmi_core import auto_load as _al
@@ -635,6 +636,7 @@ def register():
     )
     _al.register()
     _semantic_evidence_resolution.install_patch()
+    _tangent_space_export.install_patch()
     bpy.types.Scene.VTEF_settings = bpy.props.PointerProperty(type=_vsettings.VTEF_Settings)
     _slot_component_ui.register()
     _unified_vg_extract.install_patches()
@@ -758,6 +760,7 @@ def unregister():
     except Exception:
         pass
     try:
+        _tangent_space_export.remove_patch()
         _semantic_evidence_resolution.remove_patch()
     except Exception:
         pass
