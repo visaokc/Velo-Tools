@@ -1,4 +1,4 @@
-"""Keep EFMI tangent export independent of UV selection and batch contents."""
+"""Preserve EFMI normal directions and stable tangent-space export."""
 
 import numpy
 
@@ -8,6 +8,7 @@ from ._efmi_core.migoto_io.data_model.data_extractor import BlenderDataExtractor
 
 _ORIGINAL_GET_LOOP_DATA = None
 _ORIGINAL_ENCODE_TANGENTS = None
+_ORIGINAL_OCT_ENCODER = None
 
 
 def _get_loop_data(self, mesh, *args, **kwargs):
@@ -54,21 +55,40 @@ def _encode_tangents(tangents, normals):
     return numpy.copysign(parameter, sign)
 
 
+def _encode_oct_normal(normals):
+    normal = normals / numpy.linalg.norm(normals, axis=1, keepdims=True)
+    normal *= 1.0 / numpy.sum(numpy.abs(normal), axis=1, keepdims=True)
+    folded = normal.copy()
+    negative = normal[:, 2] < 0
+    # Octahedral folding requires a nonzero sign, including on negative-Z axes.
+    signs = numpy.where(normal[negative, :2] >= 0, 1.0, -1.0)
+    folded[negative, 0] = (1.0 - numpy.abs(normal[negative, 1])) * signs[:, 0]
+    folded[negative, 1] = (1.0 - numpy.abs(normal[negative, 0])) * signs[:, 1]
+    return folded[:, :2]
+
+
 def install_patch():
-    global _ORIGINAL_GET_LOOP_DATA, _ORIGINAL_ENCODE_TANGENTS
+    global _ORIGINAL_GET_LOOP_DATA, _ORIGINAL_ENCODE_TANGENTS, _ORIGINAL_OCT_ENCODER
     if _ORIGINAL_GET_LOOP_DATA is not None:
         return
     _ORIGINAL_GET_LOOP_DATA = BlenderDataExtractor.get_loop_data
     _ORIGINAL_ENCODE_TANGENTS = DataModelEFMI.__dict__["encode_tangents"]
+    _ORIGINAL_OCT_ENCODER = DataModelEFMI.__dict__.get("converter_oct_encode_vector")
     BlenderDataExtractor.get_loop_data = _get_loop_data
     DataModelEFMI.encode_tangents = staticmethod(_encode_tangents)
+    DataModelEFMI.converter_oct_encode_vector = staticmethod(_encode_oct_normal)
 
 
 def remove_patch():
-    global _ORIGINAL_GET_LOOP_DATA, _ORIGINAL_ENCODE_TANGENTS
+    global _ORIGINAL_GET_LOOP_DATA, _ORIGINAL_ENCODE_TANGENTS, _ORIGINAL_OCT_ENCODER
     if _ORIGINAL_GET_LOOP_DATA is None:
         return
     BlenderDataExtractor.get_loop_data = _ORIGINAL_GET_LOOP_DATA
     DataModelEFMI.encode_tangents = _ORIGINAL_ENCODE_TANGENTS
+    if _ORIGINAL_OCT_ENCODER is None:
+        del DataModelEFMI.converter_oct_encode_vector
+    else:
+        DataModelEFMI.converter_oct_encode_vector = _ORIGINAL_OCT_ENCODER
     _ORIGINAL_GET_LOOP_DATA = None
     _ORIGINAL_ENCODE_TANGENTS = None
+    _ORIGINAL_OCT_ENCODER = None
