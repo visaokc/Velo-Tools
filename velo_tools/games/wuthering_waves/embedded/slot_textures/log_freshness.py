@@ -79,6 +79,7 @@ class LogEvidence:
     # (ResourceDescriptor.call_id) and FrameDumpLog keying.
     calls: Dict[str, CallEvidence] = field(default_factory=dict)
     ps_event_count: int = 0
+    runtime_output_hashes: set = field(default_factory=set)
 
 
 def _norm_call_id(call_id) -> str:
@@ -105,6 +106,10 @@ def parse_log_freshness(dump_path) -> Optional[LogEvidence]:
         return None
 
     evidence = LogEvidence()
+    for file in dump_dir.iterdir():
+        match = re.match(r'^\d+-(?:o\d+|oD|u\d+)=([0-9a-f]{8})(?:\(([0-9a-f]{8})\))?', file.name, re.I)
+        if match:
+            evidence.runtime_output_hashes.update(h.lower() for h in match.groups() if h)
     calls = evidence.calls
 
     color_rt_count = 0      # running OM state, persists across call boundaries
@@ -165,17 +170,12 @@ def parse_log_freshness(dump_path) -> Optional[LogEvidence]:
                 continue
             m = _OMSET_RE.match(payload)
             if m is not None:
-                if int(m.group(1)) == 0:
-                    color_rt_count = 0
-                else:
-                    pending = ('om', 0)  # count digit-prefixed color sub-lines
+                pending = ('om', 0)  # Includes depth-only output bindings.
                 continue
             m = _OMSET_UAV_RE.match(payload)
             if m is not None:
                 num_rtvs = int(m.group(1))
-                if num_rtvs == 0:
-                    color_rt_count = 0
-                elif num_rtvs > 0:
+                if num_rtvs >= 0:
                     pending = ('om', 0)
                 # NumRTVs:-1 = D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL
                 continue
@@ -192,6 +192,10 @@ def parse_log_freshness(dump_path) -> Optional[LogEvidence]:
         # Indented sub-line (or non-call noise): attach to the pending event.
         if pending is None:
             continue
+        if pending[0] == 'om' and re.match(r'^\s+(?:\d+|D): ', line):
+            output_hash = _SUB_HASH_RE.search(line)
+            if output_hash is not None:
+                evidence.runtime_output_hashes.add(output_hash.group(1))
         m = _SUB_SLOT_RE.match(line)
         if m is None:
             continue  # 'D:' depth views, ': view=' clear lines, hex data, etc.
@@ -365,3 +369,14 @@ def find_dump_root(start_path) -> Optional[Path]:
     except OSError:
         pass
     return None
+
+
+def mark_runtime_outputs(usage, evidence):
+    """Preserve output-resource evidence without guessing from texture dimensions."""
+    if evidence is None or not isinstance(usage, dict):
+        return
+    if usage.get('hash') in evidence.runtime_output_hashes:
+        usage['runtime_output'] = True
+    for value in usage.values():
+        if isinstance(value, dict):
+            mark_runtime_outputs(value, evidence)

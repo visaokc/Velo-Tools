@@ -166,7 +166,7 @@ def _normalise_restore_policy(value):
         slot = int(value.get("persistent_slot"))
     except (TypeError, ValueError):
         return full, False
-    if not 0 <= slot <= 8:
+    if not 0 <= slot < 16:
         return full, False
     return {"mode": "except", "persistent_slot": slot}, True
 
@@ -205,7 +205,7 @@ def _branch_expectation(contract, final_setter):
             except (TypeError, ValueError):
                 signature = []
                 break
-            if not 0 <= slot <= 8 or not value:
+            if not 0 <= slot < 16 or not value:
                 signature = []
                 break
             signature.append((slot, value))
@@ -216,7 +216,7 @@ def _branch_expectation(contract, final_setter):
             assignment_slots = ()
         signature_slots = [slot for slot, _value in signature]
         if (not signature or not assignment_slots
-                or any(not 0 <= slot <= 8 for slot in assignment_slots)
+                or any(not 0 <= slot < 16 for slot in assignment_slots)
                 or len(signature_slots) != len(set(signature_slots))
                 or len(assignment_slots) != len(set(assignment_slots))):
             errors.append(

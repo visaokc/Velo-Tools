@@ -247,6 +247,7 @@ def _build_components_usage(
                 vs_out[ps_key] = ps_out
             component_out[vs_key] = vs_out
         out[f'Component {component_id}'] = component_out
+    log_freshness.mark_runtime_outputs(out, evidence)
     return out, sources
 
 
@@ -386,6 +387,8 @@ def _merge_variant_records(dst_components, src_components):
                             # dump: upgrade the canonical flag.
                             existing['fresh'] = True
                         if new_hash and new_hash == existing.get('hash'):
+                            if record.get('runtime_output'):
+                                existing['runtime_output'] = True
                             src_path = str(record.get('asset_path') or '')
                             dst_path = str(existing.get('asset_path') or '')
                             if src_path and dst_path and src_path != dst_path:

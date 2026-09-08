@@ -156,6 +156,8 @@ def normalize_usage(raw: dict, source: str, warnings: List[str],
                                 'width': record.get('width') or 0,
                                 'height': record.get('height') or 0,
                             })
+                            if record.get('runtime_output'):
+                                info['runtime_output'] = True
                             for variant in record.get('variants') or []:
                                 if isinstance(variant, str):
                                     info.setdefault('variants', [])
@@ -776,7 +778,7 @@ def _local_restore_policy(comp_id: int,
         try:
             for raw_slot in value:
                 slot = int(raw_slot)
-                if slot < 0 or slot > 8:
+                if slot < 0 or slot >= 16:
                     return None
                 out.add(slot)
         except (TypeError, ValueError):
@@ -790,7 +792,7 @@ def _local_restore_policy(comp_id: int,
         try:
             for raw_slot, raw_hash in value.items():
                 slot = int(raw_slot)
-                if slot < 0 or slot > 8 or slot in out:
+                if slot < 0 or slot >= 16 or slot in out:
                     return None
                 tex_hash = _canon_hash(raw_hash)
                 if tex_hash is None:
@@ -1276,7 +1278,10 @@ def _eligible_slots(pair_map: Dict[int, Optional[str]]) -> Set[int]:
 
 
 def _local_signature_slots(pair_map: Dict[int, Optional[str]]) -> Set[int]:
-    return set(pair_map) & set(constants.LOCAL_DISCRIMINATOR_SLOTS)
+    return {slot for slot in set(pair_map) & set(constants.LOCAL_DISCRIMINATOR_SLOTS)
+            if slot <= 8 or not any(
+                other < slot and pair_map[other] == pair_map[slot]
+                for other in pair_map)}
 
 
 def _canonical_override_slots(pair_map: Dict[int, Optional[str]],
@@ -1287,23 +1292,24 @@ def _canonical_override_slots(pair_map: Dict[int, Optional[str]],
 def _component_hash_canonical_slots(forms: List[Tuple[str, FormData]],
                                     alias: Dict[str, str],
                                     form_routes: Optional[FormRoutes] = None,
-                                    ) -> Dict[Tuple[int, Optional[str], str], int]:
-    out: Dict[Tuple[int, Optional[str], str], int] = {}
+                                    texture_info: Optional[TextureInfo] = None,
+                                    ) -> Dict[Tuple[int, int, Optional[str], str], int]:
+    out: Dict[Tuple[int, int, Optional[str], str], int] = {}
     score_by_key: Dict[
-        Tuple[int, Optional[str], str], Tuple[int, int, int]
+        Tuple[int, int, Optional[str], str], Tuple[int, int, int]
     ] = {}
     for form_id, (_label, form_data) in enumerate(forms, start=1):
         for comp_id, comp_pairs in form_data.items():
             route = (form_routes or {}).get((form_id, comp_id))
             for pair_map in comp_pairs.values():
-                role = _pass_role(pair_map, {})
+                role = _pass_role(pair_map, texture_info or {})
                 role_score = 2 if role == 'material' else (1 if role == 'outline' else 0)
                 layout_score = len(_eligible_slots(pair_map))
                 for slot, tex_hash in pair_map.items():
                     if not isinstance(tex_hash, str):
                         continue
                     canon = alias.get(tex_hash, tex_hash)
-                    key = (comp_id, route, canon)
+                    key = (form_id, comp_id, route, canon)
                     score = (role_score, layout_score, -slot)
                     previous = score_by_key.get(key)
                     if previous is None or score > previous:
@@ -1538,13 +1544,34 @@ def _local_condition_slots(pair_map: Dict[int, Optional[str]],
     return slots & fresh_slots if has_freshness else slots
 
 
+def _has_shifted_material_layout(pair_map, comp_pairs, texture_info, slots):
+    """Require at least three distinct material hashes shifted by the same offset."""
+    if not any(slot > 8 for slot in slots):
+        return False
+    for other in comp_pairs.values():
+        if other is pair_map or not _is_material_pair(other, texture_info):
+            continue
+        offsets = {}
+        for slot in slots:
+            tex_hash = pair_map.get(slot)
+            if not tex_hash or texture_info.get(tex_hash, {}).get('runtime_output'):
+                continue
+            for source_slot, source_hash in other.items():
+                if source_hash == tex_hash and source_slot != slot:
+                    offsets.setdefault(slot - source_slot, set()).add(tex_hash)
+        if any(len(hashes) >= 3 for hashes in offsets.values()):
+            return True
+    return False
+
+
 def _local_assignment_slots(pair_map: Dict[int, Optional[str]],
                             texture_info: TextureInfo,
                             role: str,
                             fresh_slots: Set[int],
                             inherited_slots: Optional[Set[int]] = None) -> Set[int]:
     slots = _canonical_override_slots(pair_map, texture_info)
-    return slots & (fresh_slots | set(inherited_slots or ()))
+    return {slot for slot in slots & (fresh_slots | set(inherited_slots or ()))
+            if not texture_info.get(pair_map.get(slot), {}).get('runtime_output')}
 
 
 def _is_material_pair(pair_map: Dict[int, Optional[str]],
@@ -1599,6 +1626,8 @@ def _hash_fingerprint(forms: List[Tuple[str, FormData]],
                     if form_fresh is not None:
                         fresh = form_fresh.get((comp_id, ps, slot))
                     row.append([slot, tex_hash, info.get('format') or '', fresh])
+                    if info.get('runtime_output'):
+                        row[-1].append('runtime_output')
                 form_rows.append([comp_id, ps, bool(form_depth.get((comp_id, ps), False)), row])
         payload.append([label, form_rows])
     raw = json.dumps(payload, sort_keys=True, separators=(',', ':'))
@@ -1961,7 +1990,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
     audit_forms = _local_audit_forms(forms, filtered_forms, texture_info)
     alias = _variant_aliases(texture_info)
     canonical_seats = _component_hash_canonical_slots(
-        filtered_forms, alias, form_routes)
+        filtered_forms, alias, form_routes, texture_info)
     ambiguous_primary: List[str] = []
     primary_passes = _primary_passes_by_form(
         audit_forms, texture_info, freshness, pass_depth, alias,
@@ -2013,7 +2042,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     continue
                 outer_sig = _signature_key(
                     pair_map, texture_info,
-                    _local_signature_slots(pair_map), alias)
+                    set(pair_map) & set(constants.LOCAL_DISCRIMINATOR_SLOTS), alias)
                 outer_by_slot = dict(outer_sig)
                 assignments = tuple(sorted(
                     (slot, tex_hash)
@@ -2111,7 +2140,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                     continue
                 outer_sig = _signature_key(
                     pair_map, texture_info,
-                    _local_signature_slots(pair_map), alias)
+                    set(pair_map) & set(constants.LOCAL_DISCRIMINATOR_SLOTS), alias)
                 depth_only = False
                 if pass_depth is not None and form_id - 1 < len(pass_depth):
                     depth_only = bool((pass_depth[form_id - 1] or {}).get(
@@ -2122,7 +2151,8 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                         and form_fresh.get((comp_id, ps, slot)) is False)
                 }
                 color_pass_candidate = bool(
-                    not depth_only and observed_only_slots)
+                    not depth_only and (observed_only_slots or _has_shifted_material_layout(
+                        pair_map, comp_pairs, texture_info, override_slots)))
                 primary_fresh_slots = _fresh_signature_slots(
                     comp_id, primary_ps, primary_pair, form_fresh)
                 primary_inherited_slots = _inherited_assignment_slots(
@@ -2171,7 +2201,7 @@ def build_local_discriminator_audit(forms: List[Tuple[str, FormData]],
                                 and other_slot in override_slots
                                 and alias.get(other_hash, other_hash) == canon)
                         ) > 1)
-                    if (canonical_seats.get((comp_id, route, canon)) == slot
+                    if (canonical_seats.get((form_id, comp_id, route, canon)) == slot
                             or duplicate_service_seat
                             or service_drift_branch
                             or color_pass_candidate):
@@ -2632,6 +2662,33 @@ def _route_split_components(
     return complete
 
 
+def _order_residual_pass_branches(branches: List[_LocalBranch]) -> List[_LocalBranch]:
+    """Keep a fresh consumer ahead of a branch matching its residual state."""
+    if not any(slot > 8 for branch in branches for slot in branch.assign):
+        return branches
+    edges = {index: set() for index in range(len(branches))}
+    for index, consumer in enumerate(branches):
+        observed = set(consumer.outer_signature)
+        if not observed:
+            continue
+        for other_index, other in enumerate(branches):
+            if index == other_index or consumer.assign == other.assign:
+                continue
+            if (set(other.signature).issubset(observed)
+                    and not set(consumer.signature).issubset(other.outer_signature)):
+                edges[other_index].add(index)
+    ordered = []
+    remaining = set(edges)
+    while remaining:
+        ready = next((index for index in sorted(remaining)
+                      if not edges[index] & remaining), None)
+        if ready is None:
+            raise SlotStyleDegrade('Conflicting residual pass branch order')
+        ordered.append(branches[ready])
+        remaining.remove(ready)
+    return ordered
+
+
 def _local_conditions_overlap(left: _LocalBranch,
                               right: _LocalBranch) -> bool:
     left_positive = dict(left.signature)
@@ -2842,6 +2899,7 @@ def _local_branches_from_audit(audit: dict,
                 'component': comp_id,
                 'route': route,
                 'signature': variant_signature,
+                'outer_signature': row_outer_signature,
                 'assign_key': tuple(sorted(variant.items())),
             })
             branch_records.append({
@@ -2975,6 +3033,15 @@ def _local_branches_from_audit(audit: dict,
             sig for other_key, values in row_signatures.get(scope, {}).items()
             if other_key != evidence_assign_key for sig in values
         ]
+        if any(slot > 8 for key in row_signatures.get(scope, {})
+               for slot, _hash in key):
+            # Residual high slots are present at competing draws too.
+            other_signatures = [
+                record.get('outer_signature') or record['signature']
+                for record in row_signature_records
+                if (record['component'], record['route']) == scope
+                and record['assign_key'] != evidence_assign_key
+            ]
         blocked_negative_slots = {
             slot for other_key in row_signatures.get(scope, {})
             for slot, _tex_hash in other_key
@@ -3521,6 +3588,7 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
                 key=lambda b: (-len(b.assign), -len(b.signature),
                                b.form_id or 0, b.signature,
                                tuple(sorted(b.assign.items()))))
+            ordered = _order_residual_pass_branches(ordered)
             first = True
             emitted: List[_LocalBranch] = []
             for branch in ordered:
@@ -3664,7 +3732,9 @@ def _build_local_plan(forms: List[Tuple[str, FormData]],
     out.append('; Slot-style texture layer (local form discriminator)')
     out.append(f'; Forms: {form_sources}')
     out.append('; Conditions are audited per-draw slot-layout branches;')
-    out.append('; ps-t0..8 may be used as condition slots, while assignment')
+    out.append('; ps-t0..15 may be used as condition slots, while assignment'
+               if any(slot > 8 for slot in used_slots) else
+               '; ps-t0..8 may be used as condition slots, while assignment')
     out.append('; slots are limited to canonical override seats with mod resources.')
     out.append('; object_detected is an outer scope gate, not a form discriminator.')
     if anchor_resources:

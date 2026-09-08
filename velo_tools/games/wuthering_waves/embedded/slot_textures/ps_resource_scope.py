@@ -15,14 +15,14 @@ _SETTER_RE = re.compile(
     r"^(CommandListSetTexturesComponent\d+"
     r"(?:Route(?:Base|[0-9a-f]{8}))?)((?:_ib\d+)*)$", re.I)
 _RESTORE_RE = re.compile(
-    r"^CommandListRestorePixelShaderResources(?:ExceptT([0-8]))?"
+    r"^CommandListRestorePixelShaderResources(?:ExceptT(\d+))?"
     r"((?:_ib\d+)*)$",
     re.I,
 )
 _BACKUP_RE = re.compile(
     r"^CommandListBackupPixelShaderResources((?:_ib\d+)*)$", re.I)
 _BYPASS_RE = re.compile(
-    r"^ResourceBypassPST([0-8])((?:_ib\d+)*)$", re.I)
+    r"^ResourceBypassPST(\d+)((?:_ib\d+)*)$", re.I)
 _BYPASS_COMMENT_RE = re.compile(
     r"^\s*;\s*(?:Temporary PS texture backup reference|"
     r"Runtime ps-t0\.\.8 backup handles)\b",
@@ -227,8 +227,21 @@ def _transactions(lines: Sequence[str], start: int, end: int):
         yield index, cleanup, limit, boundary, suffix
 
 
+def _scope_slots(lines, suffix):
+    slots = set(range(9))
+    for name, start, end in _section_spans(lines):
+        parts = _setter_parts(name)
+        if parts is None or parts[1] != suffix.casefold():
+            continue
+        for line in lines[start + 1:end]:
+            match = re.match(r"\s*ps-t(\d+)\s*=", line, re.I)
+            if match and 0 <= int(match.group(1)) < 16:
+                slots.add(int(match.group(1)))
+    return sorted(slots)
+
+
 def _support_bodies(
-        restore_specs: Iterable[Tuple[str, Optional[int]]]
+        restore_specs: Iterable[Tuple[str, Optional[int]]], slots=range(9)
         ) -> Dict[str, List[str]]:
     specs = {
         (str(suffix).casefold(), persistent_slot)
@@ -239,7 +252,7 @@ def _support_bodies(
     for suffix in sorted(suffixes, key=lambda value: (value != "", value)):
         bodies[_backup_name(suffix)] = [
             f"{_bypass_name(slot, suffix)} = ref ps-t{slot}"
-            for slot in range(9)
+            for slot in slots
         ]
         policies = sorted(
             (slot for spec_suffix, slot in specs if spec_suffix == suffix),
@@ -248,7 +261,7 @@ def _support_bodies(
         for persistent_slot in policies:
             bodies[_restore_name(suffix, persistent_slot)] = [
                 f"ps-t{slot} = ref {_bypass_name(slot, suffix)}"
-                for slot in range(9)
+                for slot in slots
                 if slot != persistent_slot
             ]
     return bodies
@@ -322,15 +335,15 @@ def _generated_support_groups(
         backups = list(group["backup"])
         restores = list(group["restore"])
         bypasses = list(group["bypass"])
-        if len(backups) != 1 or not restores or len(bypasses) != 9:
+        if len(backups) != 1 or not restores or len(bypasses) < 9:
             continue
         slots = [int(entry[3]) for entry in bypasses]
-        if set(slots) != set(range(9)) or len(set(slots)) != 9:
+        if not set(range(9)).issubset(slots) or len(set(slots)) != len(slots):
             continue
 
         backup_expected = [
             line.casefold()
-            for line in _support_bodies({(suffix, None)})[
+            for line in _support_bodies({(suffix, None)}, sorted(slots))[
                 _backup_name(suffix)]
         ]
         if _support_body_lines(lines, backups[0][1], backups[0][2]) \
@@ -341,7 +354,7 @@ def _generated_support_groups(
         for name, start, end, persistent_slot in restores:
             expected = [
                 line.casefold()
-                for line in _support_bodies({(suffix, persistent_slot)})[
+                for line in _support_bodies({(suffix, persistent_slot)}, sorted(slots))[
                     _restore_name(suffix, persistent_slot)]
             ]
             if _support_body_lines(lines, start, end) != expected:
@@ -446,7 +459,10 @@ def _ensure_support_sections(
     }
     if not specs:
         return
-    required_bodies = _support_bodies(specs)
+    required_bodies = {}
+    for suffix, persistent_slot in specs:
+        required_bodies.update(_support_bodies(
+            {(suffix, persistent_slot)}, _scope_slots(lines, suffix)))
     required_by_key = {
         name.casefold(): (name, body)
         for name, body in required_bodies.items()
@@ -547,7 +563,7 @@ def _ensure_support_sections(
         key=lambda value: (value != "", value),
     )
     for suffix in suffixes:
-        for slot in range(9):
+        for slot in _scope_slots(lines, suffix):
             resource = _bypass_name(slot, suffix)
             key = resource.casefold()
             if key in existing:
@@ -714,7 +730,10 @@ def audit_ps_resource_scope(ini_text: str,
             if enforce_contract:
                 restore_specs.add((suffix, expected_slot))
 
-    required_bodies = _support_bodies(restore_specs)
+    required_bodies = {}
+    for suffix, persistent_slot in restore_specs:
+        required_bodies.update(_support_bodies(
+            {(suffix, persistent_slot)}, _scope_slots(lines, suffix)))
     for restore_name, _expected_body in required_bodies.items():
         if restore_name.casefold() not in section_bodies:
             errors.append(f"{restore_name} missing for slot-style ps-t scope")
@@ -726,7 +745,7 @@ def audit_ps_resource_scope(ini_text: str,
     for suffix in suffixes:
         backup = _backup_name(suffix)
         backup_body = section_bodies.get(backup.casefold(), "")
-        for slot in range(9):
+        for slot in _scope_slots(lines, suffix):
             resource = _bypass_name(slot, suffix)
             if resource.casefold() not in section_bodies:
                 errors.append(f"{resource} missing for slot-style ps-t backup")
@@ -741,7 +760,7 @@ def audit_ps_resource_scope(ini_text: str,
                               -1 if item[1] is None else item[1])):
         restore = _restore_name(suffix, persistent_slot)
         body = section_bodies.get(restore.casefold(), "")
-        for slot in range(9):
+        for slot in _scope_slots(lines, suffix):
             resource = _bypass_name(slot, suffix)
             found = bool(re.search(
                 r"^\s*ps-t%d\s*=\s*ref\s+%s\s*$"

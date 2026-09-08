@@ -2494,8 +2494,22 @@ def _draw_wrapper_lines(
     return lines
 
 
+def _texture_scope_slots(texture_plan: TexturePlan, suffix: str) -> List[int]:
+    slots = set(range(9))
+    for (owner, _component, _route), setter in texture_plan.setters.items():
+        if owner != suffix:
+            continue
+        for line in setter.lines:
+            for match in re.finditer(r"\bps-t(\d+)\b", line):
+                slot = int(match.group(1))
+                if 0 <= slot < 16:
+                    slots.add(slot)
+    return sorted(slots)
+
+
 def _add_ps_support(ir: CrossSceneIR, unit: Any,
-                    policies: Iterable[Mapping[str, Any]]) -> None:
+                    policies: Iterable[Mapping[str, Any]],
+                    resource_slots: Iterable[int] = range(9)) -> None:
     if not _unit_has_geometry(unit):
         return
     suffix = str(unit.plan.suffix)
@@ -2503,7 +2517,7 @@ def _add_ps_support(ir: CrossSceneIR, unit: Any,
     ir.add_section(
         _backup_name(suffix),
         [f"ResourceBypassPST{slot}{suffix} = ref ps-t{slot}"
-         for slot in range(9)],
+         for slot in resource_slots],
         phase=IniPhase.DRAW_STACKS,
         ib_order=order,
         role="shared",
@@ -2517,13 +2531,13 @@ def _add_ps_support(ir: CrossSceneIR, unit: Any,
             _restore_name_for(suffix, policy),
             [
                 f"ps-t{index} = ref ResourceBypassPST{index}{suffix}"
-                for index in range(9) if index != slot
+                for index in resource_slots if index != slot
             ],
             phase=IniPhase.DRAW_STACKS,
             ib_order=order,
             role="shared",
         )
-    for slot in range(9):
+    for slot in resource_slots:
         ir.add_section(
             f"ResourceBypassPST{slot}{suffix}", (),
             phase=IniPhase.BUFFERS,
@@ -2549,7 +2563,7 @@ def _add_unit_draw_sections(
     components = layout.get("components") or ()
     lods = _unit_lods(unit, root)
     if _unit_has_geometry(unit):
-        trigger = [f"CheckTextureOverride = ps-t{slot}" for slot in range(9)]
+        trigger = [f"CheckTextureOverride = ps-t{slot}" for slot in _texture_scope_slots(texture_plan, suffix)]
         if mode == "MERGED" or lods:
             trigger.extend([
                 "CheckTextureOverride = vs-cb3",
@@ -2653,7 +2667,8 @@ def _add_unit_draw_sections(
         in texture_plan.setters.items()
         if setter_suffix == suffix
     )
-    _add_ps_support(ir, unit, policies)
+    _add_ps_support(ir, unit, policies,
+                    _texture_scope_slots(texture_plan, suffix))
 
 
 def _add_fold_morph_sections(

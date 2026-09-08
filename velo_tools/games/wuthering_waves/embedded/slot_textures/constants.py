@@ -205,7 +205,7 @@ def emitted_format_members(format_name: str) -> list:
 # replacement branches themselves are emitted for every pair.
 MAIN_SLOTS = (0, 1, 2, 3)
 SERVICE_SLOTS = (5, 6, 7, 8)
-LOCAL_DISCRIMINATOR_SLOTS = tuple(range(9))
+LOCAL_DISCRIMINATOR_SLOTS = tuple(range(16))
 
 # Optional belt on top of the slot-set fingerprint: when a MAIN_SLOTS texture
 # descriptor is known, material pairs must look like character textures

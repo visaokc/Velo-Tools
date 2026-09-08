@@ -203,6 +203,16 @@ def apply(ini_text: str, plan: SlotPlan, *,
             continue
         for i in trigger_indices:
             indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+            contract = (getattr(plan, 'branch_contract', None) or {}).get(
+                list_name, {})
+            high_slots = {
+                int(slot) for branch in contract.get('branches', [])
+                for slot, _value in branch.get('positive_signature', [])
+                if 9 <= int(slot) < 16
+            }
+            insert_after.setdefault(i, []).extend(
+                f'{indent}CheckTextureOverride = ps-t{slot}'
+                for slot in sorted(high_slots))
             insert_after.setdefault(i, []).append(f'{indent}run = {list_name}')
         injected_components.add(comp_id)
 

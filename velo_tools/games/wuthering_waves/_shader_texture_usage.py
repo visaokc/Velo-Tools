@@ -84,6 +84,7 @@ _ORIG_WRITE_OBJECTS = None
 _ORIG_DUMP_POST_INIT = None
 # vb0_hash -> list of "full descriptor lists" ordered by component (component_id is the index)
 _CAPTURE = {}
+_ADDED_TEXTURE_MAPS = {}
 
 
 def _skip_dirty_slot_enabled() -> bool:
@@ -332,6 +333,7 @@ def _wrapped_write_objects(output_directory, objects, allow_missing_shapekeys=Fa
                       f'{skipped_dirty_slots} stale-inherited slot record(s) from '
                       f'ShaderTextureUsage.json')
 
+            _log_freshness.mark_runtime_outputs(shader_texture_usage, evidence)
             _stu_metadata.sync_form_component_modes(shader_texture_usage)
 
             if evidence is not None and skip_dirty_slot:
@@ -488,6 +490,14 @@ def install_patches():
     global _ORIG_DUMP_POST_INIT
     if _INSTALLED:
         return
+    for slot in range(9, 16):
+        key = f'TEXTURE_{slot}'
+        if key not in _efd_module.configuration.shader_resources:
+            value = _efd_module.DataMap([_efd_module.Source(
+                'DRAW_VS', _efd_module.ShaderType.Pixel, _efd_module.SlotType.Texture,
+                _efd_module.SlotId(slot), ignore_missing=True)])
+            _efd_module.configuration.shader_resources[key] = value
+            _ADDED_TEXTURE_MAPS[key] = value
     _ORIG_BUILD_COMPONENTS = _cb_module.MeshObject.build_components
     _ORIG_WRITE_OBJECTS = _efd_module.write_objects
     _ORIG_DUMP_POST_INIT = _dump_module.Dump.__post_init__
@@ -510,6 +520,10 @@ def uninstall_patches():
         if _ORIG_DUMP_POST_INIT is not None:
             _dump_module.Dump.__post_init__ = _ORIG_DUMP_POST_INIT
     finally:
+        for key, value in _ADDED_TEXTURE_MAPS.items():
+            if _efd_module.configuration.shader_resources.get(key) is value:
+                del _efd_module.configuration.shader_resources[key]
+        _ADDED_TEXTURE_MAPS.clear()
         _ORIG_BUILD_COMPONENTS = None
         _ORIG_WRITE_OBJECTS = None
         _ORIG_DUMP_POST_INIT = None
