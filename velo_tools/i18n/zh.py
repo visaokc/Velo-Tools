@@ -1,6 +1,12 @@
 """Simplified Chinese catalog for Velo Tools."""
 
 ZH_TRANSLATIONS = {
+    'Slot Export Mode': 'Slot 导出模式',
+    'Choose the format matching syntax for slot-enabled components': '选择已启用 Slot 的 Component 使用的格式匹配语法',
+    'Native Format Read': '原生格式读取',
+    'Read slot formats with ->Format and DXGI_FORMAT literals; requires XXMI Libs 1.1.0 or newer': '使用 ->Format 与 DXGI_FORMAT 枚举读取 Slot 格式；需要 XXMI Libs 1.1.0 或更新版本',
+    'Fuzzy Format Matching': '模糊格式匹配',
+    'Use legacy match_format and filter_index sections for slot format matching': '使用旧版 match_format 与 filter_index 段匹配 Slot 格式',
     'Backing up current version': '正在备份当前版本',
     'Background update in progress': '后台更新正在进行',
     'Cleaning temporary files': '正在清理临时文件',

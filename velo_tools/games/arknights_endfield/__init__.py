@@ -29,6 +29,7 @@ from .. import _a2_panels as _a2
 
 _TAB_VALUE = "GAME"
 _ORIGINAL_VTEF_IMPORT_EXECUTE = None
+_ORIGINAL_SLOT_MODE_ANNOTATION = None
 
 # Arknights: Endfield (EFMI) game descriptor: registered into the multi-game registry,
 # queried by active_game for shared tools such as the export adapter / export hook /
@@ -558,7 +559,9 @@ def _patch_toolbox_texts():
 
 
 def _patch_velo_settings():
-    from bpy.props import BoolProperty, StringProperty
+    global _ORIGINAL_SLOT_MODE_ANNOTATION
+    from bpy.props import BoolProperty, EnumProperty, StringProperty
+    from ...core.export.slot_syntax import MODE_ITEMS
 
     _patch_preferences()
     _patch_vtef_visible_property_texts()
@@ -576,6 +579,13 @@ def _patch_velo_settings():
         BoolProperty,
         "slot_style_textures",
         default=False,
+    )
+    _ORIGINAL_SLOT_MODE_ANNOTATION = _vsettings.VTEF_Settings.__annotations__.get("slot_export_mode")
+    _vsettings.VTEF_Settings.__annotations__["slot_export_mode"] = EnumProperty(
+        name='Slot Export Mode',
+        description='Choose the format matching syntax for slot-enabled components',
+        items=MODE_ITEMS,
+        default='NATIVE',
     )
     _patch_vtef_property(
         BoolProperty,
@@ -799,6 +809,10 @@ def unregister():
             pass
     try:
         _al.unregister()
+        if _ORIGINAL_SLOT_MODE_ANNOTATION is None:
+            _vsettings.VTEF_Settings.__annotations__.pop("slot_export_mode", None)
+        else:
+            _vsettings.VTEF_Settings.__annotations__["slot_export_mode"] = _ORIGINAL_SLOT_MODE_ANNOTATION
     except Exception:
         pass
     try:

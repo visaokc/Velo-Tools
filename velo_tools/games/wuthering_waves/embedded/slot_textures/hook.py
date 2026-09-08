@@ -110,6 +110,18 @@ def install():
                 raise generator.SlotStyleDegrade(
                     generator._format_slot_unrepresented(slot_issues))
             result = transform.apply(result, plan)
+            from velo_tools.core.export import slot_syntax
+            slot_mode = getattr(cfg, "slot_export_mode", "NATIVE")
+            result = slot_syntax.lower_ini(
+                result, slot_mode, component_markers=[
+                    (section.component_id, section.name, section.lines)
+                    for section in plan.sections if section.kind == "format_tag"
+                ])
+            if slot_mode == "NATIVE":
+                plan.format_diagnostics = {}
+                for key in plan.stats:
+                    if key.startswith("format_sections"):
+                        plan.stats[key] = 0
             if formid_auxiliary:
                 for anchor_hash, form_id in manual_anchors:
                     kind = 'shader (ps)' if len(anchor_hash) == 16 else 'resource (vb0)'

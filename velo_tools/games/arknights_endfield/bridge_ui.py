@@ -71,6 +71,8 @@ def _draw_velo_inline_controls(layout, cfg, mode: str, context=None) -> None:
         box.prop(cfg, "velo_auto_split_by_material")
     if "slot_style_textures" in controls and hasattr(cfg, "slot_style_textures"):
         box.prop(cfg, "slot_style_textures")
+        if cfg.slot_style_textures:
+            box.prop(cfg, "slot_export_mode")
         if cfg.slot_style_textures and context is not None:
             from . import slot_component_ui
             slot_component_ui.draw_component_selector(box, context)

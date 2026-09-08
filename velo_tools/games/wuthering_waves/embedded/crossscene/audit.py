@@ -600,9 +600,8 @@ def _audit_residual_sensitive_conditions(text):
             stripped = line.strip()
             if not stripped.startswith(("if ", "else if ")):
                 continue
-            for slot_raw, expected in re.findall(
-                    r'\bps-t(\d+)\s*!=\s*([0-9.]+)', stripped):
-                slot = int(slot_raw)
+            _positive, negative = _slot_branch_signature_from_condition(stripped)
+            for slot, expected in negative:
                 if slot not in assigned_slots or slot in reported:
                     continue
                 reported.add(slot)
@@ -663,6 +662,15 @@ def _slot_branch_signature_from_condition(line):
     for slot_raw, expected in re.findall(
             r'\bps-t(\d+)\s*!=\s*([0-9.]+)', line):
         negative.append((int(slot_raw), expected))
+    # Generated native OR/AND groups expand one family into typed SRV values.
+    # Collapse their atoms back to the planner's family tag for contract checks.
+    for slot_raw, operator, format_name in re.findall(
+            r'\bps-t(\d+)->Format\s*(==|!=)\s*DXGI_FORMAT_([A-Z0-9_]+)', line):
+        expected = str(_slot_constants.format_filter_index(format_name))
+        target = positive if operator == "==" else negative
+        term = (int(slot_raw), expected)
+        if term not in target:
+            target.append(term)
     return tuple(sorted(positive)), tuple(sorted(negative))
 
 

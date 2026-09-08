@@ -785,6 +785,11 @@ def install() -> None:
                         last_report.append(message)
                     if plan is not None:
                         result = transform_ini(result, plan)
+                        from ...core.export import slot_syntax
+                        slot_mode = getattr(cfg, "slot_export_mode", "NATIVE")
+                        result = slot_syntax.lower_ini(result, slot_mode)
+                        if slot_mode == "NATIVE":
+                            plan.stats["format_sections"] = 0
                         message = (
                             "[SlotTextures] EFMI Slot-style texture layer applied: "
                             f"{plan.stats}"

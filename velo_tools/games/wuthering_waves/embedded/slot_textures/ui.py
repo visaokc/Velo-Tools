@@ -19,6 +19,7 @@ from velo_tools.core.component_selection import apply_bulk_selection
 
 _MISSING = object()
 _orig_slot_style_annotation = _MISSING
+_orig_slot_mode_annotation = _MISSING
 _orig_asset_name_annotation = _MISSING
 _orig_skip_dirty_slot_annotation = _MISSING
 _orig_auto_split_annotation = _MISSING
@@ -36,11 +37,20 @@ def _enable_asset_name_export(self, _context):
 def inject_settings():
     """Adds the export option to VTWW_Settings. Must run BEFORE the vendored
     settings class is registered (same constraint as _patch_tool_mode)."""
-    global _orig_slot_style_annotation
+    global _orig_slot_style_annotation, _orig_slot_mode_annotation
     global _orig_asset_name_annotation
     global _orig_skip_dirty_slot_annotation, _orig_auto_split_annotation
     from ..._wwmi_core.addon import settings as _wsettings
 
+    from velo_tools.core.export.slot_syntax import MODE_ITEMS
+    _orig_slot_mode_annotation = _wsettings.VTWW_Settings.__annotations__.get(
+        "slot_export_mode", _MISSING)
+    _wsettings.VTWW_Settings.__annotations__["slot_export_mode"] = bpy.props.EnumProperty(
+        name='Slot Export Mode',
+        description='Choose the format matching syntax for slot-enabled components',
+        items=MODE_ITEMS,
+        default='NATIVE',
+    )
     _orig_slot_style_annotation = _wsettings.VTWW_Settings.__annotations__.get(
         "velo_slot_style_textures", _MISSING)
     _orig_asset_name_annotation = (
@@ -81,11 +91,16 @@ def inject_settings():
 
 
 def restore_settings():
-    global _orig_slot_style_annotation
+    global _orig_slot_style_annotation, _orig_slot_mode_annotation
     global _orig_asset_name_annotation
     global _orig_skip_dirty_slot_annotation, _orig_auto_split_annotation
     from ..._wwmi_core.addon import settings as _wsettings
 
+    if _orig_slot_mode_annotation is _MISSING:
+        _wsettings.VTWW_Settings.__annotations__.pop("slot_export_mode", None)
+    else:
+        _wsettings.VTWW_Settings.__annotations__["slot_export_mode"] = _orig_slot_mode_annotation
+    _orig_slot_mode_annotation = _MISSING
     if _orig_slot_style_annotation is _MISSING:
         _wsettings.VTWW_Settings.__annotations__.pop("velo_slot_style_textures", None)
     else:
@@ -139,6 +154,8 @@ def _patch_export_menu():
             row.enabled = not bool(
                 getattr(cfg, "use_asset_name_matching", False))
             row.prop(cfg, "velo_slot_style_textures")
+            if cfg.velo_slot_style_textures:
+                box.prop(cfg, "slot_export_mode")
             slot_cfg = getattr(context.scene, "vtww_slot_settings", None)
             if (slot_cfg is not None and cfg.velo_slot_style_textures):
                 _draw_slot_components(box, slot_cfg)

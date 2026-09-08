@@ -40,3 +40,6 @@ velo_tools/updater/*_updater/
 # Misc local outputs
 *.log
 *.result.json
+
+# Local temporary validation outputs are never published.
+_temporary_cleanup/
