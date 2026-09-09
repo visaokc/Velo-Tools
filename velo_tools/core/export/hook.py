@@ -250,6 +250,16 @@ def _get_export_state(context, settings_attr: str):
         except Exception:
             traceback.print_exc()
 
+    # Bake while original rig bindings and dependency objects are still present.
+    try:
+        from .pose_bake import bake_before_group_remap
+        bake_before_group_remap(context, clone, bool(getattr(cfg, "apply_all_modifiers", False)))
+        _pe.apply_mmd_pre_export(clone, profile)
+    except Exception:
+        _restore_export_state({"orig": obj, "clone": clone,
+                               "linked_to": linked_to, "unlinked_from": []})
+        raise
+
     # Unlink the source from all collections (so the exporter sees only the clone, not the source)
     unlinked_from = []
     for c in export_cols:
@@ -259,12 +269,6 @@ def _get_export_state(context, settings_attr: str):
                 unlinked_from.append(c)
         except Exception:
             traceback.print_exc()
-
-    # Run preprocessing on the clone
-    try:
-        _pe.apply_mmd_pre_export(clone, profile)
-    except Exception:
-        traceback.print_exc()
 
     return {
         "orig": obj,
@@ -329,8 +333,10 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
         with transaction:
             try:
                 state = _get_export_state(context, settings_attr)
-            except Exception:
+            except Exception as exc:
                 traceback.print_exc()
+                self.report({'ERROR'}, iface_('Export preprocessing failed: {0}').format(str(exc)))
+                return {'CANCELLED'}
             try:
                 if _mesh_ops is not None:
                     mesh_state = _mesh_ops.prepare_material_route_export(context)

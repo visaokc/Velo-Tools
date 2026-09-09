@@ -86,7 +86,7 @@ class VELO_OT_invoke_game_export(bpy.types.Operator):
             if obj is None:
                 self.report({'ERROR'}, iface_("Please specify the MMD source object first (or cancel 'Preprocess First')"))
                 return {'CANCELLED'}
-            preexport.apply_mmd_pre_export(obj, s.mmd_profile)
+            # The target exporter preprocesses a disposable copy after pose baking.
 
         # single active-game switch: derive the adapter key from velo_tools.active_game via the game registry
         from ...games import registry as _registry

@@ -392,6 +392,8 @@ def _make_patched(orig_execute):
                 tmp_objs.append(cp)
                 cid = _component_id(orig_name)
                 if cid is not None and vg_maps.get(cid):
+                    from ....core.export.pose_bake import bake_before_group_remap
+                    bake_before_group_remap(context, cp, bool(cfg.apply_all_modifiers))
                     stray = _prepare_object_for_component_export(cp, vg_maps[cid], mmd_profile)
                     if stray:
                         from .crossscene import vg_translate

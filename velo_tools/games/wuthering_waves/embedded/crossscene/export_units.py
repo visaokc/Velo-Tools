@@ -590,6 +590,16 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
         obj["_velo_export_source_name"] = selected.name
         if cross_component_materials:
             _mark_source_vertex_ids(obj)
+        from .....core.export.pose_bake import bake_before_group_remap
+        try:
+            bake_before_group_remap(context, obj, bool(plan.manifest_entry.get("apply_modifiers", False)))
+        except Exception:
+            import bpy
+            mesh = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+            raise
         _preprocess_cross_scene_copy(
             context,
             obj,

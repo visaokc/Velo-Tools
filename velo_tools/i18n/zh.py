@@ -1,6 +1,15 @@
 """Simplified Chinese catalog for Velo Tools."""
 
 ZH_TRANSLATIONS = {
+    'Visible modifiers cannot preserve the current ShapeKey mix during pose export': '姿态导出时可见修改器无法保持当前 ShapeKey 混合结果',
+
+    'Cyclic relative ShapeKeys cannot be baked for pose export': '姿态导出无法烘焙循环引用的相对 ShapeKey',
+
+    'Pose export requires relative ShapeKeys': '姿态导出需要相对 ShapeKey',
+    'Modifiers changed ShapeKey vertex counts during pose export': '姿态导出时修改器导致各 ShapeKey 的顶点数不一致',
+
+    'Export preprocessing failed: {0}': '导出预处理失败：{0}',
+
     'Matching Position': '匹配用姿势',
     'Choose rest mesh positions or evaluated pose positions for matching and verification': '选择静态网格位置或求值后的姿态位置，用于匹配与可视化校对',
     'Rest Position': '静态位置',
