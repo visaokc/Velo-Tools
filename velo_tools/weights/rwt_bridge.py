@@ -137,12 +137,72 @@ def find_matches_closest_surface(source_verts, source_triangles, source_normals,
     return matched, weights
 
 
+def _inpaint_mixed_system(laplacian, mass, weights, matched):
+    """Solve the same biharmonic energy without squaring the Laplacian."""
+    fixed = _np.flatnonzero(matched)
+    free = _np.flatnonzero(~_np.asarray(matched, dtype=bool))
+    if not len(free):
+        return True, weights.copy()
+    graph = laplacian.copy()
+    graph.eliminate_zeros()
+    count, labels = _sp.sparse.csgraph.connected_components(graph, directed=False)
+    anchored = _np.zeros(count, dtype=bool)
+    anchored[labels[fixed]] = True
+    if not _np.all(anchored):
+        return False, weights
+
+    # With z = M^-1 L x, stationarity is L x + L z = 0, L x - M z = 0.
+    # Eliminate only fixed x values; retain z to avoid catastrophic cancellation
+    # in L M^-1 L on tiny faces. This does not regularize or change the energy.
+    columns = laplacian[:, free].tocsc()
+    boundary = laplacian[:, fixed].tocsc()
+    free_boundary = boundary[free]
+    system = _sp.sparse.bmat([
+        [laplacian[free][:, free], columns.T],
+        [columns, -mass],
+    ], format='csc')
+    diagonal = _np.abs(system.diagonal())
+    if not _np.all(_np.isfinite(system.data)) or _np.any(diagonal <= 0):
+        return False, weights
+    scale = 1 / _np.sqrt(diagonal)
+    scaling = _sp.sparse.diags(scale)
+    system = (scaling @ system @ scaling).tocsc()
+    try:
+        factor = _sp.sparse.linalg.splu(system)
+        painted = weights.astype(_np.float32, copy=True)
+        absolute_system = abs(system)
+        # Bound dense temporary storage independently of the source group count.
+        for start in range(0, weights.shape[1], 8):
+            values = weights[fixed, start:start + 8].astype(_np.float64)
+            rhs = -_np.vstack([free_boundary @ values, boundary @ values])
+            rhs *= scale[:, None]
+            solution = factor.solve(rhs)
+            for attempt in range(3):
+                if not _np.all(_np.isfinite(solution)):
+                    return False, weights
+                residual = rhs - system @ solution
+                magnitude = absolute_system @ _np.abs(solution) + _np.abs(rhs)
+                if _np.all(_np.abs(residual) <= 1e-7 * _np.maximum(magnitude, _np.finfo(float).tiny)):
+                    break
+                if attempt == 2:
+                    return False, weights
+                solution += factor.solve(residual)
+            painted[free, start:start + 8] = solution[:len(free)] * scale[:len(free), None]
+        if not _np.all(_np.isfinite(painted)):
+            return False, weights
+        return True, painted
+    except (RuntimeError, ValueError):
+        return False, weights
+
+
 def inpaint(verts, faces, weights, matched, point_cloud):
     ok, error = ensure_available()
     if not ok:
         raise RuntimeError(error)
     if weights.shape[0] == 0 or weights.shape[1] == 0 or not _np.any(matched):
         return False, weights
+    if _np.all(matched):
+        return True, weights.copy()
     if point_cloud:
         laplacian, mass = _robust_laplacian.point_cloud_laplacian(verts)
     else:
@@ -161,6 +221,8 @@ def inpaint(verts, faces, weights, matched, point_cloud):
     painted = painted.astype(_np.float32)
     if result:
         painted = painted.reshape(weights.shape)
+    if not result and not point_cloud:
+        return _inpaint_mixed_system(-laplacian, mass, weights, matched)
     return result, painted
 
 

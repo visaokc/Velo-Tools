@@ -1,6 +1,7 @@
 """Simplified Chinese catalog for Velo Tools."""
 
 ZH_TRANSLATIONS = {
+    '{0}. Inpaint numerical solving failed despite anchored mesh components. This is not a missing-seed error or a restriction on quad sources or concentrated weights. The target weights have not been replaced with a failed solve.': '{0}。网格连通域已有锚点，但 inpaint 数值求解仍失败。这不是缺少匹配种子，也不是不支持四边面来源或集中权重。未使用失败的求解结果替换目标权重。',
     'Visible modifiers cannot preserve the current ShapeKey mix during pose export': '姿态导出时可见修改器无法保持当前 ShapeKey 混合结果',
 
     'Cyclic relative ShapeKeys cannot be baked for pose export': '姿态导出无法烘焙循环引用的相对 ShapeKey',

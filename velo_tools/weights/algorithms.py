@@ -7,6 +7,7 @@ import bpy
 from mathutils import Vector, kdtree
 
 from ..core.mapping.filters import is_special_vg_name
+from ..i18n import iface_
 from . import rwt_bridge as _rwt
 from .read_session import weight_read_session, group_memberships
 
@@ -1370,6 +1371,15 @@ def describe_robust_inpaint_failure(target, matched, settings, component_stats=N
     if rescue_info.get("inpaint_fallback_failed"):
         parts.append(f"自动回退={rescue_info['inpaint_fallback_failed']}(失败)")
     detail = "；".join(parts)
+    if (
+        component_stats is not None
+        and component_stats["unseeded_components"] <= rescue_info.get("zero_anchor_components", 0)
+    ):
+        return iface_(
+            "{0}. Inpaint numerical solving failed despite anchored mesh components. "
+            "This is not a missing-seed error or a restriction on quad sources or concentrated weights. "
+            "The target weights have not been replaced with a failed solve."
+        ).format(detail)
     if component_stats is not None and component_stats["unseeded_components"] > 0:
         return (
             f"{detail}。目标网格至少有一块连通域完全没有拿到 direct match 种子，"
