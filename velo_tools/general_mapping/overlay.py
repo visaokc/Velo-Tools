@@ -21,6 +21,9 @@ def _compute_centroids_world(obj):
     out = {}
     if obj is None or obj.type != 'MESH' or obj.data is None:
         return out
+    if obj.data.is_editmode:
+        from velo_tools.core.mapping.positions import _mesh_centroids_local
+        return {index: obj.matrix_world @ co for index, co in _mesh_centroids_local(obj.data).items()}
     me = obj.data
     mw = obj.matrix_world
     sums = {}
@@ -100,9 +103,21 @@ def row_world_positions(settings, row):
             pose_group_world(tgt, [row.target_name, row.source_name],
                              row.target_centroid_local, row.has_target_centroid),
         )
+    def rest_endpoint(obj, names, local, present):
+        centroids = centroids_cached(obj)
+        for name in names:
+            group = obj.vertex_groups.get(name)
+            if group is not None:
+                if group.index not in centroids:
+                    return None
+                break
+        return obj.matrix_world @ Vector(local) if present else None
+
     return (
-        src.matrix_world @ Vector(row.source_centroid_local) if row.has_source_centroid else None,
-        tgt.matrix_world @ Vector(row.target_centroid_local) if row.has_target_centroid else None,
+        rest_endpoint(src, [getattr(row, 'current_source_name', ''), row.source_name, row.target_name],
+                      row.source_centroid_local, row.has_source_centroid),
+        rest_endpoint(tgt, [row.target_name, row.source_name],
+                      row.target_centroid_local, row.has_target_centroid),
     )
 
 
@@ -122,7 +137,7 @@ def claimed_world_positions(settings, side):
     return claimed
 
 
-def iter_pairs(settings):
+def iter_pairs(settings, *, include_partial=False):
     src = settings.source_object
     tgt = settings.target_object
     profile = settings.profile
@@ -134,7 +149,7 @@ def iter_pairs(settings):
         if not source_name or not target_name:
             continue
         sw, tw = row_world_positions(settings, row)
-        if sw is None or tw is None:
+        if (sw is None and tw is None) or (not include_partial and (sw is None or tw is None)):
             continue
         if source_name != target_name:
             label = f"{source_name} ({target_name})"
@@ -199,7 +214,13 @@ def _draw_3d():
     good_lines, bad_lines = [], []
     good_pts_src, bad_pts_src = [], []
     good_pts_tgt, bad_pts_tgt = [], []
-    for sw, tw, _label, _target_name in iter_pairs(settings):
+    for sw, tw, _label, _target_name in iter_pairs(settings, include_partial=True):
+        if sw is None or tw is None:
+            if sw is not None:
+                good_pts_src.append(tuple(sw))
+            if tw is not None:
+                good_pts_tgt.append(tuple(tw))
+            continue
         distance = (sw - tw).length
         src_tuple = (sw.x, sw.y, sw.z)
         tgt_tuple = (tw.x, tw.y, tw.z)
@@ -217,7 +238,7 @@ def _draw_3d():
         unmatched_targets = [(w.x, w.y, w.z) for w, _name in iter_unmatched_targets(settings)]
     unmatched_sources = [(w.x, w.y, w.z) for w, _name in iter_unmatched_sources(settings)]
 
-    if not (good_lines or bad_lines or unmatched_targets or unmatched_sources):
+    if not (good_pts_src or good_pts_tgt or bad_lines or unmatched_targets or unmatched_sources):
         return
 
     try:
@@ -303,10 +324,10 @@ def _draw_2d():
         blf.size(font_id, 12, 72)
 
     threshold = max(shared.overlay_max_distance, 1e-6)
-    for sw, tw, label, _target_name in iter_pairs(settings):
-        distance = (sw - tw).length
+    for sw, tw, label, _target_name in iter_pairs(settings, include_partial=True):
+        distance = (sw - tw).length if sw is not None and tw is not None else 0.0
         color = (0.7, 0.9, 1.0, 1.0) if distance <= threshold else (1.0, 0.7, 0.95, 1.0)
-        co2d = location_3d_to_region_2d(region, rv3d, sw)
+        co2d = location_3d_to_region_2d(region, rv3d, sw if sw is not None else tw)
         if not co2d:
             continue
         blf.color(font_id, *color)

@@ -116,20 +116,22 @@ def _safe_collect(ef):
         if not r.mmd_name or not r.unified_name:
             continue
         sw, tw = _ov._mmd_row_world_positions(ef, r)
-        if sw is None or tw is None:
+        if sw is None and tw is None:
             continue
-        d = (sw - tw).length
+        d = (sw - tw).length if sw is not None and tw is not None else 0.0
         status = 'good' if d <= threshold else 'bad'
-        endpoints.append({
-            'kind': 'src', 'vg_name': r.mmd_name,
-            'pick_vg_name': (getattr(r, 'current_source_name', '') or r.mmd_name or r.unified_name),
-            'world': sw,
-            'row_idx': ri, 'status': status, 'matched': True,
-        })
-        endpoints.append({
-            'kind': 'tgt', 'vg_name': r.unified_name, 'world': tw,
-            'row_idx': ri, 'status': status, 'matched': True,
-        })
+        if sw is not None:
+            endpoints.append({
+                'kind': 'src', 'vg_name': r.mmd_name,
+                'pick_vg_name': (getattr(r, 'current_source_name', '') or r.mmd_name or r.unified_name),
+                'world': sw,
+                'row_idx': ri, 'status': status, 'matched': True,
+            })
+        if tw is not None:
+            endpoints.append({
+                'kind': 'tgt', 'vg_name': r.unified_name, 'world': tw,
+                'row_idx': ri, 'status': status, 'matched': True,
+            })
 
     tgt_c = _ov._mmd_centroids_cached(tgt, allow_live=True, position_mode=getattr(ef, "match_position_mode", "REST"))
     src_c = _ov._mmd_centroids_cached(src, allow_live=True, position_mode=getattr(ef, "match_position_mode", "REST"))

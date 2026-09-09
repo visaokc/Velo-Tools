@@ -73,25 +73,27 @@ def _safe_collect(settings):
         if not source_name or not target_name:
             continue
         sw, tw = _overlay.row_world_positions(settings, row)
-        if sw is None or tw is None:
+        if sw is None and tw is None:
             continue
-        distance = (sw - tw).length
+        distance = (sw - tw).length if sw is not None and tw is not None else 0.0
         status = 'good' if distance <= threshold else 'bad'
-        endpoints.append({
-            'kind': 'src',
-            'vg_name': source_name,
-            'pick_vg_name': (getattr(row, 'current_source_name', '') or source_name or target_name),
-            'world': sw,
-            'row_idx': row_idx,
-            'status': status,
-        })
-        endpoints.append({
-            'kind': 'tgt',
-            'vg_name': target_name,
-            'world': tw,
-            'row_idx': row_idx,
-            'status': status,
-        })
+        if sw is not None:
+            endpoints.append({
+                'kind': 'src',
+                'vg_name': source_name,
+                'pick_vg_name': (getattr(row, 'current_source_name', '') or source_name or target_name),
+                'world': sw,
+                'row_idx': row_idx,
+                'status': status,
+            })
+        if tw is not None:
+            endpoints.append({
+                'kind': 'tgt',
+                'vg_name': target_name,
+                'world': tw,
+                'row_idx': row_idx,
+                'status': status,
+            })
 
     tgt_centroids = _overlay.centroids_cached(tgt, position_mode=getattr(settings, "match_position_mode", "REST"))
     for vg in tgt.vertex_groups:

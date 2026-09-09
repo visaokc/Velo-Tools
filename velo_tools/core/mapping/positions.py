@@ -88,8 +88,13 @@ def pose_group_world(obj, names, fallback_local=None, has_fallback=False):
 
 @persistent
 def invalidate_positions(*_args):
-    if not _pose_cache and not _rest_lookup_cache:
+    from ... import overlay as mmd_overlay
+    from ...general_mapping import overlay as general_overlay
+    if not (_pose_cache or _rest_lookup_cache or mmd_overlay._mmd_centroids_cache
+            or general_overlay._centroids_cache):
         return
+    mmd_overlay.invalidate_mmd_cache()
+    general_overlay.invalidate_cache()
     _pose_cache.clear()
     _rest_lookup_cache.clear()
     from ...games.arknights_endfield import mmd_pick

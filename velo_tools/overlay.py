@@ -26,6 +26,9 @@ def _mmd_compute_centroids_world(obj):
     out = {}
     if obj is None or obj.type != 'MESH' or obj.data is None:
         return out
+    if obj.data.is_editmode:
+        from velo_tools.core.mapping.positions import _mesh_centroids_local
+        return {index: obj.matrix_world @ co for index, co in _mesh_centroids_local(obj.data).items()}
     me = obj.data
     mw = obj.matrix_world
     sums = {}
@@ -125,8 +128,7 @@ def _mmd_group_world_centroid(obj, preferred_names: Sequence[str], fallback_loca
         if group is None:
             continue
         world = centroids.get(group.index)
-        if world is not None:
-            return world
+        return world
     if has_fallback and fallback_local is not None:
         return obj.matrix_world @ Vector(fallback_local)
     return None
@@ -172,7 +174,7 @@ def _mmd_claimed_world_positions(settings, side):
     return claimed
 
 
-def _mmd_iter_pairs(settings):
+def _mmd_iter_pairs(settings, *, include_partial=False):
     src = settings.mmd_source_object
     tgt = settings.mmd_target_object
     profile = settings.mmd_profile
@@ -182,7 +184,7 @@ def _mmd_iter_pairs(settings):
         if not row.mmd_name or not row.unified_name:
             continue
         sw, tw = _mmd_row_world_positions(settings, row)
-        if sw is None or tw is None:
+        if (sw is None and tw is None) or (not include_partial and (sw is None or tw is None)):
             continue
         if row.mmd_name != row.unified_name:
             label = f"{row.mmd_name} ({row.unified_name})"
@@ -249,7 +251,13 @@ def _draw_mmd_3d():
     good_lines, bad_lines = [], []
     good_pts_b, bad_pts_b = [], []
     good_pts_t, bad_pts_t = [], []
-    for bw, tw, _n1, _n2 in _mmd_iter_pairs(ef):
+    for bw, tw, _n1, _n2 in _mmd_iter_pairs(ef, include_partial=True):
+        if bw is None or tw is None:
+            if bw is not None:
+                good_pts_b.append(tuple(bw))
+            if tw is not None:
+                good_pts_t.append(tuple(tw))
+            continue
         d = (bw - tw).length
         bt = (bw.x, bw.y, bw.z); tt = (tw.x, tw.y, tw.z)
         if d <= threshold:
@@ -268,7 +276,7 @@ def _draw_mmd_3d():
         (w.x, w.y, w.z) for w, _n in _mmd_iter_unmatched_sources(ef)
     ]
 
-    if not (good_lines or bad_lines or unmatched_pts or unmatched_src_pts):
+    if not (good_pts_b or good_pts_t or bad_lines or unmatched_pts or unmatched_src_pts):
         return
 
     try:
@@ -355,10 +363,10 @@ def _draw_mmd_2d():
     except TypeError:
         blf.size(font_id, 12, 72)
     threshold = max(s.overlay_max_distance, 1e-6)
-    for bw, tw, label, _u in _mmd_iter_pairs(ef):
-        d = (bw - tw).length
+    for bw, tw, label, _u in _mmd_iter_pairs(ef, include_partial=True):
+        d = (bw - tw).length if bw is not None and tw is not None else 0.0
         col = (0.7, 0.9, 1.0, 1.0) if d <= threshold else (1.0, 0.7, 0.95, 1.0)
-        co2d = location_3d_to_region_2d(region, rv3d, bw)
+        co2d = location_3d_to_region_2d(region, rv3d, bw if bw is not None else tw)
         if not co2d:
             continue
         blf.color(font_id, *col)
