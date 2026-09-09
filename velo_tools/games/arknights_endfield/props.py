@@ -1,4 +1,6 @@
 """arknights_endfield - MMD mapping props (V0.1.3)"""
+from ...core.mapping.positions import on_position_mode_update
+
 import bpy
 from bpy.props import (
     StringProperty, BoolProperty, CollectionProperty, IntProperty, PointerProperty,
@@ -279,6 +281,16 @@ class VELO_EF_Settings(bpy.types.PropertyGroup):
         type=bpy.types.Object,
         poll=lambda self, obj: obj is not None and obj.type == 'ARMATURE',
         description="Optional; after selection, 'Rename to Unified Number / Restore to MMD Name' will synchronize bone names.",
+    )
+    match_position_mode: EnumProperty(
+        name='Matching Position',
+        description='Choose rest mesh positions or evaluated pose positions for matching and verification',
+        items=[
+            ('REST', 'Rest Position', 'Use undeformed mesh vertex group centers'),
+            ('POSE', 'Pose Position', 'Use evaluated mesh vertex group centers and follow pose changes'),
+        ],
+        default='REST',
+        update=on_position_mode_update,
     )
     show_overlay: BoolProperty(
         name='Enable MMD mapping visualization',

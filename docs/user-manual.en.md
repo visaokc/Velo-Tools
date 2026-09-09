@@ -151,6 +151,8 @@ Use **通用顶点组映射 (General Vertex-Group Mapping)** when source and tar
 
 Enable **通用映射 - 可视化校对（重心连线） (General Mapping Visual Check)** to inspect centroid links. Use **未匹配列表 (Unmatched List)** to resolve rows instead of accepting a partial table blindly.
 
+**Matching Position**, below the skeleton selector, is independent for General and MMD mapping. **Rest Position** (default) uses undeformed mesh vertex-group weighted centers, not bone heads. **Pose Position** uses evaluated mesh centers on both sides, including visible Armature/constraint/driver/ShapeKey and modifier deformation. Verification links, unmatched points and mouse picking follow pose changes; table assignments change only when you click **Match by Position** again. Existing rest-matched tables can be rematched without clearing them. The option does not apply modifiers, change the rig display mode, or rewrite the mesh. The skeleton selector remains for synchronized renaming; deformation comes from each mesh's actual modifier stack.
+
 The optional maximum-distance threshold rejects weak matches. Start without an arbitrary large threshold, inspect the overlay, then set a meaningful project-scale limit.
 
 ### Mesh Preparation

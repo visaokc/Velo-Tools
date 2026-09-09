@@ -60,12 +60,8 @@ def _safe_collect(settings):
     except Exception:
         is_special_vg_name = lambda name: False
 
-    from mathutils import Vector
-
     shared = getattr(bpy.context.scene, "velo_tools", None)
     threshold = max(getattr(shared, 'overlay_max_distance', 0.1), 1e-6) if shared else 0.1
-    smw = src.matrix_world
-    tmw = tgt.matrix_world
 
     endpoints = []
     claimed_src = _overlay.claimed_world_positions(settings, 'src')
@@ -76,10 +72,9 @@ def _safe_collect(settings):
         target_name = (getattr(row, 'target_name', '') or '').strip()
         if not source_name or not target_name:
             continue
-        if not (row.has_source_centroid and row.has_target_centroid):
+        sw, tw = _overlay.row_world_positions(settings, row)
+        if sw is None or tw is None:
             continue
-        sw = smw @ Vector(row.source_centroid_local)
-        tw = tmw @ Vector(row.target_centroid_local)
         distance = (sw - tw).length
         status = 'good' if distance <= threshold else 'bad'
         endpoints.append({
@@ -98,7 +93,7 @@ def _safe_collect(settings):
             'status': status,
         })
 
-    tgt_centroids = _overlay.centroids_cached(tgt)
+    tgt_centroids = _overlay.centroids_cached(tgt, position_mode=getattr(settings, "match_position_mode", "REST"))
     for vg in tgt.vertex_groups:
         if is_special_vg_name(vg.name):
             continue
@@ -124,7 +119,7 @@ def _safe_collect(settings):
         if current_name and current_name not in rows_by_source:
             rows_by_source[current_name] = (row_idx, row)
 
-    src_centroids = _overlay.centroids_cached(src)
+    src_centroids = _overlay.centroids_cached(src, position_mode=getattr(settings, "match_position_mode", "REST"))
     for vg in src.vertex_groups:
         if is_special_vg_name(vg.name):
             continue

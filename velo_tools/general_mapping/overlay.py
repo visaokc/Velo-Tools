@@ -62,7 +62,10 @@ def _obj_cache_key(obj):
     )
 
 
-def centroids_cached(obj):
+def centroids_cached(obj, position_mode='REST'):
+    if position_mode == 'POSE':
+        from ..core.mapping.positions import pose_centroids_world
+        return pose_centroids_world(obj)
     if obj is None:
         return {}
     key = _obj_cache_key(obj)
@@ -85,20 +88,37 @@ def world_matches_any(world, claimed_points, eps=_CLAIM_EPS):
     return False
 
 
+def row_world_positions(settings, row):
+    src, tgt = settings.source_object, settings.target_object
+    if src is None or tgt is None:
+        return None, None
+    if getattr(settings, 'match_position_mode', 'REST') == 'POSE':
+        from ..core.mapping.positions import pose_group_world
+        return (
+            pose_group_world(src, [getattr(row, 'current_source_name', ''), row.source_name, row.target_name],
+                             row.source_centroid_local, row.has_source_centroid),
+            pose_group_world(tgt, [row.target_name, row.source_name],
+                             row.target_centroid_local, row.has_target_centroid),
+        )
+    return (
+        src.matrix_world @ Vector(row.source_centroid_local) if row.has_source_centroid else None,
+        tgt.matrix_world @ Vector(row.target_centroid_local) if row.has_target_centroid else None,
+    )
+
+
 def claimed_world_positions(settings, side):
     obj = settings.source_object if side == 'src' else settings.target_object
     profile = settings.profile
     if obj is None or profile is None:
         return []
-    mw = obj.matrix_world
     claimed = []
     for row in profile.rows:
         if not (row.target_name or "").strip():
             continue
-        if side == 'src' and getattr(row, "has_source_centroid", False):
-            claimed.append(mw @ Vector(row.source_centroid_local))
-        if side == 'tgt' and getattr(row, "has_target_centroid", False):
-            claimed.append(mw @ Vector(row.target_centroid_local))
+        sw, tw = row_world_positions(settings, row)
+        world = sw if side == 'src' else tw
+        if world is not None:
+            claimed.append(world)
     return claimed
 
 
@@ -108,17 +128,14 @@ def iter_pairs(settings):
     profile = settings.profile
     if src is None or tgt is None or profile is None:
         return
-    smw = src.matrix_world
-    tmw = tgt.matrix_world
     for row in profile.rows:
         source_name = (row.source_name or "").strip()
         target_name = (row.target_name or "").strip()
         if not source_name or not target_name:
             continue
-        if not (row.has_source_centroid and row.has_target_centroid):
+        sw, tw = row_world_positions(settings, row)
+        if sw is None or tw is None:
             continue
-        sw = smw @ Vector(row.source_centroid_local)
-        tw = tmw @ Vector(row.target_centroid_local)
         if source_name != target_name:
             label = f"{source_name} ({target_name})"
         else:
@@ -135,7 +152,7 @@ def iter_unmatched_targets(settings):
     except Exception:
         is_special_vg_name = lambda name: False
     claimed = claimed_world_positions(settings, 'tgt')
-    centroids = centroids_cached(tgt)
+    centroids = centroids_cached(tgt, position_mode=getattr(settings, "match_position_mode", "REST"))
     for vg in tgt.vertex_groups:
         if is_special_vg_name(vg.name):
             continue
@@ -156,7 +173,7 @@ def iter_unmatched_sources(settings):
     except Exception:
         is_special_vg_name = lambda name: False
     claimed = claimed_world_positions(settings, 'src')
-    centroids = centroids_cached(src)
+    centroids = centroids_cached(src, position_mode=getattr(settings, "match_position_mode", "REST"))
     for vg in src.vertex_groups:
         if is_special_vg_name(vg.name):
             continue

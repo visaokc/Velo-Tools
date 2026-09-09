@@ -65,6 +65,7 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
         box_obj.prop(ef, "mmd_source_object", text='MMD Source')
         box_obj.prop(ef, "mmd_target_object", text='Target Component')
         box_obj.prop(ef, "mmd_armature_object", text='MMD Skeleton')
+        box_obj.prop(ef, "match_position_mode")
 
         # 1.0.8: the export adapter is decided solely by active_game on the "Game" tab; here we only show a read-only hint of the current game
         try:

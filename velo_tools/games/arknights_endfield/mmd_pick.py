@@ -76,6 +76,7 @@ def _safe_collect_cache_key(ef, threshold):
     return (
         _ov._mmd_obj_cache_key(src, allow_live=True),
         _ov._mmd_obj_cache_key(tgt, allow_live=True),
+        getattr(ef, "match_position_mode", "REST"),
         row_signature,
         round(float(threshold), 6),
     )
@@ -130,8 +131,8 @@ def _safe_collect(ef):
             'row_idx': ri, 'status': status, 'matched': True,
         })
 
-    tgt_c = _ov._mmd_centroids_cached(tgt, allow_live=True)
-    src_c = _ov._mmd_centroids_cached(src, allow_live=True)
+    tgt_c = _ov._mmd_centroids_cached(tgt, allow_live=True, position_mode=getattr(ef, "match_position_mode", "REST"))
+    src_c = _ov._mmd_centroids_cached(src, allow_live=True, position_mode=getattr(ef, "match_position_mode", "REST"))
 
     # Unmatched target vertex groups
     for vg in tgt.vertex_groups:

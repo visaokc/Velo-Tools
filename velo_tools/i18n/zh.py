@@ -1,6 +1,13 @@
 """Simplified Chinese catalog for Velo Tools."""
 
 ZH_TRANSLATIONS = {
+    'Matching Position': '匹配用姿势',
+    'Choose rest mesh positions or evaluated pose positions for matching and verification': '选择静态网格位置或求值后的姿态位置，用于匹配与可视化校对',
+    'Rest Position': '静态位置',
+    'Use undeformed mesh vertex group centers': '使用未变形网格的顶点组加权中心',
+    'Pose Position': '姿态位置',
+    'Use evaluated mesh vertex group centers and follow pose changes': '使用求值后网格的顶点组加权中心，并随姿态变化同步更新',
+
     'Slot Export Mode': 'Slot 导出模式',
     'Choose the format matching syntax for slot-enabled components': '选择已启用 Slot 的 Component 使用的格式匹配语法',
     'Native Format Read': '原生格式读取',

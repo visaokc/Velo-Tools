@@ -64,6 +64,7 @@ class VELO_PT_general_mapping(bpy.types.Panel):
         box_obj.prop(settings, "source_object", text='Source Object')
         box_obj.prop(settings, "target_object", text='Target Object')
         box_obj.prop(settings, "armature_object", text='Skeleton')
+        box_obj.prop(settings, "match_position_mode")
 
         opt = layout.box()
         opt.label(text='Matching Options', icon='PREFERENCES')

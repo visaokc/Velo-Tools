@@ -675,7 +675,7 @@ class VELO_OT_vg_table_export(bpy.types.Operator, ExportHelper):
 # E. Position match → write to MMD mapping table (kdtree-accelerated)
 # ============================================================
 
-def _compute_centroids_world(obj, only_indices=None):
+def _compute_centroids_world(obj, only_indices=None, position_mode='REST'):
     """Single-pass scan, returns {vg_index: world_pos Vector}.
 
     - skip specially-named + zero-weight VGs
@@ -686,6 +686,12 @@ def _compute_centroids_world(obj, only_indices=None):
     out = {}
     if obj is None or obj.type != 'MESH' or obj.data is None:
         return out
+    if position_mode == 'POSE':
+        from .positions import pose_centroids_world
+        points = pose_centroids_world(obj)
+        return {vg.index: points[vg.index] for vg in obj.vertex_groups
+                if vg.index in points and not is_special_vg_name(vg.name)
+                and (only_indices is None or vg.index in only_indices)}
     me = obj.data
     mw = obj.matrix_world
 
@@ -763,7 +769,8 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
         # 1) single-pass precompute the centroids on both sides (source side optionally computes only mmd_names that appear in profile)
         only_src_indices = None
         if self.only_existing_rows and len(profile.rows) > 0:
-            wanted_names = {r.mmd_name for r in profile.rows if r.mmd_name}
+            wanted_names = {r.current_source_name or r.mmd_name
+                            for r in profile.rows if r.mmd_name}
             only_src_indices = {
                 vg.index for vg in base.vertex_groups if vg.name in wanted_names
             }
@@ -771,8 +778,8 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
                 # none of the table's mmd_names exist on the source object, fall back to full scan
                 only_src_indices = None
 
-        src_centroids = _compute_centroids_world(base, only_indices=only_src_indices)
-        tgt_centroids = _compute_centroids_world(target)
+        src_centroids = _compute_centroids_world(base, only_indices=only_src_indices, position_mode=settings.match_position_mode)
+        tgt_centroids = _compute_centroids_world(target, position_mode=settings.match_position_mode)
         if not src_centroids:
             self.report({'ERROR'}, iface_('Source object {0} has no available vertex groups with weights').format(base.name))
             return {'CANCELLED'}
@@ -796,7 +803,7 @@ class VELO_OT_vg_match_to_mmd_table(bpy.types.Operator):
         src_name_by_idx = {vg.index: vg.name for vg in base.vertex_groups}
         tgt_name_by_idx = {vg.index: vg.name for vg in target.vertex_groups}
 
-        existing = {r.mmd_name: r for r in profile.rows}
+        existing = {(r.current_source_name or r.mmd_name): r for r in profile.rows}
 
         # V0.1.4: iterate in base.vertex_groups appearance order so the append order of new rows
         # matches "append rows from source object"; previously src_centroids.items() order was decided

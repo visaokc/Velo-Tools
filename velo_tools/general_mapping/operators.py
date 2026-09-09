@@ -582,8 +582,8 @@ class VELO_OT_match_to_table_lite(bpy.types.Operator):
             return {'CANCELLED'}
 
         profile = settings.profile
-        src_centroids = _compute_centroids_world(src)
-        tgt_centroids = _compute_centroids_world(tgt)
+        src_centroids = _compute_centroids_world(src, position_mode=settings.match_position_mode)
+        tgt_centroids = _compute_centroids_world(tgt, position_mode=settings.match_position_mode)
         if not src_centroids:
             self.report({'ERROR'}, iface_('Source object {0} has no available vertex groups with weights').format(src.name))
             return {'CANCELLED'}
@@ -601,7 +601,8 @@ class VELO_OT_match_to_table_lite(bpy.types.Operator):
         kd.balance()
 
         tgt_name_by_idx = {vg.index: vg.name for vg in tgt.vertex_groups}
-        existing = {row.source_name: row for row in profile.rows if row.source_name}
+        existing = {(row.current_source_name or row.source_name): row
+                    for row in profile.rows if row.source_name}
 
         added = 0
         updated = 0

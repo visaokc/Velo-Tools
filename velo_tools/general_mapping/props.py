@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from ..core.mapping.positions import on_position_mode_update
+
 import bpy
 from bpy.props import (
     BoolProperty,
+    EnumProperty,
     CollectionProperty,
     FloatProperty,
     FloatVectorProperty,
@@ -266,6 +269,16 @@ class VELO_GM_Settings(bpy.types.PropertyGroup):
         type=bpy.types.Object,
         poll=lambda self, obj: obj is not None and obj.type == 'ARMATURE',
         description='Optional; after selection, renaming the source object will synchronize to the armature.',
+    )
+    match_position_mode: EnumProperty(
+        name='Matching Position',
+        description='Choose rest mesh positions or evaluated pose positions for matching and verification',
+        items=[
+            ('REST', 'Rest Position', 'Use undeformed mesh vertex group centers'),
+            ('POSE', 'Pose Position', 'Use evaluated mesh vertex group centers and follow pose changes'),
+        ],
+        default='REST',
+        update=on_position_mode_update,
     )
     show_overlay: BoolProperty(
         name='Enable universal mapping visualization.',

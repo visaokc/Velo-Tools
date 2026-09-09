@@ -76,7 +76,10 @@ def _mmd_obj_cache_key(obj, *, allow_live=False):
     return key
 
 
-def _mmd_centroids_cached(obj, *, allow_live=False):
+def _mmd_centroids_cached(obj, *, allow_live=False, position_mode='REST'):
+    if position_mode == 'POSE':
+        from .core.mapping.positions import pose_centroids_world
+        return pose_centroids_world(obj)
     if obj is None:
         return {}
     key = _mmd_obj_cache_key(obj, allow_live=allow_live)
@@ -107,7 +110,10 @@ def invalidate_mmd_cache():
         pass
 
 
-def _mmd_group_world_centroid(obj, preferred_names: Sequence[str], fallback_local=None, has_fallback=False, *, allow_live=False):
+def _mmd_group_world_centroid(obj, preferred_names: Sequence[str], fallback_local=None, has_fallback=False, *, allow_live=False, position_mode='REST'):
+    if position_mode == 'POSE':
+        from .core.mapping.positions import pose_group_world
+        return pose_group_world(obj, preferred_names, fallback_local, has_fallback)
     if obj is None or obj.type != 'MESH' or obj.data is None:
         return None
     centroids = _mmd_centroids_cached(obj, allow_live=allow_live)
@@ -137,6 +143,7 @@ def _mmd_row_world_positions(settings, row):
         fallback_local=getattr(row, "mmd_centroid_local", None),
         has_fallback=getattr(row, "has_mmd_centroid", False),
         allow_live=True,
+        position_mode=getattr(settings, "match_position_mode", "REST"),
     )
     target_world = _mmd_group_world_centroid(
         tgt,
@@ -144,6 +151,7 @@ def _mmd_row_world_positions(settings, row):
         fallback_local=getattr(row, "unified_centroid_local", None),
         has_fallback=getattr(row, "has_unified_centroid", False),
         allow_live=True,
+        position_mode=getattr(settings, "match_position_mode", "REST"),
     )
     return source_world, target_world
 
@@ -193,7 +201,7 @@ def _mmd_iter_unmatched_targets(settings):
     except Exception:
         is_special_vg_name = lambda name: False
     claimed = _mmd_claimed_world_positions(settings, 'tgt')
-    tgt_centroids = _mmd_centroids_cached(tgt, allow_live=True)
+    tgt_centroids = _mmd_centroids_cached(tgt, allow_live=True, position_mode=getattr(settings, "match_position_mode", "REST"))
     for vg in tgt.vertex_groups:
         if is_special_vg_name(vg.name):
             continue
@@ -214,7 +222,7 @@ def _mmd_iter_unmatched_sources(settings):
     except Exception:
         is_special_vg_name = lambda name: False
     claimed = _mmd_claimed_world_positions(settings, 'src')
-    src_centroids = _mmd_centroids_cached(src, allow_live=True)
+    src_centroids = _mmd_centroids_cached(src, allow_live=True, position_mode=getattr(settings, "match_position_mode", "REST"))
     for vg in src.vertex_groups:
         if is_special_vg_name(vg.name):
             continue
