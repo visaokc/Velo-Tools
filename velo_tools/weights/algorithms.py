@@ -8,6 +8,7 @@ from mathutils import Vector, kdtree
 
 from ..core.mapping.filters import is_special_vg_name
 from . import rwt_bridge as _rwt
+from .read_session import weight_read_session, group_memberships
 
 
 @dataclass
@@ -479,15 +480,21 @@ def group_weighted_centroid_world(obj, group_name, *, threshold=0.00001):
     group = obj.vertex_groups.get(group_name)
     if group is None:
         return obj.matrix_world.translation.copy(), None
-    weights = _plain_group_weights(obj, group)
-    if len(weights) != len(obj.data.vertices):
-        return obj.matrix_world.translation.copy(), None
+    memberships = group_memberships(obj)
+    if memberships is None:
+        weights = _plain_group_weights(obj, group)
+        if len(weights) != len(obj.data.vertices):
+            return obj.matrix_world.translation.copy(), None
+        weighted_vertices = zip(obj.data.vertices, weights)
+    else:
+        weighted_vertices = ((obj.data.vertices[index], weight)
+                             for index, weight in memberships.get(group.index, ()))
 
     total = 0.0
     position_sum = Vector((0.0, 0.0, 0.0))
     normal_sum = Vector((0.0, 0.0, 0.0))
     normal_matrix = obj.matrix_world.to_3x3()
-    for vertex, raw_weight in zip(obj.data.vertices, weights):
+    for vertex, raw_weight in weighted_vertices:
         weight = float(raw_weight)
         if weight <= threshold:
             continue
@@ -1539,6 +1546,7 @@ def collect_uv_seam_edges(mesh):
         return blocked
     seen = {}
     uv_data = uv_layer.data
+    uv_keys = [_uv_key(item.uv) for item in uv_data]
     for poly in mesh.polygons:
         verts = list(poly.vertices)
         loops = list(poly.loop_indices)
@@ -1547,8 +1555,8 @@ def collect_uv_seam_edges(mesh):
             a = verts[i]
             b = verts[(i + 1) % count]
             key = tuple(sorted((a, b)))
-            uv_a = _uv_key(uv_data[loops[i]].uv)
-            uv_b = _uv_key(uv_data[loops[(i + 1) % count]].uv)
+            uv_a = uv_keys[loops[i]]
+            uv_b = uv_keys[loops[(i + 1) % count]]
             pair = (uv_a, uv_b) if key[0] == a else (uv_b, uv_a)
             old = seen.get(key)
             if old is None:
@@ -2053,6 +2061,9 @@ def _plain_group_weights(obj, group):
 
 
 def snapshot_group_memberships(obj, group):
+    cached = group_memberships(obj)
+    if cached is not None:
+        return list(cached.get(int(group.index), ()))
     memberships = []
     group_index = int(group.index)
     for vertex in obj.data.vertices:
@@ -2188,6 +2199,7 @@ def mirror_group_weights(
     }
 
 
+@weight_read_session()
 def mirrored_donor_groups(context, settings, obj, donor_groups, *, mirror_names=None, exclude_names=None):
     exclude = {_clean_name(name) for name in (exclude_names or ()) if _clean_name(name)}
     result = []
@@ -2225,6 +2237,7 @@ def mirrored_donor_groups(context, settings, obj, donor_groups, *, mirror_names=
     return result
 
 
+@weight_read_session()
 def auto_donor_pair_eligibility(context, settings, obj, donor_groups, *, exclude_names=None, max_pairs=None):
     exclude = {_clean_name(name) for name in (exclude_names or ()) if _clean_name(name)}
     result = DonorPairEligibility()
@@ -2840,6 +2853,7 @@ def _mapped_neighbor_anchor_donor_names(context, settings, source_name, target_n
     return result
 
 
+@weight_read_session()
 def semantic_auto_donor_names(context, settings, source_name, target_group, count=None):
     max_count = None
     if count is not None:
@@ -3074,6 +3088,7 @@ def _weights_center_world(obj, weights, np, *, threshold=0.00001):
     return center / total
 
 
+@weight_read_session()
 def infer_donor_side(obj, target_group=None, *, focus_weights=None, candidate_groups=None):
     if obj is None or getattr(obj, "type", None) != 'MESH':
         return ""
@@ -3193,6 +3208,7 @@ def _apply_donor_dominance_gate(candidates):
     return filtered
 
 
+@weight_read_session()
 def select_auto_donors(
     obj,
     target_group,

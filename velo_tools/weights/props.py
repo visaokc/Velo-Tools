@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
+from functools import wraps
 
 import bpy
 from bpy.props import (
@@ -12,6 +14,38 @@ from bpy.props import (
     PointerProperty,
     StringProperty,
 )
+
+
+from .read_session import weight_read_session
+
+
+_preview_update_depth = 0
+_pending_previews = {}
+
+
+@contextmanager
+def batch_donor_preview_updates():
+    """Finish dependent RNA name updates before calculating a donor preview."""
+    global _preview_update_depth
+    _preview_update_depth += 1
+    try:
+        yield
+    finally:
+        _preview_update_depth -= 1
+        if not _preview_update_depth:
+            pending = list(_pending_previews.values())
+            _pending_previews.clear()
+            for settings, context in pending:
+                sync_donor_preview(settings, context)
+
+
+def _batch_preview_callback(callback):
+    # RNA validates the code object's positional argument count, not __wrapped__.
+    @wraps(callback)
+    def update(settings, context):
+        with batch_donor_preview_updates():
+            return callback(settings, context)
+    return update
 
 
 def _is_mesh_poll(self, obj):
@@ -26,6 +60,7 @@ class VELO_WeightVGName(bpy.types.PropertyGroup):
     pass
 
 
+@_batch_preview_callback
 def _on_mirror_mapping_update(self, context):
     settings = getattr(getattr(context, "scene", None), "velo_weight_tools", None)
     if settings is None:
@@ -121,6 +156,7 @@ def selected_donor_names(settings, count=None):
     return [donor for donor, _mirror in selected_donor_pairs(settings, count=count)]
 
 
+@_batch_preview_callback
 def sync_target_group_name(settings, context):
     if getattr(settings, "manual_target_group_name", False):
         return
@@ -202,6 +238,7 @@ def refresh_mirror_vg_names(settings):
         item.name = vg.name
 
 
+@_batch_preview_callback
 def sync_mirror_group(settings, context):
     refresh_mirror_vg_names(settings)
     source_name = (getattr(settings, "source_group", "") or "").strip()
@@ -366,6 +403,7 @@ def _uses_mirror_donor_pairs(settings):
     )
 
 
+@weight_read_session()
 def preview_donor_selection(settings, context):
     if context is None:
         return [], []
@@ -468,6 +506,10 @@ def preview_donor_names(settings, context):
 
 
 def sync_donor_preview(settings, context):
+    if _preview_update_depth:
+        key = settings.as_pointer() if hasattr(settings, "as_pointer") else id(settings)
+        _pending_previews[key] = (settings, context)
+        return
     global _SYNCING_DONOR_PREVIEW
     previous = _SYNCING_DONOR_PREVIEW
     _SYNCING_DONOR_PREVIEW = True
@@ -484,6 +526,7 @@ def sync_donor_preview(settings, context):
         _SYNCING_DONOR_PREVIEW = previous
 
 
+@_batch_preview_callback
 def _on_source_object_update(self, context):
     refresh_source_vg_names(self)
     if not self.source_group and len(self.available_source_vgs) > 0:
@@ -493,18 +536,21 @@ def _on_source_object_update(self, context):
     sync_donor_preview(self, context)
 
 
+@_batch_preview_callback
 def _on_target_object_update(self, context):
     sync_mirror_group(self, context)
     sync_target_group_name(self, context)
     sync_donor_preview(self, context)
 
 
+@_batch_preview_callback
 def _on_source_group_update(self, context):
     sync_mirror_group(self, context)
     sync_target_group_name(self, context)
     sync_donor_preview(self, context)
 
 
+@_batch_preview_callback
 def _on_manual_target_group_update(self, context):
     if not getattr(self, "manual_target_group_name", False):
         sync_target_group_name(self, context)
@@ -512,11 +558,13 @@ def _on_manual_target_group_update(self, context):
     sync_donor_preview(self, context)
 
 
+@_batch_preview_callback
 def _on_target_group_name_update(self, context):
     sync_mirror_target_group_name(self, context)
     sync_donor_preview(self, context)
 
 
+@_batch_preview_callback
 def _on_mirror_group_update(self, context):
     sync_mirror_target_group_name(self, context)
     sync_mirror_donor_preview(self, context)
@@ -592,6 +640,7 @@ def _on_mirror_donor_slot_6_update(self, context):
     _on_mirror_donor_slot_update(self, context, 5)
 
 
+@_batch_preview_callback
 def _on_manual_mirror_target_group_update(self, context):
     if not getattr(self, "manual_mirror_target_group_name", False):
         sync_mirror_target_group_name(self, context)

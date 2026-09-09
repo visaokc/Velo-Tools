@@ -5,6 +5,7 @@ import sys
 from contextlib import contextmanager
 
 from . import native_dependencies
+from .read_session import group_memberships
 
 
 _np = None
@@ -267,6 +268,14 @@ def get_groups_arr(obj, group_indices):
         raise RuntimeError(error)
     lookup = {group_index: col for col, group_index in enumerate(group_indices)}
     arr = _np.zeros((len(obj.data.vertices), len(group_indices)), dtype=_np.float32)
+    memberships = group_memberships(obj)
+    if memberships is not None:
+        for group_index, col in lookup.items():
+            rows = memberships.get(group_index, ())
+            if rows:
+                indices, values = zip(*rows)
+                arr[list(indices), col] = values
+        return arr
     for vertex in obj.data.vertices:
         for elem in vertex.groups:
             col = lookup.get(elem.group)
@@ -280,6 +289,13 @@ def get_group_weights_by_index(obj, group_index):
     if not ok:
         raise RuntimeError(error)
     arr = _np.zeros(len(obj.data.vertices), dtype=_np.float32)
+    memberships = group_memberships(obj)
+    if memberships is not None:
+        rows = memberships.get(group_index, ())
+        if rows:
+            indices, values = zip(*rows)
+            arr[list(indices)] = values
+        return arr
     for vertex in obj.data.vertices:
         for elem in vertex.groups:
             if elem.group == group_index:

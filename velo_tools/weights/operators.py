@@ -13,6 +13,7 @@ from . import algorithms as _algo
 from . import native_dependencies as _native_deps
 from . import props as _props
 from . import runtime as _runtime
+from .read_session import weight_read_session
 
 
 def _invalidate_weight_overlay_caches(context=None):
@@ -286,6 +287,7 @@ def _set_edit_vertex_selection(obj, vertex_indices):
     bmesh.update_edit_mesh(obj.data)
 
 
+@weight_read_session()
 def _snapshot_editable_groups(snapshots, obj):
     if obj is None or getattr(obj, "type", None) != 'MESH':
         return
@@ -318,6 +320,7 @@ def _validate_mirror_donor_count(donors, mirror_donors):
         raise ValueError(f"镜像规格化需要匹配实际 {expected} 个镜像供体，但只找到 {actual} 个")
 
 
+@weight_read_session()
 def _select_donors_for_group(
     context,
     settings,
@@ -372,6 +375,7 @@ def _select_donors_for_group(
     )
 
 
+@weight_read_session()
 def _select_activity_donors(context, settings, obj, group, *, exclude_names=None):
     donor_count = _props.donor_count_value(settings)
     focus_weights = _algo.read_group_weights(obj, group)
