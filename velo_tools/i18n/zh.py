@@ -1,6 +1,21 @@
 """Simplified Chinese catalog for Velo Tools."""
 
 ZH_TRANSLATIONS = {
+    'Transfer contains non-finite weights': '传递结果包含非有限权重，未提交结果',
+    'Receiving groups must be unlocked': '承接组必须处于解锁状态',
+    'Locked weights already exceed one; unlock the conflicting groups first': '已有锁定权重总和超过 1；请先解锁相关冲突组',
+    'No unlocked remainder evidence is available; choose an unlocked donor': '找不到可用的未锁定余量权重依据；请选择一个未锁定供体',
+    'Locked groups and the group limit leave no slot for the remaining weight': '锁定组与组数上限没有为剩余权重留下槽位',
+    'Transfer normalization verification failed': '传递后的归一化验收失败，已回滚',
+    'Locked weight verification failed': '锁定权重验收失败，已回滚',
+    'Receiving weight verification failed': '承接权重验收失败，已回滚',
+    'Untouched weight verification failed': '非处理区域权重验收失败，已回滚',
+    'Locked groups already exceed the group limit': '已有锁定组数量超过组数上限',
+    'Unknown weight transfer engine': '未知权重传递引擎',
+    'Paired capacity adjustment: {0} vertices': '镜像联动预算调整：{0} 个顶点',
+    'Spatial remainder evidence: {0} vertices': '采用邻近余量依据：{0} 个顶点',
+    'Number of preferred remainder donors; other unlocked groups remain eligible for automatic normalization': '优先余量供体数量；其它未锁定组仍可参与自动归一化',
+    'Preserve locked groups, prioritize the receiving weights, and distribute the remainder across unlocked groups. Mirror budgets are coupled. Same-object transfers skip normalization.': '保持锁定组，优先承接权重，在未锁定组间分配余量；镜像两侧预算联动。同对象传递跳过归一化。',
     '{0}. Inpaint numerical solving failed despite anchored mesh components. This is not a missing-seed error or a restriction on quad sources or concentrated weights. The target weights have not been replaced with a failed solve.': '{0}。网格连通域已有锚点，但 inpaint 数值求解仍失败。这不是缺少匹配种子，也不是不支持四边面来源或集中权重。未使用失败的求解结果替换目标权重。',
     'Visible modifiers cannot preserve the current ShapeKey mix during pose export': '姿态导出时可见修改器无法保持当前 ShapeKey 混合结果',
 

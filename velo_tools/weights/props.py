@@ -775,7 +775,7 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
     )
     donor_count: IntProperty(
         name='Automatic donor count',
-        description='The maximum number of donor groups used during normalization; currently fixed at 1 to 6 levels, automatic selection will not forcibly add weakly related groups to reach the limit',
+        description='Number of preferred remainder donors; other unlocked groups remain eligible for automatic normalization',
         default=4,
         min=1,
         soft_max=6,
@@ -880,7 +880,7 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
     )
     smoothing_enable: BoolProperty(
         name='Enable smoothing.',
-        default=True,
+        default=False,
         description='After transfer, perform seam-safe smoothing on the new receiving group; UV seam edges will be blocked to prevent seams from affecting weights',
     )
     smoothing_repeat: IntProperty(
@@ -912,7 +912,7 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
     normalize_after: BoolProperty(
         name='Perform post-normalization',
         default=True,
-        description='After transfer, normalize together with the automatic donor group; the current implementation prioritizes keeping the weights of the newly transferred group and only compresses the donor group to fit the remaining weight space. When transferring different groups of the same object, it will automatically skip to avoid overwriting the source group.',
+        description='Preserve locked groups, prioritize the receiving weights, and distribute the remainder across unlocked groups. Mirror budgets are coupled. Same-object transfers skip normalization.',
     )
     show_advanced: BoolProperty(
         name='Advanced Parameters',

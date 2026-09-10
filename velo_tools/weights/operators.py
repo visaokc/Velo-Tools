@@ -1035,14 +1035,6 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
         created_bone = False
         locked_groups = []
         source_lock_snapshot = {}
-        original_target_weights = None
-        original_mirror_weights = None
-        preserve_rows = None
-        authority_suppressed_rows = None
-        donor_focus_weights = None
-        configured_pairs = []
-        configured_donors = []
-        configured_mirror_donors = []
         robust_smoothing_handled = False
         mirror_flag_stack = contextlib.ExitStack()
         try:
@@ -1102,260 +1094,48 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                     mirror_enabled = True
                     mirror_flag_stack.enter_context(_algo.suppress_native_mirror_flags(target))
 
-            if settings.normalize_after:
-                configured_pairs = _props.selected_donor_pairs(settings)
-                if configured_pairs:
-                    configured_names = [donor for donor, _mirror in configured_pairs]
-                    exclude_names = [mirror_group.name] if mirror_enabled and mirror_group is not None else []
-                    configured_donors = _select_donors_for_group(
-                        context,
-                        settings,
-                        target,
-                        target_group,
-                        source_name,
-                        configured_names=configured_names,
-                        exclude_names=exclude_names,
-                    )
-                    if mirror_enabled and mirror_group is not None and configured_donors:
-                        mirror_by_donor = {donor: mirror for donor, mirror in configured_pairs}
-                        mirror_names = [mirror_by_donor.get(group.name, "") for group in configured_donors]
-                        configured_mirror_donors = _algo.mirrored_donor_groups(
-                            context,
-                            settings,
-                            target,
-                            configured_donors,
-                            mirror_names=mirror_names,
-                            exclude_names=[target_group.name, mirror_group.name],
-                        )
-                        _validate_mirror_donor_count(configured_donors, configured_mirror_donors)
-
-            original_target_weights = _algo.read_group_weights(target, target_group)
-            if mirror_enabled and mirror_group is not None:
-                original_mirror_weights = _algo.read_group_weights(target, mirror_group)
-            authority_for_domain = [target_group]
-            if mirror_enabled and mirror_group is not None:
-                authority_for_domain.append(mirror_group)
-            locked_boundary_max_groups = (
-                getattr(settings, "max_groups_per_vertex", None)
-                if getattr(settings, "limit_groups_enable", False)
-                else None
-            )
-
+            from . import transfer_plan
+            _snapshot_editable_groups(snapshots, target)
             matched = None
             if settings.engine == 'ROBUST':
-                weights, matched, matched_count, rescue_info = _algo.transfer_with_robust(context, settings, source_name)
-                donor_focus_weights = weights
-                robust_smoothing_handled = bool(rescue_info.get("smoothing_handled", False))
-                report.raw_weight_nonzero, report.raw_weight_max = _algo.weight_evidence_stats(weights)
-                weights, preserve_rows = _algo.apply_locked_boundary_preserve(
-                    target,
-                    authority_for_domain,
-                    target_group,
-                    weights,
-                    original_weights=original_target_weights,
-                    max_groups_per_vertex=locked_boundary_max_groups,
-                )
-                report.locked_boundary_vertices = int(preserve_rows.sum())
-                _algo.write_group_weights(target, target_group, weights)
-                report.matched_count = matched_count
-                report.rescued_components = int(rescue_info.get("rescued_components", 0))
-                report.rescued_vertices = int(rescue_info.get("rescued_vertices", 0))
-                report.zero_anchor_components = int(rescue_info.get("zero_anchor_components", 0))
-                report.zero_anchor_vertices = int(rescue_info.get("zero_anchor_vertices", 0))
-                report.evidence_blocked_components = int(rescue_info.get("evidence_blocked_components", 0))
-                report.evidence_blocked_vertices = int(rescue_info.get("evidence_blocked_vertices", 0))
-                report.inpaint_fallback = str(rescue_info.get("inpaint_fallback", "") or "")
-                report.authority_suppressed_vertices = int(rescue_info.get("authority_suppressed_vertices", 0))
-                if robust_smoothing_handled:
-                    report.smoothed = bool(rescue_info.get("smoothed", False))
-                    report.smoothing_skipped = not report.smoothed
-                authority_suppressed_rows = rescue_info.get("authority_suppressed_rows")
+                weights, matched, report.matched_count, rescue_info = _algo.transfer_with_robust(context, settings, source_name)
+                for key in ('zero_anchor_components', 'zero_anchor_vertices', 'evidence_blocked_components',
+                            'evidence_blocked_vertices', 'inpaint_fallback'):
+                    setattr(report, key, rescue_info.get(key, getattr(report, key)))
+                report.smoothed = bool(rescue_info.get('smoothed', False))
+                robust_smoothing_handled = bool(rescue_info.get('smoothing_handled', False))
             elif settings.engine == 'DATA_TRANSFER_SURFACE':
                 weights = _algo.transfer_with_data_transfer(context, settings, source_name, target_group.name)
-                report.raw_weight_nonzero, report.raw_weight_max = _algo.weight_evidence_stats(weights)
-                weights, preserve_rows = _algo.apply_locked_boundary_preserve(
-                    target,
-                    authority_for_domain,
-                    target_group,
-                    weights,
-                    original_weights=original_target_weights,
-                    max_groups_per_vertex=locked_boundary_max_groups,
-                )
-                report.locked_boundary_vertices = int(preserve_rows.sum())
-                _algo.write_group_weights(target, target_group, weights)
-                report.matched_count = _algo.count_group_weights(target, target_group)
+                report.matched_count, _ = _algo.weight_evidence_stats(weights)
             else:
-                raise ValueError("未知权重引擎")
-            if authority_suppressed_rows is not None:
-                preserve_rows = _algo.combine_row_masks(
-                    len(target.data.vertices),
-                    preserve_rows,
-                    authority_suppressed_rows,
+                raise ValueError("Unknown weight transfer engine")
+            np = transfer_plan.np
+            weights = np.asarray(weights).reshape(-1)
+            report.raw_weight_nonzero, report.raw_weight_max = _algo.weight_evidence_stats(weights)
+            if settings.smoothing_enable and not robust_smoothing_handled:
+                smooth_matched = matched if matched is not None else np.zeros(len(weights), dtype=bool)
+                matrix, report.smoothed = _algo._smooth_robust_matrix_weights(
+                    target, _algo._rwt.get_obj_arrs_world(target)[0], weights[:, None], smooth_matched, settings,
                 )
-
-            topology_cache = None
-            smoothing_needed = (
-                settings.smoothing_enable
-                and settings.smoothing_repeat > 0
-                and settings.smoothing_factor > 0.0
-                and not robust_smoothing_handled
-            )
-            if smoothing_needed or settings.limit_groups_enable:
-                try:
-                    topology_cache = _algo.build_weight_topology_cache(target)
-                except Exception:
-                    topology_cache = None
-            if smoothing_needed:
-                report.smoothed = _algo.apply_seam_safe_smoothing(
-                    target,
-                    target_group,
-                    settings,
-                    matched,
-                    topology_cache=topology_cache,
-                    preserve_rows=preserve_rows,
-                )
-                report.smoothing_skipped = not report.smoothed
+                weights = matrix[:, 0]
+            authority_groups = [target_group]
+            labels = None
+            proposed = weights[:, None]
             if mirror_enabled:
-                mirror_stats = _algo.mirror_group_weights(
-                    target,
-                    target_group,
-                    mirror_group,
-                    preserve_rows=preserve_rows,
-                    preserve_weights=original_mirror_weights,
-                )
-            donors = []
-            mirror_donors = []
-            if settings.normalize_after:
-                automatic_mirror_pairs = mirror_enabled and not configured_pairs
-                focus_weights = donor_focus_weights
-                if focus_weights is None:
-                    focus_weights = _algo.read_group_weights(target, target_group)
-                exclude_names = [mirror_group.name] if mirror_enabled and mirror_group is not None else []
-                if configured_pairs:
-                    donors = list(configured_donors)
-                else:
-                    donors = _select_donors_for_group(
-                        context,
-                        settings,
-                        target,
-                        target_group,
-                        source_name,
-                        focus_weights=focus_weights,
-                        exclude_names=exclude_names,
-                        rank_all=automatic_mirror_pairs,
-                    )
-                report.donors = [vg.name for vg in donors]
-                if mirror_enabled and mirror_group is not None and donors:
-                    if configured_pairs:
-                        mirror_donors = list(configured_mirror_donors)
-                    else:
-                        eligibility = _algo.auto_donor_pair_eligibility(
-                            context,
-                            settings,
-                            target,
-                            donors,
-                            exclude_names=[target_group.name, mirror_group.name],
-                            max_pairs=_props.donor_count_value(settings),
-                        )
-                        donors = eligibility.donors
-                        mirror_donors = eligibility.mirror_donors
-                        skipped_locked_pairs = list(eligibility.skipped_locked_pairs)
-                        diagnostic_donors = _select_donors_for_group(
-                            context,
-                            settings,
-                            target,
-                            target_group,
-                            source_name,
-                            focus_weights=focus_weights,
-                            exclude_names=exclude_names,
-                            include_locked_candidates=True,
-                            rank_all=True,
-                        )
-                        diagnostic = _algo.auto_donor_pair_eligibility(
-                            context,
-                            settings,
-                            target,
-                            diagnostic_donors,
-                            exclude_names=[target_group.name, mirror_group.name],
-                            max_pairs=_props.donor_count_value(settings),
-                        )
-                        for label in diagnostic.skipped_locked_pairs:
-                            if label not in skipped_locked_pairs:
-                                skipped_locked_pairs.append(label)
-                        report.skipped_locked_donor_pairs = skipped_locked_pairs
-                    _validate_mirror_donor_count(donors, mirror_donors)
-                    report.donors = [vg.name for vg in donors] + [f"镜像:{vg.name}" for vg in mirror_donors]
-            if settings.limit_groups_enable:
-                if source is target:
-                    report.limit_skipped_same_object = True
-                else:
-                    authority_groups = [target_group]
-                    if mirror_enabled and mirror_group is not None:
-                        authority_groups.append(mirror_group)
-                    if settings.normalize_after:
-                        authority_groups.extend(donors)
-                        authority_groups.extend(mirror_donors)
-                    for group in authority_groups:
-                        _snapshot_group(snapshots, target, group)
-                    priority_groups = [target_group]
-                    if mirror_enabled and mirror_group is not None:
-                        priority_groups.append(mirror_group)
-                    limit_report = _algo.apply_limit_groups_scoped(
-                        target,
-                        settings,
-                        authority_groups,
-                        priority_groups=priority_groups,
-                        preserve_rows=preserve_rows,
-                    )
-                    report.limited = bool(limit_report.changed)
-                    report.protected_over_limit_vertices = int(limit_report.protected_over_limit_vertices)
-                    report.authority_limited_vertices = int(limit_report.authority_limited_vertices)
-            if settings.normalize_after:
-                if source is target:
-                    report.normalize_skipped_same_object = True
-                elif donors:
-                    for group in donors:
-                        _snapshot_group(snapshots, target, group)
-                    if mirror_enabled and mirror_group is not None:
-                        for group in mirror_donors:
-                            _snapshot_group(snapshots, target, group)
-                        norm_report = _algo.normalize_authority_groups_with_donors(
-                            target,
-                            [target_group, mirror_group],
-                            donors + mirror_donors,
-                            preserve_rows=preserve_rows,
-                        )
-                        report.normalized = bool(norm_report)
-                        report.no_yieldable_vertices += int(norm_report.no_yieldable_vertices)
-                        report.under_normalized_vertices += int(norm_report.under_normalized_vertices)
-                    else:
-                        norm_report = _algo.normalize_with_donors(target, target_group, donors, preserve_rows=preserve_rows)
-                        report.normalized = bool(norm_report)
-                        report.no_yieldable_vertices += int(norm_report.no_yieldable_vertices)
-                        report.under_normalized_vertices += int(norm_report.under_normalized_vertices)
-                    seed_max_groups = (
-                        getattr(settings, "max_groups_per_vertex", None)
-                        if getattr(settings, "limit_groups_enable", False)
-                        else None
-                    )
-                    seed_brush = getattr(_algo, "seed_brush_boundary_memberships", None)
-                    if callable(seed_brush):
-                        seeded = int(seed_brush(
-                            target,
-                            target_group,
-                            donors,
-                            topology_cache=topology_cache,
-                            max_groups_per_vertex=seed_max_groups,
-                        ))
-                        if mirror_enabled and mirror_group is not None and mirror_donors:
-                            seeded += int(seed_brush(
-                                target,
-                                mirror_group,
-                                mirror_donors,
-                                topology_cache=topology_cache,
-                                max_groups_per_vertex=seed_max_groups,
-                            ))
-                        report.brush_seed_vertices = int(getattr(report, "brush_seed_vertices", 0)) + seeded
+                proposed, labels, mirror_stats = transfer_plan.mirrored_field(target, weights)
+                authority_groups.append(mirror_group)
+            normalize = bool(settings.normalize_after and source is not target)
+            allocation = transfer_plan.commit_transfer(
+                target, authority_groups, proposed, settings, labels=labels,
+                normalize=normalize, limit=source is not target,
+            )
+            report.normalized = normalize
+            report.normalize_skipped_same_object = bool(settings.normalize_after and source is target)
+            report.limit_skipped_same_object = bool(settings.limit_groups_enable and source is target)
+            report.limited = allocation['limited_vertices'] > 0
+            report.capacity_adjusted = allocation['capacity_adjusted']
+            report.inferred_remainder = allocation['inferred_remainder']
+
             _algo.ensure_numeric_export_compatible(target, target_group_name)
             if mirror_enabled and mirror_group is not None:
                 _algo.ensure_numeric_export_compatible(target, mirror_group.name)
@@ -1422,6 +1202,10 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append(f"无来源正权重 {report.evidence_blocked_components} 域/{report.evidence_blocked_vertices} 点")
         if report.inpaint_fallback:
             bits.append(f"{report.inpaint_fallback.lower()} inpaint 回退")
+        if getattr(report, 'capacity_adjusted', 0):
+            bits.append(iface_("Paired capacity adjustment: {0} vertices").format(report.capacity_adjusted))
+        if getattr(report, 'inferred_remainder', 0):
+            bits.append(iface_("Spatial remainder evidence: {0} vertices").format(report.inferred_remainder))
         if report.raw_weight_nonzero:
             bits.append(
                 "evidence "

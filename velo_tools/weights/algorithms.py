@@ -28,6 +28,8 @@ class WeightTransferReport:
     inpaint_fallback: str = ""
     smoothed: bool = False
     smoothing_skipped: bool = False
+    capacity_adjusted: int = 0
+    inferred_remainder: int = 0
     limited: bool = False
     protected_over_limit_vertices: int = 0
     authority_limited_vertices: int = 0
@@ -985,6 +987,8 @@ def _transfer_with_robust_matrix_context(
         component_stats,
         threshold=threshold,
     )
+    from .transfer_plan import supported_field
+    selected_weights = supported_field(target, selected_weights, matched, direct_matrix_weights[:, selected_column])
     rescue_info.update(gate_info)
     rescue_info["matrix_context"] = True
     return RobustMatrixTransferResult(

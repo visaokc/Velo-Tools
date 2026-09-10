@@ -241,7 +241,7 @@ Robust uses optional CPython 3.11 native packages. On first use, Velo shows the 
 
 If the standalone add-on is already enabled and has loaded a complete compatible dependency set, Velo reuses those modules without adding its private dependency directory to `sys.path`. Otherwise Velo loads its own private copies temporarily, so the two add-ons can coexist.
 
-Robust uses a whole-island positive-evidence gate. A disconnected target island with no positive source evidence remains zero instead of receiving invented inpaint weights.
+Robust rejects positive inpaint components without a positive direct source seed, including isolated positive patches inside a connected mesh. This evidence filter does not guarantee correct anatomical correspondence.
 
 Use **高级 (Advanced)** only when geometry requires different distance, normal-angle, normal-flip, inpaint, evaluated-mesh, or dilation settings.
 
@@ -249,11 +249,13 @@ Use **高级 (Advanced)** only when geometry requires different distance, normal
 
 With **手动指定承接组 (Specify Target Group Manually)** off, Velo resolves the target through the active MMD mapping. Turn it on only when you need an explicit override.
 
-The donor count is a maximum from 1 to 6. Automatic selection does not add weak groups merely to fill every slot.
+Additional smoothing is off by default. Both engines share the same allocation pipeline; weights need not be consolidated into one donor before transfer. Existing saved smoothing settings are respected.
 
-Manual donor and mirror-donor choices are strict. Velo validates them before writing target weights. A failed operation restores the target's previous weight memberships.
+Donor entries are preferred remainder suggestions, not an exclusive list. Other unlocked ordinary groups can contribute proportionally; nearest spatial evidence is used when local remainder weights are absent. Invalid suggestions do not prevent otherwise feasible transfers.
 
-Locked ordinary groups are protected capacity during limit and normalization. The new target group is preserved first; eligible donors are compressed into the remaining capacity.
+Locked ordinary groups remain unchanged. The recipient has priority, and its mirror is derived strictly from the authoritative side, not sampled independently. Capacity adjustments are coupled across mirrored values and reported. The last available influence slot can absorb the remainder. Old recipient support is normalized even when the new weight is zero.
+
+The complete allocation is checked before writing, then verified after writing. Incompatible locked budgets or missing remainder evidence cancel the operation and restore previous memberships. Successful recipients are automatically locked when that option is enabled, allowing sequential transfers without modifying completed groups.
 
 #### Mirror, Merge, and Repair
 
@@ -999,7 +1001,7 @@ Inspect the detected list for duplicate numeric Deform IDs on the same object. A
 
 ### Weight Transfer Fails Before Writing
 
-Check manual target, donor, mirror target, and mirror-donor selections. Manual choices are strict and are validated before mutation.
+Check target and mirror-target selections, locked capacity, and available unlocked remainder evidence. Donor suggestions are optional. Incompatible constraints are rejected before committing weights.
 
 If a disconnected island stays zero, it has no positive source evidence. Adjust the source geometry or matching settings instead of forcing inpaint.
 
