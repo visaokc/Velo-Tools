@@ -25,7 +25,7 @@ _DRAW_SECTION_RE = re.compile(r"^CommandList_Draw_Component(\d+)$", re.I)
 _OVERRIDE_TRIGGER_RE = re.compile(
     r"^\s*run\s*=\s*CommandList\\EFMIv1\\OverrideTextures\s*$", re.I
 )
-_DRAW_RE = re.compile(r"^\s*drawindexed\s*=", re.I)
+_DRAW_RE = re.compile(r"^\s*drawindexed(?:instanced)?\s*=", re.I)
 _HEX8_RE = re.compile(r"^[0-9a-f]{8}$")
 
 

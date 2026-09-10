@@ -21,6 +21,7 @@ from . import general_mapping
 from . import mesh
 from . import weights
 from . import games
+from . import materials
 from .core.mapping import positions as _mapping_positions
 from .core import mapping as _core_mapping
 from .core import export as _core_export
@@ -29,7 +30,7 @@ from .core import mesh_references as _mesh_references
 # core.mapping's UI sub-panel attaches under VELO_EF_PT_root, which is registered by
 # games.arknights_endfield, so it must be registered after games (the unregister order
 # is reversed automatically).
-_modules = (updater, properties, operators, ui, bone_number_map, overlay, general_mapping, mesh, weights, games, _core_mapping, _core_export, _mapping_positions, _mesh_references)
+_modules = (updater, properties, operators, ui, bone_number_map, overlay, general_mapping, mesh, weights, games, _core_mapping, _core_export, _mapping_positions, _mesh_references, materials)
 
 
 def register():

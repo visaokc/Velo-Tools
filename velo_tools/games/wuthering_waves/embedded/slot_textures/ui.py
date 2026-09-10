@@ -147,6 +147,8 @@ def _patch_export_menu():
         box.label(text='Velo Compatibility Options', icon="TOOL_SETTINGS")
         if hasattr(cfg, "velo_auto_split_by_material"):
             box.prop(cfg, "velo_auto_split_by_material")
+            if cfg.velo_auto_split_by_material and hasattr(cfg, "material_texture_overrides"):
+                box.prop(cfg, "material_texture_overrides")
         if hasattr(cfg, "use_asset_name_matching"):
             box.prop(cfg, "use_asset_name_matching")
         if hasattr(cfg, "velo_slot_style_textures"):

@@ -110,7 +110,11 @@ def _used_materials(obj) -> list[UsedMaterial]:
     mesh.polygons.foreach_get("material_index", indices)
     result = []
     for slot in sorted(set(indices)):
-        material = mesh.materials[slot] if 0 <= slot < len(mesh.materials) else None
+        object_slots = getattr(obj, "material_slots", None)
+        if object_slots is not None and 0 <= slot < len(object_slots):
+            material = object_slots[slot].material
+        else:
+            material = mesh.materials[slot] if 0 <= slot < len(mesh.materials) else None
         if material is None:
             name = "<empty>"
             key = ("empty", slot)
@@ -257,6 +261,12 @@ def _split_object_by_material(context, obj) -> list:
     active = context.view_layer.objects.active
     selected = list(context.selected_objects)
     previous_mode = getattr(context.object, "mode", "OBJECT") if context.object else "OBJECT"
+    # Blender's Separate remaps mesh slots, not object-level material overrides.
+    # This object already belongs to the disposable export copy, never the source.
+    effective_materials = [slot.material for slot in obj.material_slots]
+    for index, material in enumerate(effective_materials):
+        obj.data.materials[index] = material
+        obj.material_slots[index].link = "DATA"
     before = {item.as_pointer() for item in bpy.data.objects}
     normal_attribute = capture_split_corner_normals(obj.data)
     try:

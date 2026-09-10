@@ -1426,3 +1426,104 @@ ZH_TRANSLATIONS = {
     'Normalize standalone mirror operations. Source weight transfer never normalizes; perform manual cleanup after completing the transfers.': '对单独镜像操作执行规格化。源权重传递从不规格化，请在全部传递完成后手动整理。',
     "Transferred weights are empty for '{0}/{1}'. Check source coverage and geometric matching.": "“{0}/{1}”的传递权重为空，请检查源权重覆盖和几何匹配。",
 }
+
+
+# Semantic material authoring.
+ZH_TRANSLATIONS.update(
+{'Material Tools': '材质工具',
+ 'Semantic texture inputs / Original texture mapping / Same-diffuse propagation': '语义贴图输入 / 原始贴图映射 / 同漫反射传播',
+ 'Use Material Textures': '按材质指定贴图',
+ 'Use semantic texture inputs for each material draw in Slot export; requires automatic material splitting. Original materials and draw order are preserved': '在 '
+                                                                                                                                                              'Slot '
+                                                                                                                                                              '导出中按材质为各 '
+                                                                                                                                                              'draw '
+                                                                                                                                                              '指定语义贴图；需要开启按材质分离。保留原始材质及绘制顺序',
+ 'Initialize Selected Materials': '初始化选中物体材质',
+ 'Replace selected MMD or Blender shaders with semantic texture inputs, preserving diffuse UV wiring and keeping original materials as backups': '将选中的 '
+                                                                                                                                                 'MMD '
+                                                                                                                                                 '或 '
+                                                                                                                                                 'Blender '
+                                                                                                                                                 '着色器转换为语义贴图输入节点；保留漫反射 '
+                                                                                                                                                 'UV '
+                                                                                                                                                 '连线，并备份原始材质',
+ 'Refresh Source Mapping': '刷新原始贴图映射',
+ 'Read original extraction evidence for the active material; keep valid choices and leave ambiguous texture roles unresolved': '为活动材质读取原始提取数据；保留有效选择，不猜测有歧义的贴图用途',
+ 'Confirm Suggested Mapping': '确认建议的贴图对应关系',
+ 'Confirm that the displayed original textures have the indicated semantic roles; file formats alone do not prove their meaning': '确认当前显示的原始贴图具有所标示的用途；仅凭文件格式不能确定其实际含义',
+ 'Choose Original Texture': '选择对应的原始贴图',
+ 'Choose the original extracted image for this semantic role; no shader slot number is required': '为该用途选择对应的原始提取贴图，无需填写着色器槽位编号',
+ 'Original Texture': '原始贴图',
+ 'Propagate by Same Diffuse': '按相同漫反射传播',
+ 'Copy non-diffuse image inputs from the active material to selected materials with the exact same diffuse image; resolve original mappings independently for each Component': '将活动材质的其它贴图连接传播到选中物体中使用同一漫反射图像的材质；各 '
+                                                                                                                                                                               'Component '
+                                                                                                                                                                               '独立解析原始贴图映射',
+ 'Replace Existing Connections': '覆盖已有连接',
+ 'Replace populated non-diffuse inputs; otherwise only fill empty inputs': '覆盖已有的非漫反射连接；关闭时仅填充空输入',
+ 'Select a mesh material': '请选择网格材质',
+ 'Formats are hints; verify original textures': '格式仅作提示，请核对原始贴图',
+ 'Suggestion: confirmation required': '推断建议：需要确认',
+ 'Packed maps are exported unchanged; preview is approximate': '打包贴图原样导出；预览为近似效果',
+ 'Unassigned': '未指定',
+ 'Leave this role unresolved': '暂不指定该用途对应的原始贴图',
+ 'Texture Assignment': '贴图指定',
+ 'Diffuse': '漫反射',
+ 'Normal': '法线',
+ 'Packed PBR': '打包 PBR',
+ 'FTM': 'FTM',
+ 'Mask': '遮罩',
+ 'Emission': '自发光',
+ 'Light Map': '光照贴图',
+ 'Detail': '细节贴图',
+ 'More than one texture assignment node in this material': '当前材质存在多个贴图指定节点',
+ 'Cyclic texture connection': '贴图连接存在循环',
+ 'Connect the image Color output to a texture input': '请将图像的颜色输出连接到贴图输入',
+ 'Texture inputs support Image Texture nodes and reroutes; bake procedural maps first': '贴图输入支持图像纹理节点和重定向；程序化贴图请先烘焙',
+ 'Connect the texture assignment Shader output to the active Material Output': '请将贴图指定节点的着色器输出连接到活动材质输出节点',
+ 'Initialize this material first': '请先初始化当前材质',
+ 'Material textures require Slot style texture export': '按材质指定贴图需要开启 Slot 风格贴图导出',
+ 'Material textures do not support custom templates or asset-name export': '按材质指定贴图暂不支持自定义模板或资产名称导出',
+ 'Material textures require a full export with INI output': '按材质指定贴图需要完整导出并输出 INI',
+ 'Material source game differs from the active exporter': '材质原始贴图所属游戏与当前导出器不一致',
+ '{0}: choose the original texture for {1} in Material Tools': '{0}：请在材质工具中选择 {1} 对应的原始贴图',
+ '{0}: confirm the suggested original texture mapping before export': '{0}：请在导出前确认建议的原始贴图对应关系',
+ '{0}: save and reload the image before export; generated, tiled, animated, and unsaved images are not exported': '{0}：请在导出前保存并重新载入图像；不导出生成图、分块图、动画或尚未保存的图像',
+ 'Unsupported material image file type: {0}': '不支持的材质贴图文件类型：{0}',
+ 'Empty material image: {0}': '材质贴图为空：{0}',
+ 'Two semantic inputs replace the same original texture differently': '两个用途输入对同一原始贴图指定了不同的替换图像',
+ 'Enable texture copying when exporting material textures': '导出按材质指定的贴图时，请开启复制贴图',
+ 'Material image output conflicts with an existing file: {0}': '材质贴图输出与已有文件冲突：{0}',
+ 'Switch to Object Mode to edit material assignments': '请切换到物体模式后编辑材质指定',
+ 'Linked objects cannot receive local material assignments': '无法为库链接物体写入本地材质指定',
+ 'Material operation failed: {0}': '材质操作失败：{0}',
+ 'Initialized {0} materials; originals retained as backups': '已初始化 {0} 个材质；原材质已保留为备份',
+ 'Source mapping refreshed; review format-based suggestions': '已刷新原始贴图映射；请检查基于格式的推断建议',
+ 'Original texture mapping confirmed': '已确认原始贴图对应关系',
+ 'The active material needs a connected diffuse image': '活动材质需要连接一张漫反射图像',
+ 'Updated {0} matching materials; review each target source mapping': '已更新 {0} 个匹配材质；请检查各目标的原始贴图映射',
+ 'Choose the original image, not the replacement': '请选择原始贴图，而不是准备替换的新贴图',
+ 'Material textures currently support single-source export; disable this option for Cross-Scene export': '按材质指定贴图当前支持单来源导出；跨场景导出时请关闭此选项',
+ 'Material textures currently require Cross-IB to be disabled': '按材质指定贴图当前需要关闭 Cross-IB',
+ 'Set an original source folder and Component name before mapping textures': '映射贴图前，请设置原始提取目录和 Component 名称',
+ 'Source evidence missing; refresh mapping before export': '缺少原始贴图数据；导出前请刷新映射',
+ 'Ambiguous original texture filenames': '原始贴图文件名存在歧义',
+ 'Duplicate INI sections prevent material binding': 'INI 存在重名区段，无法安全指定材质贴图',
+ 'Material bindings require an INI Constants section': '材质贴图指定需要 INI 的 Constants 区段',
+ 'Material texture layer is already present': 'INI 已存在材质贴图指定层',
+ 'Ambiguous exported material draw ranges': '导出的材质绘制范围存在歧义',
+ 'Invalid finalized material draw partition': '最终材质绘制分段无效',
+ 'Material ranges do not cover the original draw': '材质绘制分段未完整覆盖原始 draw',
+ 'Missing material image resource': '缺少材质图像资源',
+ 'Component {0}: original texture {1} has no safe slot assignment; refresh its source mapping and slot selection': 'Component '
+                                                                                                                   '{0}：原始贴图 '
+                                                                                                                   '{1} '
+                                                                                                                   '没有安全的槽位绑定；请刷新原始贴图映射并检查 '
+                                                                                                                   'Slot '
+                                                                                                                   '部件选择',
+ 'Component {0} has no validated slot setter': 'Component {0} 没有已验证的槽位设置入口',
+ 'Some material draws have no supported INI anchor; custom or cross-scene draw layouts require explicit adaptation': '部分材质 '
+                                                                                                                     'draw '
+                                                                                                                     '找不到支持的 '
+                                                                                                                     'INI '
+                                                                                                                     '插入位置；自定义或跨场景绘制布局需要单独适配',
+ 'Unsafe material resource filename': '材质资源文件名不安全'}
+)

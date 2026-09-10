@@ -1,6 +1,6 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.6.6. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.6.6 and identifies additions in 1.6.7-dev. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
 
@@ -39,6 +39,7 @@ Velo Tools follows Blender's interface language. Simplified and Traditional Chin
 | **顶点组工具** | Vertex Group Tools | Batch vertex-group work and name mapping |
 | **网格工具** | Mesh Tools | Materials, collection routing, sculpt helpers, and ShapeKey aggregation |
 | **权重工具** | Weight Tools | Transfer, mirror, normalize, smooth, and repair weights |
+| **材质工具** | Material Tools | Semantic image inputs, original texture mapping, and per-draw Slot textures (1.6.7-dev) |
 | **游戏** | Game | EFMI and WWMI game workflows |
 
 Inside **游戏 (Game)**, choose **终末地 (Arknights: Endfield)** or **鸣潮 (Wuthering Waves)**.
@@ -279,6 +280,21 @@ In Edit Mode, **按比例规格化选中顶点 (Normalize Selected Vertices Prop
 Seam-safe smoothing blocks propagation across UV seams. **限制每顶点组数量 (Limit Groups per Vertex)** affects manual cleanup and standalone mirroring, not source transfer. The **Normalize standalone mirror** option and donor count are in the mirror panel; their existing standalone behavior is unchanged.
 
 Weight Tools accelerate authoring; they do not replace deformation review. Inspect joints, seams, mirrored areas, and previously disconnected islands before export.
+
+### Material Tools: Semantic Slot Textures (1.6.7-dev)
+
+The **Material Tools** tab is immediately to the right of **Weight Tools**. It separates two choices: connect a replacement image to a semantic input, then identify the original extracted image that input replaces. Users do not enter `ps-t` slot numbers. Export resolves the original identity through the existing Component/pass-aware Slot planner.
+
+In the selected game's **Export Mod** settings, enable **Auto Split by Material**, **Slot-style Textures**, and **Use Material Textures** under compatibility options. Enable INI output and texture copying, and use a separate mod output folder. The new material option defaults to off and disappears when automatic material splitting is disabled. Disabling material splitting bypasses the material-binding path entirely.
+
+1. Select mesh objects in Object Mode, open **Material Tools**, choose the matching game and click **Initialize Selected Materials**. Each used MMD or Blender material receives a semantic shader-group copy. The diffuse image and its UV/vector wiring are retained when identifiable; original materials are kept as backups. Object-level material assignments isolate unselected users of shared meshes. Repeating initialization does not replace existing assignment nodes.
+2. In the Shader Editor, connect each Image Texture **Color** output to **Diffuse**, **Normal**, **Packed PBR** (Endfield), **FTM** (Wuthering Waves), **Mask**, **Emission**, **Light Map**, or **Detail**. Keep **Shader** connected to the active Material Output. Direct image nodes and reroutes are supported; procedural maps must be baked first. Leaving an input unconnected retains the existing Slot behavior for that map. Alpha controls preview, not a separate exported texture role.
+3. Set the original object-source folder and use **Refresh Source Mapping**. The material's Component prefix, or otherwise the object's prefix, chooses the source Component. Extraction names, observed formats, and same-pass co-occurrence with the original diffuse image narrow candidates. DDS-header hints are used only when extraction format evidence is absent. Format alone does not prove texture meaning: inspect the suggested originals, use **Choose Original Texture** to select by thumbnail/filename when needed, and **Confirm Suggested Mapping** before export. A directly matched original diffuse identity is already confirmed. Initialization also works without source evidence, but connected maps cannot export until their mappings are resolved.
+4. To reuse other maps, make the configured material active, select the target objects, and run **Propagate by Same Diffuse**. Matching uses the exact image datablock or canonical saved-image path, not similar names or image appearance. By default only empty non-diffuse inputs are filled; **Replace Existing Connections** allows replacement. Target Component mappings remain independent and must be reviewed, especially across Components.
+
+The exporter snapshots the final triangulated material ranges, preserves draw order and conditions, and coalesces adjacent compatible texture-binding groups within a Component. Each group saves and restores its affected slots. Components may share the same original texture while choosing different replacements without rewriting a global shared binding. Identical replacement file contents reuse an output resource. This is Slot routing, not new runtime Hash-based per-draw matching.
+
+This first implementation supports single-source EFMI and WWMI exports with Native or Fuzzy Slot syntax. CrossIB, WWMI Cross-Scene, asset-name export, custom/live templates, and partial export are explicitly excluded. Components using connected material inputs must participate in safe Slot export; an unavailable original binding aborts instead of silently falling back. Packed PBR/FTM images are copied unchanged; the Principled preview is approximate and does not reproduce either game's packed-channel shading. Saved DDS/PNG/JPG/JPEG/TGA/BMP files and packed file images are supported without automatic format conversion. Generated, dirty, animated, tiled, or procedural images need to be saved/baked to a supported single image first. Use Blender Undo or reassign the retained original material to revert an initialization, and validate the exported mod in game.
 
 ## EFMI End-to-End
 

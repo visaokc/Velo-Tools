@@ -69,6 +69,8 @@ def _draw_velo_inline_controls(layout, cfg, mode: str, context=None) -> None:
         row.prop(cfg, "rename_mirror_pairs")
     if "auto_split_by_material" in controls and hasattr(cfg, "velo_auto_split_by_material"):
         box.prop(cfg, "velo_auto_split_by_material")
+        if cfg.velo_auto_split_by_material and hasattr(cfg, "material_texture_overrides"):
+            box.prop(cfg, "material_texture_overrides")
     if "slot_style_textures" in controls and hasattr(cfg, "slot_style_textures"):
         box.prop(cfg, "slot_style_textures")
         if cfg.slot_style_textures:

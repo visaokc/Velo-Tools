@@ -1115,6 +1115,7 @@ class VELO_ToolsSettings(bpy.types.PropertyGroup):
             ('MATCH', 'Vertex Group Tools', 'Vertex Group Name Matching / MMD Mapping / Vertex Group Operations'),
             ('MESH', 'Grid tool', 'Material / Split and Merge / ShapeKey Aggregation / Multi-Object Sculpting'),
             ('WEIGHT', 'Weight Tool', 'Weight transfer / Smooth / Limit group count'),
+            ('MATERIAL', 'Material Tools', 'Semantic texture inputs / Original texture mapping / Same-diffuse propagation'),
             ('GAME', 'Game', 'Game MOD Workflow: Arknights: Endfield(EFMI) / Wuthering Waves(WWMI)'),
         ],
         default='MATCH',

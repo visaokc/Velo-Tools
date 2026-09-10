@@ -1067,6 +1067,14 @@ def prepare_material_route_export(context):
             if obj.data is not None:
                 clone.data = obj.data.copy()
                 clone.data.name = f"{obj.data.name}{_EXPORT_TEMP_SUFFIX}"
+            # Preserve effective object overrides on this disposable mesh before
+            # Separate remaps its material slots. Never write through the source.
+            for index, slot in enumerate(obj.material_slots):
+                clone.data.materials[index] = slot.material
+                clone.material_slots[index].link = "DATA"
+            component_id = _component_id_from_object(obj, root)
+            if component_id is not None:
+                clone["velo_component_id"] = component_id
             clone.name = f"{obj.name}{_EXPORT_TEMP_SUFFIX}"
             _mark_export_temp_object(clone)
             if was_hidden and not ignore_hidden_objects:
