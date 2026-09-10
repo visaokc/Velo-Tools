@@ -742,10 +742,10 @@ def _refresh_suspended_material_routes(scene):
         _ROUTE_AUTO_REFRESHING[0] = False
 
 
-def suspend_material_route_auto_refresh(scene):
-    """Collapse export-time depsgraph churn into at most one route refresh."""
+def suspend_material_route_auto_refresh(scene, *, refresh_on_exit=True):
+    """Suppress material scans throughout native export, including its cleanup."""
     return _ROUTE_REFRESH_GATE.suspend(
-        scene, _refresh_suspended_material_routes)
+        scene, _refresh_suspended_material_routes if refresh_on_exit else lambda _scene: None)
 
 
 @persistent
@@ -1006,10 +1006,14 @@ def _cleanup_join_orphan_meshes(meshes):
 
 
 def prepare_material_route_export(context):
+    from ..core.export.material_partition import material_routing_enabled
+
     scene = context.scene
+    cfg = get_export_component_settings(scene)
+    if not material_routing_enabled(cfg):
+        return None
     route_settings = get_material_route_settings(scene)
     root = get_export_component_root(scene)
-    cfg = get_export_component_settings(scene)
     ignore_hidden_objects = bool(getattr(cfg, "ignore_hidden_objects", False))
     ignore_hidden_collections = bool(getattr(cfg, "ignore_hidden_collections", False))
     if route_settings is None or root is None:

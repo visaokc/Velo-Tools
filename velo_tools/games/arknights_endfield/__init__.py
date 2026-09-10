@@ -594,7 +594,7 @@ def _patch_velo_settings():
     )
     _vsettings.VTEF_Settings.__annotations__["velo_auto_split_by_material"] = BoolProperty(
         name='Automatically split by material during export',
-        description='When exporting temporary objects, automatically split according to the actual material with the prefix Component; it will not modify scene objects.',
+        description='Enabled: intelligently split and route temporary export objects using material names. Disabled: assign Components only from object names, without material-name routing, validation, or splitting. Scene objects remain unchanged.',
         default=True,
     )
 

@@ -13,6 +13,11 @@ _COMPONENT_RE = re.compile(r"component[_ -]*(\d+)", re.IGNORECASE)
 _PATCHES: dict[type, tuple[object, object, str, object]] = {}
 
 
+def material_routing_enabled(settings) -> bool:
+    """Use one policy for host routing, merger partitions, and cross-scene inputs."""
+    return bool(getattr(settings, "velo_auto_split_by_material", True))
+
+
 @dataclass(frozen=True)
 class UsedMaterial:
     slot: int
@@ -217,8 +222,12 @@ def _validate_solidify(temp_object, used: Sequence[UsedMaterial]) -> None:
                     )
 
 
-def prepare_cross_scene_object(obj, source_name: str, apply_modifiers: bool) -> PartitionPlan:
-    """Validate one selected cross-scene source and cache its plan on a later copy."""
+def prepare_cross_scene_object(
+    obj, source_name: str, apply_modifiers: bool, *, settings=None,
+) -> PartitionPlan:
+    """Plan source ownership without touching materials in object-name mode."""
+    if not material_routing_enabled(settings):
+        return PartitionPlan("OBJECT_NAME", component_id_from_name(source_name), frozenset())
     temp = type("CrossSceneSource", (), {"name": source_name, "object": obj})()
     used = _used_materials(obj)
     plan = _classify_with_location(source_name, obj, used)
@@ -415,6 +424,10 @@ def install(merger_cls: type, settings_attr: str, after_split=None,
     def import_objects_from_collection(self):
         original_import(self)
         cfg = getattr(self.context.scene, settings_attr, None)
+        self._velo_allow_host_material_routes = False
+        if not material_routing_enabled(cfg):
+            self._velo_material_partition_plans = None
+            return
         self._velo_allow_host_material_routes = (
             settings_attr == "VTEF_settings"
             and (
@@ -422,9 +435,6 @@ def install(merger_cls: type, settings_attr: str, after_split=None,
                 or bool(cfg.get("_unified_vg_component_export", False))
             )
         )
-        if not bool(getattr(cfg, "velo_auto_split_by_material", True)):
-            self._velo_material_partition_plans = None
-            return
         plans = {}
         for component in self.components:
             entries = []

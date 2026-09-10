@@ -566,6 +566,7 @@ def _prepare_inputs(context: Any, cfg: Any, plan: ExportUnitPlan,
             selected.object,
             selected.name,
             bool(plan.manifest_entry.get("apply_modifiers", False)),
+            settings=cfg,
         )
         material_components = {
             material_partition.component_id_from_name(name)

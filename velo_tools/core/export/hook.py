@@ -18,6 +18,7 @@ from pathlib import Path
 import bpy
 
 from . import preexport as _pe
+from .material_partition import material_routing_enabled
 
 
 # {id(cls): (cls, orig_execute, src_label)}
@@ -316,6 +317,8 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
     def patched(self, context):
         states = []
         mesh_state = None
+        use_material_routes = material_routing_enabled(
+            getattr(context.scene, settings_attr, None))
         # EFMI validates the map source required by each unified export mode.
         # WWMI validates its own Metadata contract, so this gate is EFMI-only.
         validation_error = (None if adapter_key == "WWMI"
@@ -333,14 +336,15 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
             traceback.print_exc()
             _mesh_ops = None
         transaction = (
-            _mesh_ops.suspend_material_route_auto_refresh(context.scene)
+            _mesh_ops.suspend_material_route_auto_refresh(
+                context.scene, refresh_on_exit=use_material_routes)
             if _mesh_ops is not None else nullcontext()
         )
         with transaction:
             try:
                 try:
                     states = _get_export_states(context, settings_attr)
-                    if _mesh_ops is not None:
+                    if _mesh_ops is not None and use_material_routes:
                         mesh_state = _mesh_ops.prepare_material_route_export(context)
                 except Exception as exc:
                     traceback.print_exc()

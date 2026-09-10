@@ -347,7 +347,12 @@ Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
 6. Configure optional CrossIB or custom ShapeKey features.
 7. Run **导出 Mod (Export Mod)**.
 
-**Velo 兼容选项 (Velo Compatibility) -> 导出时自动按材质拆分 (Auto Split by Material on Export)** is enabled by default. If one joined object actually uses at least two `Component N`-prefixed materials, Velo separates only the export copy and keeps the scene object and ShapeKeys unchanged. Every used material in this mode must match the object's Component; conflicts report the collection, object, and material slot and stop export. Objects with no material, one material, or only unprefixed preview materials retain native object-name behavior. Turning the option off restores the complete legacy path without validation or splitting.
+**Velo 兼容选项 (Velo Compatibility) -> 导出时自动按材质拆分 (Auto Split by Material on Export)** is enabled by default and controls the complete material-aware export pipeline:
+
+- **Enabled:** retain intelligent material-name detection, temporary material separation, material-to-collection routing, and the applicable material-ownership and modifier checks. Material `Component N` prefixes can participate in choosing the destination Component; existing routing rules remain in effect. Export does not destructively split the scene objects.
+- **Disabled:** bypass material-name routing, validation, and splitting throughout export. Each whole object is assigned by its own `Component N` name, not its materials. Arbitrary names, conflicting material prefixes, and multiple material slots do not change Component ownership. A material prefix does not make an object with an ineligible name exportable. Export-time material-tree refreshes are also suppressed.
+
+This switch does not disable MMD mapping, skeleton-mode rules, modifier application, ShapeKey processing, or object/collection visibility filters. Independent manual material-splitting and mesh-naming tools keep their own behavior.
 
 Default-template EFMI exports use each eight-digit texture Hash in generated INI identifiers, for example `[Resource_Texture_ab9de26a]` and `[TextureOverride_Texture_ab9de26a]`, rather than unstable ordinal names such as `Resource_Texture10`. References are renamed together, so the resource, override, source DDS filename, and STU record can be correlated directly. User-controlled custom templates retain their authored identifiers.
 
@@ -535,7 +540,7 @@ Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
 7. Configure any Velo compatibility options.
 8. Export and review Blender's final status.
 
-**导出时自动按材质拆分 (Auto Split by Material on Export)** follows the same rules for WWMI single-IB, Cross-Scene, and **Per-Component (from Merged)** exports. Current WWMI hidden-object and collection options remain authoritative. Material ownership conflicts fail closed; disabling the option performs neither validation nor partitioning.
+**导出时自动按材质拆分 (Auto Split by Material on Export)** uses the same enabled/disabled contract for WWMI single-IB, Cross-Scene, and **Per-Component (from Merged)** exports. Enabled mode retains the existing intelligent material routing and checks. Disabled mode uses object-name Component ownership throughout, including Cross-Scene body, own-buffer, and editable-unit preparation; it does not inspect material names or defer weight conversion because of material prefixes. Existing global-to-local Component remapping, vertex-group validation, and hidden-object/collection filters remain authoritative.
 
 The complete path writes `mod.ini`, `Meshes`, and `Textures`.
 
