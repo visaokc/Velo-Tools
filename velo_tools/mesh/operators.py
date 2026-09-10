@@ -143,28 +143,10 @@ def _claim_mesh_name(mesh, name):
     return mesh.name == name
 
 
-def _working_mesh_objects(scene):
-    """Read explicit tool selections, without guessing by names or materials."""
-    objects = set()
-    for owner, attributes in (
-        ("velo_endfield", ("mmd_source_object", "mmd_target_object")),
-        ("velo_weight_tools", ("source_object", "target_object")),
-    ):
-        settings = getattr(scene, owner, None)
-        for attribute in attributes:
-            obj = getattr(settings, attribute, None)
-            if is_real_mesh(obj):
-                objects.add(obj)
-    return objects
-
-
 def _reserve_split_target_names(targets):
-    protected = _working_mesh_objects(bpy.context.scene)
     meshes = [obj for obj in targets if getattr(obj, "type", None) == 'MESH']
     meshes.sort(key=lambda obj: obj.name)
     for index, obj in enumerate(meshes):
-        if obj in protected:
-            continue
         try:
             obj.name = f"__velo_split_obj_{index:04d}"
         except Exception:
@@ -177,52 +159,6 @@ def _reserve_split_target_names(targets):
                 data.name = f"__velo_split_mesh_{index:04d}"
         except Exception:
             pass
-
-
-def _snapshot_weight_tool_objects(context):
-    settings = getattr(getattr(context, "scene", None), "velo_weight_tools", None)
-    if settings is None:
-        return None
-    source = getattr(settings, "source_object", None)
-    target = getattr(settings, "target_object", None)
-    return {
-        "settings": settings,
-        "source": {
-            "object": source,
-            "name": getattr(source, "name", "") if source is not None else "",
-            "pointer": _safe_object_pointer(source),
-        },
-        "target": {
-            "object": target,
-            "name": getattr(target, "name", "") if target is not None else "",
-            "pointer": _safe_object_pointer(target),
-        },
-    }
-
-
-def _resolve_weight_tool_object(entry, replacement_map=None):
-    original = entry.get("object")
-    if _safe_object_pointer(original) and is_real_mesh(original):
-        return original
-    replacement_map = replacement_map or {}
-    replacement = replacement_map.get(entry.get("pointer", 0))
-    if is_real_mesh(replacement):
-        return replacement
-    return None
-
-
-def _restore_weight_tool_objects(context, snapshot, *, replacement_map=None):
-    if not snapshot:
-        return
-    settings = snapshot.get("settings")
-    if settings is None:
-        return
-    source = _resolve_weight_tool_object(snapshot["source"], replacement_map=replacement_map)
-    if source is not None and getattr(settings, "source_object", None) is not source:
-        settings.source_object = source
-    target = _resolve_weight_tool_object(snapshot["target"], replacement_map=replacement_map)
-    if target is not None and getattr(settings, "target_object", None) is not target:
-        settings.target_object = target
 
 
 def _strip_component_prefix(name):
@@ -1005,7 +941,6 @@ def _route_meshes_to_component_sets(scene, meshes, *, refresh_after=True, preser
     created_collections = set()
     missing_component = []
     routed_count = 0
-    protected = _working_mesh_objects(scene)
     for obj in meshes:
         if not is_real_mesh(obj):
             continue
@@ -1024,7 +959,7 @@ def _route_meshes_to_component_sets(scene, meshes, *, refresh_after=True, preser
             destination = mapped_collection
         _move_object_within_root(obj, root, destination)
         obj["velo_component_id"] = int(component_id)
-        if obj not in protected and not (preserve_object_names and not is_export_temp_object(obj)):
+        if not (preserve_object_names and not is_export_temp_object(obj)):
             _rename_to_component_material(obj, component_id)
         routed_count += 1
     if refresh_after:
@@ -1304,18 +1239,10 @@ def _merge_meshes_by_texture_groups(context, meshes, root):
     merged_groups = 0
     merged_objects = 0
     results = []
-    replacement_map = {}
-    protected = _working_mesh_objects(context.scene)
     for (component_id, _destination_name, _texture_key), group in groups.items():
-        anchors = [obj for obj in group if obj in protected]
-        if anchors:
-            # Keep every explicit work object alive, even when textures match.
-            results.extend(anchors[1:])
-            group = [anchors[0]] + [obj for obj in group if obj not in protected]
         if len(group) < 2:
             results.extend(group)
             continue
-        group_pointers = [_safe_object_pointer(obj) for obj in group]
         group_meshes = [getattr(obj, "data", None) for obj in group]
         bpy.ops.object.select_all(action='DESELECT')
         for obj in group:
@@ -1330,9 +1257,6 @@ def _merge_meshes_by_texture_groups(context, meshes, root):
         merged = context.view_layer.objects.active or group[0]
         if component_id >= 0:
             merged["velo_component_id"] = int(component_id)
-        for pointer in group_pointers:
-            if pointer:
-                replacement_map[pointer] = merged
         results.append(merged)
         merged_groups += 1
         merged_objects += len(group)
@@ -1349,7 +1273,6 @@ def _merge_meshes_by_texture_groups(context, meshes, root):
         "merged_groups": merged_groups,
         "merged_objects": merged_objects,
         "result_count": len(results),
-        "replacement_map": replacement_map,
     }
 
 
@@ -1507,8 +1430,6 @@ class VELO_OT_merge_by_texture(bpy.types.Operator):
             self.report({'WARNING'}, iface_('Select at least 2 mesh objects'))
             return {'CANCELLED'}
 
-        weight_snapshot = _snapshot_weight_tool_objects(context)
-
         groups = {}  # frozenset(image_names) -> [obj, ...]
         skipped = 0
         for obj in meshes:
@@ -1521,11 +1442,9 @@ class VELO_OT_merge_by_texture(bpy.types.Operator):
 
         merged_groups = 0
         merged_objs = 0
-        replacement_map = {}
         for key, group in groups.items():
             if len(group) < 2:
                 continue
-            group_pointers = [_safe_object_pointer(obj) for obj in group]
             group_meshes = [getattr(obj, "data", None) for obj in group]
             # Select this group and set the active object
             bpy.ops.object.select_all(action='DESELECT')
@@ -1538,14 +1457,8 @@ class VELO_OT_merge_by_texture(bpy.types.Operator):
                 self.report({'WARNING'}, iface_('Merge failed (image {0}): {1}').format(sorted(key), e))
                 continue
             _cleanup_join_orphan_meshes(group_meshes)
-            merged = context.view_layer.objects.active or group[0]
-            for pointer in group_pointers:
-                if pointer:
-                    replacement_map[pointer] = merged
             merged_groups += 1
             merged_objs += len(group)
-
-        _restore_weight_tool_objects(context, weight_snapshot, replacement_map=replacement_map)
 
         msg = f"按贴图合并完成: {merged_groups} 组 / {merged_objs} 个物体"
         if skipped:
@@ -1652,7 +1565,6 @@ def _rename_to_sole_material(obj):
 
 def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_component_prefix=False):
     _ensure_object_mode(context)
-    protected = _working_mesh_objects(context.scene)
     before_objs = set(context.scene.objects)
     split_sources = 0
     skipped_single = 0
@@ -1721,8 +1633,6 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
         # Do not restore the old active key on the resulting material pieces.
         if obj.data.shape_keys:
             obj.active_shape_key_index = 0
-        if obj in protected:
-            continue
         if preserve_component_prefix:
             if _rename_to_component_material(obj, _component_id_from_object(obj)):
                 renamed += 1
@@ -1979,7 +1889,6 @@ class VELO_OT_split_by_material_to_collections(bpy.types.Operator):
         if not sources:
             self.report({'WARNING'}, iface_('Please select at least one mesh object in the part collection first'))
             return {'CANCELLED'}
-        weight_snapshot = _snapshot_weight_tool_objects(context)
         _ROUTE_AUTO_REFRESHING[0] = True
         try:
             if not any(len(obj.material_slots) > 1 for obj in sources):
@@ -2017,7 +1926,6 @@ class VELO_OT_split_by_material_to_collections(bpy.types.Operator):
             _ROUTE_AUTO_REFRESHING[0] = False
 
         refresh_material_route_items(context.scene)
-        _restore_weight_tool_objects(context, weight_snapshot)
         self.report({'INFO'}, iface_(str("；".join(return_bits))))
         return {'FINISHED'}
 
@@ -2051,9 +1959,6 @@ class VELO_OT_split_by_texture_to_collections(bpy.types.Operator):
             self.report({'WARNING'}, iface_('Please select at least one mesh object in the part collection first'))
             return {'CANCELLED'}
 
-        weight_snapshot = _snapshot_weight_tool_objects(context)
-        merged = {"replacement_map": {}}
-
         _ROUTE_AUTO_REFRESHING[0] = True
         try:
             stats = {
@@ -2077,7 +1982,6 @@ class VELO_OT_split_by_texture_to_collections(bpy.types.Operator):
             _ROUTE_AUTO_REFRESHING[0] = False
 
         refresh_material_route_items(context.scene)
-        _restore_weight_tool_objects(context, weight_snapshot, replacement_map=merged.get("replacement_map"))
 
         missing = result["missing_component"]
         bits = [

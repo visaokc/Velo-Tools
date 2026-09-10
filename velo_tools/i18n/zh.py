@@ -1,6 +1,10 @@
 """Simplified Chinese catalog for Velo Tools."""
 
 ZH_TRANSLATIONS = {
+    'Exact name of the MMD reference mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel. Export mapping still applies to the selected component collection.': '按精确名称引用 MMD 参照网格。无匹配时保留名字，同名网格出现后自动接上；清空可取消绑定。导出映射仍应用于所选组件集合。',
+    'Exact name of the target Component mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel.': '按精确名称引用目标 Component 网格。无匹配时保留名字，同名网格出现后自动接上；清空可取消绑定。',
+    'Exact name of the weight source mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel.': '按精确名称引用权重来源网格。无匹配时保留名字，同名网格出现后自动接上；清空可取消绑定。',
+    'Exact name of the weight target mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel.': '按精确名称引用权重目标网格。无匹配时保留名字，同名网格出现后自动接上；清空可取消绑定。',
     'Select Basis before splitting each mesh by material, preserve boundary normals, retain used material slots, clean zero-displacement ShapeKeys, and leave resulting pieces on Basis to prevent missing-key join contamination': '按材质分离前先选 Basis，保留分离边界法线和实际使用的材质槽，清理零位移 ShapeKey；结果保持选中 Basis，防止后续合并时缺失形态键被错误坐标填充',
     'Clean ShapeKey Contamination': '清理污染形态键',
     'Clean exact repeated material-region offsets on selected meshes without a reference copy. Preserve the source ShapeKey and different deformations; skip ambiguous sources. Intentional identical reuse cannot be distinguished automatically. Supports Undo': '无需对照副本，清理所选网格中整个材质区域完全重复的位移。保留来源 ShapeKey 和不同的正常变形；来源有歧义时跳过。人为设计的完全相同复用无法自动区分。支持撤销',

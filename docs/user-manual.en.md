@@ -215,7 +215,7 @@ Use **按材质分离所属集合 (Route Material Splits to Collections)** after
 
 Collection rows are real Blender collections. Leaf rows are a preview of final material grouping, not current mesh objects.
 
-Material splitting preserves the identity and name of meshes explicitly chosen in the MMD and Weight Tools source/target selectors. It does not choose a new mesh by the old name or material name. The original object becomes one of the resulting fragments; preserving its selection does not preserve the unsplit geometry. Texture regrouping keeps explicitly chosen work objects alive instead of merging them into another chosen mesh.
+MMD and Weight Tools mesh selectors store the exact name you choose, not a permanent object pointer. Splitting and regrouping remain free to rename or merge every mesh normally. Each selector resolves its saved name to the currently matching mesh; if none exists, its field turns red without changing the name. A same-named mesh appearing again, including after a join, reconnects automatically and restores the normal field color. The **X** button clears the binding even while it is waiting, so you can choose another name. Similar names, numeric suffixes, and a differently named merge result are not substitutes.
 
 These operations may disable **忽略嵌套集合 (Ignore Nested Collections)** so newly routed child collections remain exportable. Re-check that option before export.
 

@@ -7,6 +7,7 @@ import bpy
 from . import algorithms as _algo
 from . import native_dependencies as _native_deps
 from . import operators as _operators
+from ..core.mesh_references import draw_reference
 
 
 def _report_summary(text, limit=84):
@@ -45,7 +46,7 @@ class VELO_PT_weight_objects(bpy.types.Panel):
         layout = self.layout
         settings = context.scene.velo_weight_tools
         col = layout.column(align=True)
-        col.prop(settings, "source_object")
+        draw_reference(col, settings, "source_object")
         row = col.row(align=True)
         row.prop_search(settings, "source_group", settings, "available_source_vgs", text='Source Vertex Group')
         row.operator("velo.weight_refresh_groups", text="", icon='FILE_REFRESH')
@@ -54,7 +55,7 @@ class VELO_PT_weight_objects(bpy.types.Panel):
         if settings.mirror_status:
             icon = 'INFO' if settings.mirror_group else 'ERROR'
             col.label(text=settings.mirror_status, icon=icon)
-        col.prop(settings, "target_object")
+        draw_reference(col, settings, "target_object")
         col.prop(settings, "armature_object")
 
 

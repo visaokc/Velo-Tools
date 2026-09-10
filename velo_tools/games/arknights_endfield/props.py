@@ -1,5 +1,6 @@
 """arknights_endfield - MMD mapping props (V0.1.3)"""
 from ...core.mapping.positions import on_position_mode_update
+from ...core import mesh_references as _mesh_refs
 
 import bpy
 from bpy.props import (
@@ -175,14 +176,14 @@ def _on_mmd_row_unified_update(self, context):
         pass
 
 
-def _on_mmd_source_update(self, context):
+def _on_mmd_source_update(self, context, *, select_bound_table=True):
     """On source object change: refresh autocomplete candidates + invalidate the overlay cache; also switch the mapping table Text per the object binding."""
     try:
         _refresh_available_src_vgs(self)
     except Exception:
         pass
     src = self.mmd_source_object
-    if src is not None:
+    if src is not None and select_bound_table:
         try:
             bound = src.get("velo_mmd_text", "")
             if bound:
@@ -204,7 +205,7 @@ def _on_mmd_source_update(self, context):
             _mp.start_modal_if_needed()
     except Exception:
         pass
-    for area in context.screen.areas:
+    for area in getattr(context.screen, "areas", ()):
         if area.type == 'VIEW_3D':
             area.tag_redraw()
 
@@ -223,9 +224,16 @@ def _on_mmd_target_update(self, context):
             _mp.start_modal_if_needed()
     except Exception:
         pass
-    for area in context.screen.areas:
+    for area in getattr(context.screen, "areas", ()):
         if area.type == 'VIEW_3D':
             area.tag_redraw()
+
+
+def _on_mesh_resolution_changed(settings, context, fields):
+    if "mmd_source_object" in fields:
+        _on_mmd_source_update(settings, context, select_bound_table=False)
+    elif "mmd_target_object" in fields:
+        _on_mmd_target_update(settings, context)
 
 
 class VELO_EF_VGName(bpy.types.PropertyGroup):
@@ -262,19 +270,23 @@ class VELO_EF_Settings(bpy.types.PropertyGroup):
         description='Current MMD mapping table built-in text',
         update=_on_active_mmd_text_update,
     )
-    mmd_source_object: PointerProperty(
+    mmd_source_object = _mesh_refs.object_property("mmd_source_object")
+    mmd_source_object_name: StringProperty(
         name='MMD Source Object',
-        type=bpy.types.Object,
-        poll=_is_mesh_poll,
-        description='Reference mesh for editing and matching MMD groups. Export applies the current mapping table to all eligible meshes in the selected component collection, not just this object.',
-        update=lambda self, ctx: _on_mmd_source_update(self, ctx),
+        description='Exact name of the MMD reference mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel. Export mapping still applies to the selected component collection.',
+        options=set(),
+        search=_mesh_refs.search_callback(_is_mesh_poll),
+        search_options={'SUGGESTION', 'SORT'},
+        update=_mesh_refs.update_callback("mmd_source_object", _on_mmd_source_update),
     )
-    mmd_target_object: PointerProperty(
+    mmd_target_object = _mesh_refs.object_property("mmd_target_object")
+    mmd_target_object_name: StringProperty(
         name='Target Object',
-        type=bpy.types.Object,
-        poll=_is_mesh_poll,
-        description='Arknights: Endfield Component Grid (the unified_name of the profile row comes from it)',
-        update=lambda self, ctx: _on_mmd_target_update(self, ctx),
+        description='Exact name of the target Component mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel.',
+        options=set(),
+        search=_mesh_refs.search_callback(_is_mesh_poll),
+        search_options={'SUGGESTION', 'SORT'},
+        update=_mesh_refs.update_callback("mmd_target_object", _on_mmd_target_update),
     )
     mmd_armature_object: PointerProperty(
         name='MMD Skeleton',
@@ -310,9 +322,13 @@ def register():
     for c in _classes:
         bpy.utils.register_class(c)
     bpy.types.Scene.velo_endfield = PointerProperty(type=VELO_EF_Settings)
+    _mesh_refs.register_reference_set(
+        "velo_endfield", ("mmd_source_object", "mmd_target_object"), _on_mesh_resolution_changed,
+    )
 
 
 def unregister():
+    _mesh_refs.unregister_reference_set("velo_endfield")
     if hasattr(bpy.types.Scene, 'velo_endfield'):
         try:
             del bpy.types.Scene.velo_endfield

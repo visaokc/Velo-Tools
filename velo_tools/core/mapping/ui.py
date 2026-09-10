@@ -5,6 +5,7 @@ from __future__ import annotations
 from velo_tools.i18n import iface_
 
 import bpy
+from ..mesh_references import draw_reference
 
 
 class VELO_EF_UL_mmd_rows(bpy.types.UIList):
@@ -62,8 +63,8 @@ class VELO_EF_PT_mmd_mapping(bpy.types.Panel):
         # Top: MMD-specific source/target objects
         box_obj = layout.box()
         box_obj.label(text='MMD Working Objects (completely isolated from the vertex group renaming tab below)', icon='OBJECT_DATA')
-        box_obj.prop(ef, "mmd_source_object", text='MMD Source')
-        box_obj.prop(ef, "mmd_target_object", text='Target Component')
+        draw_reference(box_obj, ef, "mmd_source_object", text=iface_('MMD Source'))
+        draw_reference(box_obj, ef, "mmd_target_object", text=iface_('Target Component'))
         box_obj.prop(ef, "mmd_armature_object", text='MMD Skeleton')
         box_obj.prop(ef, "match_position_mode")
 

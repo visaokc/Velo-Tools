@@ -17,6 +17,7 @@ from bpy.props import (
 
 
 from .read_session import weight_read_session
+from ..core import mesh_references as _mesh_refs
 
 
 _preview_update_depth = 0
@@ -646,20 +647,32 @@ def _on_manual_mirror_target_group_update(self, context):
         sync_mirror_target_group_name(self, context)
 
 
+def _on_mesh_resolution_changed(settings, context, fields):
+    if "source_object" in fields:
+        refresh_source_vg_names(settings)
+        refresh_mirror_vg_names(settings)
+    if "target_object" in fields:
+        refresh_donor_vg_names(settings)
+
+
 class VELO_WeightSettings(bpy.types.PropertyGroup):
-    source_object: PointerProperty(
+    source_object = _mesh_refs.object_property("source_object")
+    source_object_name: StringProperty(
         name='Source Mesh',
-        type=bpy.types.Object,
-        poll=_is_mesh_poll,
-        description='Provide a mesh for weight sources; the source vertex group is read from this object',
-        update=_on_source_object_update,
+        description='Exact name of the weight source mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel.',
+        options=set(),
+        search=_mesh_refs.search_callback(_is_mesh_poll),
+        search_options={'SUGGESTION', 'SORT'},
+        update=_mesh_refs.update_callback("source_object", _on_source_object_update),
     )
-    target_object: PointerProperty(
+    target_object = _mesh_refs.object_property("target_object")
+    target_object_name: StringProperty(
         name='Target mesh',
-        type=bpy.types.Object,
-        poll=_is_mesh_poll,
-        description='Receive mesh with new weights; the associated group will be reused or created on this object',
-        update=_on_target_object_update,
+        description='Exact name of the weight target mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel.',
+        options=set(),
+        search=_mesh_refs.search_callback(_is_mesh_poll),
+        search_options={'SUGGESTION', 'SORT'},
+        update=_mesh_refs.update_callback("target_object", _on_target_object_update),
     )
     armature_object: PointerProperty(
         name='Target skeleton',
@@ -982,9 +995,13 @@ def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.velo_weight_tools = PointerProperty(type=VELO_WeightSettings)
+    _mesh_refs.register_reference_set(
+        "velo_weight_tools", ("source_object", "target_object"), _on_mesh_resolution_changed,
+    )
 
 
 def unregister():
+    _mesh_refs.unregister_reference_set("velo_weight_tools")
     if hasattr(bpy.types.Scene, "velo_weight_tools"):
         try:
             del bpy.types.Scene.velo_weight_tools
