@@ -1,14 +1,8 @@
-"""V0.1.6: monkey-patch for the vendored EFMI export operator.
+"""Reversible, export-scope MMD preprocessing for host export operators.
 
-Design goal: when the user clicks each plugin's own "Export Mod" button, the
-MMD source object is automatically preprocessed (rename + remove special +
-remove empty VG), but the source data itself is **not modified**.
-
-Implementation: only when the MMD source object is already within the
-`component_collection` selected by the current export adapter do we clone it
-(an independent mesh datablock) and temporarily substitute the clone into the
-export; in finally we re-link the source back into its original collections and
-delete the clone object and clone mesh.
+Apply the current mapping table to every eligible mesh, including material
+fragments. Bake all copies before unlinking any originals; never change tool
+selections, live mapping tables, or source mesh data during export.
 """
 from __future__ import annotations
 
@@ -200,17 +194,35 @@ def _validate_merged_export_preconditions(context, settings_attr: str):
         "\u8bf7\u91cd\u65b0\u63d0\u53d6\u6216\u6539\u7528 Per-Component \u5bfc\u51fa\u3002"
     )
 
-def _get_export_state(context, settings_attr: str):
-    """Build the swap state: returning None means no processing is needed."""
-    ef = getattr(context.scene, "velo_endfield", None)
-    if ef is None:
-        return None
-    obj = getattr(ef, "mmd_source_object", None)
-    if obj is None or obj.type != 'MESH':
-        return None
-    profile = getattr(ef, "mmd_profile", None)
-
+def _get_export_states(context, settings_attr: str):
+    """Apply the current table across export scope, independent of selections."""
+    from ..mapping.filters import is_special_vg_name
+    from ..mapping.algorithms import build_mmd_to_unified
+    settings = getattr(context.scene, "velo_endfield", None)
     cfg = getattr(context.scene, settings_attr, None)
+    profile = getattr(settings, "mmd_profile", None)
+    mapping = build_mmd_to_unified(profile)
+    requests = []
+    for obj in _iter_export_meshes(context, cfg):
+        if any(g.name in mapping or is_special_vg_name(g.name) for g in obj.vertex_groups):
+            requests.append((obj, profile))
+    states = []
+    try:
+        for obj, profile in requests:
+            state = _prepare_export_copy(context, cfg, obj, profile)
+            if state:
+                states.append(state)
+        for state in states:
+            _unlink_export_source(state)
+        return states
+    except Exception:
+        for state in reversed(states):
+            _restore_export_state(state)
+        raise
+
+
+def _prepare_export_copy(context, cfg, obj, profile):
+    """Bake and remap an independent copy while originals remain available."""
     target_col = getattr(cfg, "component_collection", None) if cfg is not None else None
     ignore_hidden_objects = bool(getattr(cfg, "ignore_hidden_objects", False)) if cfg is not None else False
     ignore_hidden_collections = bool(getattr(cfg, "ignore_hidden_collections", False)) if cfg is not None else False
@@ -242,16 +254,12 @@ def _get_export_state(context, settings_attr: str):
 
     # Link the clone into all the same collections as the source (keep the parent/child organization consistent)
     linked_to = []
-    for c in export_cols:
-        try:
+    try:
+        for c in export_cols:
             if clone.name not in c.objects:
                 c.objects.link(clone)
                 linked_to.append(c)
-        except Exception:
-            traceback.print_exc()
-
-    # Bake while original rig bindings and dependency objects are still present.
-    try:
+        # Bake while original rig bindings and dependency objects are present.
         from .pose_bake import bake_before_group_remap
         bake_before_group_remap(context, clone, bool(getattr(cfg, "apply_all_modifiers", False)))
         _pe.apply_mmd_pre_export(clone, profile)
@@ -260,22 +268,20 @@ def _get_export_state(context, settings_attr: str):
                                "linked_to": linked_to, "unlinked_from": []})
         raise
 
-    # Unlink the source from all collections (so the exporter sees only the clone, not the source)
-    unlinked_from = []
-    for c in export_cols:
-        try:
-            if obj.name in c.objects:
-                c.objects.unlink(obj)
-                unlinked_from.append(c)
-        except Exception:
-            traceback.print_exc()
-
     return {
         "orig": obj,
         "clone": clone,
         "linked_to": linked_to,
-        "unlinked_from": unlinked_from,
+        "unlinked_from": [],
     }
+
+
+def _unlink_export_source(state):
+    for collection in state["linked_to"]:
+        obj = state["orig"]
+        if obj.name in collection.objects:
+            collection.objects.unlink(obj)
+            state["unlinked_from"].append(collection)
 
 
 def _restore_export_state(state):
@@ -308,7 +314,7 @@ def _restore_export_state(state):
 
 def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = ""):
     def patched(self, context):
-        state = None
+        states = []
         mesh_state = None
         # EFMI validates the map source required by each unified export mode.
         # WWMI validates its own Metadata contract, so this gate is EFMI-only.
@@ -332,17 +338,14 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
         )
         with transaction:
             try:
-                state = _get_export_state(context, settings_attr)
-            except Exception as exc:
-                traceback.print_exc()
-                self.report({'ERROR'}, iface_('Export preprocessing failed: {0}').format(str(exc)))
-                return {'CANCELLED'}
-            try:
-                if _mesh_ops is not None:
-                    mesh_state = _mesh_ops.prepare_material_route_export(context)
-            except Exception:
-                traceback.print_exc()
-            try:
+                try:
+                    states = _get_export_states(context, settings_attr)
+                    if _mesh_ops is not None:
+                        mesh_state = _mesh_ops.prepare_material_route_export(context)
+                except Exception as exc:
+                    traceback.print_exc()
+                    self.report({'ERROR'}, iface_('Export preprocessing failed: {0}').format(str(exc)))
+                    return {'CANCELLED'}
                 return orig_execute(self, context)
             finally:
                 try:
@@ -351,7 +354,8 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
                 except Exception:
                     traceback.print_exc()
                 try:
-                    _restore_export_state(state)
+                    for state in reversed(states):
+                        _restore_export_state(state)
                 except Exception:
                     traceback.print_exc()
 

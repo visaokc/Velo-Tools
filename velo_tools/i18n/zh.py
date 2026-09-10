@@ -1,6 +1,8 @@
 """Simplified Chinese catalog for Velo Tools."""
 
 ZH_TRANSLATIONS = {
+    'Object `{0}` (Component {1}) uses vertex groups without merged-skeleton runtime mappings: {2}.': '对象“{0}”（Component {1}）使用了无法解析到合并骨架 runtime 映射的顶点组：{2}。',
+    'Reference mesh for editing and matching MMD groups. Export applies the current mapping table to all eligible meshes in the selected component collection, not just this object.': '编辑和匹配 MMD 顶点组的参照网格。导出时会将当前映射表应用于所选组件集合内所有符合导出条件的网格，而非仅此物体。',
     'Transfer contains non-finite weights': '传递结果包含非有限权重，未提交结果',
     'Receiving groups must be unlocked': '承接组必须处于解锁状态',
     'Locked weights already exceed one; unlock the conflicting groups first': '已有锁定权重总和超过 1；请先解锁相关冲突组',

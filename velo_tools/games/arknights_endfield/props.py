@@ -266,7 +266,7 @@ class VELO_EF_Settings(bpy.types.PropertyGroup):
         name='MMD Source Object',
         type=bpy.types.Object,
         poll=_is_mesh_poll,
-        description='MMD Model Mesh (the mmd_name in the profile row comes from it)',
+        description='Reference mesh for editing and matching MMD groups. Export applies the current mapping table to all eligible meshes in the selected component collection, not just this object.',
         update=lambda self, ctx: _on_mmd_source_update(self, ctx),
     )
     mmd_target_object: PointerProperty(

@@ -143,10 +143,28 @@ def _claim_mesh_name(mesh, name):
     return mesh.name == name
 
 
+def _working_mesh_objects(scene):
+    """Read explicit tool selections, without guessing by names or materials."""
+    objects = set()
+    for owner, attributes in (
+        ("velo_endfield", ("mmd_source_object", "mmd_target_object")),
+        ("velo_weight_tools", ("source_object", "target_object")),
+    ):
+        settings = getattr(scene, owner, None)
+        for attribute in attributes:
+            obj = getattr(settings, attribute, None)
+            if is_real_mesh(obj):
+                objects.add(obj)
+    return objects
+
+
 def _reserve_split_target_names(targets):
+    protected = _working_mesh_objects(bpy.context.scene)
     meshes = [obj for obj in targets if getattr(obj, "type", None) == 'MESH']
     meshes.sort(key=lambda obj: obj.name)
     for index, obj in enumerate(meshes):
+        if obj in protected:
+            continue
         try:
             obj.name = f"__velo_split_obj_{index:04d}"
         except Exception:
@@ -159,25 +177,6 @@ def _reserve_split_target_names(targets):
                 data.name = f"__velo_split_mesh_{index:04d}"
         except Exception:
             pass
-
-
-def _normalize_weight_object_name(name):
-    return (name or "").rstrip("+").strip()
-
-
-def _find_weight_object_by_name_hint(name):
-    normalized = _normalize_weight_object_name(name)
-    if not normalized:
-        return None
-    candidates = [
-        obj
-        for obj in bpy.data.objects
-        if is_real_mesh(obj) and _normalize_weight_object_name(obj.name) == normalized
-    ]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda obj: (obj.name != normalized, len(obj.name), obj.name))
-    return candidates[0]
 
 
 def _snapshot_weight_tool_objects(context):
@@ -202,21 +201,13 @@ def _snapshot_weight_tool_objects(context):
 
 
 def _resolve_weight_tool_object(entry, replacement_map=None):
+    original = entry.get("object")
+    if _safe_object_pointer(original) and is_real_mesh(original):
+        return original
     replacement_map = replacement_map or {}
     replacement = replacement_map.get(entry.get("pointer", 0))
     if is_real_mesh(replacement):
         return replacement
-    name = entry.get("name", "")
-    if name:
-        by_name = bpy.data.objects.get(name)
-        if is_real_mesh(by_name):
-            return by_name
-        hinted = _find_weight_object_by_name_hint(name)
-        if hinted is not None:
-            return hinted
-    original = entry.get("object")
-    if is_real_mesh(original):
-        return original
     return None
 
 
@@ -1014,6 +1005,7 @@ def _route_meshes_to_component_sets(scene, meshes, *, refresh_after=True, preser
     created_collections = set()
     missing_component = []
     routed_count = 0
+    protected = _working_mesh_objects(scene)
     for obj in meshes:
         if not is_real_mesh(obj):
             continue
@@ -1032,7 +1024,7 @@ def _route_meshes_to_component_sets(scene, meshes, *, refresh_after=True, preser
             destination = mapped_collection
         _move_object_within_root(obj, root, destination)
         obj["velo_component_id"] = int(component_id)
-        if not (preserve_object_names and not is_export_temp_object(obj)):
+        if obj not in protected and not (preserve_object_names and not is_export_temp_object(obj)):
             _rename_to_component_material(obj, component_id)
         routed_count += 1
     if refresh_after:
@@ -1313,7 +1305,13 @@ def _merge_meshes_by_texture_groups(context, meshes, root):
     merged_objects = 0
     results = []
     replacement_map = {}
+    protected = _working_mesh_objects(context.scene)
     for (component_id, _destination_name, _texture_key), group in groups.items():
+        anchors = [obj for obj in group if obj in protected]
+        if anchors:
+            # Keep every explicit work object alive, even when textures match.
+            results.extend(anchors[1:])
+            group = [anchors[0]] + [obj for obj in group if obj not in protected]
         if len(group) < 2:
             results.extend(group)
             continue
@@ -1654,6 +1652,7 @@ def _rename_to_sole_material(obj):
 
 def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_component_prefix=False):
     _ensure_object_mode(context)
+    protected = _working_mesh_objects(context.scene)
     before_objs = set(context.scene.objects)
     split_sources = 0
     skipped_single = 0
@@ -1715,6 +1714,8 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
                 cleaned_keys += 1
             except Exception:
                 pass
+        if obj in protected:
+            continue
         if preserve_component_prefix:
             if _rename_to_component_material(obj, _component_id_from_object(obj)):
                 renamed += 1

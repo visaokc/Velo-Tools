@@ -232,10 +232,12 @@ def _translate_numeric_groups(
     target_count,
     named_source_to_target=None,
     ambiguous_names=None,
+    merged_runtime=False,
 ):
     from ._efmi_core.addon.exceptions import ConfigError
     from ._efmi_core.migoto_io.blender_tools.vertex_groups import remove_unused_vertex_groups
     from ...core.mapping.algorithms import reorder_numeric_vertex_groups_first
+    from ...core.mapping.filters import is_special_vg_name
 
     remove_unused_vertex_groups(merger.context, obj)
     named_source_to_target = named_source_to_target or {}
@@ -245,6 +247,9 @@ def _translate_numeric_groups(
     translated = {}
     for group in list(obj.vertex_groups):
         name = (group.name or "").strip()
+        if is_special_vg_name(name):
+            to_remove.append(group)
+            continue
         if name.isdigit():
             target_id = source_to_target.get(int(name))
         elif name in ambiguous_names:
@@ -282,11 +287,14 @@ def _translate_numeric_groups(
         preview = ", ".join(unmatched[:12])
         if len(unmatched) > 12:
             preview += f", ... (+{len(unmatched) - 12})"
+        message = (
+            "Object `{0}` (Component {1}) uses vertex groups without merged-skeleton runtime mappings: {2}."
+            if merged_runtime else
+            "Object `{0}` (Component {1}) uses vertex groups without Component-local runtime mappings: {2}."
+        )
         raise ConfigError(
             "component_collection",
-            iface_(
-                "Object `{0}` (Component {1}) uses vertex groups without Component-local runtime mappings: {2}."
-            ).format(obj.name, component_id, preview),
+            iface_(message).format(obj.name, component_id, preview),
         )
 
     for group in to_remove:
@@ -448,6 +456,7 @@ def _translate_object_to_runtime(
         runtime_count,
         named_source_to_target=name_to_runtime,
         ambiguous_names=ambiguous_names,
+        merged_runtime=True,
     )
 
 

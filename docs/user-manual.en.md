@@ -155,6 +155,8 @@ Enable **通用映射 - 可视化校对（重心连线） (General Mapping Visua
 
 The optional maximum-distance threshold rejects weak matches. Start without an arbitrary large threshold, inspect the overlay, then set a meaningful project-scale limit.
 
+**MMD Source** is an editing and matching reference, not an export whitelist. The current MMD mapping table applies by group name to every eligible mesh in the selected **component collection**, including separated fragments and meshes with no per-object table binding. Nested-collection and hidden-object/collection export options still determine scope. Mapping, special-group removal (`mmd_edge_scale`, `mmd_vertex_order`, `UV_*`), and empty-group cleanup run on temporary copies, leaving original meshes and tool selections unchanged. Different skeleton modes retain their own downstream index conversion and validation rules.
+
 ### Mesh Preparation
 
 Open **网格工具 (Mesh Tools)**.
@@ -206,6 +208,8 @@ Use **按材质分离所属集合 (Route Material Splits to Collections)** after
 5. Run split by material or split by texture.
 
 Collection rows are real Blender collections. Leaf rows are a preview of final material grouping, not current mesh objects.
+
+Material splitting preserves the identity and name of meshes explicitly chosen in the MMD and Weight Tools source/target selectors. It does not choose a new mesh by the old name or material name. The original object becomes one of the resulting fragments; preserving its selection does not preserve the unsplit geometry. Texture regrouping keeps explicitly chosen work objects alive instead of merging them into another chosen mesh.
 
 These operations may disable **忽略嵌套集合 (Ignore Nested Collections)** so newly routed child collections remain exportable. Re-check that option before export.
 
@@ -324,6 +328,8 @@ For an object source that contains `BoneNameMapping.json` and `BoneNameSkeleton.
 ### 3. Edit and Export EFMI
 
 Edit the imported component collection. Keep recognizable `Component N` object identity and review vertex groups before export.
+
+MMD preprocessing covers the selected export collection rather than only the MMD Source selector. **Merged (Merged Skeleton)** resolves weights against the shared runtime palette and retains supported cross-component bone lookup; **Merged (Unified Vertex Groups)** translates back to component-local indices, while **Per-Component** keeps its native local path. A missing local entry alone is not a reason to reject a valid merged-skeleton weight.
 
 Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
 
