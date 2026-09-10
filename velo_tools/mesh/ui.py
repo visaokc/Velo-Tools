@@ -262,6 +262,7 @@ class VELO_PT_mesh_actions(bpy.types.Panel):
         thr_row = col.row(align=True)
         thr_row.prop(context.scene.velo_tools, "shapekey_cleanup_threshold",
                      text='ShapeKey Cleanup Threshold')
+        col.operator("mesh.clean_shape_key_contamination", icon='SHAPEKEY_DATA')
         sub2 = col.row(align=True)
         sub2.enabled = sel_count >= 2
         sub2.operator("velo.merge_by_texture",

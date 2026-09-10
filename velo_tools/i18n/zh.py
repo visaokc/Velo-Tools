@@ -1,6 +1,21 @@
 """Simplified Chinese catalog for Velo Tools."""
 
 ZH_TRANSLATIONS = {
+    'Select Basis before splitting each mesh by material, preserve boundary normals, retain used material slots, clean zero-displacement ShapeKeys, and leave resulting pieces on Basis to prevent missing-key join contamination': '按材质分离前先选 Basis，保留分离边界法线和实际使用的材质槽，清理零位移 ShapeKey；结果保持选中 Basis，防止后续合并时缺失形态键被错误坐标填充',
+    'Clean ShapeKey Contamination': '清理污染形态键',
+    'Clean exact repeated material-region offsets on selected meshes without a reference copy. Preserve the source ShapeKey and different deformations; skip ambiguous sources. Intentional identical reuse cannot be distinguished automatically. Supports Undo': '无需对照副本，清理所选网格中整个材质区域完全重复的位移。保留来源 ShapeKey 和不同的正常变形；来源有歧义时跳过。人为设计的完全相同复用无法自动区分。支持撤销',
+    'ShapeKey cleanup failed and rollback was incomplete; undo this operation': 'ShapeKey 清理失败且未能完整回滚，请撤销本次操作',
+    'ShapeKey cleanup failed; all changes were rolled back': 'ShapeKey 清理失败，已回滚全部修改',
+    'ShapeKey cleanup analysis failed; no coordinates were changed': 'ShapeKey 清理分析失败，未修改任何坐标',
+    'shared mesh or ShapeKey data': '网格或 ShapeKey 数据被多个对象共享',
+    'read-only data': '数据只读',
+    'absolute, chained, or vertex-group-masked ShapeKeys': '使用绝对、链式相对或顶点组遮罩 ShapeKey',
+    'snapshot memory limit': '超过快照内存上限',
+    'invalid ShapeKey coordinates': 'ShapeKey 坐标无效',
+    'Skipped {0}: {1}': '已跳过 {0}：{1}',
+    '{0}: protected source ShapeKeys: {1}': '{0}：已保护来源 ShapeKey：{1}',
+    'No safely identifiable repeated contamination to clean; skipped {0} ambiguous patterns and {1} meshes': '未发现可安全识别的重复污染；已跳过 {0} 组有歧义的数据和 {1} 个网格',
+    'Cleaned {0} meshes, {1} ShapeKeys, {2} vertex records; protected {3} source keys; skipped {4} ambiguous patterns and {5} meshes. Undo is available': '已清理 {0} 个网格、{1} 个 ShapeKey、{2} 条顶点记录；保护 {3} 个来源键；跳过 {4} 组有歧义的数据和 {5} 个网格。可撤销',
     'Object `{0}` (Component {1}) uses vertex groups without merged-skeleton runtime mappings: {2}.': '对象“{0}”（Component {1}）使用了无法解析到合并骨架 runtime 映射的顶点组：{2}。',
     'Reference mesh for editing and matching MMD groups. Export applies the current mapping table to all eligible meshes in the selected component collection, not just this object.': '编辑和匹配 MMD 顶点组的参照网格。导出时会将当前映射表应用于所选组件集合内所有符合导出条件的网格，而非仅此物体。',
     'Transfer contains non-finite weights': '传递结果包含非有限权重，未提交结果',

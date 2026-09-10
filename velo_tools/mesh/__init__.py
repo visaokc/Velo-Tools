@@ -9,9 +9,10 @@ from . import machin3tools_patch
 from . import octahedral_uv
 from . import tangent_space_smooth_normals
 from . import shapekey_ops
+from . import shape_key_cleanup
 from . import ui
 
-_modules = (operators, machin3tools_patch, octahedral_uv, tangent_space_smooth_normals, shapekey_ops, ui)
+_modules = (operators, machin3tools_patch, octahedral_uv, tangent_space_smooth_normals, shapekey_ops, shape_key_cleanup, ui)
 
 
 def register():

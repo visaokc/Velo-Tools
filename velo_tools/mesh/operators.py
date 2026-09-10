@@ -1665,6 +1665,10 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
         bpy.ops.object.select_all(action='DESELECT')
         src.select_set(True)
         context.view_layer.objects.active = src
+        # Select Basis before entering edit mode: split mesh coordinates are later
+        # used by native Join to fill ShapeKeys missing from a material piece.
+        if src.data.shape_keys:
+            src.active_shape_key_index = 0
         try:
             bpy.ops.object.mode_set(mode='EDIT')
             bpy.ops.mesh.select_all(action='SELECT')
@@ -1714,6 +1718,9 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
                 cleaned_keys += 1
             except Exception:
                 pass
+        # Do not restore the old active key on the resulting material pieces.
+        if obj.data.shape_keys:
+            obj.active_shape_key_index = 0
         if obj in protected:
             continue
         if preserve_component_prefix:
@@ -2093,7 +2100,7 @@ class VELO_OT_split_by_material(bpy.types.Operator):
     bl_idname = "velo.split_by_material"
     bl_label = 'Split mesh by material'
     bl_description = (
-        'For each selected mesh: enter edit mode, split by material, keep boundary normals before splitting, for each resulting sub-object retain only actually used material slots, and clean zero-displacement ShapeKey'
+        'Select Basis before splitting each mesh by material, preserve boundary normals, retain used material slots, clean zero-displacement ShapeKeys, and leave resulting pieces on Basis to prevent missing-key join contamination'
     )
     bl_options = {'REGISTER', 'UNDO'}
 
