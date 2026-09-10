@@ -227,10 +227,11 @@ Open **权重工具 (Weight Tools)**.
 2. Choose a mirror source group if both sides should be transferred.
 3. Choose the target mesh and optional target armature.
 4. In **传递设置 (Transfer Settings)**, choose an engine.
-5. Confirm the target group, mirror target, and donor preview.
-6. Configure smoothing, group limits, and normalization in **后处理 (Postprocess)**.
+5. Confirm the target group and mirror target.
+6. Configure optional smoothing in **后处理 (Postprocess)**; transfer does not normalize or limit influences.
 7. Click **执行权重传递 (Run Weight Transfer)**.
-8. Open or copy the last report, then test deformation in Pose Mode.
+8. Repeat for the remaining groups. Completed receiving groups can stay locked throughout the sequence.
+9. After all transfers, select the intended vertices in Edit Mode, explicitly unlock the groups you want to normalize, and run **按比例规格化选中顶点 (Normalize Selected Vertices Proportionally)**. Review deformation after cleanup.
 
 #### Choose an Engine
 
@@ -245,17 +246,17 @@ Robust rejects positive inpaint components without a positive direct source seed
 
 Use **高级 (Advanced)** only when geometry requires different distance, normal-angle, normal-flip, inpaint, evaluated-mesh, or dilation settings.
 
-#### Target and Donor Rules
+#### Source-Faithful Transfer Staging
 
 With **手动指定承接组 (Specify Target Group Manually)** off, Velo resolves the target through the active MMD mapping. Turn it on only when you need an explicit override.
 
-Additional smoothing is off by default. Both engines share the same allocation pipeline; weights need not be consolidated into one donor before transfer. Existing saved smoothing settings are respected.
+Both engines stage only the receiving field and its strict mirror. Optional smoothing runs before the final mirror copy and does not normalize any groups. Extra smoothing remains off by default; explicitly saved smoothing settings are respected.
 
-Donor entries are preferred remainder suggestions, not an exclusive list. Other unlocked ordinary groups can contribute proportionally; nearest spatial evidence is used when local remainder weights are absent. Invalid suggestions do not prevent otherwise feasible transfers.
+All other groups, locked or unlocked, keep their exact weights and memberships. Their totals and influence counts never reduce, amplify, or block the sampled receiving field. Donors are not needed, and no remainder is moved into the receiver. A receiving group that is itself locked still requires an explicit unlock before replacement.
 
-Locked ordinary groups remain unchanged. The recipient has priority, and its mirror is derived strictly from the authoritative side, not sampled independently. Capacity adjustments are coupled across mirrored values and reported. The last available influence slot can absorb the remainder. Old recipient support is normalized even when the new weight is zero.
+The mirror is derived from the authoritative side rather than independently sampled. Coincident vertices share bucket values; only reciprocal mirror matches are copied, and missing reciprocal matches are reported.
 
-The complete allocation is checked before writing, then verified after writing. Incompatible locked budgets or missing remainder evidence cancel the operation and restore previous memberships. Successful recipients are automatically locked when that option is enabled, allowing sequential transfers without modifying completed groups.
+Working totals may be below or above one, and vertices may temporarily exceed the final influence limit. Normalization and group-count cleanup are separate, explicit operations after the sequence, even if an older scene saved automatic post-normalization as enabled. The complete receiving write is verified against its plan, and failures restore exact original memberships and lock flags. Successful recipients can still be automatically locked.
 
 #### Mirror, Merge, and Repair
 
@@ -263,9 +264,9 @@ Use **镜像映射组 (Mirror Mapping Groups)** to store manual left/right pairs
 
 Use **权重组转移 (Weight-Group Transfer)** to move one group's weights into another or to merge mapping rows that share one target.
 
-In Edit Mode, **按比例规格化选中顶点 (Normalize Selected Vertices Proportionally)** repairs only selected vertices. It does not create weights in groups that were absent.
+In Edit Mode, **按比例规格化选中顶点 (Normalize Selected Vertices Proportionally)** first applies the requested influence limit and then proportionally normalizes selected vertices. It respects existing locks: explicitly unlock the groups you want included, then restore their locks if desired. It neither creates missing memberships nor automatically unlocks transferred groups. This step rescales retained values; it cannot correct a wrong geometric match or undo smoothing changes.
 
-Seam-safe smoothing blocks propagation across UV seams. **限制每顶点组数量 (Limit Groups per Vertex)** excludes locked and Velo-special groups from editable candidates.
+Seam-safe smoothing blocks propagation across UV seams. **限制每顶点组数量 (Limit Groups per Vertex)** affects manual cleanup and standalone mirroring, not source transfer. The **Normalize standalone mirror** option and donor count are in the mirror panel; their existing standalone behavior is unchanged.
 
 Weight Tools accelerate authoring; they do not replace deformation review. Inspect joints, seams, mirrored areas, and previously disconnected islands before export.
 
@@ -1001,7 +1002,7 @@ Inspect the detected list for duplicate numeric Deform IDs on the same object. A
 
 ### Weight Transfer Fails Before Writing
 
-Check target and mirror-target selections, locked capacity, and available unlocked remainder evidence. Donor suggestions are optional. Incompatible constraints are rejected before committing weights.
+Check source coverage, target/mirror-target selection, and geometric matching. Other locked groups do not constrain source transfer, and no donor or normalized starting state is required. Previously distorted results must be transferred again; changing the add-on does not reconstruct already overwritten weights.
 
 If a disconnected island stays zero, it has no positive source evidence. Adjust the source geometry or matching settings instead of forcing inpaint.
 

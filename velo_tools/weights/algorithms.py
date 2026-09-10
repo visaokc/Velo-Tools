@@ -1499,6 +1499,7 @@ def _create_temp_transfer_object(context, obj, name):
     finally:
         obj.to_mesh_clear()
     temp_obj = bpy.data.objects.new(name, mesh_copy)
+    temp_obj.matrix_world = obj.matrix_world.copy()
     context.scene.collection.objects.link(temp_obj)
     temp_obj.hide_viewport = True
     temp_obj.hide_render = True

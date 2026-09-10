@@ -108,6 +108,8 @@ class VELO_PT_weight_mirror_mapping(bpy.types.Panel):
         action = layout.row(align=True)
         action.enabled = ok
         action.operator("velo.weight_mirror_active_group", icon='MOD_MIRROR')
+        layout.prop(settings, "normalize_after", text='Normalize standalone mirror')
+        layout.prop(settings, "donor_count")
 
 
 class VELO_PT_weight_transfer(bpy.types.Panel):
@@ -147,21 +149,7 @@ class VELO_PT_weight_transfer(bpy.types.Panel):
         row.enabled = settings.armature_object is not None
         row.prop(settings, "create_bone_if_missing")
         col.prop(settings, "auto_lock_target_groups")
-        col.prop(settings, "donor_count")
-        donor_box = col.box()
-        donor_box.label(text='Precompute donor (used during normalization)')
-        if len(settings.available_donor_vgs) <= 0:
-            donor_box.label(text='Currently no selectable donor group', icon='INFO')
-        else:
-            for slot_index, prop_name in enumerate(("donor_slot_1", "donor_slot_2", "donor_slot_3", "donor_slot_4", "donor_slot_5", "donor_slot_6")[:_donor_slot_count(settings)], start=1):
-                row = donor_box.row(align=True)
-                row.prop_search(settings, prop_name, settings, "available_donor_vgs", text=iface_('Donor {0}').format(slot_index))
-                mirror_prop = f"mirror_donor_slot_{slot_index}"
-                mirror = row.row(align=True)
-                mirror.prop_search(settings, mirror_prop, settings, "available_donor_vgs", text=iface_('Mirror {0}').format(slot_index))
-        if settings.mirror_donor_status:
-            icon = 'ERROR' if "锁定" in settings.mirror_donor_status or "未找到" in settings.mirror_donor_status else 'INFO'
-            donor_box.label(text=settings.mirror_donor_status, icon=icon)
+        col.label(text='Transfer stages source weights only; cleanup is manual', icon='INFO')
         transfer_row = layout.row(align=True)
         if settings.engine == 'ROBUST':
             dependency_status, dependency_error = _operators.native_install_status()
@@ -245,11 +233,11 @@ class VELO_PT_weight_postprocess(bpy.types.Panel):
         sub.prop(settings, "smoothing_repeat")
         sub.prop(settings, "smoothing_factor")
         col.separator()
+        col.label(text='Group limits below apply to manual cleanup, not transfer', icon='INFO')
         col.prop(settings, "limit_groups_enable")
         row = col.row(align=True)
         row.enabled = settings.limit_groups_enable
         row.prop(settings, "max_groups_per_vertex")
-        col.prop(settings, "normalize_after")
         repair_row = col.row(align=True)
         active = getattr(context, "active_object", None)
         repair_row.enabled = (

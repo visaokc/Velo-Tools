@@ -900,19 +900,19 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
     limit_groups_enable: BoolProperty(
         name='Limit the number of vertex groups',
         default=True,
-        description='After transfer, limit the number of editable bone weights each vertex can participate in; locked groups and Velo special groups will not be involved',
+        description='Limit editable weights during manual cleanup and standalone mirroring only. Source transfer never limits influences.',
     )
     max_groups_per_vertex: IntProperty(
         name='Maximum number of groups',
         default=4,
         min=1,
         soft_max=8,
-        description='Maximum number of editable weight groups that can be retained per vertex',
+        description='Maximum influence count for manual cleanup and standalone mirroring, not for source transfer.',
     )
     normalize_after: BoolProperty(
         name='Perform post-normalization',
         default=True,
-        description='Preserve locked groups, prioritize the receiving weights, and distribute the remainder across unlocked groups. Mirror budgets are coupled. Same-object transfers skip normalization.',
+        description='Normalize standalone mirror operations. Source weight transfer never normalizes; perform manual cleanup after completing the transfers.',
     )
     show_advanced: BoolProperty(
         name='Advanced Parameters',

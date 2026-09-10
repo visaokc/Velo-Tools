@@ -1010,7 +1010,7 @@ class VELO_OT_weight_normalize_selected_vertices(bpy.types.Operator):
 class VELO_OT_weight_transfer(bpy.types.Operator):
     bl_idname = "velo.weight_transfer"
     bl_label = 'Execute weight transfer'
-    bl_description = 'Transfer source vertex group weights to the target mesh according to the current WEIGHT settings, and perform optional smoothing, limiting, and normalization.'
+    bl_description = 'Stage source weights and optional smoothing in the receiving groups only. Other groups and their locks remain unchanged. Normalize and limit influences manually after all transfers.'
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -1035,6 +1035,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
         created_bone = False
         locked_groups = []
         source_lock_snapshot = {}
+        target_lock_snapshot = {}
         robust_smoothing_handled = False
         mirror_flag_stack = contextlib.ExitStack()
         try:
@@ -1049,6 +1050,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             source_name = (settings.source_group or "").strip()
             source_lock_snapshot = _snapshot_group_locks(source) if source is not target else {}
             source_group = _algo.validate_source_group(source, source_name, require_unlocked=False)
+            target_lock_snapshot = _snapshot_group_locks(target)
             _source_nonzero, report.source_weight_max = _algo.weight_evidence_stats(
                 _algo.read_group_weights(source, source_group)
             )
@@ -1095,7 +1097,6 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                     mirror_flag_stack.enter_context(_algo.suppress_native_mirror_flags(target))
 
             from . import transfer_plan
-            _snapshot_editable_groups(snapshots, target)
             matched = None
             if settings.engine == 'ROBUST':
                 weights, matched, report.matched_count, rescue_info = _algo.transfer_with_robust(context, settings, source_name)
@@ -1124,17 +1125,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             if mirror_enabled:
                 proposed, labels, mirror_stats = transfer_plan.mirrored_field(target, weights)
                 authority_groups.append(mirror_group)
-            normalize = bool(settings.normalize_after and source is not target)
-            allocation = transfer_plan.commit_transfer(
-                target, authority_groups, proposed, settings, labels=labels,
-                normalize=normalize, limit=source is not target,
-            )
-            report.normalized = normalize
-            report.normalize_skipped_same_object = bool(settings.normalize_after and source is target)
-            report.limit_skipped_same_object = bool(settings.limit_groups_enable and source is target)
-            report.limited = allocation['limited_vertices'] > 0
-            report.capacity_adjusted = allocation['capacity_adjusted']
-            report.inferred_remainder = allocation['inferred_remainder']
+            transfer_plan.commit_transfer(target, authority_groups, proposed, settings, labels=labels)
 
             _algo.ensure_numeric_export_compatible(target, target_group_name)
             if mirror_enabled and mirror_group is not None:
@@ -1143,10 +1134,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             current_nonzero = 0 if current_group is None else _algo.count_group_weights(target, current_group)
             if current_nonzero <= 0:
                 raise RuntimeError(
-                    f"权重传递结果为空：'{target.name}/{target_group_name}' 当前没有任何非零权重。"
-                    "这通常表示虽然找到了几何匹配，但来源组在这些匹配点上的最终权重仍为 0，"
-                    "或后续 limit/normalize 没有可用 donor 可协同分配。请优先检查来源组是否确实覆盖当前区域，"
-                    "以及目标区域附近是否存在可参与的 donor。"
+                    iface_("Transferred weights are empty for '{0}/{1}'. Check source coverage and geometric matching.").format(
+                        target.name, target_group_name)
                 )
             if current_group is not None:
                 report.created_bone = _algo.ensure_group_bone(context, settings, target, current_group.name)
@@ -1177,6 +1166,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                     _algo.remove_armature_bone(context, _algo.resolve_armature_object(settings), bone_name)
                 except Exception:
                     pass
+            _restore_group_locks(target, target_lock_snapshot)
             _restore_group_snapshots(target, snapshots)
             _remove_created_groups(target, created_groups)
             settings.last_report = str(exc)
@@ -1202,10 +1192,7 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append(f"无来源正权重 {report.evidence_blocked_components} 域/{report.evidence_blocked_vertices} 点")
         if report.inpaint_fallback:
             bits.append(f"{report.inpaint_fallback.lower()} inpaint 回退")
-        if getattr(report, 'capacity_adjusted', 0):
-            bits.append(iface_("Paired capacity adjustment: {0} vertices").format(report.capacity_adjusted))
-        if getattr(report, 'inferred_remainder', 0):
-            bits.append(iface_("Spatial remainder evidence: {0} vertices").format(report.inferred_remainder))
+        bits.append(iface_("Receiving field preserved; normalize and limit manually after all transfers"))
         if report.raw_weight_nonzero:
             bits.append(
                 "evidence "
@@ -1250,6 +1237,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             bits.append(f"镜像 {mirror_group.name} {mirror_stats.get('matched_vertices', 0)} 点")
             if mirror_stats.get("coincident_buckets", 0):
                 bits.append(f"重合点组 {mirror_stats['coincident_buckets']}")
+            if mirror_stats.get('unmatched_vertices', 0):
+                bits.append(iface_("No reciprocal mirror vertex: {0} vertices").format(mirror_stats['unmatched_vertices']))
         if locked_groups:
             if len(locked_groups) == 1:
                 bits.append("已锁定承接组")
