@@ -1614,3 +1614,9 @@ ZH_TRANSLATIONS.update({
     'Preserve Draw Order': '保留绘制顺序',
     'Keep this material as a sorting barrier during texture batching; use for transparent or other order-dependent game passes. Texture assignment and synchronization remain enabled': '按贴图聚合时，保留此材质的位置，不让其它部件跨过它排序。用于透明或其它依赖绘制顺序的游戏 pass；不影响贴图指定和同步',
 })
+
+
+# File-stem material resource identifiers.
+ZH_TRANSLATIONS.update({
+    "Material image {0} has no usable resource name after removing unsupported characters; rename the source image": "贴图 {0} 去除不支持的字符后没有可用的资源节名，请修改源贴图文件名",
+})

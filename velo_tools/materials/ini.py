@@ -40,6 +40,53 @@ def safe_material_resource_filename(filename):
     return dot > 0 and basename[dot:].lower() in MATERIAL_IMAGE_EXTENSIONS
 
 
+def material_resource_name(filename):
+    """Use the file stem only; sanitize the identifier, never the output path."""
+    if not safe_material_resource_filename(filename):
+        raise BindingError("Unsafe material resource filename")
+    stem = filename[len("Textures/"):].rsplit(".", 1)[0]
+    stem = re.sub(r"[^A-Za-z0-9_]", "", stem.replace(" ", "_"))
+    if not stem:
+        raise BindingError(
+            "Material image {0} has no usable resource name after removing unsupported characters; rename the source image",
+            filename)
+    return f"ResourceMaterialTexture_{stem}"
+
+
+def allocate_material_resource_names(filenames):
+    """Allocate deterministic section names without changing delivered files.
+
+    Reserve every natural base first, so a generated suffix never takes a
+    name such as Body_001 from a different file. Exact clean stems take
+    priority within a collision group; input/draw traversal order is ignored.
+    """
+    bases = {filename: material_resource_name(filename) for filename in set(filenames)}
+    buckets = defaultdict(list)
+    for filename, base in bases.items():
+        buckets[base.casefold()].append(filename)
+    reserved = set(buckets)
+    used, result = set(), {}
+    for key in sorted(buckets):
+        def priority(filename):
+            stem = filename[len("Textures/"):].rsplit(".", 1)[0]
+            exact = "ResourceMaterialTexture_" + stem == bases[filename]
+            return not exact, filename.casefold(), filename
+
+        suffix = 1
+        for index, filename in enumerate(sorted(buckets[key], key=priority)):
+            base = bases[filename]
+            name = base
+            if index:
+                while True:
+                    name = f"{base}_{suffix:03d}"
+                    suffix += 1
+                    if name.casefold() not in reserved and name.casefold() not in used:
+                        break
+            used.add(name.casefold())
+            result[filename] = name
+    return result
+
+
 @dataclass(frozen=True)
 class Segment:
     count: int

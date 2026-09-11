@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from array import array
-import hashlib
 import json
 from pathlib import Path
 
@@ -149,15 +148,15 @@ def _image_payload(image):
     if suffix not in ini.MATERIAL_IMAGE_EXTENSIONS:
         raise ValueError(iface_("Unsupported material image file type: {0}").format(suffix))
     filename = f"Textures/{basename}"
-    if not ini.safe_material_resource_filename(filename):
-        raise ValueError(iface_("Unsafe material resource filename"))
+    try:
+        resource = ini.material_resource_name(filename)
+    except ini.BindingError as exc:
+        raise ValueError(iface_(exc.message).format(*exc.values)) from exc
     content = bytes(image.packed_file.data) if image.packed_file else Path(
         bpy.path.abspath(image.filepath, library=image.library)).read_bytes()
     if not content:
         raise ValueError(iface_("Empty material image: {0}").format(image.name))
-    digest = hashlib.sha256(content).hexdigest()[:24]
-    name_digest = hashlib.sha256(filename.encode("utf-8")).hexdigest()[:8]
-    return f"ResourceMaterialTexture{digest}{name_digest}", filename, content
+    return resource, filename, content
 
 
 def _register_payload(payloads, payload_names, filename, content):
@@ -192,6 +191,17 @@ def _validate_payload_destinations(root, payloads):
 def build_material_layer(maker, text, cfg, game):
     validate_mode(cfg, game, getattr(maker, "scene", None))
     draws, resources, payloads, payload_names, images = [], {}, {}, {}, {}
+    # Allocate section names from the complete file set, not reordered draws.
+    for component in maker.merged_object.components:
+        for temp in component.objects:
+            for _count, _offset, values in getattr(temp, "material_draw_segments", ()):
+                for _identity, image in values:
+                    pointer = image.as_pointer()
+                    if pointer not in images:
+                        payload = _image_payload(image)
+                        _register_payload(payloads, payload_names, payload[1], payload[2])
+                        images[pointer] = payload
+    resource_names = ini.allocate_material_resource_names(payloads)
     for index, component in enumerate(maker.merged_object.components):
         for temp in component.objects:
             raw = getattr(temp, "material_draw_segments", ())
@@ -201,17 +211,11 @@ def build_material_layer(maker, text, cfg, game):
             for count, offset, values in raw:
                 replacements = {}
                 for identity, image in values:
-                    pointer = image.as_pointer()
-                    if pointer not in images:
-                        images[pointer] = _image_payload(image)
-                    resource, filename, content = images[pointer]
+                    _base, filename, _content = images[image.as_pointer()]
+                    resource = resource_names[filename]
                     if identity in replacements and replacements[identity] != resource:
                         raise ValueError(iface_("Two semantic inputs replace the same original texture differently"))
                     replacements[identity] = resource
-                    _register_payload(payloads, payload_names, filename, content)
-                    prior_filename = resources.get(resource)
-                    if prior_filename is not None and prior_filename != filename:
-                        raise ValueError(iface_("Material image output conflicts with an existing file: {0}").format(filename))
                     resources[resource] = filename
                 segments.append(ini.Segment(count, offset, tuple(sorted(replacements.items()))))
             draws.append(ini.Draw(getattr(temp, "material_component_id", index),
@@ -221,7 +225,7 @@ def build_material_layer(maker, text, cfg, game):
     if draws and not getattr(cfg, "copy_textures", True):
         raise ValueError(iface_("Enable texture copying when exporting material textures"))
     result, stats = ini.transform(text, draws, resource_map, resources,
-                                      batch_draws=getattr(cfg, "material_texture_batching", True))
+                                  batch_draws=getattr(cfg, "material_texture_batching", True))
     maker.material_texture_payloads = payloads
     maker.material_texture_report = stats
     print("[MaterialTextures]", game, stats)

@@ -1,6 +1,7 @@
 """Stable material batching before native offsets and sequential mesh assembly."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -115,7 +116,9 @@ def prepare_merger(merger, cfg, game, resolve_images, image_payload):
                         for identity, image in resolve_images(material, game, comp, folder, catalogs):
                             pointer = image.as_pointer()
                             if pointer not in image_resources:
-                                image_resources[pointer] = image_payload(image)[0]
+                                _base, filename, content = image_payload(image)
+                                # Sanitized section labels may collide; actual files must not.
+                                image_resources[pointer] = (filename, hashlib.sha256(content).digest())
                             resource = image_resources[pointer]
                             if identity in replacements and replacements[identity] != resource:
                                 raise ValueError(iface_("Two semantic inputs replace the same original texture differently"))
