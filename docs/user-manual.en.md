@@ -298,6 +298,22 @@ Export preserves finalized triangle ranges, draw order and conditions, and group
 
 Single-source EFMI and WWMI support Native/Fuzzy syntax. CrossIB, WWMI Cross-Scene, asset-name export, custom/live templates and partial export remain excluded. Packed PBR/FTM files are copied unchanged; Principled preview is approximate. Saved DDS/PNG/JPG/JPEG/TGA/BMP and packed file images are supported without automatic format conversion. Dirty, generated, animated, tiled or procedural images must be saved/baked first. Use Undo or the retained original material to revert authoring changes, and validate exported results in game.
 
+#### Persistent texture sync and replacement paths
+
+Propagation now remembers explicit **object/material/role** memberships. Select the source and intended meshes once, then run **Propagate by Same Diffuse**. A mesh may contain several materials; only the matching, used materials participate. A source with only a diffuse image is sufficient: empty roles with recognized original mappings can be linked for later image assignment. Fill-only propagation does not link an independently populated, different target image. Existing workflows from before persistent groups require one additional propagation to establish membership; initialization does not guess groups globally.
+
+Under each original-image selector, the path field displays the image actually connected to that role. It is read-only; the adjacent folder button opens **Replace Texture**, where a path can be browsed or entered. The group count opens **Texture Sync Members**. Select any member and choose a new image to update all members of that role, even when the other objects are not selected. Independent roles update only the current object's material uses. Packed images are explicitly labeled: their displayed path is the recorded path, not necessarily a readable external file.
+
+A replacement changes the material image nodes, not a shared Image datablock's global path. Original identities, each Component's runtime destination, UV/vector wiring and unrelated uses remain unchanged. Replacing the diffuse image does not change group identity. Object/material/image renames, saving and reopening the project, and Undo/Redo preserve membership. Duplicating an object does not automatically recruit the duplicate. A direct manual node image change is treated as a local override and excluded from subsequent group replacements unless explicitly propagated again. No periodic global same-file scan is used.
+
+| Action | Original mapping | Image connection | Sync membership |
+| --- | --- | --- | --- |
+| **Leave This Texture Sync** | Kept | Kept | Only this object's current material role leaves; other members/roles stay linked |
+| **Clear Original Mapping** / **Unassigned** | Cleared, including manual opt-out; automatic resolution may run again on refresh/export preparation | Kept | Kept |
+| **Keep Game Texture** | Explicit opt-out from this material role's replacement; refresh does not re-enable it | Kept for authoring/preview | Kept; later group image edits do not re-enable export for this role |
+
+Unassigned is an unresolved state, not a persistent disable switch. A connected, enabled role must resolve to a safe original before export; known mapping errors are checked before temporary export meshes are allocated. Keep Game Texture skips this additional material override and retains the existing Component Slot behavior; it does not delete source images or undo other resource overrides. None of the three actions disconnects every group member's nodes. File-load and group-commit failures roll back staged images, assignments and membership together; cancelling a picker leaves the project unchanged.
+
 ## EFMI End-to-End
 
 Choose **游戏 (Game) -> 终末地 (Arknights: Endfield)**.

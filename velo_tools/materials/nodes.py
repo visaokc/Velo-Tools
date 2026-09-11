@@ -19,7 +19,7 @@ def assignment_node(material):
     return found[0] if found else None
 
 
-def image_from_socket(socket):
+def image_node_from_socket(socket):
     """Only direct image/reroute chains have unambiguous file export semantics."""
     seen = set()
     while socket and socket.is_linked:
@@ -28,14 +28,30 @@ def image_from_socket(socket):
         if node.as_pointer() in seen:
             raise ValueError(iface_("Cyclic texture connection"))
         seen.add(node.as_pointer())
-        if node.type == "TEX_IMAGE" and node.image is not None:
+        if node.type == "TEX_IMAGE":
             if link.from_socket.name != "Color":
                 raise ValueError(iface_("Connect the image Color output to a texture input"))
-            return node.image
+            return node
         if node.type != "REROUTE":
             raise ValueError(iface_("Texture inputs support Image Texture nodes and reroutes; bake procedural maps first"))
         socket = node.inputs[0]
     return None
+
+
+def image_from_socket(socket):
+    node = image_node_from_socket(socket)
+    return node.image if node else None
+
+
+def role_image(material, role):
+    assignment = assignment_node(material)
+    if assignment is None:
+        raise ValueError(iface_("Initialize this material first"))
+    output = next((node for node in material.node_tree.nodes
+                   if node.type == "OUTPUT_MATERIAL" and node.is_active_output), None)
+    if output is None or not any(link.from_node == assignment for link in output.inputs["Surface"].links):
+        raise ValueError(iface_("Connect the texture assignment Shader output to the active Material Output"))
+    return image_from_socket(assignment.inputs[model.ROLES[role]])
 
 
 def connected_images(material):
@@ -294,16 +310,49 @@ def initialize_copy(material, game, component, catalog):
 
 
 def connect_image(material, role, image):
-    node = assignment_node(material)
-    if node is None:
+    """Replace the role's image without editing shared Image IDs or losing UV wiring."""
+    assignment = assignment_node(material)
+    if assignment is None:
         raise ValueError(iface_("Initialize this material first"))
-    socket = node.inputs[model.ROLES[role]]
-    for link in list(socket.links):
-        material.node_tree.links.remove(link)
+    socket = assignment.inputs[model.ROLES[role]]
+    tree = material.node_tree
+    texture = image_node_from_socket(socket) if socket.is_linked else None
     if image is None:
+        for link in list(socket.links):
+            tree.links.remove(link)
         return
-    texture = material.node_tree.nodes.new("ShaderNodeTexImage")
-    texture.image = image
-    texture.label = iface_(model.ROLES[role])
-    texture.location = (-360, -list(model.ROLES).index(role) * 280)
-    material.node_tree.links.new(texture.outputs["Color"], socket)
+    if texture is not None:
+        # Reuse only a private node branch. Reroutes may fan out to other roles.
+        def private_branch(node, seen=None):
+            seen = set() if seen is None else seen
+            if node.as_pointer() in seen:
+                return False
+            seen.add(node.as_pointer())
+            for output in node.outputs:
+                for link in output.links:
+                    if link.to_socket == socket:
+                        continue
+                    if role == "DIFFUSE" and link.to_node == assignment and link.to_socket.name == "Alpha":
+                        continue
+                    if link.to_node.type != "REROUTE" or not private_branch(link.to_node, seen):
+                        return False
+            return True
+        if private_branch(texture):
+            texture.image = image
+            return
+    replacement = tree.nodes.new("ShaderNodeTexImage")
+    replacement.image = image
+    replacement.label = iface_(model.ROLES[role])
+    replacement.location = (-360, -list(model.ROLES).index(role) * 280)
+    if texture is not None:
+        replacement.location = texture.location.copy()
+        for name in ("interpolation", "projection", "projection_blend", "extension"):
+            setattr(replacement, name, getattr(texture, name))
+        replacement.inputs["Vector"].default_value = texture.inputs["Vector"].default_value
+        for link in texture.inputs["Vector"].links:
+            tree.links.new(link.from_socket, replacement.inputs["Vector"])
+        if role == "DIFFUSE":
+            for link in list(texture.outputs["Alpha"].links):
+                if link.to_node == assignment and link.to_socket.name == "Alpha":
+                    tree.links.new(replacement.outputs["Alpha"], link.to_socket)
+    tree.links.new(replacement.outputs["Color"], socket)

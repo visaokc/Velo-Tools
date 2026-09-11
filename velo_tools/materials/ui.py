@@ -5,7 +5,7 @@ from pathlib import Path
 import bpy
 import bpy.utils.previews
 
-from . import model, nodes, hooks
+from . import model, nodes, hooks, groups
 from ..i18n import iface_
 
 _ENUM_ITEMS = []
@@ -55,19 +55,34 @@ def _selected_slots(context, *, used_only=True):
                 yield obj, index, slot.material
 
 
-def _commit(plans):
+def _commit(plans, *, scene=None, group_state=None, keep_backups=True):
     """Object-linked slots isolate unselected users of a shared mesh/material."""
+    scene = scene or bpy.context.scene
+    previous_groups = groups.snapshot(scene)
+    next_groups = groups.remap(previous_groups if group_state is None else group_state, plans)
+    token_backups = {member[kind]: member[kind].get(groups._OBJECT_KEY)
+                     for group in next_groups for member in group["members"]
+                     for kind in groups._KINDS if member[kind] is not None}
+    object_cache = dict(groups._ID_CACHE)
+    object_uids = dict(groups._ID_UIDS)
+    object_names = dict(groups._ID_NAMES)
     changed = []
     backups = {}
+    attempted_groups = False
     try:
         for obj, index, original, replacement in plans:
             slot = obj.material_slots[index]
+            if slot.material != original:
+                raise ValueError(iface_("The target material changed; reopen the texture picker"))
             changed.append((obj, index, slot.link, original))
             slot.link = "OBJECT"
             slot.material = replacement
-            if original.library is None:
+            if keep_backups and original.library is None:
                 backups.setdefault(original, original.use_fake_user)
                 original.use_fake_user = True
+        if next_groups != previous_groups:
+            attempted_groups = True
+            groups.write(scene, next_groups)
     except Exception:
         for obj, index, link, original in reversed(changed):
             slot = obj.material_slots[index]
@@ -75,6 +90,20 @@ def _commit(plans):
             slot.link = link
         for material, fake_user in backups.items():
             material.use_fake_user = fake_user
+        if attempted_groups:
+            groups.restore(scene, previous_groups)
+            for obj, token in token_backups.items():
+                if token is None:
+                    if groups._OBJECT_KEY in obj:
+                        del obj[groups._OBJECT_KEY]
+                else:
+                    obj[groups._OBJECT_KEY] = token
+            groups._ID_CACHE.clear()
+            groups._ID_CACHE.update(object_cache)
+            groups._ID_UIDS.clear()
+            groups._ID_UIDS.update(object_uids)
+            groups._ID_NAMES.clear()
+            groups._ID_NAMES.update(object_names)
         raise
 
 
@@ -143,7 +172,7 @@ def _mapping_witnesses(context, entries, cache):
         bindings = data.get("bindings", {}) if data.get("game") == game else {}
         row = result.setdefault(nodes.image_key(diffuse), {})
         identity = model.texture_identity(diffuse.filepath or diffuse.name)
-        if identity in catalog:
+        if identity in catalog and "DIFFUSE" not in data.get("replacement_roles", ()):
             row.setdefault("DIFFUSE", set()).add(identity)
         for role, identity in bindings.items():
             if identity in catalog:
@@ -151,17 +180,20 @@ def _mapping_witnesses(context, entries, cache):
     return result
 
 
-def _resolved_mapping(material, game, comp, catalog, witnesses=None, images=None):
+def _resolved_mapping(material, game, comp, catalog, witnesses=None, images=None, replacement_roles=()):
     if images is None:
         images = nodes.connected_images(material) if nodes.assignment_node(material) else {}
         diffuse = nodes.diffuse_image(material)
         if diffuse:
             images["DIFFUSE"] = diffuse
-    return model.resolve_sources(game, comp, catalog, model.unpack_sources(material),
-                                 _image_identities(images), witnesses)
+    identities = {role: identity for role, identity in _image_identities(images).items() if role not in replacement_roles}
+    value = model.resolve_sources(game, comp, catalog, model.unpack_sources(material), identities, witnesses)
+    if replacement_roles:
+        value["replacement_roles"] = sorted(set(value.get("replacement_roles", ())) | set(replacement_roles))
+    return value
 
 
-def _refresh_mapping(context, material):
+def _mapping_value(context, material):
     cache = {}
     game, comp, catalog = source_context(context, context.active_object, material, cache)
     cfg = getattr(context.scene, hooks.SETTINGS[game])
@@ -172,7 +204,13 @@ def _refresh_mapping(context, material):
     witnesses = _mapping_witnesses(context, entries, cache)
     key = nodes.image_key(nodes.diffuse_image(material))
     value = _resolved_mapping(material, game, comp, catalog, witnesses.get(key))
-    material[model.DATA_KEY] = json.dumps(value, sort_keys=True)
+    return value
+
+
+def _refresh_mapping(context, material):
+    from .group_ui import edit_source
+    value = _mapping_value(context, material)
+    edit_source(context, context.active_object, material, value)
     return value
 
 
@@ -200,9 +238,11 @@ class MATERIAL_OT_refresh_sources(bpy.types.Operator):
 def _source_items(self, context):
     global _ENUM_ITEMS
     material = bpy.data.materials.get(self.material_name) or active_material(context)
-    data = model.unpack_sources(material) if material else {}
-    items = [("NONE", iface_("Keep Game Texture"), iface_("Do not override this texture role"), "X", 0)]
-    for number, (identity, record) in enumerate(data.get("catalog", {}).items(), 1):
+    cached = getattr(self, "catalog_json", "")
+    data = json.loads(cached) if cached else (model.unpack_sources(material) if material else {})
+    items = [("NONE", iface_("Keep Game Texture"), iface_("Do not override this texture role"), "X", 0),
+             ("UNASSIGNED", iface_("Unassigned"), iface_("Clear the original mapping and allow automatic matching on the next refresh"), "LOOP_BACK", 1)]
+    for number, (identity, record) in enumerate(data.get("catalog", {}).items(), 2):
         name = Path(record["names"][0]).name if record.get("names") else identity
         items.append((identity, name, " / ".join(record.get("formats", ())) + " | " + identity,
                       _PREVIEW_ICONS.get((material.name, identity), 0), number))
@@ -210,12 +250,12 @@ def _source_items(self, context):
     return _ENUM_ITEMS
 
 
-def load_source_previews(context, material):
+def load_source_previews(context, material, data=None):
     """Generate thumbnails only on explicit picker invocation, never panel redraw."""
     global _PREVIEWS
     if _PREVIEWS is None:
         _PREVIEWS = bpy.utils.previews.new()
-    data = model.unpack_sources(material)
+    data = data if data is not None else model.unpack_sources(material)
     cfg = getattr(context.scene, hooks.SETTINGS.get(data.get("game"), "VTEF_settings"))
     folder = Path(bpy.path.abspath(cfg.object_source_folder))
     if not folder.is_dir():
@@ -240,7 +280,9 @@ class MATERIAL_OT_choose_source(bpy.types.Operator):
     bl_description = "Choose the original extracted image for this semantic role; no shader slot number is required"
     bl_options = {"REGISTER", "UNDO"}
     material_name: bpy.props.StringProperty(options={"HIDDEN"})
+    object_name: bpy.props.StringProperty(options={"HIDDEN"})
     role: bpy.props.StringProperty(options={"HIDDEN"})
+    catalog_json: bpy.props.StringProperty(options={"HIDDEN"})
     source: bpy.props.EnumProperty(name="Original Texture", items=_source_items)
     bl_property = "source"
 
@@ -249,13 +291,16 @@ class MATERIAL_OT_choose_source(bpy.types.Operator):
         if material is None:
             return {"CANCELLED"}
         self.material_name = material.name
+        self.object_name = context.active_object.name
         try:
-            data = _refresh_mapping(context, material)
+            data = _mapping_value(context, material)
         except Exception as exc:
             self.report({"ERROR"}, iface_("Material operation failed: {0}").format(exc))
             return {"CANCELLED"}
-        load_source_previews(context, material)
-        self.source = data.get("bindings", {}).get(self.role, "NONE")
+        self.catalog_json = json.dumps(data)
+        load_source_previews(context, material, data)
+        self.source = data.get("bindings", {}).get(self.role,
+            "NONE" if model.inherits_game_source(data, self.role) else "UNASSIGNED")
         return context.window_manager.invoke_props_dialog(self, width=600)
 
     def draw(self, context):
@@ -265,35 +310,41 @@ class MATERIAL_OT_choose_source(bpy.types.Operator):
         self.layout.label(text="Choose the original image, not the replacement", icon="INFO")
 
     def execute(self, context):
-        material = bpy.data.materials.get(self.material_name)
-        if material is None or self.role not in model.ROLES:
+        from .group_ui import edit_source, _target
+        try:
+            obj, material = _target(context, self)
+            data = model.unpack_sources(material)
+            if self.source == "UNASSIGNED":
+                value = model.clear_source(data, self.role)
+            else:
+                game, comp, catalog = source_context(context, obj, material)
+                if self.source != "NONE" and self.source not in catalog:
+                    raise ValueError(iface_("The selected original is no longer in the source folder"))
+                data.setdefault("manual", dict(data.get("bindings", {})))[self.role] = (
+                    "" if self.source == "NONE" else self.source)
+                diffuse = nodes.diffuse_image(material)
+                value = model.resolve_sources(game, comp, catalog, data,
+                    _image_identities({"DIFFUSE": diffuse}) if diffuse else {})
+            edit_source(context, obj, material, value)
+        except Exception as exc:
+            self.report({"ERROR"}, iface_("Material operation failed: {0}").format(exc))
             return {"CANCELLED"}
-        data = model.unpack_sources(material)
-        if self.source != "NONE" and self.source not in data.get("catalog", {}):
-            return {"CANCELLED"}
-        data.setdefault("manual", dict(data.get("bindings", {})))[self.role] = (
-            "" if self.source == "NONE" else self.source)
-        game, comp, catalog = source_context(context, context.active_object, material)
-        diffuse = nodes.diffuse_image(material)
-        value = model.resolve_sources(game, comp, catalog, data,
-                                      _image_identities({"DIFFUSE": diffuse}) if diffuse else {})
-        material[model.DATA_KEY] = json.dumps(value, sort_keys=True)
         return {"FINISHED"}
 
 
 def _propagation_source(context, entries):
     """Prefer the active configured material; infer a unique selected donor otherwise."""
     active = active_material(context)
-    if active and nodes.assignment_node(active):
+    if active and any(obj == context.active_object and mat == active for obj, _slot, mat in entries) and nodes.assignment_node(active):
         images = nodes.connected_images(active)
-        if images.get("DIFFUSE") and any(role != "DIFFUSE" for role in images):
+        if images.get("DIFFUSE"):
             return active, images
     donors = {}
     for _obj, _index, material in entries:
         if not nodes.assignment_node(material):
             continue
         images = nodes.connected_images(material)
-        if not images.get("DIFFUSE") or not any(role != "DIFFUSE" for role in images):
+        if not images.get("DIFFUSE"):
             continue
         signature = tuple(sorted((role, repr(nodes.image_key(image))) for role, image in images.items()))
         donors.setdefault(signature, (material, images))
@@ -301,13 +352,13 @@ def _propagation_source(context, entries):
         return next(iter(donors.values()))
     if donors:
         raise ValueError(iface_("Several configured materials are selected; make the intended source material active"))
-    raise ValueError(iface_("Connect a diffuse image and at least one other texture on a source material before propagation"))
+    raise ValueError(iface_("Initialize a source material and connect its diffuse image before propagation"))
 
 
 class MATERIAL_OT_propagate(bpy.types.Operator):
     bl_idname = "material_tools.propagate"
     bl_label = "Propagate by Same Diffuse"
-    bl_description = "Find the source and all matching diffuse images across selected material slots, copy other maps and automatically resolve each Component's original identities; the active configured material takes priority"
+    bl_description = "Find the source and all matching diffuse images across selected material slots, copy other maps, resolve each Component's original identities and remember per-role sync groups; the active configured material takes priority"
     bl_options = {"REGISTER", "UNDO"}
     overwrite: bpy.props.BoolProperty(
         name="Replace Existing Connections",
@@ -322,6 +373,7 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
         matched, filled, mapped, unresolved = set(), 0, 0, 0
         try:
             entries = list(_selected_slots(context))
+            state = groups.current_state(context.scene)
             source, images = _propagation_source(context, entries)
             diffuse = images["DIFFUSE"]
             key_diffuse = nodes.image_key(diffuse)
@@ -330,6 +382,7 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
                 witness_entries.append((context.active_object, -1, source))
             witnesses = _mapping_witnesses(context, witness_entries, cache).get(key_diffuse, {})
             wanted = {role: image for role, image in images.items() if role != "DIFFUSE"}
+            replacement_roles = set(model.unpack_sources(source).get("replacement_roles", ()))
             for obj, index, material in entries:
                 if nodes.image_key(nodes.diffuse_image(material)) != key_diffuse:
                     continue
@@ -346,11 +399,12 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
                              and nodes.image_key(target_images.get(role)) != nodes.image_key(image)}
                 old = model.unpack_sources(material)
                 value = _resolved_mapping(material, game, comp, catalog, witnesses,
-                                          {**target_images, **additions})
+                                          {**target_images, **additions},
+                                          replacement_roles & ({"DIFFUSE"} | additions.keys()))
                 additions = {role: image for role, image in additions.items()
                              if not model.inherits_game_source(value, role)}
                 mapping_changed = existing and old != value
-                if not additions and not mapping_changed:
+                if not additions and not mapping_changed and existing:
                     continue
                 copy = material.copy() if existing else nodes.initialize_copy(material, game, comp, catalog)
                 copies[key] = copy
@@ -362,14 +416,31 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
                 unresolved += sum(role not in value["bindings"] and not model.inherits_game_source(value, role)
                                   for role in {**target_images, **additions})
                 plans.append((obj, index, material, copy))
-            _commit(plans)
+            remapped = {(obj.as_pointer(), original.as_pointer()): replacement
+                        for obj, _index, original, replacement in plans}
+            final_entries = [(obj, index, remapped.get((obj.as_pointer(), mat.as_pointer()), mat))
+                             for obj, index, mat in entries
+                             if nodes.image_key(nodes.diffuse_image(mat)) == key_diffuse]
+            source_entry = next(((obj, mat) for obj, index, mat in final_entries
+                                 if obj == context.active_object and entries
+                                 and any(old == source and original_obj == obj and old_index == index
+                                         for original_obj, old_index, old in entries)), None)
+            if source_entry is None:
+                source_entry = next(((obj, remapped.get((obj.as_pointer(), source.as_pointer()), source))
+                                     for obj, _index, mat in entries if mat == source), None)
+            linked = 0
+            if source_entry is not None:
+                state, linked = groups.link_selected(groups.remap(state, plans), source_entry, final_entries)
+            _commit(plans, scene=context.scene, group_state=state)
         except Exception as exc:
             _discard(copies.values())
             self.report({"ERROR"}, iface_("Material operation failed: {0}").format(exc))
             return {"CANCELLED"}
         self.report({"INFO"}, iface_("Source {0}: matched {1} materials, connected {2} maps, refreshed {3} mappings, {4} unresolved roles").format(
             source.name, len(matched), filled, mapped, unresolved))
-        if not copies:
+        if linked:
+            self.report({"INFO"}, iface_("Linked {0} texture roles; replace a group from any member").format(linked))
+        if not copies and not linked:
             target_matches = [item for item in matched if item[0] != source.as_pointer()]
             if not target_matches:
                 self.report({"WARNING"}, iface_("No selected target uses the source diffuse image"))
@@ -408,6 +479,8 @@ class MATERIAL_PT_tools(bpy.types.Panel):
             if assignment is None:
                 return
             data = model.unpack_sources(material)
+            state = groups.current_state(context.scene, owner=(context.active_object, material))
+            from . import group_ui
             layout.operator("material_tools.refresh_sources", icon="FILE_REFRESH")
             if not data.get("catalog"):
                 layout.label(text="No retained source images; check the source folder or keep game textures", icon="INFO")
@@ -426,15 +499,14 @@ class MATERIAL_PT_tools(bpy.types.Panel):
                 row.label(text=iface_(label))
                 name = Path(record["names"][0]).name if record.get("names") else (
                     iface_("Keep Game Texture") if model.inherits_game_source(data, role) else (source or iface_("Unassigned")))
-                operator = box.operator("material_tools.choose_source", text=name, icon="IMAGE_DATA")
+                mapping_row = box.row(align=True)
+                operator = mapping_row.operator("material_tools.choose_source", text=name, icon="IMAGE_DATA")
+                operator.role = role
+                operator = mapping_row.operator("material_tools.clear_source", text="", icon="LOOP_BACK")
                 operator.role = role
                 if model.inherits_game_source(data, role):
                     box.label(text="Keep Game Texture", icon="INFO")
-                socket = assignment.inputs[label]
-                if socket.is_linked:
-                    image = nodes.image_from_socket(socket)
-                    if image:
-                        box.label(text=image.name, icon="TEXTURE")
+                group_ui.draw_role(box, context, material, role, state)
             layout.label(text="Packed maps are exported unchanged; preview is approximate", icon="INFO")
         except Exception as exc:
             layout.label(text=str(exc), icon="ERROR")

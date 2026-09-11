@@ -12,6 +12,7 @@ from . import model, nodes, ini
 from ..i18n import iface_
 
 _PATCHES = []
+_EXPORT_PATCHES = []
 SETTINGS = {"ENDFIELD": "VTEF_settings", "WUTHERING": "VTWW_settings"}
 
 
@@ -39,6 +40,56 @@ def validate_mode(cfg, game, scene=None):
         raise ValueError(iface_("Material textures currently require Cross-IB to be disabled"))
 
 
+def resolve_material_images(material, game, component, folder, catalogs):
+    images = nodes.connected_images(material)
+    if not images:
+        return ()
+    data = model.unpack_sources(material)
+    if data.get("game") != game:
+        raise ValueError(iface_("Material source game differs from the active exporter"))
+    if component not in catalogs:
+        catalogs[component] = model.read_evidence(folder, component)
+    current = catalogs[component]
+    identities = {role: identity for role, image in images.items()
+                  if (identity := model.texture_identity(image.filepath or image.name))}
+    data = model.resolve_sources(game, component, current, data, identities)
+    values = []
+    for role, image in images.items():
+        identity = data.get("bindings", {}).get(role, "")
+        if model.inherits_game_source(data, role):
+            continue
+        if not identity or identity not in current:
+            raise ValueError(iface_("{0}: choose the original texture for {1} in Material Tools").format(material.name, iface_(model.ROLES[role])))
+        values.append((identity, image))
+    return tuple(values)
+
+
+def preflight_materials(context, cfg, game):
+    """Reject known authoring errors before native temporary mesh allocation.
+
+    Finalized geometry still receives the same validation in capture_merger;
+    modifier-generated materials cannot be assumed to match authoring inputs.
+    """
+    from ..core.export.hook import _iter_export_meshes
+    validate_mode(cfg, game, context.scene)
+    folder = Path(bpy.path.abspath(cfg.object_source_folder))
+    catalogs, seen = {}, set()
+    for obj in _iter_export_meshes(context, cfg):
+        component = model.component_id(obj.name)
+        if component is None:
+            continue
+        used = {polygon.material_index for polygon in obj.data.polygons}
+        for index, slot in enumerate(obj.material_slots):
+            if index not in used or slot.material is None:
+                continue
+            target = model.component_id(slot.material.name)
+            target = component if target is None else target
+            key = slot.material.as_pointer(), target
+            if key not in seen:
+                seen.add(key)
+                resolve_material_images(slot.material, game, target, folder, catalogs)
+
+
 def capture_merger(merger, cfg, game):
     """Snapshot file bindings and triangle runs before Join removes source IDs."""
     validate_mode(cfg, game, merger.context.scene)
@@ -56,28 +107,7 @@ def capture_merger(merger, cfg, game):
                 if slot_id not in used_slots:
                     continue
                 material = slot.material
-                images = nodes.connected_images(material)
-                if not images:
-                    by_slot[slot_id] = ()
-                    continue
-                data = model.unpack_sources(material)
-                if data.get("game") != game:
-                    raise ValueError(iface_("Material source game differs from the active exporter"))
-                if comp not in catalogs:
-                    catalogs[comp] = model.read_evidence(folder, comp)
-                current = catalogs[comp]
-                identities = {role: identity for role, image in images.items()
-                              if (identity := model.texture_identity(image.filepath or image.name))}
-                data = model.resolve_sources(game, comp, current, data, identities)
-                values = []
-                for role, image in images.items():
-                    identity = data.get("bindings", {}).get(role, "")
-                    if model.inherits_game_source(data, role):
-                        continue
-                    if not identity or identity not in current:
-                        raise ValueError(iface_("{0}: choose the original texture for {1} in Material Tools").format(material.name, iface_(model.ROLES[role])))
-                    values.append((identity, image))
-                by_slot[slot_id] = tuple(values)
+                by_slot[slot_id] = resolve_material_images(material, game, comp, folder, catalogs)
             segments = []
             for polygon_index, slot_id in enumerate(indices):
                 bindings = by_slot.get(slot_id, ())
@@ -138,11 +168,12 @@ def build_material_layer(maker, text, cfg, game):
     return result
 
 
-def _install_game(game, merger_cls, maker_cls, cfg_type, operator_cls):
+def _install_game(game, merger_cls, maker_cls, cfg_type, operator_cls, exporter_cls):
     original_stats = merger_cls.finalize_temp_objects_stats
     original_build = maker_cls.build_from_template
     original_write = maker_cls.write
     original_execute = operator_cls.execute
+    original_verify = exporter_cls.verify_config
     cfg_type.material_texture_overrides = bpy.props.BoolProperty(
         name="Use Material Textures",
         description="Use semantic texture inputs for each material draw in Slot export; requires automatic material splitting. Original materials and draw order are preserved",
@@ -205,6 +236,13 @@ def _install_game(game, merger_cls, maker_cls, cfg_type, operator_cls):
                 return {"CANCELLED"}
         return original_execute(self, context)
 
+    def verify_config(self):
+        original_verify(self)
+        if enabled(self.cfg):
+            preflight_materials(self.context, self.cfg, game)
+
+    exporter_cls.verify_config = verify_config
+    _EXPORT_PATCHES.append((exporter_cls, original_verify))
     merger_cls.finalize_temp_objects_stats = finalize_temp_objects_stats
     maker_cls.build_from_template = build_from_template
     maker_cls.write = write
@@ -215,19 +253,22 @@ def _install_game(game, merger_cls, maker_cls, cfg_type, operator_cls):
 def install():
     if _PATCHES:
         return
-    from ..games.arknights_endfield._efmi_core.blender_export.blender_export import ObjectMergerEFMI
+    from ..games.arknights_endfield._efmi_core.blender_export.blender_export import ObjectMergerEFMI, ModExporter as FirstExporter
     from ..games.arknights_endfield._efmi_core.blender_export.ini_maker import IniMaker as FirstMaker
     from ..games.arknights_endfield._efmi_core.addon.settings import VTEF_Settings
-    from ..games.wuthering_waves._wwmi_core.blender_export.blender_export import ObjectMergerWWMI
+    from ..games.wuthering_waves._wwmi_core.blender_export.blender_export import ObjectMergerWWMI, ModExporter as SecondExporter
     from ..games.wuthering_waves._wwmi_core.blender_export.ini_maker import IniMaker as SecondMaker
     from ..games.wuthering_waves._wwmi_core.addon.settings import VTWW_Settings
     from ..games.arknights_endfield._efmi_core.addon.ui import VTEF_Export
     from ..games.wuthering_waves._wwmi_core.addon.ui import VTWW_Export
-    _install_game("ENDFIELD", ObjectMergerEFMI, FirstMaker, VTEF_Settings, VTEF_Export)
-    _install_game("WUTHERING", ObjectMergerWWMI, SecondMaker, VTWW_Settings, VTWW_Export)
+    _install_game("ENDFIELD", ObjectMergerEFMI, FirstMaker, VTEF_Settings, VTEF_Export, FirstExporter)
+    _install_game("WUTHERING", ObjectMergerWWMI, SecondMaker, VTWW_Settings, VTWW_Export, SecondExporter)
 
 
 def remove():
+    for exporter, verify in reversed(_EXPORT_PATCHES):
+        exporter.verify_config = verify
+    _EXPORT_PATCHES.clear()
     for merger, maker, cfg_type, operator, stats, build, write, execute in reversed(_PATCHES):
         merger.finalize_temp_objects_stats = stats
         maker.build_from_template = build

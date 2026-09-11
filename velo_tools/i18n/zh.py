@@ -1551,3 +1551,40 @@ ZH_TRANSLATIONS.update({
     "Initialized {0} materials, refreshed {1} mappings; originals retained as backups": "已初始化 {0} 个材质，刷新 {1} 份映射；原材质已保留为备份",
     "No retained source images; check the source folder or keep game textures": "没有保留的原图；请检查源目录，或保留游戏贴图"
 })
+
+
+ZH_TRANSLATIONS.update({
+    "Texture File Path": "使用贴图路径",
+    "Actual connected image path; use the adjacent button to replace images without changing unrelated image users": "显示节点实际连接的图像路径；用旁边按钮更换贴图，不影响未关联的图像用户",
+    "The target material changed; reopen the texture picker": "目标材质已经改变，请重新打开贴图选择器",
+    "Unknown texture role": "未知贴图用途",
+    "The sync group changed; reopen the texture picker": "贴图同步组已经改变，请重新打开贴图选择器",
+    "Choose an existing image file": "请选择存在的图像文件",
+    "Image file not found: {0}": "找不到图像文件：{0}",
+    "Could not load the selected image": "无法加载所选图像",
+    "Replace Texture": "更换贴图",
+    "Replace this role on all explicitly linked members, or only the current material when independent; preserve original mappings and UV wiring": "统一更换本用途的所有已关联成员；独立状态下仅更换当前材质。保留各自原图对应和 UV 连线",
+    "Image File": "图像文件",
+    "Replaced {0} on {1} materials across {2} objects": "已更换 {2} 个物体、{1} 个材质的{0}",
+    "Leave This Texture Sync": "退出本项同步",
+    "Remove only this object's current material role from batch synchronization; keep its image connection, original mapping and every other member unchanged": "只让当前物体的当前材质、本贴图用途退出批量同步；保留图像连线和原图对应，其它成员不变",
+    "This texture role is independent; image connections and original mappings were kept": "本贴图用途已独立；图像连线和原图对应保持不变",
+    "Clear Original Mapping": "清空原图对应",
+    "Return this role to Unassigned, clearing manual opt-out too; keep image connections and sync membership. The next refresh may infer the original again": "回到未分配，并清除手动停用状态；保留图像连线和同步关系，下次刷新可重新识别原图",
+    "Original mapping cleared; refresh to infer it again. Image connections were kept": "已清空原图对应，可刷新重新识别；图像连线保持不变",
+    "Texture Sync Members": "贴图同步成员",
+    "Show the explicit objects and materials affected by this role's batch replacement, excluding independent node edits": "查看本用途批量更换会影响的物体和材质；单独修改过节点用图的成员不参与",
+    "{0} material uses in this sync group": "本同步组包含 {0} 处材质使用位置",
+    "{0} additional material uses": "另有 {0} 处材质使用位置",
+    "No replacement image connected": "尚未连接替换贴图",
+    "Packed image; the field shows its recorded file path": "图像已内嵌；框中显示其记录的文件路径",
+    "Image has unsaved changes": "图像有尚未保存的修改",
+    "Synced: {0} materials": "同组：{0} 个材质",
+    "Independent texture": "本项独立",
+    "Conflicting texture sync memberships": "贴图同步成员存在冲突",
+    "Clear the original mapping and allow automatic matching on the next refresh": "清空原图对应，下次刷新时允许自动识别",
+    "The selected original is no longer in the source folder": "所选原图已不在源目录中",
+    "Initialize a source material and connect its diffuse image before propagation": "请先初始化来源材质并连接漫反射图，再执行传播",
+    "Find the source and all matching diffuse images across selected material slots, copy other maps, resolve each Component's original identities and remember per-role sync groups; the active configured material takes priority": "遍历选中网格的材质槽匹配漫反射，传播其它贴图并独立解析各 Component 原图，保存按用途的同步组；优先使用活动来源材质",
+    "Linked {0} texture roles; replace a group from any member": "已关联 {0} 个贴图用途，可从任意成员统一更换同组贴图"
+})

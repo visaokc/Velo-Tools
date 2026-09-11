@@ -201,7 +201,9 @@ def resolve_sources(game, component, catalog, previous=None, image_identities=No
     old = previous if same_scope else {}
     manual = dict(old.get("manual", old.get("bindings", {})))
     manual = {role: identity for role, identity in manual.items() if role in ROLES}
-    image_identities = image_identities or {}
+    replacement_roles = set(old.get("replacement_roles", ())) & ROLES.keys()
+    image_identities = {role: identity for role, identity in (image_identities or {}).items()
+                        if role not in replacement_roles}
     witnesses = witnesses or {}
     old_bindings = old.get("bindings", {})
     diffuse = manual.get("DIFFUSE") or image_identities.get("DIFFUSE") or old_bindings.get("DIFFUSE", "")
@@ -240,8 +242,33 @@ def resolve_sources(game, component, catalog, previous=None, image_identities=No
     result = json.loads(pack_sources(game, component, catalog, bindings))
     result["manual"] = manual
     result["omitted"] = omitted
+    if replacement_roles:
+        result["replacement_roles"] = sorted(replacement_roles)
     return result
 
 
 def inherits_game_source(data, role):
     return role in data.get("omitted", {}) or data.get("manual", {}).get(role) == ""
+
+
+def clear_source(data, role):
+    """Clear only the original mapping; subsequent refresh may infer it again."""
+    if role not in ROLES:
+        raise ValueError("Unknown texture role")
+    result = json.loads(json.dumps(data))
+    # Migrate legacy choices before removing this role's explicit state.
+    result.setdefault("manual", dict(result.get("bindings", {})))
+    for field in ("bindings", "manual", "omitted"):
+        result.get(field, {}).pop(role, None)
+    result.pop("confirmed", None)
+    return result
+
+
+def pin_original(data, role):
+    """Choosing a replacement must not reinterpret its filename as a new original."""
+    result = json.loads(json.dumps(data))
+    result["replacement_roles"] = sorted(set(result.get("replacement_roles", ())) | {role})
+    identity = result.get("bindings", {}).get(role)
+    if identity:
+        result.setdefault("manual", dict(result.get("bindings", {})))[role] = identity
+    return result
