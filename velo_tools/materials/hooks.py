@@ -8,11 +8,12 @@ from pathlib import Path
 
 import bpy
 
-from . import model, nodes, ini
+from . import model, nodes, ini, batching
 from ..i18n import iface_
 
 _PATCHES = []
 _EXPORT_PATCHES = []
+_UV_PATCHES = []
 SETTINGS = {"ENDFIELD": "VTEF_settings", "WUTHERING": "VTWW_settings"}
 
 
@@ -73,7 +74,7 @@ def preflight_materials(context, cfg, game):
     from ..core.export.hook import _iter_export_meshes
     validate_mode(cfg, game, context.scene)
     folder = Path(bpy.path.abspath(cfg.object_source_folder))
-    catalogs, seen = {}, set()
+    catalogs, seen, checked_images = {}, set(), set()
     for obj in _iter_export_meshes(context, cfg):
         component = model.component_id(obj.name)
         if component is None:
@@ -87,7 +88,13 @@ def preflight_materials(context, cfg, game):
             key = slot.material.as_pointer(), target
             if key not in seen:
                 seen.add(key)
-                resolve_material_images(slot.material, game, target, folder, catalogs)
+                values = resolve_material_images(slot.material, game, target, folder, catalogs)
+                if getattr(cfg, "material_texture_batching", True):
+                    for _identity, image in values:
+                        pointer = image.as_pointer()
+                        if pointer not in checked_images:
+                            _image_payload(image)
+                            checked_images.add(pointer)
 
 
 def capture_merger(merger, cfg, game):
@@ -161,7 +168,8 @@ def build_material_layer(maker, text, cfg, game):
                                                for texture in maker.textures])
     if draws and not getattr(cfg, "copy_textures", True):
         raise ValueError(iface_("Enable texture copying when exporting material textures"))
-    result, stats = ini.transform(text, draws, resource_map, resources)
+    result, stats = ini.transform(text, draws, resource_map, resources,
+                                      batch_draws=getattr(cfg, "material_texture_batching", True))
     maker.material_texture_payloads = payloads
     maker.material_texture_report = stats
     print("[MaterialTextures]", game, stats)
@@ -176,12 +184,20 @@ def _install_game(game, merger_cls, maker_cls, cfg_type, operator_cls, exporter_
     original_verify = exporter_cls.verify_config
     cfg_type.material_texture_overrides = bpy.props.BoolProperty(
         name="Use Material Textures",
-        description="Use semantic texture inputs for each material draw in Slot export; requires automatic material splitting. Original materials and draw order are preserved",
+        description="Use semantic texture inputs for each material draw in Slot export; requires automatic material splitting. Original materials are preserved",
         default=False)
 
+    cfg_type.material_texture_batching = bpy.props.BoolProperty(
+        name="Group Draws by Texture",
+        description="Stably group compatible temporary objects before index ranges and buffers are built, reducing repeated texture commands without renaming source objects. Disable to retain the previous export order",
+        default=True)
+
     def finalize_temp_objects_stats(self):
-        original_stats(self)
         cfg = getattr(self.context.scene, SETTINGS[game])
+        if enabled(cfg) and getattr(cfg, "material_texture_batching", True):
+            validate_mode(cfg, game, self.context.scene)
+            batching.prepare_merger(self, cfg, game, resolve_material_images, _image_payload)
+        original_stats(self)
         if enabled(cfg):
             capture_merger(self, cfg, game)
         else:
@@ -263,9 +279,15 @@ def install():
     from ..games.wuthering_waves._wwmi_core.addon.ui import VTWW_Export
     _install_game("ENDFIELD", ObjectMergerEFMI, FirstMaker, VTEF_Settings, VTEF_Export, FirstExporter)
     _install_game("WUTHERING", ObjectMergerWWMI, SecondMaker, VTWW_Settings, VTWW_Export, SecondExporter)
+    from ..games.wuthering_waves._wwmi_core.blender_export import blender_export as second_module
+    _UV_PATCHES.append((second_module, second_module.copy_uv_layer))
+    second_module.copy_uv_layer = batching.copy_uv_layer_snapshot
 
 
 def remove():
+    for module, copy_uv in reversed(_UV_PATCHES):
+        module.copy_uv_layer = copy_uv
+    _UV_PATCHES.clear()
     for exporter, verify in reversed(_EXPORT_PATCHES):
         exporter.verify_config = verify
     _EXPORT_PATCHES.clear()
@@ -274,5 +296,6 @@ def remove():
         maker.build_from_template = build
         maker.write = write
         operator.execute = execute
+        del cfg_type.material_texture_batching
         del cfg_type.material_texture_overrides
     _PATCHES.clear()

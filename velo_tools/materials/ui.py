@@ -481,6 +481,7 @@ class MATERIAL_PT_tools(bpy.types.Panel):
             data = model.unpack_sources(material)
             state = groups.current_state(context.scene, owner=(context.active_object, material))
             from . import group_ui
+            layout.prop(material, "material_texture_preserve_order")
             layout.operator("material_tools.refresh_sources", icon="FILE_REFRESH")
             if not data.get("catalog"):
                 layout.label(text="No retained source images; check the source folder or keep game textures", icon="INFO")
@@ -517,12 +518,17 @@ _CLASSES = (MATERIAL_OT_initialize, MATERIAL_OT_refresh_sources,
 
 
 def register():
+    bpy.types.Material.material_texture_preserve_order = bpy.props.BoolProperty(
+        name="Preserve Draw Order",
+        description="Keep this material as a sorting barrier during texture batching; use for transparent or other order-dependent game passes. Texture assignment and synchronization remain enabled",
+        default=False)
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
 
 
 def unregister():
     global _PREVIEWS
+    del bpy.types.Material.material_texture_preserve_order
     if _PREVIEWS is not None:
         bpy.utils.previews.remove(_PREVIEWS)
         _PREVIEWS = None

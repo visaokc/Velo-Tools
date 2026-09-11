@@ -1588,3 +1588,13 @@ ZH_TRANSLATIONS.update({
     "Find the source and all matching diffuse images across selected material slots, copy other maps, resolve each Component's original identities and remember per-role sync groups; the active configured material takes priority": "遍历选中网格的材质槽匹配漫反射，传播其它贴图并独立解析各 Component 原图，保存按用途的同步组；优先使用活动来源材质",
     "Linked {0} texture roles; replace a group from any member": "已关联 {0} 个贴图用途，可从任意成员统一更换同组贴图"
 })
+
+
+# Temporary export ordering.
+ZH_TRANSLATIONS.update({
+    'Use semantic texture inputs for each material draw in Slot export; requires automatic material splitting. Original materials are preserved': '在 Slot 导出中按材质为各 draw 指定语义贴图；需要开启按材质分离。保留原始材质',
+    'Group Draws by Texture': '按贴图聚合导出',
+    'Stably group compatible temporary objects before index ranges and buffers are built, reducing repeated texture commands without renaming source objects. Disable to retain the previous export order': '在计算 index 范围和生成 Buffer 前，按贴图组合稳定聚合兼容的临时部件，减少重复贴图命令，不改源物体名称。关闭可保留原先的导出顺序',
+    'Preserve Draw Order': '保留绘制顺序',
+    'Keep this material as a sorting barrier during texture batching; use for transparent or other order-dependent game passes. Texture assignment and synchronization remain enabled': '按贴图聚合时，保留此材质的位置，不让其它部件跨过它排序。用于透明或其它依赖绘制顺序的游戏 pass；不影响贴图指定和同步',
+})

@@ -68,7 +68,94 @@ def source_resources(text, textures):
     return {identity: tuple(names) for identity, names in aliases.items()}
 
 
-def transform(text, draws, resource_by_identity, resources):
+def _coalesce_transactions(output):
+    """Remove only consecutive restore/apply pairs for the exact same scope."""
+    previous_restore = None
+    for index, line in enumerate(output):
+        run = _RUN.match(line)
+        if run and run.group(1).startswith("CommandListRestoreMaterial"):
+            previous_restore = index
+        elif run and run.group(1).startswith("CommandListApplyMaterial") and previous_restore is not None:
+            old = output[previous_restore]
+            if old.replace("RestoreMaterial", "ApplyMaterial") == line:
+                output[previous_restore] = ""
+                output[index] = ""
+            previous_restore = None
+        elif line.strip() and not line.lstrip().startswith(";"):
+            previous_restore = None
+    return output
+
+
+def _hoist_draw_guards(lines):
+    """Share bindings around pure per-object visibility guards, not arbitrary IFs.
+
+    A guard must contain exactly apply -> draw(s) -> restore, with no nested
+    control flow, side effects or state changes. Its original draw condition is
+    preserved. Setting/restoring textures when every guard is false is a no-op.
+    """
+    output = []
+    index = 0
+    guard = re.compile(r"^(\s*)if\s+\$draw_\w+\s*(?:;.*)?$", re.I)
+    while index < len(lines):
+        match = guard.match(lines[index])
+        if match is None:
+            output.append(lines[index])
+            index += 1
+            continue
+        end = index + 1
+        executable = []
+        while end < len(lines):
+            code = lines[end].strip()
+            if code and not code.startswith(";"):
+                if code.lower() == "endif":
+                    break
+                if not (_RUN.match(lines[end]) or _DRAW.match(lines[end])):
+                    break
+                executable.append(end)
+            end += 1
+        valid = end < len(lines) and lines[end].strip().lower() == "endif" and len(executable) >= 3
+        if valid:
+            first, last = executable[0], executable[-1]
+            apply, restore = _RUN.match(lines[first]), _RUN.match(lines[last])
+            valid = (apply is not None and restore is not None
+                     and apply.group(1).startswith("CommandListApplyMaterial")
+                     and apply.group(1).replace("ApplyMaterial", "RestoreMaterial") == restore.group(1)
+                     and all(_DRAW.match(lines[item]) for item in executable[1:-1]))
+        if not valid:
+            output.append(lines[index])
+            index += 1
+            continue
+        indent = match.group(1)
+        output.append(f"{indent}run = {apply.group(1)}")
+        output.extend(lines[item] for item in range(index, end + 1) if item not in (first, last))
+        output.append(f"{indent}run = {restore.group(1)}")
+        index = end + 1
+    return output
+
+
+def _combine_constants(lines):
+    """Normalize the native ShapeKey template's additive Constants fragments.
+
+    Only this special section is combined. Keep declaration/initialization order
+    exactly; duplicate executable/resource sections remain an export error.
+    """
+    spans = _sections(lines)
+    fragments = [(start, end) for name, start, end in spans if name.casefold() == "constants"]
+    if len(fragments) < 2:
+        return lines
+    first, end = fragments[0]
+    extra = [line for start, stop in fragments[1:] for line in lines[start + 1:stop]]
+    removed = {index for start, stop in fragments[1:] for index in range(start, stop)}
+    result = []
+    for index, line in enumerate(lines):
+        if index == end:
+            result.extend(extra)
+        if index not in removed:
+            result.append(line)
+    return result
+
+
+def transform(text, draws, resource_by_identity, resources, *, batch_draws=False):
     """Use integer witnesses emitted by safe setters, never runtime hash tests.
 
     Draw ranges come from the finalized temporary mesh, before native Join.
@@ -78,7 +165,7 @@ def transform(text, draws, resource_by_identity, resources):
     draws = [draw for draw in draws if any(s.replacements for s in draw.segments)]
     if not draws:
         return text, {"groups": 0, "draws": 0}
-    lines = text.splitlines()
+    lines = _combine_constants(text.splitlines())
     spans = _sections(lines)
     bodies = {name.casefold(): (name, start, end) for name, start, end in spans}
     if len(bodies) != len(spans):
@@ -242,20 +329,9 @@ def transform(text, draws, resource_by_identity, resources):
                     continue
                 identity = reverse.get(resource.casefold()) if current_key in reachable[comp] else None
                 output.append(f"{indent}{witness(comp, slot)} = {tokens.get(identity, 0)}")
-    # Merge only adjacent transactions with no intervening executable command.
-    previous_restore = None
-    for index, line in enumerate(output):
-        run = _RUN.match(line)
-        if run and run.group(1).startswith("CommandListRestoreMaterial"):
-            previous_restore = index
-        elif run and run.group(1).startswith("CommandListApplyMaterial") and previous_restore is not None:
-            old = output[previous_restore]
-            if old.replace("RestoreMaterial", "ApplyMaterial") == line:
-                output[previous_restore] = ""
-                output[index] = ""
-            previous_restore = None
-        elif line.strip() and not line.lstrip().startswith(";"):
-            previous_restore = None
+    output = _coalesce_transactions(output)
+    if batch_draws:
+        output = _coalesce_transactions(_hoist_draw_guards(output))
     for name in sorted(used_resources):
         filename = resources[name]
         if not re.fullmatch(r"Textures/material_[a-f0-9]{24}\.[a-z0-9]+", filename):

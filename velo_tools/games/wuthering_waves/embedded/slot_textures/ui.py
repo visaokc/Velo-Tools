@@ -149,6 +149,8 @@ def _patch_export_menu():
             box.prop(cfg, "velo_auto_split_by_material")
             if cfg.velo_auto_split_by_material and hasattr(cfg, "material_texture_overrides"):
                 box.prop(cfg, "material_texture_overrides")
+                if cfg.material_texture_overrides and hasattr(cfg, "material_texture_batching"):
+                    box.prop(cfg, "material_texture_batching")
         if hasattr(cfg, "use_asset_name_matching"):
             box.prop(cfg, "use_asset_name_matching")
         if hasattr(cfg, "velo_slot_style_textures"):
