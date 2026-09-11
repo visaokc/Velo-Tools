@@ -172,11 +172,12 @@ def draw_reference(layout, settings, field, *, text=None):
     name = requested_name(settings, field)
     value_row = row.row(align=True)
     value_row.alert = bool(name and resolve(settings, field) is None)
-    # One native Object field supplies search and eyedropper together. The exact
-    # name stays visible after its transient pointer is released, even if missing.
+    # Empty fields expose the native eyedropper. Filled fields show actual saved
+    # text with a clear action, never a gray placeholder or a second picker.
     label = text if text is not None else iface_(settings.bl_rna.properties[field + "_name"].name)
-    value_row.prop(settings, field + "_picker", text=label,
-                   icon='OUTLINER_OB_MESH', placeholder=name, translate=False)
+    display_field = field + ("_name" if name else "_picker")
+    value_row.prop(settings, display_field, text=label,
+                   icon='OUTLINER_OB_MESH', translate=False)
     if name:
         clear = row.operator("wm.context_set_string", text="", icon='X')
         clear.data_path = f"scene.{settings.path_from_id()}.{field}_name"
