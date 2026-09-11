@@ -173,15 +173,11 @@ def draw_reference(layout, settings, field, *, text=None):
     value_row = row.row(align=True)
     value_row.alert = bool(name and resolve(settings, field) is None)
     # Empty fields expose the native eyedropper. Filled fields show actual saved
-    # text with a clear action, never a gray placeholder or a second picker.
+    # text with Blender's built-in clear action, never an extra button or hint.
     label = text if text is not None else iface_(settings.bl_rna.properties[field + "_name"].name)
     display_field = field + ("_name" if name else "_picker")
     value_row.prop(settings, display_field, text=label,
                    icon='OUTLINER_OB_MESH', translate=False)
-    if name:
-        clear = row.operator("wm.context_set_string", text="", icon='X')
-        clear.data_path = f"scene.{settings.path_from_id()}.{field}_name"
-        clear.value = ""
 
 
 @persistent
