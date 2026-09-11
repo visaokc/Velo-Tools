@@ -86,8 +86,10 @@ def prepare_merger(merger, cfg, game, resolve_images, image_payload):
     """
     import bpy
     from ..i18n import iface_
+    from . import export_cache
 
     folder = Path(bpy.path.abspath(cfg.object_source_folder))
+    cache = export_cache.current()
     protected = protected_components(folder, game)
     catalogs, materials, image_resources = {}, {}, {}
     plans = []
@@ -100,7 +102,7 @@ def prepare_merger(merger, cfg, game, resolve_images, image_payload):
         component_barrier = protected is None or comp in protected or bool(getattr(metadata, "cpu_posed", False))
         for temp in original:
             obj = temp.object
-            used = {polygon.material_index for polygon in obj.data.polygons}
+            used = set(export_cache.material_indices(obj.data))
             signatures = set()
             blocked = component_barrier or not used
             for slot_id in sorted(used):
@@ -116,9 +118,11 @@ def prepare_merger(merger, cfg, game, resolve_images, image_payload):
                         for identity, image in resolve_images(material, game, comp, folder, catalogs):
                             pointer = image.as_pointer()
                             if pointer not in image_resources:
-                                _base, filename, content = image_payload(image)
+                                payload = image_payload(image)
+                                _base, filename, content = payload
                                 # Sanitized section labels may collide; actual files must not.
-                                image_resources[pointer] = (filename, hashlib.sha256(content).digest())
+                                image_resources[pointer] = (cache.signature(payload) if cache is not None
+                                                            else (filename, hashlib.sha256(content).digest()))
                             resource = image_resources[pointer]
                             if identity in replacements and replacements[identity] != resource:
                                 raise ValueError(iface_("Two semantic inputs replace the same original texture differently"))

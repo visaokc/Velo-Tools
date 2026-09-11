@@ -1,13 +1,12 @@
 """Reversible driver hooks for finalized draw ranges and image delivery."""
 from __future__ import annotations
 
-from array import array
 import json
 from pathlib import Path
 
 import bpy
 
-from . import model, nodes, ini, batching
+from . import model, nodes, ini, batching, export_cache
 from ..i18n import iface_
 
 _PATCHES = []
@@ -19,6 +18,14 @@ SETTINGS = {"ENDFIELD": "VTEF_settings", "WUTHERING": "VTWW_settings"}
 def enabled(cfg):
     return bool(getattr(cfg, "velo_auto_split_by_material", True)
                 and getattr(cfg, "material_texture_overrides", False))
+
+
+def _has_assignment_material(obj):
+    """Cheap presence check; unused invalid slots must not trigger validation."""
+    return any(material is not None and material.use_nodes and material.node_tree
+               and any(node.type == "GROUP" and node.get(model.NODE_KEY) == model.SCHEMA
+                       for node in material.node_tree.nodes)
+               for slot in obj.material_slots if (material := slot.material) is not None)
 
 
 def validate_mode(cfg, game, scene=None):
@@ -44,11 +51,17 @@ def resolve_material_images(material, game, component, folder, catalogs):
     images = nodes.connected_images(material)
     if not images:
         return ()
+    cache = export_cache.current()
+    key = (game, component, str(folder), str(material.get(model.DATA_KEY, "{}")),
+           tuple((role, image.as_pointer(), image.filepath or image.name) for role, image in images.items()))
+    if cache is not None and key in cache.resolved:
+        cache.stats['material_hits'] += 1
+        return cache.resolved[key]
     data = model.unpack_sources(material)
     if data.get("game") != game:
         raise ValueError(iface_("Material source game differs from the active exporter"))
     if component not in catalogs:
-        catalogs[component] = model.read_evidence(folder, component)
+        catalogs[component] = cache.evidence(folder, component) if cache is not None else model.read_evidence(folder, component)
     current = catalogs[component]
     identities = {role: identity for role, image in images.items()
                   if (identity := model.texture_identity(image.filepath or image.name))}
@@ -61,7 +74,10 @@ def resolve_material_images(material, game, component, folder, catalogs):
         if not identity or identity not in current:
             raise ValueError(iface_("{0}: choose the original texture for {1} in Material Tools").format(material.name, iface_(model.ROLES[role])))
         values.append((identity, image))
-    return tuple(values)
+    result = tuple(values)
+    if cache is not None:
+        cache.resolved[key] = result
+    return result
 
 
 def preflight_materials(context, cfg, game):
@@ -79,7 +95,9 @@ def preflight_materials(context, cfg, game):
         component = model.component_id(obj.name)
         if component is None:
             continue
-        used = {polygon.material_index for polygon in obj.data.polygons}
+        if not _has_assignment_material(obj):
+            continue
+        used = set(export_cache.material_indices(obj.data))
         for index, slot in enumerate(obj.material_slots):
             if index not in used or slot.material is None:
                 continue
@@ -107,19 +125,30 @@ def capture_merger(merger, cfg, game):
         comp = getattr(component, "id", index)
         for temp in component.objects:
             obj = temp.object
+            if not _has_assignment_material(obj):
+                temp.material_draw_segments = ()
+                temp.material_component_id = comp
+                continue
             by_slot = {}
-            indices = array("i", [0]) * len(obj.data.polygons)
-            obj.data.polygons.foreach_get("material_index", indices)
+            indices = export_cache.material_indices(obj.data)
             used_slots = set(indices)
             for slot_id, slot in enumerate(obj.material_slots):
                 if slot_id not in used_slots:
                     continue
                 material = slot.material
                 by_slot[slot_id] = resolve_material_images(material, game, comp, folder, catalogs)
+            signatures = {slot: tuple((identity, image.as_pointer()) for identity, image in values)
+                          for slot, values in by_slot.items()}
+            unique = {signatures.get(slot, ()) for slot in used_slots}
+            if len(unique) <= 1:
+                values = by_slot.get(indices[0], ()) if indices else ()
+                temp.material_draw_segments = ((len(indices) * 3, temp.index_offset, values),) if values else ()
+                temp.material_component_id = comp
+                continue
             segments = []
             for polygon_index, slot_id in enumerate(indices):
                 bindings = by_slot.get(slot_id, ())
-                signature = tuple((identity, image.as_pointer()) for identity, image in bindings)
+                signature = signatures.get(slot_id, ())
                 if segments and segments[-1][3] == signature:
                     segments[-1][0] += 3
                 else:
@@ -152,8 +181,12 @@ def _image_payload(image):
         resource = ini.material_resource_name(filename)
     except ini.BindingError as exc:
         raise ValueError(iface_(exc.message).format(*exc.values)) from exc
-    content = bytes(image.packed_file.data) if image.packed_file else Path(
-        bpy.path.abspath(image.filepath, library=image.library)).read_bytes()
+    cache = export_cache.current()
+    if image.packed_file:
+        content = cache.packed_bytes(image) if cache is not None else bytes(image.packed_file.data)
+    else:
+        path = Path(bpy.path.abspath(image.filepath, library=image.library))
+        content = cache.read(path) if cache is not None else path.read_bytes()
     if not content:
         raise ValueError(iface_("Empty material image: {0}").format(image.name))
     return resource, filename, content
@@ -174,15 +207,22 @@ def _register_payload(payloads, payload_names, filename, content):
 def _validate_payload_destinations(root, payloads):
     """Verify append-only delivery and exact casing before any payload write."""
     existing = set()
+    directories = {}
+    cache = export_cache.current()
     for filename, content in payloads.items():
         destination = root / filename
-        matches = ([entry for entry in destination.parent.iterdir()
-                    if entry.name.casefold() == destination.name.casefold()]
-                   if destination.parent.is_dir() else [])
+        if destination.parent not in directories:
+            entries = {}
+            if destination.parent.is_dir():
+                for entry in destination.parent.iterdir():
+                    entries.setdefault(entry.name.casefold(), []).append(entry)
+            directories[destination.parent] = entries
+        matches = directories[destination.parent].get(destination.name.casefold(), [])
         if not matches:
             continue
         if (len(matches) != 1 or matches[0].name != destination.name
-                or not matches[0].is_file() or matches[0].read_bytes() != content):
+                or not matches[0].is_file()
+                or (cache.read(matches[0]) if cache is not None else matches[0].read_bytes()) != content):
             raise ValueError(iface_("Material image output conflicts with an existing file: {0}").format(str(destination)))
         existing.add(filename)
     return existing
@@ -238,6 +278,7 @@ def _install_game(game, merger_cls, maker_cls, cfg_type, operator_cls, exporter_
     original_write = maker_cls.write
     original_execute = operator_cls.execute
     original_verify = exporter_cls.verify_config
+    original_export = exporter_cls.export_mod
     cfg_type.material_texture_overrides = bpy.props.BoolProperty(
         name="Use Material Textures",
         description="Use semantic texture inputs for each material draw in Slot export; requires automatic material splitting. Original materials are preserved",
@@ -311,8 +352,18 @@ def _install_game(game, merger_cls, maker_cls, cfg_type, operator_cls, exporter_
         if enabled(self.cfg):
             preflight_materials(self.context, self.cfg, game)
 
+    def export_mod(self, *args, **kwargs):
+        if not enabled(self.cfg):
+            return original_export(self, *args, **kwargs)
+        with export_cache.scope() as cache:
+            try:
+                return original_export(self, *args, **kwargs)
+            finally:
+                self.material_cache_report = dict(cache.stats)
+
     exporter_cls.verify_config = verify_config
-    _EXPORT_PATCHES.append((exporter_cls, original_verify))
+    exporter_cls.export_mod = export_mod
+    _EXPORT_PATCHES.append((exporter_cls, original_verify, original_export))
     merger_cls.finalize_temp_objects_stats = finalize_temp_objects_stats
     maker_cls.build_from_template = build_from_template
     maker_cls.write = write
@@ -342,8 +393,9 @@ def remove():
     for module, copy_uv in reversed(_UV_PATCHES):
         module.copy_uv_layer = copy_uv
     _UV_PATCHES.clear()
-    for exporter, verify in reversed(_EXPORT_PATCHES):
+    for exporter, verify, export in reversed(_EXPORT_PATCHES):
         exporter.verify_config = verify
+        exporter.export_mod = export
     _EXPORT_PATCHES.clear()
     for merger, maker, cfg_type, operator, stats, build, write, execute in reversed(_PATCHES):
         merger.finalize_temp_objects_stats = stats

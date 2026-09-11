@@ -146,8 +146,10 @@ def _family_candidate(catalog, candidates, anchors):
 
 
 def infer_bindings(catalog, game, diffuse_identity=""):
-    candidates_by_role = {role: [key for key, row in catalog.items() if role in role_hints(row, game)]
-                          for role in ROLES}
+    candidates_by_role = {role: [] for role in ROLES}
+    for key, row in catalog.items():
+        for role in role_hints(row, game):
+            candidates_by_role[role].append(key)
     diffuse_candidates = candidates_by_role["DIFFUSE"]
     if diffuse_identity not in catalog:
         diffuse_identity = diffuse_candidates[0] if len(diffuse_candidates) == 1 else ""
@@ -196,13 +198,12 @@ def dds_format(path):
 IMAGE_EXTENSIONS = {".dds", ".png", ".jpg", ".jpeg", ".tga", ".bmp"}
 
 
-def read_evidence(folder, component):
-    """Only retained source files participate in authoring; STU stays untouched."""
+def source_snapshot(folder):
+    """Read the source JSON and direct-file index once for one export operation."""
     folder = Path(folder)
     payload = json.loads((folder / "ShaderTextureUsage.json").read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise ValueError("Invalid ShaderTextureUsage.json")
-    catalog = source_catalog(payload, component)
     candidates = sorted((path for path in folder.iterdir()
                          if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS),
                         key=lambda path: path.name.casefold())
@@ -210,6 +211,13 @@ def read_evidence(folder, component):
     by_identity = {}
     for path in candidates:
         by_identity.setdefault(texture_identity(path.name), []).append(path)
+    return payload, by_name, by_identity, {}
+
+
+def read_evidence(folder, component, *, snapshot=None):
+    """Only retained source files participate; UI calls always read fresh evidence."""
+    payload, by_name, by_identity, header_hints = snapshot if snapshot is not None else source_snapshot(folder)
+    catalog = source_catalog(payload, component)
     retained = {}
     for identity, row in catalog.items():
         files = list(by_identity.get(identity, ()))
@@ -226,7 +234,9 @@ def read_evidence(folder, component):
         if not row["formats"]:
             for candidate in files:
                 if candidate.suffix.lower() == ".dds":
-                    hint = dds_format(candidate)
+                    if candidate not in header_hints:
+                        header_hints[candidate] = dds_format(candidate)
+                    hint = header_hints[candidate]
                     if hint and hint not in row["formats"]:
                         row["formats"].append(hint)
         retained[identity] = row

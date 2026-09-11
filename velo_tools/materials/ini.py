@@ -5,6 +5,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 import re
 
+from .routing import SourcePlan
+
 _HEADER = re.compile(r"^\s*\[([^]]+)\]\s*$")
 _RUN = re.compile(r"^\s*run\s*=\s*([^;\s]+)\s*(?:;.*)?$", re.I)
 _SET = re.compile(r"^(\s*)ps-t(\d+)\s*=\s*(?:(?:ref|reference|copy)\s+)?([^;\s]+)", re.I)
@@ -255,48 +257,15 @@ def transform(text, draws, resource_by_identity, resources, *, batch_draws=False
     reverse = {resource.casefold(): identity
                for identity, aliases in resource_by_identity.items()
                for resource in ((aliases,) if isinstance(aliases, str) else aliases)}
-    tokens = {identity: i+1 for i, identity in enumerate(sorted(resource_by_identity))}
-    root_calls = {}
-    reachable = defaultdict(set)
-
-    def walk(name, seen):
-        key = name.casefold()
-        if key in seen or key not in bodies:
-            return
-        seen.add(key)
-        _, start, end = bodies[key]
-        for line in lines[start+1:end]:
-            match = _RUN.match(line)
-            if match:
-                walk(match.group(1), seen)
-
-    for name, start, end in spans:
-        comp_match = _COMPONENT.search(name)
-        comp = int(comp_match.group(1)) if comp_match else None
-        if comp not in required or _ROOT.match(name):
-            continue
-        for index in range(start+1, end):
-            run = _RUN.match(lines[index])
-            root = _ROOT.match(run.group(1)) if run else None
-            if root and int(root.group(1)) == comp:
-                root_calls[index] = comp
-                walk(run.group(1), reachable[comp])
-    occurrences = defaultdict(lambda: defaultdict(set))
-    for comp, section_keys in reachable.items():
-        for key in section_keys:
-            _, start, end = bodies[key]
-            for line in lines[start+1:end]:
-                match = _SET.match(line)
-                if match and (identity := reverse.get(match.group(3).casefold())):
-                    occurrences[comp][identity].add(int(match.group(2)))
-    slots = {comp: sorted({slot for values in occurrence.values() for slot in values})
-             for comp, occurrence in occurrences.items()}
+    wanted = {comp: {identity for draw in draws if draw.component == comp
+                     for segment in draw.segments for identity, _target in segment.replacements}
+              for comp in required}
+    plan = SourcePlan(lines, spans, required, wanted, reverse)
+    occurrences, reachable = plan.occurrences, plan.reachable
     groups = {}
     support = []
     used_resources = set()
-
-    def witness(comp, slot):
-        return f"$material_source_c{comp}_t{slot}"
+    used_backups = set()
 
     def group_for(comp, replacements):
         if not replacements:
@@ -321,21 +290,24 @@ def transform(text, draws, resource_by_identity, resources, *, batch_draws=False
             if not available:
                 raise BindingError("Component {0}: original texture {1} has no safe slot assignment; refresh its source mapping and slot selection", comp, identity)
             used_resources.add(target)
-            for slot in sorted(available):
-                condition = f"if {witness(comp, slot)} == {tokens[identity]}"
-                backup = f"ResourceMaterialBackup{group}T{slot}"
-                apply.extend([condition, f"    {backup} = reference ps-t{slot}",
-                              f"    ps-t{slot} = reference {target}", "endif"])
-                restore.extend([condition, f"    ps-t{slot} = reference {backup}",
-                                f"    {backup} = null", "endif"])
-        backups = sorted({line.strip().split(" =")[0] for line in apply if " = reference ps-t" in line})
+        for condition, assignments in plan.conditions(comp, key[1]):
+            apply.append(f"if {condition}")
+            restore.append(f"if {condition}")
+            for slot, target in assignments:
+                backup = f"ResourceMaterialBackupC{comp}T{slot}"
+                used_backups.add(backup)
+                apply.extend([f"    {backup} = reference ps-t{slot}",
+                              f"    ps-t{slot} = reference {target}"])
+                restore.extend([f"    ps-t{slot} = reference {backup}",
+                                f"    {backup} = null"])
+            apply.append("endif")
+            restore.append("endif")
         support.extend(["", *apply, "", *restore])
-        for backup in backups:
-            support.extend(["", f"[{backup}]"])
         return group
 
     replacements_at = {}
     seen_draws = set()
+    moved_comments = set()
     for name, start, end in spans:
         comp_match = _COMPONENT.search(name)
         if not comp_match:
@@ -358,11 +330,32 @@ def transform(text, draws, resource_by_identity, resources, *, batch_draws=False
             if not reachable.get(comp):
                 raise BindingError("Component {0} has no validated slot setter", comp)
             seen_draws.add(key)
+            comment_end = index
+            while comment_end > start+1 and not lines[comment_end-1].strip():
+                comment_end -= 1
+            guarded_label = (comment_end > start+1 and re.match(
+                r"^\s*if\s+\$draw_\w+\s*(?:;.*)?$", lines[comment_end-1], re.I))
+            if guarded_label:
+                comment_end -= 1
+            comment_start = comment_end
+            while comment_start > start+1:
+                previous = lines[comment_start-1].strip()
+                if previous and not previous.startswith(";"):
+                    break
+                comment_start -= 1
+            object_comments = [line for line in lines[comment_start:comment_end] if line.strip()]
+            if guarded_label and not any(re.match(r'^\s*;\s*Draw object\b', line, re.I)
+                                         for line in object_comments):
+                object_comments = []
+            if object_comments:
+                moved_comments.update(range(comment_start, comment_end))
+                object_comments = [indent + line.lstrip() for line in object_comments]
             out = []
             for segment in draw.segments:
                 group = group_for(comp, segment.replacements)
                 if group:
                     out.append(f"{indent}run = CommandListApplyMaterial{group}")
+                out.extend(object_comments)
                 local = list(args)
                 local[0], local[offset_index] = str(segment.count), str(segment.offset)
                 out.append(f"{indent}{command} = {', '.join(local)}{comment or ''}")
@@ -372,28 +365,17 @@ def transform(text, draws, resource_by_identity, resources, *, batch_draws=False
     if set(lookup) != seen_draws:
         raise BindingError("Some material draws have no supported INI anchor; custom or cross-scene draw layouts require explicit adaptation")
     output = []
-    current_key = ""
     for index, line in enumerate(lines):
-        header = _HEADER.match(line)
-        if header:
-            current_key = header.group(1).casefold()
-        if index in root_calls:
-            comp = root_calls[index]
-            indent = line[:len(line)-len(line.lstrip())]
-            output.extend(f"{indent}{witness(comp, slot)} = 0" for slot in slots.get(comp, ()))
-        output.extend(replacements_at.get(index, [line]))
+        if index in moved_comments:
+            continue
+        output.extend(plan.before.get(index, ()))
+        output.extend(replacements_at.get(index, [plan.call_replacements.get(index, line)]))
         if index == bodies["constants"][1]:
-            output.extend(f"global {witness(comp, slot)} = 0"
-                          for comp in sorted(slots) for slot in slots[comp])
-        assignment = _SET.match(line)
-        if assignment:
-            indent, slot, resource = assignment.groups()
-            slot = int(slot)
-            for comp in sorted(slots):
-                if slot not in slots[comp]:
-                    continue
-                identity = reverse.get(resource.casefold()) if current_key in reachable[comp] else None
-                output.append(f"{indent}{witness(comp, slot)} = {tokens.get(identity, 0)}")
+            output.extend(plan.declarations)
+        output.extend(plan.after.get(index, ()))
+    for backup in sorted(used_backups):
+        support.extend(["", f"[{backup}]"])
+    support.extend(plan.clones)
     output = _coalesce_transactions(output)
     if batch_draws:
         output = _coalesce_transactions(_hoist_draw_guards(output))
