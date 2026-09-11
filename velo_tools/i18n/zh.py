@@ -1620,3 +1620,10 @@ ZH_TRANSLATIONS.update({
 ZH_TRANSLATIONS.update({
     "Material image {0} has no usable resource name after removing unsupported characters; rename the source image": "贴图 {0} 去除不支持的字符后没有可用的资源节名，请修改源贴图文件名",
 })
+
+
+# Ambiguous source evidence and original-image selection.
+ZH_TRANSLATIONS.update({
+    "Possible role: {0}": "可能用途：{0}",
+    "Multiple originals match this role ({0}); choose an original": "仍有 {0} 张同类原图无法区分，请选择对应原图",
+})

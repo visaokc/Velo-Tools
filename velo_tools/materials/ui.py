@@ -9,6 +9,7 @@ from . import model, nodes, hooks, groups
 from ..i18n import iface_
 
 _ENUM_ITEMS = []
+_ENUM_STRINGS = {}
 _PREVIEWS = None
 _PREVIEW_ICONS = {}
 
@@ -235,18 +236,37 @@ class MATERIAL_OT_refresh_sources(bpy.types.Operator):
 
 
 
+def _retain_enum_items(items):
+    """Blender borrows enum string pointers; retain them until unregistration."""
+    return [tuple(_ENUM_STRINGS.setdefault(value, value) if isinstance(value, str) else value
+                  for value in item) for item in items]
+
+
 def _source_items(self, context):
     global _ENUM_ITEMS
-    material = bpy.data.materials.get(self.material_name) or active_material(context)
+    material = bpy.data.materials.get(getattr(self, "material_name", "")) or (
+        active_material(context) if context is not None else None)
     cached = getattr(self, "catalog_json", "")
     data = json.loads(cached) if cached else (model.unpack_sources(material) if material else {})
     items = [("NONE", iface_("Keep Game Texture"), iface_("Do not override this texture role"), "X", 0),
              ("UNASSIGNED", iface_("Unassigned"), iface_("Clear the original mapping and allow automatic matching on the next refresh"), "LOOP_BACK", 1)]
-    for number, (identity, record) in enumerate(data.get("catalog", {}).items(), 2):
+    role = getattr(self, "role", "")
+    catalog = data.get("catalog", {})
+    game = data.get("game", "ENDFIELD")
+    preferred = data.get("bindings", {}).get(role)
+    entries = list(enumerate(catalog.items(), 2))
+    entries.sort(key=lambda item: (item[1][0] != preferred,
+        role not in model.role_hints(item[1][1], game), item[0]))
+    for number, (identity, record) in entries:
         name = Path(record["names"][0]).name if record.get("names") else identity
-        items.append((identity, name, " / ".join(record.get("formats", ())) + " | " + identity,
-                      _PREVIEW_ICONS.get((material.name, identity), 0), number))
-    _ENUM_ITEMS = items
+        hints = " / ".join(iface_(model.ROLES[key]) for key in model.ROLES
+                           if key in model.role_hints(record, game))
+        description = " / ".join(record.get("formats", ())) + " | " + identity
+        if hints:
+            description = iface_("Possible role: {0}").format(hints) + " | " + description
+        items.append((identity, name, description,
+                      _PREVIEW_ICONS.get((material.name if material else "", identity), 0), number))
+    _ENUM_ITEMS = _retain_enum_items(items)
     return _ENUM_ITEMS
 
 
@@ -507,6 +527,11 @@ class MATERIAL_PT_tools(bpy.types.Panel):
                 operator.role = role
                 if model.inherits_game_source(data, role):
                     box.label(text="Keep Game Texture", icon="INFO")
+                elif not source:
+                    count = sum(role in model.role_hints(record, data.get("game", "ENDFIELD"))
+                                for record in data.get("catalog", {}).values())
+                    if count > 1:
+                        box.label(text=iface_("Multiple originals match this role ({0}); choose an original").format(count), icon="INFO")
                 group_ui.draw_role(box, context, material, role, state)
             layout.label(text="Packed maps are exported unchanged; preview is approximate", icon="INFO")
         except Exception as exc:
@@ -536,3 +561,4 @@ def unregister():
     for cls in reversed(_CLASSES):
         bpy.utils.unregister_class(cls)
     _ENUM_ITEMS.clear()
+    _ENUM_STRINGS.clear()

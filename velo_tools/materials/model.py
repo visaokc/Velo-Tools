@@ -42,11 +42,12 @@ def source_catalog(payload, component):
     catalog = {}
     root = payload.get(f"Component {component}", {})
 
-    def visit(value):
+    def visit(value, path=(), depth_only=False):
         if isinstance(value, list):
-            for child in value:
-                visit(child)
+            for index, child in enumerate(value):
+                visit(child, (*path, str(index)), depth_only)
         elif isinstance(value, dict):
+            depth_only = depth_only or value.get("depth_only") is True
             peers = sorted({str(record.get("hash", "")).lower()
                             for key, record in value.items()
                             if re.fullmatch(r"ps-t\d+", str(key), re.I)
@@ -57,8 +58,14 @@ def source_catalog(payload, component):
                     identity = str(record.get("hash", "")).lower()
                     if record.get("fresh") is False or not re.fullmatch(r"[0-9a-f]{8}", identity):
                         continue
-                    row = catalog.setdefault(identity, {"formats": [], "names": [], "peers": []})
+                    row = catalog.setdefault(identity, {"formats": [], "names": [], "peers": [], "usages": []})
                     row["peers"] = sorted(set(row["peers"]) | set(peers))
+                    usage = {"pass": list(path), "peers": peers, "depth_only": depth_only}
+                    size = _texture_size(record)
+                    if size:
+                        usage["width"], usage["height"] = size
+                    if usage not in row["usages"]:
+                        row["usages"].append(usage)
                     fmt = str(record.get("format", "")).upper().removeprefix("DXGI_FORMAT_")
                     if fmt and fmt not in row["formats"]:
                         row["formats"].append(fmt)
@@ -67,7 +74,7 @@ def source_catalog(payload, component):
                         if name and name not in row["names"]:
                             row["names"].append(name)
                 else:
-                    visit(record)
+                    visit(record, (*path, str(key)), depth_only)
     visit(root)
     return dict(sorted(catalog.items()))
 
@@ -96,18 +103,75 @@ def role_hints(record, game):
     return set()
 
 
+def _texture_size(record):
+    """Unknown dimensions are absence of evidence, never an inferred size."""
+    values = (record.get("width"), record.get("height"))
+    if all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in values):
+        return values
+    return None
+
+
+def _family_candidate(catalog, candidates, anchors):
+    """Resolve a unique co-used map, without slot or shader-specific rules.
+
+    An isolated role in a color pass and an exact atlas-size match are two
+    independent hints. When both exist they must agree; ties stay unresolved.
+    Unioned peer lists alone cannot prove which pass supplied the evidence.
+    """
+    candidates, anchors = set(candidates), set(anchors)
+    if len(candidates) < 2 or not anchors or not anchors.issubset(catalog):
+        return ""
+    anchor_sizes = {}
+    for anchor in anchors:
+        per_pass = {}
+        for usage in catalog[anchor].get("usages", ()):
+            if not usage.get("depth_only") and (size := _texture_size(usage)):
+                per_pass.setdefault(tuple(usage["pass"]), set()).add(size)
+        anchor_sizes[anchor] = per_pass
+    isolated, sized = set(), set()
+    for identity in candidates:
+        for usage in catalog[identity].get("usages", ()):
+            peers = set(usage.get("peers", ())) & catalog.keys()
+            if usage.get("depth_only") or not anchors.issubset(peers):
+                continue
+            size = _texture_size(usage)
+            sizes = [anchor_sizes[anchor].get(tuple(usage["pass"]), set()) for anchor in anchors]
+            mismatch = size is not None and any(values and values != {size} for values in sizes)
+            if peers & candidates == {identity} and not mismatch:
+                isolated.add(identity)
+            if size is not None and all(values == {size} for values in sizes):
+                sized.add(identity)
+    supported = isolated & sized if isolated and sized else isolated or sized
+    return next(iter(supported)) if len(supported) == 1 else ""
+
+
 def infer_bindings(catalog, game, diffuse_identity=""):
-    result = {}
+    candidates_by_role = {role: [key for key, row in catalog.items() if role in role_hints(row, game)]
+                          for role in ROLES}
+    diffuse_candidates = candidates_by_role["DIFFUSE"]
+    if diffuse_identity not in catalog:
+        diffuse_identity = diffuse_candidates[0] if len(diffuse_candidates) == 1 else ""
+        normals = candidates_by_role["NORMAL"]
+        if not diffuse_identity and len(normals) == 1:
+            diffuse_identity = _family_candidate(catalog, diffuse_candidates, normals)
+    result = {"DIFFUSE": diffuse_identity} if diffuse_identity in catalog else {}
     for role in ROLES:
-        candidates = [key for key, row in catalog.items() if role in role_hints(row, game)]
-        if role != "DIFFUSE" and diffuse_identity in catalog:
+        if role == "DIFFUSE":
+            continue
+        candidates = candidates_by_role[role]
+        if diffuse_identity in catalog:
             related = [key for key in candidates if diffuse_identity in catalog[key].get("peers", ())]
             if related or any("peers" in row for row in catalog.values()):
                 candidates = related
-        if role == "DIFFUSE" and diffuse_identity in catalog:
-            result[role] = diffuse_identity
-        elif len(candidates) == 1:
+        if len(candidates) == 1:
             result[role] = candidates[0]
+        elif diffuse_identity in catalog and role in {"NORMAL", "PACKED_PBR", "FTM"}:
+            anchors = [diffuse_identity]
+            if role != "NORMAL" and result.get("NORMAL"):
+                anchors.append(result["NORMAL"])
+            selected = _family_candidate(catalog, candidates, anchors)
+            if selected:
+                result[role] = selected
     return result
 
 
@@ -168,6 +232,8 @@ def read_evidence(folder, component):
         retained[identity] = row
     for row in retained.values():
         row["peers"] = [identity for identity in row["peers"] if identity in retained]
+        for usage in row.get("usages", ()):
+            usage["peers"] = [identity for identity in usage["peers"] if identity in retained]
     return retained
 
 
@@ -237,7 +303,9 @@ def resolve_sources(game, component, catalog, previous=None, image_identities=No
                 bindings.pop(role, None)
                 if requested:
                     omitted[role] = requested
-        elif role not in bindings and requested and requested not in catalog:
+        elif requested and requested not in catalog:
+            # Removing the chosen original must not promote an auxiliary map.
+            bindings.pop(role, None)
             omitted[role] = requested
     result = json.loads(pack_sources(game, component, catalog, bindings))
     result["manual"] = manual
