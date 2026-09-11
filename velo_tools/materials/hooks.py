@@ -75,6 +75,7 @@ def preflight_materials(context, cfg, game):
     validate_mode(cfg, game, context.scene)
     folder = Path(bpy.path.abspath(cfg.object_source_folder))
     catalogs, seen, checked_images = {}, set(), set()
+    payloads, payload_names = {}, {}
     for obj in _iter_export_meshes(context, cfg):
         component = model.component_id(obj.name)
         if component is None:
@@ -89,12 +90,13 @@ def preflight_materials(context, cfg, game):
             if key not in seen:
                 seen.add(key)
                 values = resolve_material_images(slot.material, game, target, folder, catalogs)
-                if getattr(cfg, "material_texture_batching", True):
-                    for _identity, image in values:
-                        pointer = image.as_pointer()
-                        if pointer not in checked_images:
-                            _image_payload(image)
-                            checked_images.add(pointer)
+                for _identity, image in values:
+                    pointer = image.as_pointer()
+                    if pointer not in checked_images:
+                        _resource, filename, content = _image_payload(image)
+                        _register_payload(payloads, payload_names, filename, content)
+                        checked_images.add(pointer)
+    _validate_payload_destinations(Path(bpy.path.abspath(cfg.mod_output_folder)), payloads)
 
 
 def capture_merger(merger, cfg, game):
@@ -127,23 +129,69 @@ def capture_merger(merger, cfg, game):
             temp.material_component_id = comp
 
 
+def _image_source_basename(image):
+    """Recover the file basename without Blender's datablock duplicate suffix."""
+    source_name = str(getattr(image, "filepath_raw", "") or image.filepath or image.name)
+    basename = source_name.replace("\\", "/").rsplit("/", 1)[-1]
+    while Path(basename).suffix.lower() not in ini.MATERIAL_IMAGE_EXTENSIONS:
+        stem, separator, duplicate = basename.rpartition(".")
+        if not separator or len(duplicate) != 3 or not duplicate.isdigit():
+            break
+        basename = stem
+    return basename
+
+
 def _image_payload(image):
     if image.source != "FILE" or image.is_dirty:
         raise ValueError(iface_("{0}: save and reload the image before export; generated, tiled, animated, and unsaved images are not exported").format(image.name))
-    suffix = Path(image.filepath or image.name).suffix.lower()
-    if suffix not in {".dds", ".png", ".jpg", ".jpeg", ".tga", ".bmp"}:
+    basename = _image_source_basename(image)
+    suffix = Path(basename).suffix.lower()
+    if suffix not in ini.MATERIAL_IMAGE_EXTENSIONS:
         raise ValueError(iface_("Unsupported material image file type: {0}").format(suffix))
+    filename = f"Textures/{basename}"
+    if not ini.safe_material_resource_filename(filename):
+        raise ValueError(iface_("Unsafe material resource filename"))
     content = bytes(image.packed_file.data) if image.packed_file else Path(
         bpy.path.abspath(image.filepath, library=image.library)).read_bytes()
     if not content:
         raise ValueError(iface_("Empty material image: {0}").format(image.name))
     digest = hashlib.sha256(content).hexdigest()[:24]
-    return f"ResourceMaterialTexture{digest}", f"Textures/material_{digest}{suffix}", content
+    name_digest = hashlib.sha256(filename.encode("utf-8")).hexdigest()[:8]
+    return f"ResourceMaterialTexture{digest}{name_digest}", filename, content
+
+
+def _register_payload(payloads, payload_names, filename, content):
+    """Register one exact basename and reject Windows-equivalent collisions."""
+    folded = filename.casefold()
+    prior_name = payload_names.get(folded)
+    if prior_name is not None:
+        if prior_name != filename or payloads[prior_name] != content:
+            raise ValueError(iface_("Material image output conflicts with an existing file: {0}").format(filename))
+        return
+    payload_names[folded] = filename
+    payloads[filename] = content
+
+
+def _validate_payload_destinations(root, payloads):
+    """Verify append-only delivery and exact casing before any payload write."""
+    existing = set()
+    for filename, content in payloads.items():
+        destination = root / filename
+        matches = ([entry for entry in destination.parent.iterdir()
+                    if entry.name.casefold() == destination.name.casefold()]
+                   if destination.parent.is_dir() else [])
+        if not matches:
+            continue
+        if (len(matches) != 1 or matches[0].name != destination.name
+                or not matches[0].is_file() or matches[0].read_bytes() != content):
+            raise ValueError(iface_("Material image output conflicts with an existing file: {0}").format(str(destination)))
+        existing.add(filename)
+    return existing
 
 
 def build_material_layer(maker, text, cfg, game):
     validate_mode(cfg, game, getattr(maker, "scene", None))
-    draws, resources, payloads, images = [], {}, {}, {}
+    draws, resources, payloads, payload_names, images = [], {}, {}, {}, {}
     for index, component in enumerate(maker.merged_object.components):
         for temp in component.objects:
             raw = getattr(temp, "material_draw_segments", ())
@@ -160,7 +208,11 @@ def build_material_layer(maker, text, cfg, game):
                     if identity in replacements and replacements[identity] != resource:
                         raise ValueError(iface_("Two semantic inputs replace the same original texture differently"))
                     replacements[identity] = resource
-                    resources[resource], payloads[filename] = filename, content
+                    _register_payload(payloads, payload_names, filename, content)
+                    prior_filename = resources.get(resource)
+                    if prior_filename is not None and prior_filename != filename:
+                        raise ValueError(iface_("Material image output conflicts with an existing file: {0}").format(filename))
+                    resources[resource] = filename
                 segments.append(ini.Segment(count, offset, tuple(sorted(replacements.items()))))
             draws.append(ini.Draw(getattr(temp, "material_component_id", index),
                                   temp.index_count, temp.index_offset, tuple(segments)))
@@ -226,12 +278,10 @@ def _install_game(game, merger_cls, maker_cls, cfg_type, operator_cls, exporter_
         root = Path(ini_path).parent if ini_path is not None else Path(bpy.path.abspath(self.cfg.mod_output_folder))
         created = []
         try:
-            for filename, content in payloads.items():
-                destination = root / filename
-                if destination.exists():
-                    if destination.read_bytes() != content:
-                        raise ValueError(iface_("Material image output conflicts with an existing file: {0}").format(str(destination)))
-                    continue
+            existing = _validate_payload_destinations(root, payloads)
+            pending = [(root / filename, content) for filename, content in payloads.items()
+                       if filename not in existing]
+            for destination, content in pending:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with destination.open("xb") as stream:
                     created.append(destination)

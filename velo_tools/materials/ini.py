@@ -11,6 +11,8 @@ _SET = re.compile(r"^(\s*)ps-t(\d+)\s*=\s*(?:(?:ref|reference|copy)\s+)?([^;\s]+
 _DRAW = re.compile(r"^(\s*)(drawindexed(?:instanced)?)\s*=\s*([^;]+?)(\s*;.*)?$", re.I)
 _COMPONENT = re.compile(r"component[_ ]*(\d+)(?:$|[^0-9])", re.I)
 _ROOT = re.compile(r"^CommandListSetTexturesComponent(\d+)", re.I)
+MATERIAL_IMAGE_EXTENSIONS = frozenset({".dds", ".png", ".jpg", ".jpeg", ".tga", ".bmp"})
+_INVALID_MATERIAL_FILENAME_CHARS = frozenset('<>:"/\\|?*;\x00')
 
 
 class BindingError(ValueError):
@@ -20,6 +22,22 @@ class BindingError(ValueError):
         self.message = message
         self.values = values
         super().__init__(message.format(*values))
+
+
+def safe_material_resource_filename(filename):
+    """Accept one exact basename under Textures without rewriting it."""
+    prefix = "Textures/"
+    if not isinstance(filename, str) or not filename.startswith(prefix):
+        return False
+    basename = filename[len(prefix):]
+    if (not basename or basename in {".", ".."} or basename != basename.strip()
+            or basename.endswith(".")):
+        return False
+    if any(ord(char) < 32 or char in _INVALID_MATERIAL_FILENAME_CHARS
+           for char in basename):
+        return False
+    dot = basename.rfind(".")
+    return dot > 0 and basename[dot:].lower() in MATERIAL_IMAGE_EXTENSIONS
 
 
 @dataclass(frozen=True)
@@ -334,7 +352,7 @@ def transform(text, draws, resource_by_identity, resources, *, batch_draws=False
         output = _coalesce_transactions(_hoist_draw_guards(output))
     for name in sorted(used_resources):
         filename = resources[name]
-        if not re.fullmatch(r"Textures/material_[a-f0-9]{24}\.[a-z0-9]+", filename):
+        if not safe_material_resource_filename(filename):
             raise BindingError("Unsafe material resource filename")
         support.extend(["", f"[{name}]", f"filename = {filename}"])
     return "\n".join(output + support).rstrip() + "\n", {"groups": len(groups), "draws": len(seen_draws)}
