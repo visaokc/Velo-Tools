@@ -53,7 +53,7 @@ def connected_images(material):
 def image_key(image):
     if image is None:
         return None
-    if image.source == "FILE" and image.filepath and not image.packed_file:
+    if image.source == "FILE" and image.filepath and not image.is_dirty:
         return os.path.normcase(str(Path(bpy.path.abspath(image.filepath, library=image.library)).resolve()))
     return ("image", image.as_pointer())
 
@@ -96,29 +96,142 @@ def shader_group():
     return tree
 
 
+def _group_socket(sockets, reference):
+    return next((socket for socket in sockets if socket.identifier == reference.identifier),
+                sockets.get(reference.name))
+
+
+def _diffuse_reference(material):
+    """Trace only active base-color paths, including nested shader groups."""
+    if not material or not material.use_nodes or not material.node_tree:
+        return None
+    tree = material.node_tree
+    assignment = assignment_node(material)
+    if assignment:
+        socket = assignment.inputs["Diffuse"]
+        seen = set()
+        while socket.is_linked:
+            if socket.as_pointer() in seen:
+                return None
+            seen.add(socket.as_pointer())
+            link = socket.links[0]
+            if link.from_node.type == "TEX_IMAGE" and link.from_node.image:
+                return link.from_node, ()
+            if link.from_node.type != "REROUTE":
+                return None
+            socket = link.from_node.inputs[0]
+        return None
+    mmd = next((node for node in tree.nodes if node.type == "TEX_IMAGE"
+                and node.name.lower() == "mmd_base_tex" and node.image), None)
+    if mmd:
+        return mmd, ()
+    found, visited = [], set()
+
+    def input_links(socket, stack, mode):
+        if socket:
+            for link in socket.links:
+                output(link.from_socket, stack, mode)
+
+    def output(socket, stack, mode):
+        key = (socket.as_pointer(), tuple(group.as_pointer() for group in stack), mode)
+        if key in visited or len(visited) >= 512:
+            return
+        visited.add(key)
+        node = socket.node
+        if node.type == "GROUP" and node.node_tree:
+            if node in stack:
+                return
+            out = next((item for item in node.node_tree.nodes
+                        if item.type == "GROUP_OUTPUT" and item.is_active_output), None)
+            if out:
+                input_links(_group_socket(out.inputs, socket), stack + (node,), mode)
+        elif node.type == "GROUP_INPUT" and stack:
+            input_links(_group_socket(stack[-1].inputs, socket), stack[:-1], mode)
+        elif node.type == "REROUTE":
+            input_links(node.inputs[0], stack, mode)
+        elif mode == "shader":
+            color = node.inputs.get("Base Color") if node.type == "BSDF_PRINCIPLED" else (
+                node.inputs.get("Color") if node.type == "BSDF_DIFFUSE" else None)
+            if color:
+                input_links(color, stack, "color")
+            elif node.type in {"MIX_SHADER", "ADD_SHADER"}:
+                for value in node.inputs:
+                    if value.type == "SHADER":
+                        input_links(value, stack, mode)
+        elif node.type == "TEX_IMAGE" and node.image and socket.name == "Color":
+            found.append((node, stack))
+        else:
+            # Do not mistake a factor, roughness or normal-map input for diffuse.
+            names = {"Color", "Color1", "Color2", "A", "B", "Image"}
+            for value in node.inputs:
+                if value.name in names and value.type == "RGBA" and not value.is_unavailable:
+                    input_links(value, stack, "color")
+
+    for node in tree.nodes:
+        if node.type == "OUTPUT_MATERIAL" and node.is_active_output:
+            input_links(node.inputs.get("Surface"), (), "shader")
+    if not found:
+        images = [node for node in tree.nodes if node.type == "TEX_IMAGE" and node.image]
+        return (images[0], ()) if len(images) == 1 else None
+    keys = {image_key(node.image) for node, _stack in found}
+    return found[0] if len(keys) == 1 else None
+
+
 def _old_diffuse(material):
-    if material.use_nodes and material.node_tree:
-        nodes = material.node_tree.nodes
-        for node in nodes:
-            if node.type == "TEX_IMAGE" and node.name.lower() == "mmd_base_tex" and node.image:
-                return node
-        outputs = [n for n in nodes if n.type == "OUTPUT_MATERIAL" and n.is_active_output]
-        for output in outputs:
-            for link in output.inputs["Surface"].links:
-                shader = link.from_node
-                if shader.type == "BSDF_PRINCIPLED":
-                    socket = shader.inputs["Base Color"]
-                    while socket.is_linked:
-                        source = socket.links[0].from_node
-                        if source.type == "TEX_IMAGE":
-                            return source
-                        if source.type != "REROUTE":
-                            break
-                        socket = source.inputs[0]
-        images = [n for n in nodes if n.type == "TEX_IMAGE" and n.image]
-        if len(images) == 1:
-            return images[0]
-    return None
+    found = _diffuse_reference(material)
+    return found[0] if found else None
+
+
+def diffuse_image(material):
+    found = _diffuse_reference(material)
+    return found[0].image if found else None
+
+
+def _flatten_image_branch(reference, target_tree):
+    """Copy a nested image/vector branch without mutating shared node groups."""
+    source, stack = reference
+    copied = {}
+
+    def copy_output(socket, groups):
+        node = socket.node
+        if node.type == "GROUP" and node.node_tree:
+            if node in groups:
+                raise ValueError(iface_("Cyclic texture connection"))
+            out = next((item for item in node.node_tree.nodes if item.type == "GROUP_OUTPUT" and item.is_active_output), None)
+            inner = _group_socket(out.inputs, socket) if out else None
+            if inner and inner.is_linked:
+                return copy_output(inner.links[0].from_socket, groups + (node,))
+            raise ValueError(iface_("Bake the nested diffuse vector input before initializing this material"))
+        if node.type == "GROUP_INPUT" and groups:
+            outer = _group_socket(groups[-1].inputs, socket)
+            if outer and outer.is_linked:
+                return copy_output(outer.links[0].from_socket, groups[:-1])
+            raise ValueError(iface_("Bake the nested diffuse vector input before initializing this material"))
+        key = (node.as_pointer(), tuple(group.as_pointer() for group in groups))
+        if key not in copied:
+            clone = target_tree.nodes.new(node.bl_idname)
+            copied[key] = clone
+            for prop in node.bl_rna.properties:
+                if prop.is_readonly or prop.identifier in {"rna_type", "name", "parent", "select", "location"}:
+                    continue
+                if prop.type not in {"BOOLEAN", "INT", "FLOAT", "STRING", "ENUM"}:
+                    continue
+                try:
+                    setattr(clone, prop.identifier, getattr(node, prop.identifier))
+                except (AttributeError, TypeError):
+                    pass
+            if node.type == "TEX_IMAGE":
+                clone.image = node.image
+            for old_socket, new_socket in zip(node.inputs, clone.inputs):
+                if hasattr(old_socket, "default_value"):
+                    new_socket.default_value = old_socket.default_value
+                if old_socket.is_linked:
+                    target_tree.links.new(copy_output(old_socket.links[0].from_socket, groups), new_socket)
+        output_index = list(node.outputs).index(socket)
+        return copied[key].outputs[output_index]
+
+    return copy_output(source.outputs["Color"], stack).node
+
 
 
 def initialize_copy(material, game, component, catalog):
@@ -127,7 +240,10 @@ def initialize_copy(material, game, component, catalog):
     try:
         result.use_nodes = True
         tree = result.node_tree
-        diffuse = _old_diffuse(result)
+        reference = _diffuse_reference(result)
+        diffuse = reference[0] if reference else None
+        if reference and reference[1]:
+            diffuse = _flatten_image_branch(reference, tree)
         shader = next((node for node in tree.nodes if node.type == "BSDF_PRINCIPLED"), None)
         base_color = tuple(shader.inputs["Base Color"].default_value) if shader else tuple(material.diffuse_color)
         alpha = shader.inputs["Alpha"].default_value if shader else material.diffuse_color[3]
@@ -167,11 +283,9 @@ def initialize_copy(material, game, component, catalog):
             if use_alpha:
                 tree.links.new(diffuse.outputs["Alpha"], assignment.inputs["Alpha"])
             identity = model.texture_identity(diffuse.image.filepath or diffuse.image.name)
-        result[model.DATA_KEY] = model.pack_sources(
-            game, component, catalog, model.infer_bindings(catalog, game, identity))
-        data = model.unpack_sources(result)
-        data["confirmed"] = ["DIFFUSE"] if identity and identity in catalog else []
-        result[model.DATA_KEY] = json.dumps(data)
+        data = model.resolve_sources(game, component, catalog,
+                                     image_identities={"DIFFUSE": identity} if identity else {})
+        result[model.DATA_KEY] = json.dumps(data, sort_keys=True)
         result["material_source_backup"] = material.name
         return result
     except Exception:

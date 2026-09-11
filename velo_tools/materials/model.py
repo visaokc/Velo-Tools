@@ -129,28 +129,47 @@ def dds_format(path):
             b"BC5U": "BC5_UNORM", b"BC5S": "BC5_SNORM"}.get(fourcc, "")
 
 
+IMAGE_EXTENSIONS = {".dds", ".png", ".jpg", ".jpeg", ".tga", ".bmp"}
+
+
 def read_evidence(folder, component):
-    path = Path(folder) / "ShaderTextureUsage.json"
-    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    """Only retained source files participate in authoring; STU stays untouched."""
+    folder = Path(folder)
+    payload = json.loads((folder / "ShaderTextureUsage.json").read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise ValueError("Invalid ShaderTextureUsage.json")
     catalog = source_catalog(payload, component)
-    # Display actual extracted filenames even when STU omits asset-name evidence.
-    for candidate in Path(folder).iterdir():
-        if not candidate.is_file() or candidate.suffix.lower() not in {".dds", ".png", ".jpg", ".jpeg", ".tga", ".bmp"}:
+    candidates = sorted((path for path in folder.iterdir()
+                         if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS),
+                        key=lambda path: path.name.casefold())
+    by_name = {path.name.casefold(): path for path in candidates}
+    by_identity = {}
+    for path in candidates:
+        by_identity.setdefault(texture_identity(path.name), []).append(path)
+    retained = {}
+    for identity, row in catalog.items():
+        files = list(by_identity.get(identity, ()))
+        for name in row["names"]:
+            # A recorded file must still live directly in this source folder.
+            basename = str(name).replace("\\", "/").rsplit("/", 1)[-1]
+            candidate = by_name.get(basename.casefold())
+            if candidate and candidate not in files and texture_identity(candidate.name) in ("", identity):
+                files.append(candidate)
+        if not files:
             continue
-        identity = texture_identity(candidate.name)
-        row = catalog.get(identity)
-        if row is None:
-            continue
-        if candidate.name not in row["names"]:
-            row["names"].append(candidate.name)
-        # Extraction evidence wins over a subsequently re-saved DDS format.
-        if not row["formats"] and candidate.suffix.lower() == ".dds":
-            hint = dds_format(candidate)
-            if hint:
-                row["formats"] = [hint]
-    return catalog
+        row["files"] = sorted(path.name for path in files)
+        row["names"] = list(dict.fromkeys(row["files"] + row["names"]))
+        if not row["formats"]:
+            for candidate in files:
+                if candidate.suffix.lower() == ".dds":
+                    hint = dds_format(candidate)
+                    if hint and hint not in row["formats"]:
+                        row["formats"].append(hint)
+        retained[identity] = row
+    for row in retained.values():
+        row["peers"] = [identity for identity in row["peers"] if identity in retained]
+    return retained
+
 
 
 def catalog_fingerprint(catalog):
@@ -161,7 +180,7 @@ def catalog_fingerprint(catalog):
 def pack_sources(game, component, catalog, bindings):
     return json.dumps({"version": SCHEMA, "game": game, "component": component,
                        "catalog": catalog, "fingerprint": catalog_fingerprint(catalog),
-                       "bindings": bindings}, sort_keys=True)
+                       "bindings": bindings, "manual": {}, "omitted": {}}, sort_keys=True)
 
 
 def unpack_sources(material):
@@ -169,3 +188,60 @@ def unpack_sources(material):
     if value and value.get("version") != SCHEMA:
         raise ValueError("Unsupported material texture schema")
     return value
+
+
+def resolve_sources(game, component, catalog, previous=None, image_identities=None, witnesses=None):
+    """Apply unique suggestions immediately, preserving explicit edits and omissions.
+
+    Legacy saved bindings cannot be distinguished from manual edits, so migrate
+    them conservatively. No confirmation state is required or written.
+    """
+    previous = previous or {}
+    same_scope = previous.get("game") == game and previous.get("component") == component
+    old = previous if same_scope else {}
+    manual = dict(old.get("manual", old.get("bindings", {})))
+    manual = {role: identity for role, identity in manual.items() if role in ROLES}
+    image_identities = image_identities or {}
+    witnesses = witnesses or {}
+    old_bindings = old.get("bindings", {})
+    diffuse = manual.get("DIFFUSE") or image_identities.get("DIFFUSE") or old_bindings.get("DIFFUSE", "")
+    if diffuse not in catalog:
+        choices = set(witnesses.get("DIFFUSE", ())) & catalog.keys()
+        diffuse = next(iter(choices)) if len(choices) == 1 else ""
+    bindings = infer_bindings(catalog, game, diffuse)
+    for role in ROLES:
+        direct = image_identities.get(role)
+        candidates = set(witnesses.get(role, ())) & catalog.keys()
+        if direct in catalog:
+            bindings[role] = direct
+        elif role not in bindings and len(candidates) == 1:
+            bindings[role] = next(iter(candidates))
+    # Changing the diffuse witness changes the associated material map family.
+    diffuse = manual.get("DIFFUSE", bindings.get("DIFFUSE", ""))
+    if diffuse in catalog:
+        associated = infer_bindings(catalog, game, diffuse)
+        for role in ROLES:
+            if role not in manual and role not in image_identities and role not in witnesses:
+                bindings.pop(role, None)
+                if role in associated:
+                    bindings[role] = associated[role]
+    omitted = {}
+    for role in ROLES:
+        requested = manual.get(role, old_bindings.get(role, old.get("omitted", {}).get(role)))
+        if role in manual:
+            if requested in catalog:
+                bindings[role] = requested
+            else:
+                bindings.pop(role, None)
+                if requested:
+                    omitted[role] = requested
+        elif role not in bindings and requested and requested not in catalog:
+            omitted[role] = requested
+    result = json.loads(pack_sources(game, component, catalog, bindings))
+    result["manual"] = manual
+    result["omitted"] = omitted
+    return result
+
+
+def inherits_game_source(data, role):
+    return role in data.get("omitted", {}) or data.get("manual", {}).get(role) == ""

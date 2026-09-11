@@ -66,11 +66,14 @@ def capture_merger(merger, cfg, game):
                 if comp not in catalogs:
                     catalogs[comp] = model.read_evidence(folder, comp)
                 current = catalogs[comp]
+                identities = {role: identity for role, image in images.items()
+                              if (identity := model.texture_identity(image.filepath or image.name))}
+                data = model.resolve_sources(game, comp, current, data, identities)
                 values = []
                 for role, image in images.items():
                     identity = data.get("bindings", {}).get(role, "")
-                    if role not in data.get("confirmed", ()):
-                        raise ValueError(iface_("{0}: confirm the suggested original texture mapping before export").format(material.name))
+                    if model.inherits_game_source(data, role):
+                        continue
                     if not identity or identity not in current:
                         raise ValueError(iface_("{0}: choose the original texture for {1} in Material Tools").format(material.name, iface_(model.ROLES[role])))
                     values.append((identity, image))

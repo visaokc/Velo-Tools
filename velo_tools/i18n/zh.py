@@ -1527,3 +1527,27 @@ ZH_TRANSLATIONS.update(
                                                                                                                      '插入位置；自定义或跨场景绘制布局需要单独适配',
  'Unsafe material resource filename': '材质资源文件名不安全'}
 )
+
+# Confirmation-free material mapping and diffuse propagation.
+ZH_TRANSLATIONS.update({
+    "Re-read retained source images and selected diffuse-image matches; apply unique mappings immediately, preserve manual edits, and omit removed originals": "重新读取源目录中保留的贴图及选中材质的同漫反射身份；唯一映射立即生效，保留手动修改并忽略已移除原图",
+    "Find the source and all matching diffuse images across selected material slots, copy other maps and automatically resolve each Component's original identities; the active configured material takes priority": "遍历选中物体的材质槽，找到同漫反射材质并传播其它贴图，自动解析各 Component 的原图身份；优先使用已配置的活动材质",
+    "Replace populated non-diffuse inputs; otherwise only fill empty inputs. Source mappings are refreshed in both modes": "覆盖已连接的非漫反射输入；关闭时仅填空。两种模式都会刷新原图映射",
+    "Source mapping updated: {0} assigned, {1} removed originals ignored": "原图映射已更新：已指定 {0} 项，忽略 {1} 项已移除原图",
+    "Source {0}: matched {1} materials, connected {2} maps, refreshed {3} mappings, {4} unresolved roles": "来源 {0}：匹配 {1} 个材质，连接 {2} 张贴图，刷新 {3} 份映射，{4} 个用途待指定",
+    "Mappings apply automatically; edit incorrect sources directly": "映射自动生效；识别不对时直接修改原图",
+    "Removed source files are excluded from mapping": "源目录已移除的贴图不参与映射",
+    "Keep Game Texture": "保留游戏贴图",
+    "Do not override this texture role": "不替换此用途，保留游戏原有贴图",
+    "Bake the nested diffuse vector input before initializing this material": "初始化前，请先烘焙此嵌套漫反射的向量输入",
+    "Several configured materials are selected; make the intended source material active": "选中了多份不同的已配置材质，请将要作为来源的材质设为活动材质",
+    "Connect a diffuse image and at least one other texture on a source material before propagation": "传播前，请为一份来源材质连接漫反射和至少一张其它用途的贴图",
+    "No selected target uses the source diffuse image": "选中目标中没有使用来源漫反射的材质",
+    "Matching materials are already up to date; enable Replace Existing Connections to replace populated inputs": "匹配材质已是最新状态；需要覆盖已有连线时开启“覆盖已有连接”",
+    "Propagation uses the active configured material or a unique selected source": "优先使用已配置的活动材质，否则寻找选中范围内唯一的来源"
+})
+
+ZH_TRANSLATIONS.update({
+    "Initialized {0} materials, refreshed {1} mappings; originals retained as backups": "已初始化 {0} 个材质，刷新 {1} 份映射；原材质已保留为备份",
+    "No retained source images; check the source folder or keep game textures": "没有保留的原图；请检查源目录，或保留游戏贴图"
+})
