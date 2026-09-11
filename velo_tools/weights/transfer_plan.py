@@ -31,44 +31,21 @@ def supported_field(obj, weights, matched, seeds):
     return values
 
 
-def mirrored_field(obj, weights):
-    """Share one primary value across reciprocal, coincident mirror buckets."""
-    from mathutils import Vector, kdtree
-    from . import algorithms
-    tolerance = max(algorithms._bbox_diagonal_local(obj) * .0001, .000001)
-    buckets = list(algorithms._bucket_vertices_by_coordinate(obj, tolerance).values())
-    centers = [sum((obj.data.vertices[i].co for i in bucket), Vector()) / len(bucket) for bucket in buckets]
-    values = [float(np.mean(np.asarray(weights)[bucket])) for bucket in buckets]
-    tree = kdtree.KDTree(len(buckets))
-    for i, center in enumerate(centers):
-        tree.insert(center, i)
-    tree.balance()
-    partners = np.full(len(buckets), -1, dtype=int)
-    for i, center in enumerate(centers):
-        _, partner, distance = tree.find(Vector((-center.x, center.y, center.z)))
-        if partner is not None and distance <= tolerance:
-            partners[i] = partner
-    proposed = np.zeros((len(weights), 2))
-    labels = np.arange(len(weights) * 2).reshape(-1, 2) + len(buckets)
-    matched_vertices = 0
-    coincident_buckets = 0
-    unmatched_vertices = 0
-    for i, bucket in enumerate(buckets):
-        proposed[bucket, 0] = values[i]
-        labels[bucket, 0] = i
-        partner = partners[i]
-        if partner >= 0 and partners[partner] == i:
-            proposed[bucket, 1] = values[partner]
-            labels[bucket, 1] = partner
-            if values[partner] >= EPSILON:
-                matched_vertices += len(bucket)
-                coincident_buckets += int(len(bucket) > 1)
-        elif values[i] >= EPSILON:
-            unmatched_vertices += len(bucket)
+def mirrored_field(obj, weights, *, mirror_weights=None):
+    """Preserve the primary field and copy only resolved, layer-safe mirrors."""
+    from .symmetry import object_mirror_candidates, mirrored_values
+    weights = np.asarray(weights).reshape(-1)
+    _, candidates, _ = object_mirror_candidates(obj)
+    mirrored, sources, ambiguous = mirrored_values(weights, candidates, fallback=mirror_weights)
+    proposed = np.column_stack((weights, mirrored))
+    labels = np.column_stack((np.arange(len(weights)), np.arange(len(weights), 2 * len(weights))))
+    resolved = sources >= 0
+    labels[resolved, 1] = sources[resolved]
     return proposed, labels, {
-        'matched_vertices': matched_vertices,
-        'coincident_buckets': coincident_buckets,
-        'unmatched_vertices': unmatched_vertices,
+        'matched_vertices': int(np.count_nonzero(resolved & (mirrored >= EPSILON))),
+        'coincident_buckets': 0,
+        'unmatched_vertices': int(np.count_nonzero(~resolved & (weights >= EPSILON))),
+        'ambiguous_vertices': len(ambiguous),
     }
 
 

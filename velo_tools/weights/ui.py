@@ -247,6 +247,12 @@ class VELO_PT_weight_postprocess(bpy.types.Panel):
             and getattr(active, "mode", None) == 'EDIT'
         )
         repair_row.operator("velo.weight_normalize_selected_vertices", icon='MOD_VERTEX_WEIGHT')
+        col.separator()
+        col.prop(settings, 'selected_mirror_direction', expand=True)
+        mirror_row = col.row(align=True)
+        mirror_row.enabled = repair_row.enabled
+        op = mirror_row.operator('velo.weight_mirror_selected_vertices', icon='MOD_MIRROR')
+        op.direction = settings.selected_mirror_direction
 
 
 class VELO_PT_weight_advanced(bpy.types.Panel):

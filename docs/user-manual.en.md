@@ -265,7 +265,7 @@ Both engines stage only the receiving field and its strict mirror. Optional smoo
 
 All other groups, locked or unlocked, keep their exact weights and memberships. Their totals and influence counts never reduce, amplify, or block the sampled receiving field. Donors are not needed, and no remainder is moved into the receiver. A receiving group that is itself locked still requires an explicit unlock before replacement.
 
-The mirror is derived from the authoritative side rather than independently sampled. Coincident vertices share bucket values; only reciprocal mirror matches are copied, and missing reciprocal matches are reported.
+The mirror is derived from the authoritative side rather than independently sampled. Nearby mesh layers are matched separately without coordinate-grid averaging, and the primary samples stay unchanged. Exact coincident vertices use topology when it distinguishes them; conflicting unresolved samples are not averaged. Missing or ambiguous matches preserve existing destination weights and are reported.
 
 Working totals may be below or above one, and vertices may temporarily exceed the final influence limit. Normalization and group-count cleanup are separate, explicit operations after the sequence, even if an older scene saved automatic post-normalization as enabled. The complete receiving write is verified against its plan, and failures restore exact original memberships and lock flags. Successful recipients can still be automatically locked.
 
@@ -276,6 +276,10 @@ Use **镜像映射组 (Mirror Mapping Groups)** to store manual left/right pairs
 Use **权重组转移 (Weight-Group Transfer)** to move one group's weights into another or to merge mapping rows that share one target.
 
 In Edit Mode, **按比例规格化选中顶点 (Normalize Selected Vertices Proportionally)** first applies the requested influence limit and then proportionally normalizes selected vertices. It respects existing locks: explicitly unlock the groups you want included, then restore their locks if desired. It neither creates missing memberships nor automatically unlocks transferred groups. This step rescales retained values; it cannot correct a wrong geometric match or undo smoothing changes.
+
+Below normalization, **Mirror selected vertex weights** repairs existing asymmetry. Select either the healthy vertices or just the damaged destination vertices; their counterparts do not also need to be selected. Choose **-X to +X** or **+X to -X** in the N panel, then run the action. Directions refer to the mesh's local X axis, not screen left/right. The lower-left **Adjust Last Operation** panel (F9) can change the direction of that operation; Ctrl+Z undoes it.
+
+Only existing reciprocal group pairs with both groups unlocked participate. Neutral, non-sided groups mirror under their own names; manual/MMD/name pairs are supported, while unresolved numeric or missing pairs are skipped. Locked groups, unrelated vertices, source weights, selection, mesh coordinates and ShapeKeys remain unchanged. The action copies weights exactly without normalization or influence limiting; if protected weights make totals asymmetric, they remain protected. Ambiguous coincident layers are skipped rather than blended, and shared mesh data must first be made single-user.
 
 Seam-safe smoothing blocks propagation across UV seams. **限制每顶点组数量 (Limit Groups per Vertex)** affects manual cleanup and standalone mirroring, not source transfer. The **Normalize standalone mirror** option and donor count are in the mirror panel; their existing standalone behavior is unchanged.
 

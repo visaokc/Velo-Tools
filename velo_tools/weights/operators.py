@@ -1007,6 +1007,67 @@ class VELO_OT_weight_normalize_selected_vertices(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+class VELO_OT_weight_mirror_selected_vertices(bpy.types.Operator):
+    bl_idname = 'velo.weight_mirror_selected_vertices'
+    bl_label = 'Mirror selected vertex weights'
+    bl_description = 'Mirror selected pairs across local X using existing group pairs. Only unlocked groups on both sides participate; locked groups, other vertices and geometry stay unchanged. Supports Undo and Adjust Last Operation'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    direction: EnumProperty(
+        name='Mirror Direction',
+        description='Direction in mesh local X. Select either endpoint of a pair; only the destination side is changed',
+        items=(
+            ('NEGATIVE_TO_POSITIVE', '-X to +X', 'Copy weights from negative X to positive X'),
+            ('POSITIVE_TO_NEGATIVE', '+X to -X', 'Copy weights from positive X to negative X'),
+        ),
+        default='NEGATIVE_TO_POSITIVE',
+    )
+
+    @classmethod
+    def poll(cls, context):
+        obj = getattr(context, 'active_object', None)
+        return (getattr(getattr(context, 'scene', None), 'velo_weight_tools', None) is not None
+                and obj is not None and obj.type == 'MESH' and obj.mode == 'EDIT')
+
+    def invoke(self, context, event):
+        if not self.properties.is_property_set('direction'):
+            self.direction = context.scene.velo_weight_tools.selected_mirror_direction
+        return self.execute(context)
+
+    def draw(self, context):
+        self.layout.prop(self, 'direction', expand=True)
+
+    def execute(self, context):
+        from .selected_mirror import mirror_selected
+
+        obj = context.active_object
+        settings = context.scene.velo_weight_tools
+        selected = _selected_edit_vertex_indices(obj)
+        if not selected:
+            self.report({'WARNING'}, iface_('No vertices selected'))
+            return {'CANCELLED'}
+        try:
+            # Object-mode writes are part of this one undoable operator. Do not
+            # change selection, active group, locks or the active ShapeKey.
+            bpy.ops.object.mode_set(mode='OBJECT')
+            with _algo.suppress_native_mirror_flags(obj):
+                result = mirror_selected(context, settings, obj, selected, self.direction)
+            settings.last_report = iface_(
+                'Mirrored {0} vertices; skipped {1} selected vertices, {2} ambiguous vertices and {3} group mappings. Locked weights unchanged'
+            ).format(result['matched_vertices'], result['skipped_vertices'],
+                     result['ambiguous_vertices'], result['skipped_groups'])
+            self.report({'INFO'}, iface_(settings.last_report))
+            return {'FINISHED'}
+        except Exception as exc:
+            settings.last_report = iface_('Selected weight mirror failed: {0}').format(iface_(str(exc)))
+            self.report({'ERROR'}, iface_(settings.last_report))
+            return {'CANCELLED'}
+        finally:
+            if obj.mode != 'EDIT':
+                bpy.ops.object.mode_set(mode='EDIT')
+            _invalidate_weight_overlay_caches(context)
+
+
 class VELO_OT_weight_transfer(bpy.types.Operator):
     bl_idname = "velo.weight_transfer"
     bl_label = 'Execute weight transfer'
@@ -1123,7 +1184,9 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
             labels = None
             proposed = weights[:, None]
             if mirror_enabled:
-                proposed, labels, mirror_stats = transfer_plan.mirrored_field(target, weights)
+                proposed, labels, mirror_stats = transfer_plan.mirrored_field(
+                    target, weights, mirror_weights=_algo.read_group_weights(target, mirror_group),
+                )
                 authority_groups.append(mirror_group)
             transfer_plan.commit_transfer(target, authority_groups, proposed, settings, labels=labels)
 
@@ -1239,6 +1302,8 @@ class VELO_OT_weight_transfer(bpy.types.Operator):
                 bits.append(f"重合点组 {mirror_stats['coincident_buckets']}")
             if mirror_stats.get('unmatched_vertices', 0):
                 bits.append(iface_("No reciprocal mirror vertex: {0} vertices").format(mirror_stats['unmatched_vertices']))
+            if mirror_stats.get('ambiguous_vertices', 0):
+                bits.append(iface_("Ambiguous mirror vertices preserved: {0}").format(mirror_stats['ambiguous_vertices']))
         if locked_groups:
             if len(locked_groups) == 1:
                 bits.append("已锁定承接组")
@@ -1261,6 +1326,7 @@ _classes = (
     VELO_OT_weight_merge_groups,
     VELO_OT_weight_merge_mapping_families,
     VELO_OT_weight_normalize_selected_vertices,
+    VELO_OT_weight_mirror_selected_vertices,
     VELO_OT_weight_transfer,
 )
 

@@ -1,6 +1,22 @@
 """Simplified Chinese catalog for Velo Tools."""
 
 ZH_TRANSLATIONS = {
+    'Mirror Direction': '镜像方向',
+    '-X to +X': '-X 到 +X',
+    '+X to -X': '+X 到 -X',
+    'Copy weights from negative X to positive X': '将负 X 侧权重复制到正 X 侧',
+    'Copy weights from positive X to negative X': '将正 X 侧权重复制到负 X 侧',
+    'Direction in mesh local X. Select either endpoint of a pair; only the destination side is changed': '按网格局部 X 轴选择方向。可选择镜像配对的任意一侧，仅修改目标侧',
+    'Mirror selected vertex weights': '镜像选中顶点权重',
+    'Mirror selected pairs across local X using existing group pairs. Only unlocked groups on both sides participate; locked groups, other vertices and geometry stay unchanged. Supports Undo and Adjust Last Operation': '按局部 X 轴和已有顶点组配对镜像选中顶点；仅处理两端均解锁的顶点组，锁定组、其它顶点和几何不变。支持撤销及调整上一步操作',
+    'No vertices selected': '没有选择任何顶点',
+    'Mirrored {0} vertices; skipped {1} selected vertices, {2} ambiguous vertices and {3} group mappings. Locked weights unchanged': '已镜像 {0} 个顶点；跳过 {1} 个选中顶点、{2} 个歧义顶点和 {3} 个顶点组映射。锁定权重未改动',
+    'Selected weight mirror failed: {0}': '选中顶点权重镜像失败：{0}',
+    'Selected weight editing requires a single-user mesh': '选中顶点权重编辑需要单用户网格，请先将网格数据设为单用户',
+    'Locked or special vertex groups cannot be changed': '不能修改锁定或特殊顶点组',
+    'Mirror weights must be finite and between zero and one': '镜像权重必须为 0 到 1 之间的有限数值',
+    'Selected weight write verification failed': '选中顶点权重写入校验失败',
+    'Ambiguous mirror vertices preserved: {0}': '已保留歧义镜像顶点：{0}',
     'Exact name of the MMD reference mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel. Export mapping still applies to the selected component collection.': '按精确名称引用 MMD 参照网格。无匹配时保留名字，同名网格出现后自动接上；清空可取消绑定。导出映射仍应用于所选组件集合。',
     'Exact name of the target Component mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel.': '按精确名称引用目标 Component 网格。无匹配时保留名字，同名网格出现后自动接上；清空可取消绑定。',
     'Exact name of the weight source mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel.': '按精确名称引用权重来源网格。无匹配时保留名字，同名网格出现后自动接上；清空可取消绑定。',

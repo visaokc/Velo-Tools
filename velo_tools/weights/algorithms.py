@@ -3486,8 +3486,14 @@ def normalize_selected_vertices_proportional(
     if writable_indices:
         changed_columns = np.flatnonzero(np.any(np.abs(normalized - writable_weights) > 1e-8, axis=0))
         if len(changed_columns):
-            changed_indices = [writable_indices[int(column)] for column in changed_columns]
-            write_groups_by_indices(obj, changed_indices, normalized[:, changed_columns])
+            from .selected_mirror import apply_updates
+            updates = {}
+            for column in changed_columns:
+                changed_rows = np.flatnonzero(selected_mask & (normalized[:, column] != writable_weights[:, column]))
+                for row in changed_rows:
+                    value = float(np.float32(normalized[row, column]))
+                    updates[int(row), writable_indices[int(column)]] = value if value > 0. else None
+            apply_updates(obj, updates)
     return NormalizationReport(
         attempted=True,
         changed=bool(len(changed_columns)),

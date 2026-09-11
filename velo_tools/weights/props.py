@@ -922,6 +922,15 @@ class VELO_WeightSettings(bpy.types.PropertyGroup):
         soft_max=8,
         description='Maximum influence count for manual cleanup and standalone mirroring, not for source transfer.',
     )
+    selected_mirror_direction: EnumProperty(
+        name='Mirror Direction',
+        description='Direction in mesh local X. Select either endpoint of a pair; only the destination side is changed',
+        items=(
+            ('NEGATIVE_TO_POSITIVE', '-X to +X', 'Copy weights from negative X to positive X'),
+            ('POSITIVE_TO_NEGATIVE', '+X to -X', 'Copy weights from positive X to negative X'),
+        ),
+        default='NEGATIVE_TO_POSITIVE',
+    )
     normalize_after: BoolProperty(
         name='Perform post-normalization',
         default=True,
