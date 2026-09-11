@@ -1,6 +1,8 @@
 """Simplified Chinese catalog for Velo Tools."""
 
 ZH_TRANSLATIONS = {
+    'Pick Mesh': '吸取网格',
+    'Pick a mesh from the 3D View or Outliner to store its exact name': '用吸管从 3D 视图或大纲视图选择网格，保存其精确名称',
     'Exact name of the MMD reference mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel. Export mapping still applies to the selected component collection.': '按精确名称引用 MMD 参照网格。无匹配时保留名字，同名网格出现后自动接上；清空可取消绑定。导出映射仍应用于所选组件集合。',
     'Exact name of the target Component mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel.': '按精确名称引用目标 Component 网格。无匹配时保留名字，同名网格出现后自动接上；清空可取消绑定。',
     'Exact name of the weight source mesh. Keep this name when no mesh matches, and reconnect when it appears. Clear the field to cancel.': '按精确名称引用权重来源网格。无匹配时保留名字，同名网格出现后自动接上；清空可取消绑定。',

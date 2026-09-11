@@ -10,6 +10,7 @@ _reference_sets = {}
 _resolved_states = {}
 _refreshing = False
 _initialization_pending = False
+_pending_pickers = {}
 
 
 def requested_name(settings, field):
@@ -69,6 +70,50 @@ def update_callback(field, callback):
 
 def register_reference_set(owner, fields, on_resolution_changed):
     _reference_sets[owner] = tuple(fields), on_resolution_changed
+    settings_type = bpy.types.Scene.bl_rna.properties[owner].fixed_type
+    settings_class = bpy.types.PropertyGroup.bl_rna_get_subclass_py(settings_type.identifier)
+    for field in fields:
+        setattr(settings_class, field + "_picker", bpy.props.PointerProperty(
+            name='Pick Mesh',
+            description='Pick a mesh from the 3D View or Outliner to store its exact name',
+            type=bpy.types.Object,
+            poll=_picker_poll,
+            update=_picker_update(field),
+            options={'SKIP_SAVE'},
+        ))
+
+
+def _picker_poll(_settings, obj):
+    return obj is not None and obj.type == 'MESH'
+
+
+def _picker_update(field):
+    def update(settings, _context):
+        picker = field + "_picker"
+        obj = getattr(settings, picker)
+        if obj is None:
+            return
+        try:
+            if _picker_poll(settings, obj):
+                setattr(settings, field + "_name", obj.name)
+        finally:
+            # Native eyedroppers read the pointer back after update to confirm success.
+            # Release only on the next UI tick, not inside that readback transaction.
+            _pending_pickers[(settings.as_pointer(), picker)] = settings
+            if not bpy.app.timers.is_registered(_clear_pickers):
+                bpy.app.timers.register(_clear_pickers, first_interval=0.0)
+    return update
+
+
+def _clear_pickers():
+    pending = tuple(_pending_pickers.items())
+    _pending_pickers.clear()
+    for (_pointer, field), settings in pending:
+        try:
+            setattr(settings, field, None)
+        except (ReferenceError, AttributeError):
+            pass
+    return None
 
 
 def unregister_reference_set(owner):
@@ -132,6 +177,10 @@ def draw_reference(layout, settings, field, *, text=None):
         clear = row.operator("wm.context_set_string", text="", icon='X')
         clear.data_path = f"scene.{settings.path_from_id()}.{field}_name"
         clear.value = ""
+    # Keep a real RNA Object button so Blender supplies its native eyedropper.
+    picker_row = row.row(align=True)
+    picker_row.ui_units_x = 2
+    picker_row.prop(settings, field + "_picker", text="", icon_only=True)
 
 
 @persistent
@@ -190,6 +239,9 @@ def register():
 def unregister():
     global _initialization_pending
     _initialization_pending = False
+    if bpy.app.timers.is_registered(_clear_pickers):
+        bpy.app.timers.unregister(_clear_pickers)
+    _clear_pickers()
     if bpy.app.timers.is_registered(_finish_registration):
         bpy.app.timers.unregister(_finish_registration)
     for name, callback in _handlers:
