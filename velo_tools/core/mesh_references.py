@@ -73,9 +73,10 @@ def register_reference_set(owner, fields, on_resolution_changed):
     settings_type = bpy.types.Scene.bl_rna.properties[owner].fixed_type
     settings_class = bpy.types.PropertyGroup.bl_rna_get_subclass_py(settings_type.identifier)
     for field in fields:
+        name_prop = settings_type.properties[field + "_name"]
         setattr(settings_class, field + "_picker", bpy.props.PointerProperty(
-            name='Pick Mesh',
-            description='Pick a mesh from the 3D View or Outliner to store its exact name',
+            name=name_prop.name,
+            description=name_prop.description,
             type=bpy.types.Object,
             poll=_picker_poll,
             update=_picker_update(field),
@@ -165,22 +166,21 @@ def refresh_scene(scene, *, notify=True):
 
 
 def draw_reference(layout, settings, field, *, text=None):
+    from bpy.app.translations import pgettext_iface as iface_
+
     row = layout.row(align=True)
     name = requested_name(settings, field)
     value_row = row.row(align=True)
     value_row.alert = bool(name and resolve(settings, field) is None)
-    kwargs = {"icon": 'OUTLINER_OB_MESH'}
-    if text is not None:
-        kwargs["text"] = text
-    value_row.prop(settings, field + "_name", **kwargs)
+    # One native Object field supplies search and eyedropper together. The exact
+    # name stays visible after its transient pointer is released, even if missing.
+    label = text if text is not None else iface_(settings.bl_rna.properties[field + "_name"].name)
+    value_row.prop(settings, field + "_picker", text=label,
+                   icon='OUTLINER_OB_MESH', placeholder=name, translate=False)
     if name:
         clear = row.operator("wm.context_set_string", text="", icon='X')
         clear.data_path = f"scene.{settings.path_from_id()}.{field}_name"
         clear.value = ""
-    # Keep a real RNA Object button so Blender supplies its native eyedropper.
-    picker_row = row.row(align=True)
-    picker_row.ui_units_x = 2
-    picker_row.prop(settings, field + "_picker", text="", icon_only=True)
 
 
 @persistent
