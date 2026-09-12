@@ -223,7 +223,7 @@ def _combine_constants(lines):
     return result
 
 
-def transform(text, draws, resource_by_identity, resources, *, batch_draws=False):
+def transform(text, draws, resource_by_identity, resources, *, batch_draws=False, preserved_calls=()):
     """Use integer witnesses emitted by safe setters, never runtime hash tests.
 
     Draw ranges come from the finalized temporary mesh, before native Join.
@@ -261,7 +261,7 @@ def transform(text, draws, resource_by_identity, resources, *, batch_draws=False
     wanted = {comp: {identity for draw in draws if draw.component == comp
                      for segment in draw.segments for identity, _target in segment.replacements}
               for comp in required}
-    plan = SourcePlan(lines, spans, required, wanted, reverse)
+    plan = SourcePlan(lines, spans, required, wanted, reverse, preserved_calls)
     occurrences, reachable = plan.occurrences, plan.reachable
     groups = {}
     support = []

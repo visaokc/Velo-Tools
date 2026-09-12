@@ -137,7 +137,7 @@ def collect_ranges(maker):
     return result
 
 
-def transform_ini(text, ranges, color_buffers=None):
+def transform_ini(text, ranges, color_buffers=None, *, preserved_calls=()):
     """Save once per component command list; switch only at actual draw boundaries."""
     if not ranges or MARKER in text:
         return text, 0
@@ -149,7 +149,7 @@ def transform_ini(text, ranges, color_buffers=None):
     replacements, bindings, touched, ends, invalidations = {}, {}, set(), {}, {}
     uniform, fully_bound, gate_starts, opaque_calls, control_starts = {}, {}, {}, {}, []
     lines = text.splitlines()
-    safe_calls = _state_preserving_calls(lines)
+    safe_calls = _state_preserving_calls(lines, preserved_calls)
     for index, line in enumerate(lines):
         header = _HEADER.match(line)
         if header:
@@ -277,7 +277,7 @@ def transform_ini(text, ranges, color_buffers=None):
     return result, ordinal
 
 
-def _state_preserving_calls(lines):
+def _state_preserving_calls(lines, preserved_calls=()):
     """Recognize texture-only helpers without assuming opaque calls preserve draws."""
     sections, current = {}, None
     for line in lines:
@@ -287,7 +287,7 @@ def _state_preserving_calls(lines):
             sections[current] = []
         elif current is not None:
             sections[current].append(line.strip().split(";", 1)[0].strip().lower())
-    safe, pending = set(), dict(sections)
+    safe, pending = {name.casefold() for name in preserved_calls}, dict(sections)
     while pending:
         added = set()
         for name, commands in pending.items():
@@ -319,6 +319,7 @@ def install():
                 temp.smooth_normal_color = _has_color_data(temp.object.data)
 
     def build_mod_ini(self):
+        from ...core.export.ini_effects import preserved_graphics_calls
         result = original_build(self)
         # User-authored/live templates remain under their owner's control.
         if (getattr(self.cfg, "use_custom_template", False)
@@ -327,7 +328,8 @@ def install():
         maker = self.ini
         color_buffers = {"Resource_" + name for name, buffer in maker.buffers.items()
                          if _compatible_layout(buffer)}
-        text, draws = transform_ini(maker.ini_string, collect_ranges(maker), color_buffers)
+        text, draws = transform_ini(maker.ini_string, collect_ranges(maker), color_buffers,
+                                    preserved_calls=preserved_graphics_calls(maker.ini_string))
         if draws:
             maker.ini_string = maker.with_checksum(text)
             print(f"[SmoothNormalColor] Component-scoped native activation covers {draws} custom draw(s)")

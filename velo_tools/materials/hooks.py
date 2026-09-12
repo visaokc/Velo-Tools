@@ -229,6 +229,7 @@ def _validate_payload_destinations(root, payloads):
 
 
 def build_material_layer(maker, text, cfg, game):
+    from ..core.export.ini_effects import preserved_graphics_calls
     validate_mode(cfg, game, getattr(maker, "scene", None))
     draws, resources, payloads, payload_names, images = [], {}, {}, {}, {}
     # Allocate section names from the complete file set, not reordered draws.
@@ -265,7 +266,8 @@ def build_material_layer(maker, text, cfg, game):
     if draws and not getattr(cfg, "copy_textures", True):
         raise ValueError(iface_("Enable texture copying when exporting material textures"))
     result, stats = ini.transform(text, draws, resource_map, resources,
-                                  batch_draws=getattr(cfg, "material_texture_batching", True))
+                                  batch_draws=getattr(cfg, "material_texture_batching", True),
+                                  preserved_calls=preserved_graphics_calls(text))
     maker.material_texture_payloads = payloads
     maker.material_texture_report = stats
     print("[MaterialTextures]", game, stats)

@@ -12,10 +12,6 @@ _INSTALLED = False
 _ORIG_BUILD_FROM_TEMPLATE = None
 _IM_MODULE = None
 
-_TEMP_OBJECT_SUFFIX_RE = re.compile(r"__(?:velo_export|export_copy)(?:\.\d{3})?")
-_DRAWVAR_SUFFIX_RE = re.compile(
-    r"(\$(?:draw|obj)_[A-Za-z0-9_]*?)_(?:velo_export|export_copy)\b"
-)
 _SECTION_NAME_RE = re.compile(r"^\[([^\]]+)\][ \t]*\r?$", re.MULTILINE)
 _NUMERIC_TEXTURE_RESOURCE_RE = re.compile(
     r"^\[ResourceTexture(?P<index>\d+)\][ \t]*\r?$"
@@ -62,25 +58,15 @@ def _readable_texture_section_names(text: str) -> str:
     if not renames:
         return text
 
-    token_re = re.compile(
-        r"(?<![A-Za-z0-9_])("
-        + "|".join(re.escape(name) for name in sorted(renames, key=len, reverse=True))
-        + r")(?![A-Za-z0-9_])"
-    )
-    return token_re.sub(lambda match: renames[match.group(1)], text)
+    from velo_tools.core.export.ini_names import rewrite_identifiers
+    return rewrite_identifiers(text, renames)
 
 
-def sanitize_ini_text(text: str) -> str:
+def sanitize_ini_text(text: str, generated_names=(), format_drawvar=None) -> str:
     """Apply final readability cleanup to rendered WWMI INI text."""
     result = _readable_texture_section_names(text)
-    result = _TEMP_OBJECT_SUFFIX_RE.sub("", result)
-
-    # Collapse the exact internal suffix without touching arbitrary user text.
-    while True:
-        collapsed = _DRAWVAR_SUFFIX_RE.sub(r"\1", result)
-        if collapsed == result:
-            return result
-        result = collapsed
+    from velo_tools.core.export.ini_names import sanitize_generated_object_names
+    return sanitize_generated_object_names(result, generated_names, format_drawvar)
 
 
 def _ini_maker_module():
@@ -107,7 +93,9 @@ def install():
             template_string=template_string,
             with_checksum=False,
         )
-        result = sanitize_ini_text(result)
+        from velo_tools.core.export.ini_names import generated_object_names
+        result = sanitize_ini_text(result, generated_object_names(cfg),
+                                   self.formatter.format_ini_drawvar)
         if with_checksum:
             result = module.IniMaker.with_checksum(result)
         self.ini_string = result

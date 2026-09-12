@@ -58,6 +58,7 @@ def install():
         result = _ORIG_WRITE_FILES(self)
         if getattr(self.extracted_object, "velo_lods", None):
             write_runtime_assets(self.mod_output_folder)
+        _cleanup_stale_lod_buffers(self)
         return result
 
     _wrapped_build_mod_ini._velo_lod_hook = True
@@ -103,6 +104,7 @@ def _load_template(cfg) -> str:
 
 
 def _prepare_lod_export(exporter):
+    exporter._lod_stale_cleanup_requested = False
     try:
         metadata = json.loads(
             (exporter.object_source_folder / "Metadata.json").read_text(encoding="utf-8"))
@@ -169,10 +171,8 @@ def prepare_lod_export_memory(exporter, *, metadata, excluded_names=(),
     if not lod_groups:
         return
 
-    if cleanup_stale and hasattr(exporter, "meshes_path"):
-        for pattern in ("BlendLOD*.buf", "CanonicalLodMap*.buf"):
-            for stale in exporter.meshes_path.glob(pattern):
-                stale.unlink()
+    if cleanup_stale:
+        exporter._lod_stale_cleanup_requested = True
 
     ordered_groups = sorted(
         lod_groups.items(),
@@ -229,3 +229,18 @@ def prepare_lod_export_memory(exporter, *, metadata, excluded_names=(),
     print(
         f"[LOD] Prepared {len(velo_lods)} LOD level(s) with stable canonical "
         "Blend IDs and per-bone source maps.")
+
+
+def _cleanup_stale_lod_buffers(exporter):
+    """Retire obsolete maps only after the replacement INI and resources commit."""
+    if (not getattr(exporter, "_lod_stale_cleanup_requested", False)
+            or not getattr(exporter.cfg, "write_ini", True)
+            or getattr(exporter.cfg, "partial_export", False)
+            or not hasattr(exporter, "meshes_path")):
+        return
+    keep = {f"{name}.buf".casefold() for name in exporter.buffers}
+    for pattern in ("BlendLOD*.buf", "CanonicalLodMap*.buf"):
+        for stale in exporter.meshes_path.glob(pattern):
+            if stale.name.casefold() not in keep:
+                stale.unlink()
+    exporter._lod_stale_cleanup_requested = False

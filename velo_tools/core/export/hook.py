@@ -252,6 +252,8 @@ def _prepare_export_copy(context, cfg, obj, profile):
     clone.data = obj.data.copy()
     clone.name = f"{obj.name}__export_copy"
     clone.data.name = f"{obj.data.name}__export_copy"
+    from .ini_names import DISPLAY_NAME_KEY
+    clone[DISPLAY_NAME_KEY] = obj.name
 
     # Link the clone into all the same collections as the source (keep the parent/child organization consistent)
     linked_to = []

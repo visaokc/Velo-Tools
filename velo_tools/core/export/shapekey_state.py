@@ -190,8 +190,15 @@ def collapse_nonexported_shape_key_mix(
 
 
 def finalize_merger_shape_keys(merger, parse_shape_id: ShapeIdParser) -> None:
+    objects = []
     for component in getattr(merger, "components", ()) or ():
         for temp_object in getattr(component, "objects", ()) or ():
             obj = getattr(temp_object, "object", None)
             if obj is not None:
-                collapse_nonexported_shape_key_mix(obj, parse_shape_id)
+                objects.append(obj)
+    # Native geometry preparation has already removed ignored muted keys.
+    # Validate before join can silently discard one object's default value.
+    merge_shape_key_defaults(
+        object_shape_key_defaults(obj, parse_shape_id) for obj in objects)
+    for obj in objects:
+        collapse_nonexported_shape_key_mix(obj, parse_shape_id)

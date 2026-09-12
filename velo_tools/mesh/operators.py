@@ -176,8 +176,8 @@ def is_export_temp_object(obj):
         obj.get(_EXPORT_TEMP_KEY) or obj.get(_LEGACY_EXPORT_TEMP_KEY)
     ):
         return True
-    name = getattr(obj, "name", "") or ""
-    return name.endswith((_EXPORT_TEMP_SUFFIX, _LEGACY_EXPORT_TEMP_SUFFIX))
+    from ..core.export.ini_names import DISPLAY_NAME_KEY
+    return bool(getattr(obj, "get", None) and obj.get(DISPLAY_NAME_KEY))
 
 
 def _mark_export_temp_object(obj, enabled=True):
@@ -186,7 +186,8 @@ def _mark_export_temp_object(obj, enabled=True):
     if enabled:
         obj[_EXPORT_TEMP_KEY] = True
     else:
-        for key in (_EXPORT_TEMP_KEY, _LEGACY_EXPORT_TEMP_KEY):
+        from ..core.export.ini_names import DISPLAY_NAME_KEY
+        for key in (_EXPORT_TEMP_KEY, _LEGACY_EXPORT_TEMP_KEY, DISPLAY_NAME_KEY):
             if key in obj:
                 del obj[key]
     return obj
@@ -197,6 +198,8 @@ def _with_export_temp_suffix(obj, base_name):
     if not base_text:
         return base_text
     if is_export_temp_object(obj):
+        from ..core.export.ini_names import DISPLAY_NAME_KEY
+        obj[DISPLAY_NAME_KEY] = base_text
         return f"{base_text}{_EXPORT_TEMP_SUFFIX}"
     return base_text
 
@@ -1076,6 +1079,8 @@ def prepare_material_route_export(context):
             if component_id is not None:
                 clone["velo_component_id"] = component_id
             clone.name = f"{obj.name}{_EXPORT_TEMP_SUFFIX}"
+            from ..core.export.ini_names import DISPLAY_NAME_KEY
+            clone[DISPLAY_NAME_KEY] = obj.name
             _mark_export_temp_object(clone)
             if was_hidden and not ignore_hidden_objects:
                 clone.hide_set(False)

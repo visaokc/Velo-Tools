@@ -47,25 +47,34 @@ def _state_name(kind: str, suffix: str) -> str:
     return f"$external_shape_{kind}{suffix}"
 
 
+def _domain_shape_keys(domain: Any):
+    plan = getattr(domain, "plan", None)
+    entry = getattr(plan, "manifest_entry", {}) or {}
+    ignore_muted = bool(entry.get("ignore_muted_shape_keys", getattr(
+        getattr(domain, "cfg", None), "ignore_muted_shape_keys", False)))
+    objects = [getattr(item, "object", None)
+               for item in getattr(plan, "selected", ()) or ()]
+    objects.append(getattr(getattr(domain, "merged_object", None), "object", None))
+    for obj in objects:
+        shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
+        for key in getattr(shape_keys, "key_blocks", ()) or ():
+            if not (ignore_muted and bool(getattr(key, "mute", False))):
+                yield key
+
+
 def collect_shape_key_names(
         domains: Iterable[Any], channels: Mapping[int, int],
 ) -> Mapping[int, str]:
     names = {shape_id: set() for shape_id in channels}
     for domain in domains:
-        selected = getattr(getattr(domain, "plan", None), "selected", ()) or ()
-        objects = [getattr(item, "object", None) for item in selected]
-        objects.append(
-            getattr(getattr(domain, "merged_object", None), "object", None))
-        for obj in objects:
-            shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
-            for key in getattr(shape_keys, "key_blocks", ()) or ():
-                name = " ".join(str(getattr(key, "name", "")).split())
-                match = _DEFORM_NAME_RE.fullmatch(name)
-                if match is None:
-                    continue
-                shape_id = int(match.group(1))
-                if shape_id in names:
-                    names[shape_id].add(name)
+        for key in _domain_shape_keys(domain):
+            name = " ".join(str(getattr(key, "name", "")).split())
+            match = _DEFORM_NAME_RE.fullmatch(name)
+            if match is None:
+                continue
+            shape_id = int(match.group(1))
+            if shape_id in names:
+                names[shape_id].add(name)
     return {
         shape_id: " | ".join(sorted(values, key=str.casefold))
         for shape_id, values in names.items() if values
@@ -77,26 +86,20 @@ def collect_shape_key_defaults(
 ) -> Mapping[int, float]:
     defaults = {}
     for domain in domains:
-        selected = getattr(getattr(domain, "plan", None), "selected", ()) or ()
-        objects = [getattr(item, "object", None) for item in selected]
-        objects.append(
-            getattr(getattr(domain, "merged_object", None), "object", None))
-        for obj in objects:
-            shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
-            for key in getattr(shape_keys, "key_blocks", ()) or ():
-                shape_id = _shape_id(str(getattr(key, "name", "")))
-                if shape_id is None or shape_id not in channels:
-                    continue
-                value = float(getattr(key, "value", 0.0))
-                previous = defaults.get(shape_id)
-                if previous is not None and not math.isclose(
-                    previous, value, rel_tol=0.0, abs_tol=1e-6
-                ):
-                    raise ValueError(
-                        f"Deform {shape_id} has inconsistent Blender values "
-                        f"({_format_ini_float(previous)} and {_format_ini_float(value)})"
-                    )
-                defaults[shape_id] = value
+        for key in _domain_shape_keys(domain):
+            shape_id = _shape_id(str(getattr(key, "name", "")))
+            if shape_id is None or shape_id not in channels:
+                continue
+            value = float(getattr(key, "value", 0.0))
+            previous = defaults.get(shape_id)
+            if previous is not None and not math.isclose(
+                previous, value, rel_tol=0.0, abs_tol=1e-6
+            ):
+                raise ValueError(
+                    f"Deform {shape_id} has inconsistent Blender values "
+                    f"({_format_ini_float(previous)} and {_format_ini_float(value)})"
+                )
+            defaults[shape_id] = value
     return defaults
 
 
@@ -236,6 +239,25 @@ def _insert_before_marker(text: str, marker: str, insertion: str) -> str:
     return text.replace(marker, insertion.rstrip() + "\n\n" + marker, 1)
 
 
+def _external_resource_marker(text: str, *, has_native: bool) -> str:
+    """Accept the stock Merged and Per-Component resource boundaries only."""
+    skeleton = "; Resources: Skeleton Override -------------------------"
+    buffers = "; Resources: Buffers -------------------------"
+    marker = skeleton if skeleton in text else buffers
+    for candidate in (skeleton, buffers):
+        if text.count(candidate) > 1:
+            raise ShapeKeyPlanError(
+                f"Custom INI template is missing unique marker: {candidate}")
+    shape = "; Resources: Shape Keys Override -------------------------"
+    shape_count = text.count(shape)
+    if (text.count(marker) != 1 or shape_count > 1
+            or (has_native and shape_count != 1)
+            or (shape_count == 1 and not text.index(shape) < text.index(marker))):
+        raise ShapeKeyPlanError(
+            f"Custom INI template is missing unique marker: {marker}")
+    return marker
+
+
 def _replace_shared_position(text: str, suffix: str) -> str:
     name = f"CommandListOverrideSharedResources{suffix}"
     start, end = _section_span(text, name)
@@ -293,6 +315,7 @@ def inject_single_ib_ini(
     if not plan.has_external:
         return text
     _validate_channel_range(text, channels)
+    resource_marker = _external_resource_marker(text, has_native=plan.has_native)
     suffix = ""
     constants = control_constant_lines(
         channels, (suffix,), shape_names, shape_defaults)
@@ -321,14 +344,17 @@ def inject_single_ib_ini(
         target.append(f"[{name}]")
         target.extend(lines)
         target.append("")
+    # Stock templates omit native ShapeKey resources when native records are
+    # empty, even though the independent external pipeline still has records.
+    shape_marker = "; Resources: Shape Keys Override -------------------------"
     text = _insert_before_marker(
         text,
-        "; Resources: Shape Keys Override -------------------------",
+        shape_marker if shape_marker in text else resource_marker,
         "\n".join(command_block),
     )
     text = _insert_before_marker(
         text,
-        "; Resources: Skeleton Override -------------------------",
+        resource_marker,
         "\n".join(resource_block),
     )
     return text

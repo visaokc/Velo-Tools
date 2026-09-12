@@ -7,13 +7,25 @@ import re
 _RUN = re.compile(r"^\s*run\s*=\s*([^;\s]+)\s*(?:;.*)?$", re.I)
 _SET = re.compile(r"^(\s*)ps-t(\d+)\s*=\s*(?:(?:ref|reference|copy)\s+)?([^;\s]+)", re.I)
 _ROOT = re.compile(r"^CommandListSetTexturesComponent(\d+)", re.I)
+_BRANCH = re.compile(r"^(if|elif|else[ \t]+if)[ \t]+\S", re.I)
+
+
+def _branch_kind(line):
+    """Recognize control flow without changing the authored condition text."""
+    code = line.split(';', 1)[0].strip().casefold()
+    if code in ('else', 'endif'):
+        return code
+    match = _BRANCH.match(code)
+    if match:
+        return 'if' if match[1] == 'if' else 'elif'
+    return None
 
 
 class ComplexLayout(Exception):
     """The owner requires sparse per-slot tracking instead of one layout ID."""
 
 
-def terminal_layouts(lines, bodies, root, slots, reverse, wanted):
+def terminal_layouts(lines, bodies, root, slots, reverse, wanted, preserved_calls=()):
     """Stamp terminal layouts inside the owner, not inside shared helpers.
 
     Evaluate every structural branch using symbolic source identities. Runtime
@@ -34,24 +46,24 @@ def terminal_layouts(lines, bodies, root, slots, reverse, wanted):
         def sequence(index, nested=False):
             result = []
             while index < end:
-                code = lines[index].split(';', 1)[0].strip().lower()
-                if code in ('endif', 'else') or code.startswith('else if '):
+                kind = _branch_kind(lines[index])
+                if kind in ('endif', 'else', 'elif'):
                     if not nested:
                         raise ComplexLayout()
                     return result, index
-                if code.startswith('if '):
+                if kind == 'if':
                     branches = []
                     branch, stop = sequence(index + 1, True)
                     branches.append(branch)
-                    while stop < end and lines[stop].split(';', 1)[0].strip().lower().startswith('else if '):
+                    while stop < end and _branch_kind(lines[stop]) == 'elif':
                         branch, stop = sequence(stop + 1, True)
                         branches.append(branch)
-                    if stop < end and lines[stop].split(';', 1)[0].strip().lower() == 'else':
+                    if stop < end and _branch_kind(lines[stop]) == 'else':
                         branch, stop = sequence(stop + 1, True)
                         branches.append(branch)
                     else:
                         branches.append([])
-                    if stop >= end or lines[stop].split(';', 1)[0].strip().lower() != 'endif':
+                    if stop >= end or _branch_kind(lines[stop]) != 'endif':
                         raise ComplexLayout()
                     result.append(branches)
                     index = stop + 1
@@ -84,6 +96,8 @@ def terminal_layouts(lines, bodies, root, slots, reverse, wanted):
                     states = next_states
                 elif call:
                     target = call.group(1).casefold()
+                    if target in preserved_calls:
+                        continue
                     if target in stack:
                         raise ComplexLayout()
                     next_states = set()
@@ -112,7 +126,8 @@ def terminal_layouts(lines, bodies, root, slots, reverse, wanted):
 class SourcePlan:
     """Only the affected owner's selectors and draw-time writes carry state."""
 
-    def __init__(self, lines, spans, required, wanted, reverse):
+    def __init__(self, lines, spans, required, wanted, reverse, preserved_calls=()):
+        self.preserved_calls = {name.casefold() for name in preserved_calls}
         self.before = defaultdict(list)
         self.after = defaultdict(list)
         self.declarations = []
@@ -177,7 +192,7 @@ class SourcePlan:
                 active = False
                 depth = 0
                 for index in range(start+1, last_draw+1):
-                    code = lines[index].split(';', 1)[0].strip().lower()
+                    kind = _branch_kind(lines[index])
                     call = _RUN.match(lines[index])
                     if call and call.group(1).casefold() in roots:
                         active = True
@@ -187,9 +202,9 @@ class SourcePlan:
                         between.append(index)
                         if call:
                             owner_scope.update(walk(call.group(1).casefold()))
-                    if code.startswith('if '):
+                    if kind == 'if':
                         depth += 1
-                    elif code == 'endif':
+                    elif kind == 'endif':
                         depth -= 1
             try:
                 # Only commands between the selector and draws can invalidate its layout.
@@ -205,11 +220,13 @@ class SourcePlan:
                     if line.lstrip().lower().startswith(('post ', 'checktextureoverride')):
                         raise ComplexLayout()
                     call = _RUN.match(line)
-                    if call and call.group(1).casefold() not in bodies:
+                    if (call and call.group(1).casefold() not in bodies
+                            and call.group(1).casefold() not in self.preserved_calls):
                         raise ComplexLayout()
                 stamps = {}
                 for root in sorted(roots):
-                    stamps.update(terminal_layouts(lines, bodies, root, slots, reverse, wanted[comp]))
+                    stamps.update(terminal_layouts(lines, bodies, root, slots, reverse,
+                                                   wanted[comp], self.preserved_calls))
                 values = sorted({layout for layout in stamps.values() if any(layout)})
                 tokens = {layout: index+1 for index, layout in enumerate(values)}
                 self.layouts[comp] = {token: layout for layout, token in tokens.items()}
@@ -243,6 +260,7 @@ class SourcePlan:
             _, start, end = bodies[key]
             if any((m := _SET.match(line)) and int(m.group(2)) in slots
                    or (r := _RUN.match(line)) and r.group(1).casefold() not in bodies
+                   and r.group(1).casefold() not in self.preserved_calls
                    for line in lines[start+1:end]):
                 changed.add(key)
         while True:
@@ -269,7 +287,7 @@ class SourcePlan:
                     target = call.group(1).casefold()
                     if target in renames:
                         line = line.replace(call.group(1), renames[target], 1)
-                    elif target not in bodies:
+                    elif target not in bodies and target not in self.preserved_calls:
                         additions.extend(reset)
                 if clone is not None:
                     clone.append(line)

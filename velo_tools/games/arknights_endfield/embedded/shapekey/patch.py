@@ -29,7 +29,6 @@ _SHAPEKEY_HLSL_NAMES = (
     "shapekey_blend.hlsl",
     "shapekey_blend_merged.hlsl",
 )
-_TEMP_OBJECT_SUFFIX_RE = re.compile(r"__(?:velo_export|export_copy)(?:\.\d{3})?")
 
 # id(IniMaker class)  -> (cls, orig_build_from_template, orig_write, mod_name)
 _patched_inimaker = {}
@@ -144,16 +143,30 @@ def _get_current_efmi_data_model(exporter):
 
 
 def _collect_all_deform_keys_from_context(context):
+    from ..._efmi_core.blender_export import object_merger
+
     cfg = getattr(context.scene, "VTEF_settings", None)
     coll = getattr(cfg, "component_collection", None) if cfg is not None else None
     if coll is None:
         return []
 
+    candidates = object_merger.get_collection_objects(
+        coll,
+        recursive=not bool(getattr(cfg, "ignore_nested_collections", False)),
+        skip_hidden_collections=bool(getattr(cfg, "ignore_hidden_collections", False)),
+    )
+    component_pattern = re.compile(r'.*component[_ -]*(\d+).*', re.IGNORECASE)
     all_keys = []
-    for obj in coll.all_objects:
-        if obj.type != 'MESH':
+    for obj in candidates:
+        if (obj.type != 'MESH' or obj.name.startswith('TEMP_')
+                or component_pattern.fullmatch(obj.name) is None):
+            continue
+        if (bool(getattr(cfg, "ignore_hidden_objects", False))
+                and object_merger.object_is_hidden(obj)):
             continue
         keys = detector.collect_deform_keys(obj)
+        if bool(getattr(cfg, "ignore_muted_shape_keys", False)):
+            keys = [item for item in keys if not item["key_block"].mute]
         if not keys:
             continue
         dups = detector.validate_no_duplicate_keys(keys)
@@ -194,7 +207,7 @@ def _get_export_slot_map(component_keys, merge_buffers):
 
 
 def _early_validate_all_shape_keys(context):
-    """Walk the configured component collection and validate ALL shape keys
+    """Validate keys on eligible objects using the native export scope
     BEFORE any buffer / texture is written. Raises RuntimeError on the first
     failure with a user-readable message. No-op when ShapeKey export is off
     or no collection is set.
@@ -337,7 +350,9 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
 
     # Render without checksum, post-process, then re-checksum.
     result = orig(self, context, cfg, template_string=template_string, with_checksum=False)
-    result = _TEMP_OBJECT_SUFFIX_RE.sub("", result)
+    from .....core.export.ini_names import generated_object_names, sanitize_generated_object_names
+    result = sanitize_generated_object_names(
+        result, generated_object_names(cfg), self.formatter.format_ini_drawvar)
 
     if _settings_enabled() and _bake_results:
         try:
