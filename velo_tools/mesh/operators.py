@@ -144,7 +144,10 @@ def _claim_mesh_name(mesh, name):
 
 
 def _reserve_split_target_names(targets):
-    meshes = [obj for obj in targets if getattr(obj, "type", None) == 'MESH']
+    # Only reserve names that will actually be replaced by a material name.
+    # Empty-material pieces must retain their original Component ownership.
+    meshes = [obj for obj in targets if getattr(obj, "type", None) == 'MESH'
+              and len(obj.material_slots) == 1 and obj.material_slots[0].material is not None]
     meshes.sort(key=lambda obj: obj.name)
     for index, obj in enumerate(meshes):
         try:
@@ -1611,6 +1614,16 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
     split_sources = 0
     skipped_single = 0
     for src in sources:
+        # Separate and ShapeKey cleanup both write through the mesh datablock.
+        # Isolate selected users before either operation, including single-slot meshes.
+        if src.data.users > 1:
+            src.data = src.data.copy()
+        # Native Separate remaps DATA slots; materialize visible OBJECT overrides
+        # first so repeated/empty slots retain the same per-face assignments.
+        effective_materials = [slot.material for slot in src.material_slots]
+        for index, material in enumerate(effective_materials):
+            src.data.materials[index] = material
+            src.material_slots[index].link = 'DATA'
         if len(src.material_slots) <= 1:
             skipped_single += 1
             continue
@@ -1648,11 +1661,13 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
     cleaned_slots = 0
     cleaned_keys = 0
     renamed = 0
+    for obj in targets:
+        if obj.type == 'MESH':
+            cleaned_slots += _trim_to_used_material(obj)
     _reserve_split_target_names(targets)
     for obj in targets:
         if obj.type != 'MESH':
             continue
-        cleaned_slots += _trim_to_used_material(obj)
         cleaned_keys += _clean_unused_shape_keys(obj, threshold=threshold)
         sk = obj.data.shape_keys if obj.data else None
         if sk and len(sk.key_blocks) > 1:

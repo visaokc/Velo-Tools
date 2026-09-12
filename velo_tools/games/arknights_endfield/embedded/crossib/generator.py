@@ -371,7 +371,7 @@ def _require_compatible_skinning(transparency, provider_id, target_id):
     )
 
 
-def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, source_folder=None, frame_dump_folder=None, cfg=None, context=None):
+def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, source_folder=None, frame_dump_folder=None, cfg=None, context=None, formatter=None):
     """Compute providers/consumers/resources for the given mappings.
 
     v1.5 architecture (per dev guidance — both bug fixes in one):
@@ -691,11 +691,20 @@ def build_cross_ib(crossib_settings, extracted_object, buffers, merged_object, s
                 for obj in objs:
                     if not _name_matches_wanted(wanted, obj.name):
                         continue  # User did not select this sub-mesh for borrowing.
+                    visible = bool(getattr(cfg, 'use_ini_toggles', False)) and formatter is not None
+                    if visible:
+                        b.append(f"    if {formatter.format_ini_drawvar(obj.name)}")
                     b.append(f"    ; Draw provider {obj.name}")
-                    b.append(
-                        f"    drawindexedinstanced = {obj.index_count}, INSTANCE_COUNT, "
-                        f"{obj.index_offset}, 0, FIRST_INSTANCE"
-                    )
+                    # The native spatial callback already decomposes instances.
+                    if bool(getattr(cfg, 'use_spatial_identification', False)):
+                        b.append(f"    drawindexed = {obj.index_count}, {obj.index_offset}, 0")
+                    else:
+                        b.append(
+                            f"    drawindexedinstanced = {obj.index_count}, INSTANCE_COUNT, "
+                            f"{obj.index_offset}, 0, FIRST_INSTANCE"
+                        )
+                    if visible:
+                        b.append('    endif')
                     emitted += 1
                 if emitted == 0:
                     b.append(

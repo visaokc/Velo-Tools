@@ -45,7 +45,8 @@ _HLSL_DIR = Path(__file__).parent / "hlsl"
 _HEADER_RE = re.compile(r'^\s*\[CommandList_Draw_Component(\d+)\]\s*$')
 _TEX_OVERRIDE_RE = re.compile(r'^\s*\[TextureOverride_Component(\d+)(?:_LOD\d+)?\]\s*$')
 _DRAW_COMMENT_RE = re.compile(r'^\s*;\s*Draw\s+(.+?)\s*$', re.IGNORECASE)
-_DRAW_CALL_RE = re.compile(r'^\s*(?:drawindexedinstanced\b|draw\s*=)', re.IGNORECASE)
+_DRAW_CALL_RE = re.compile(r'^\s*(?:drawindexed(?:instanced)?|draw)\s*=', re.IGNORECASE)
+_NATIVE_DRAW_COMMENT_RE = re.compile(r'^\s*;\s*Draw\s+object\s+"(.*)"\s*:\s*$', re.IGNORECASE)
 _CHECK_TEX_RE = re.compile(r'^\s*CheckTextureOverride\s*=\s*ps-t(\d+)\s*$', re.IGNORECASE)
 
 # Idempotency markers. Each injected CommandList body is wrapped between BODY
@@ -211,23 +212,39 @@ def strip_crossib_shader_sections(ini_text):
     return _join_sections(kept), removed
 
 
+def _draw_comment_name(line):
+    if re.match(r'^\s*;\s*(?:drawindexed(?:instanced)?|draw)\s*=', line, re.I):
+        return None
+    match = _NATIVE_DRAW_COMMENT_RE.match(line)
+    if match:
+        return match.group(1)
+    match = _DRAW_COMMENT_RE.match(line)
+    if not match or re.match(r'(?:single instance|all instances)\b', match.group(1), re.I):
+        return None
+    return match.group(1).strip()
+
+
 def _find_draw_region(body):
     """Return (start_idx, end_idx) for the contiguous draw block in a CommandList
     body, or None if no `; Draw ` marker is found.
 
     A draw region begins at the first `; Draw ...` comment and extends through
-    every subsequent line that is part of a draw (`drawindexedinstanced`,
+    every subsequent line that is part of a draw (`drawindexed`, `drawindexedinstanced`,
     `draw = from_caller`, draw-local comments, ini toggle `if $...` / `endif`
     wrappers, additional `; Draw ...` comments, or blank lines that separate
     consecutive draw groups).
     """
     start = None
     for i, line in enumerate(body):
-        if line.lstrip().startswith("; Draw "):
+        if _draw_comment_name(line) is not None:
             start = i
             break
     if start is None:
         return None
+    # Native templates put each visibility condition before its object comment.
+    # Keep that wrapper with the draw, not around capture or consumer borrowing.
+    while start > 0 and re.match(r'^\s*if\s+', body[start - 1], re.I):
+        start -= 1
 
     end = start
     depth = 0
@@ -240,10 +257,12 @@ def _find_draw_region(body):
             end = i
         elif _DRAW_CALL_RE.match(s):
             end = i
-        elif s.startswith("if ") and i > start:
+        elif s.lower().startswith("if "):
             depth += 1
             end = i
-        elif s.startswith("endif") and depth > 0:
+        elif s.lower().startswith(("else", "elif")) and depth > 0:
+            end = i
+        elif s.lower().startswith("endif") and depth > 0:
             depth -= 1
             end = i
         elif s == "":
@@ -253,7 +272,7 @@ def _find_draw_region(body):
                 j += 1
             if j < len(body):
                 ns = body[j].lstrip()
-                if ns.startswith("; Draw ") or _DRAW_CALL_RE.match(ns):
+                if _draw_comment_name(ns) is not None or _DRAW_CALL_RE.match(ns) or re.match(r'if\s+', ns, re.I):
                     i = j
                     continue
             break
@@ -276,11 +295,14 @@ def _split_draw_entries(draw_lines):
     entries = []
     cur = {"name": None, "lines": []}
     for line in draw_lines:
-        m = _DRAW_COMMENT_RE.match(line)
-        if m:
+        name = _draw_comment_name(line)
+        if name is not None:
+            leading_conditions = []
+            while cur['lines'] and re.match(r'^\s*if\s+', cur['lines'][-1], re.I):
+                leading_conditions.insert(0, cur['lines'].pop())
             if cur["lines"]:
                 entries.append(cur)
-            cur = {"name": m.group(1).strip(), "lines": [line]}
+            cur = {"name": name, "lines": leading_conditions + [line]}
         else:
             cur["lines"].append(line)
     if cur["lines"]:
@@ -471,13 +493,14 @@ def _enable_textureoverride_commandlist(body, comp_id):
     return new_body
 
 
-def inject_cross_ib(ini_text, settings, extracted_object, merged_object, buffers, extra_ps_slots_map=None, source_folder=None, frame_dump_folder=None, cfg=None, context=None):
+def inject_cross_ib(ini_text, settings, extracted_object, merged_object, buffers, extra_ps_slots_map=None, source_folder=None, frame_dump_folder=None, cfg=None, context=None, formatter=None):
     providers_map, consumers_map, resources_str = generator.build_cross_ib(
         settings, extracted_object, buffers, merged_object,
         source_folder=source_folder,
         frame_dump_folder=frame_dump_folder,
         cfg=cfg,
         context=context,
+        formatter=formatter,
     )
     # Idempotency: drop any previously appended velo resource block, and (in the
     # loop below) skip any CommandList body that is already injected. EFMI
@@ -631,6 +654,7 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
                     None,
                     self.cfg,
                     context,
+                    formatter=getattr(self, 'formatter', None),
                 )
                 print("[CrossIB] Injection done.")
             except Exception:

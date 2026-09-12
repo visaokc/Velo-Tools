@@ -713,6 +713,8 @@ ZH_TRANSLATIONS = {
     'Merge vertex groups with the same name': '合并同名顶点组',
     'Merge vertices with the same name before the decimal suffix in the selected objects, for example, merge 7, 7.1, 7.3 into the same group.': '把选中物体中小数后缀前名称相同的顶点组合并，例如把 7、7.1、7.3 合并到同一组。',
     'Merge weights for the same target according to the mapping': '按映射合并同目标来源权重',
+    "Source group '{0}' belongs to multiple mapping targets; resolve the conflicting rows before merging.": "来源组 '{0}' 同时指向多个映射目标；请先解决冲突行再合并。",
+    "Mapping-family merging requires a single-user mesh; make the source mesh single-user first.": "按映射合并权重需要单用户 Mesh；请先将来源 Mesh 设为单用户。",
     'Merged': 'Merged',
     'Merged (Merged Skeleton)': 'Merged（合并骨架）',
     'Merged (Unified Vertex Groups)': 'Merged（统一顶点组）',

@@ -432,12 +432,16 @@ def _mapping_merge_groups(obj, armature, grouped_rows, *, mode):
     moved_vertices = 0
     removed_groups = 0
     changed_rows = []
+    plans = []
+    owners = {}
+    # Validate every family before changing any weights or deleting any groups.
     for target_name, entries in grouped_rows.items():
         resolved = []
         for row_index, row, source_names in entries:
             group = _first_existing_group(obj, source_names)
             if group is None:
                 continue
+            owners.setdefault(group.name, set()).add(target_name)
             resolved.append({
                 "row_index": row_index,
                 "row": row,
@@ -475,22 +479,45 @@ def _mapping_merge_groups(obj, armature, grouped_rows, *, mode):
             changed_rows.append(item["row"])
         if not redundant:
             continue
-        _algo.write_group_weights(obj, keeper_group, merged_weights)
-        for group in redundant:
-            _algo.clear_vertex_group(obj, group)
-            merged_groups += 1
-            if _remove_group_if_empty(obj, group):
-                removed_groups += 1
-    if mode == 'MMD':
+        plans.append((keeper_group, merged_weights, redundant))
+
+    if plans and getattr(obj.data, 'users', 1) > 1:
+        raise ValueError(iface_("Mapping-family merging requires a single-user mesh; make the source mesh single-user first."))
+    snapshots = {}
+    for keeper_group, _weights, redundant in plans:
+        for group in [keeper_group, *redundant]:
+            if len(owners[group.name]) > 1:
+                raise ValueError(iface_(
+                    "Source group '{0}' belongs to multiple mapping targets; resolve the conflicting rows before merging."
+                ).format(group.name))
+            _snapshot_group(snapshots, obj, group)
+    target_attr = 'unified_name' if mode == 'MMD' else 'target_name'
+    row_values = [(row, getattr(row, target_attr)) for row in changed_rows]
+    try:
+        with _algo.suppress_native_mirror_flags(obj):
+            for keeper_group, merged_weights, redundant in plans:
+                _algo.write_group_weights(obj, keeper_group, merged_weights)
+                for group in redundant:
+                    _algo.clear_vertex_group(obj, group)
+                    merged_groups += 1
         for row in changed_rows:
-            if (row.unified_name or "").strip():
-                row.unified_name = ""
+            if (getattr(row, target_attr) or "").strip():
+                setattr(row, target_attr, "")
                 disconnected_rows += 1
-    else:
-        for row in changed_rows:
-            if (row.target_name or "").strip():
-                row.target_name = ""
-                disconnected_rows += 1
+    except Exception:
+        # Groups still exist here, so rollback preserves their indices and locks.
+        with _algo.suppress_native_mirror_flags(obj):
+            for name, memberships in snapshots.items():
+                _algo.restore_group_memberships(obj, obj.vertex_groups[name], memberships)
+        for row, value in row_values:
+            setattr(row, target_attr, value)
+        raise
+
+    # Delay irreversible group deletion until every weight and row write succeeded.
+    redundant_names = [group.name for _, _, redundant in plans for group in redundant]
+    for name in redundant_names:
+        if _remove_group_if_empty(obj, obj.vertex_groups.get(name)):
+            removed_groups += 1
     return merged_groups, disconnected_rows, moved_vertices, removed_groups
 
 
