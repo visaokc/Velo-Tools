@@ -547,10 +547,19 @@ def _actual_route_pairs_for_object(root, obj):
     materials = []
     texture_keys = []
     component_ids = []
-    for slot in obj.material_slots:
+    # Unused or duplicate slots do not make a physically separated part virtual.
+    used_slots = ({0} if len(obj.material_slots) == 1
+                  else {polygon.material_index for polygon in obj.data.polygons})
+    seen_materials = set()
+    for index, slot in enumerate(obj.material_slots):
+        if index not in used_slots:
+            continue
         mat = getattr(slot, "material", None)
         if mat is None or not getattr(mat, "name", ""):
             continue
+        if mat in seen_materials:
+            continue
+        seen_materials.add(mat)
         materials.append(mat)
         texture_keys.append(frozenset(_image_keys_of_material(mat)))
         component_id = _component_id_from_name(mat.name)
@@ -1032,7 +1041,7 @@ def prepare_material_route_export(context):
         "owned_clones": [],
         "created_objects": [],
     }
-    working_meshes = []
+    working_meshes = {False: [], True: []}
     passthrough_meshes = []
 
     try:
@@ -1047,17 +1056,22 @@ def prepare_material_route_export(context):
                 collection for collection in getattr(obj, "users_collection", ())
                 if _collection_is_descendant(root, collection)
             ]
+            export_links = original_links
             if ignore_hidden_collections:
-                original_links = [
+                export_links = [
                     collection for collection in original_links
                     if _collection_is_visible_in_view_layer(collection, context)
                 ]
-            if not original_links:
+            if not export_links:
                 continue
 
+            # The virtual tree describes still-merged material parts. An actual
+            # separated object owns its current links, even when another object
+            # shares its material or no depsgraph refresh has happened yet.
+            use_virtual_routes = not bool(_actual_route_pairs_for_object(root, obj))
             if is_export_temp_object(obj):
                 _mark_export_temp_object(obj)
-                working_meshes.append(obj)
+                working_meshes[use_virtual_routes].append(obj)
                 continue
 
             was_hidden = bool(getattr(obj, "hide_get", None) and obj.hide_get())
@@ -1088,33 +1102,35 @@ def prepare_material_route_export(context):
             if was_hidden and not ignore_hidden_objects:
                 clone.hide_set(False)
 
-            for collection in original_links:
+            for collection in export_links:
                 collection.objects.link(clone)
-            for collection in original_links:
+            for collection in export_links:
                 collection.objects.unlink(obj)
 
             state["original_links"].append((obj, tuple(original_links), was_hidden))
             state["owned_clones"].append(clone)
-            working_meshes.append(clone)
+            working_meshes[use_virtual_routes].append(clone)
 
-        if not working_meshes and not passthrough_meshes:
+        if not any(working_meshes.values()) and not passthrough_meshes:
             return None
 
-        targets = list(passthrough_meshes)
-        if working_meshes:
+        for use_virtual_routes, sources in working_meshes.items():
+            if not sources:
+                continue
             threshold = float(getattr(getattr(scene, "velo_tools", None), "shapekey_cleanup_threshold", _EPS))
             stats = _split_meshes_by_material(
                 context,
-                working_meshes,
+                sources,
                 threshold=threshold,
                 preserve_component_prefix=True,
             )
             split_targets = list(stats["targets"])
             for obj in split_targets:
                 _mark_export_temp_object(obj)
-            state["created_objects"] = [obj for obj in split_targets if obj not in working_meshes]
-            targets.extend(split_targets)
-        _route_meshes_to_component_sets(scene, targets, refresh_after=False, preserve_object_names=True)
+            state["created_objects"].extend(obj for obj in split_targets if obj not in sources)
+            if use_virtual_routes:
+                _route_meshes_to_component_sets(
+                    scene, split_targets, refresh_after=False, preserve_object_names=True)
         return state
     except Exception:
         restore_material_route_export(state)
