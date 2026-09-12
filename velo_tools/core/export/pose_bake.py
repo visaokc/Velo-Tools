@@ -6,10 +6,14 @@ import numpy as np
 from ...i18n import iface_
 
 
-def bake_before_group_remap(context, obj, apply_modifiers):
+_MERGER_PATCHES = []
+
+
+def bake_before_group_remap(context, obj, apply_modifiers, *, require_armature=True):
     """Freeze the visible stack once, preserving relative ShapeKey coordinates."""
     if not apply_modifiers or not any(
-        mod.type == 'ARMATURE' and mod.show_viewport and mod.object is not None
+        mod.show_viewport and (not require_armature or
+                              (mod.type == 'ARMATURE' and mod.object is not None))
         for mod in obj.modifiers
     ):
         return
@@ -74,6 +78,8 @@ def bake_before_group_remap(context, obj, apply_modifiers):
                 if mesh != baked:
                     bpy.data.meshes.remove(mesh)
         obj.data = baked
+        if hasattr(old_mesh, "smooth_normal_color_enabled"):
+            baked.smooth_normal_color_enabled = old_mesh.smooth_normal_color_enabled
         if metadata:
             basis = np.empty(len(baked.vertices) * 3, dtype=np.float32)
             baked.vertices.foreach_get('co', basis)
@@ -107,6 +113,7 @@ def bake_before_group_remap(context, obj, apply_modifiers):
         obj.modifiers.clear()
         obj.show_only_shape_key = show_only
         obj.active_shape_key_index = active_index
+
         context.view_layer.update()
         evaluated = obj.evaluated_get(context.evaluated_depsgraph_get())
         visible = evaluated.to_mesh()
@@ -127,3 +134,32 @@ def bake_before_group_remap(context, obj, apply_modifiers):
     finally:
         obj.show_only_shape_key = show_only
         obj.active_shape_key_index = active_index
+
+
+def install_merger_hooks():
+    """Bake ShapeKey modifier stacks once on native disposable export objects."""
+    if _MERGER_PATCHES:
+        return
+    from ...games.arknights_endfield._efmi_core.blender_export.blender_export import ObjectMergerEFMI
+    from ...games.wuthering_waves._wwmi_core.blender_export.blender_export import ObjectMergerWWMI
+
+    def wrap(original):
+        def finalize_temp_objects_geometry(self):
+            if self.apply_modifiers:
+                for component in self.components:
+                    for temp in component.objects:
+                        if temp.object.data.shape_keys is not None:
+                            bake_before_group_remap(self.context, temp.object, True, require_armature=False)
+            return original(self)
+        return finalize_temp_objects_geometry
+
+    for cls in (ObjectMergerEFMI, ObjectMergerWWMI):
+        original = cls.finalize_temp_objects_geometry
+        cls.finalize_temp_objects_geometry = wrap(original)
+        _MERGER_PATCHES.append((cls, original))
+
+
+def remove_merger_hooks():
+    for cls, original in reversed(_MERGER_PATCHES):
+        cls.finalize_temp_objects_geometry = original
+    _MERGER_PATCHES.clear()

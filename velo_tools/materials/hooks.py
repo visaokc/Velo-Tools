@@ -47,6 +47,31 @@ def validate_mode(cfg, game, scene=None):
         raise ValueError(iface_("Material textures currently require Cross-IB to be disabled"))
 
 
+def _uses_original_image(image, files, folder):
+    """Skip exact native payloads, not merely images carrying a familiar name."""
+    if image.source != "FILE" or image.is_dirty:
+        return False
+    path = Path(bpy.path.abspath(image.filepath, library=image.library)).resolve()
+    basename = _image_source_basename(image)
+    candidates = [(folder / name).resolve() for name in files
+                  if basename.casefold() == name.casefold() or path == (folder / name).resolve()]
+    if not candidates:
+        return False
+    if path in candidates and not image.packed_file:
+        return True
+    cache = export_cache.current()
+    if image.packed_file:
+        content = cache.packed_bytes(image) if cache is not None else bytes(image.packed_file.data)
+    else:
+        content = cache.read(path) if cache is not None else path.read_bytes()
+    for candidate in candidates:
+        original = cache.read(candidate) if cache is not None else candidate.read_bytes()
+        if content == original:
+            return True
+    # The native exporter will copy this same destination basename as well.
+    raise ValueError(iface_("Material image output conflicts with an existing file: {0}").format(f"Textures/{basename}"))
+
+
 def resolve_material_images(material, game, component, folder, catalogs):
     images = nodes.connected_images(material)
     if not images:
@@ -73,6 +98,8 @@ def resolve_material_images(material, game, component, folder, catalogs):
             continue
         if not identity or identity not in current:
             raise ValueError(iface_("{0}: choose the original texture for {1} in Material Tools").format(material.name, iface_(model.ROLES[role])))
+        if _uses_original_image(image, current[identity].get("files", ()), folder):
+            continue
         values.append((identity, image))
     result = tuple(values)
     if cache is not None:

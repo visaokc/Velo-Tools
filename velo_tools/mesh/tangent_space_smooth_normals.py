@@ -100,6 +100,7 @@ def generate_color_data(mesh):
     for loop_index, value in enumerate(loop_data):
         target.data[loop_index].color = (value[0], value[1], 0.0, 0.0)
     _activate_source_uv(mesh, source_uv)
+    mesh.smooth_normal_color_enabled = True
 
 
 class _GenerateSmoothNormalDataBase:
@@ -168,6 +169,14 @@ _classes = (
 
 
 def register():
+    bpy.types.Mesh.smooth_normal_color_enabled = bpy.props.BoolProperty(
+        name="Enable COLOR Outline Normals",
+        description=(
+            "Allow Endfield export to activate authored COLOR R/G outline normals for this mesh's Component. "
+            "Imported COLOR is not enabled automatically"
+        ),
+        default=False,
+    )
     for cls in _classes:
         bpy.utils.register_class(cls)
 
@@ -175,3 +184,5 @@ def register():
 def unregister():
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)
+    if hasattr(bpy.types.Mesh, "smooth_normal_color_enabled"):
+        del bpy.types.Mesh.smooth_normal_color_enabled

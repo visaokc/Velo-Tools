@@ -351,8 +351,10 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
     # Render without checksum, post-process, then re-checksum.
     result = orig(self, context, cfg, template_string=template_string, with_checksum=False)
     from .....core.export.ini_names import generated_object_names, sanitize_generated_object_names
+    self._export_drawvar_renames = {}
     result = sanitize_generated_object_names(
-        result, generated_object_names(cfg), self.formatter.format_ini_drawvar)
+        result, generated_object_names(cfg), self.formatter.format_ini_drawvar,
+        renames_out=self._export_drawvar_renames)
 
     if _settings_enabled() and _bake_results:
         try:

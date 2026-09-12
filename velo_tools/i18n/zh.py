@@ -1307,6 +1307,8 @@ ZH_TRANSLATIONS = {
     'Generate Smooth Normal TEXCOORD4': '生成平滑法线 TEXCOORD4',
     'Generate Endfield tangent-space smooth-normal X/Y data and store it in TEXCOORD4.xy': '生成终末地切线空间平滑法线 X/Y 数据，并存入 TEXCOORD4.xy',
     'Generate Smooth Normal COLOR': '生成平滑法线 COLOR',
+    'Enable COLOR Outline Normals': '启用 COLOR 描边法线',
+    "Allow Endfield export to activate authored COLOR R/G outline normals for this mesh's Component. Imported COLOR is not enabled automatically": '允许终末地导出时为此网格所属的 Component 启用自制 COLOR R/G 描边法线。导入的原始 COLOR 不会自动启用',
     'Generate Endfield tangent-space smooth-normal X/Y data in COLOR R/G; only use it when the target COLOR semantic stores smooth normals': '在 COLOR R/G 中生成终末地切线空间平滑法线 X/Y 数据；仅在目标 COLOR semantic 确实存储平滑法线时使用',
     'A regular UV map is required to calculate tangent space': '需要常规 UV 贴图才能计算切线空间',
     'Could not generate data: {0}': '无法生成数据：{0}',

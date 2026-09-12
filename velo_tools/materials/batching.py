@@ -127,7 +127,9 @@ def prepare_merger(merger, cfg, game, resolve_images, image_payload):
                             if identity in replacements and replacements[identity] != resource:
                                 raise ValueError(iface_("Two semantic inputs replace the same original texture differently"))
                             replacements[identity] = resource
-                        materials[key] = tuple(sorted(replacements.items())) or None
+                        # A validated native-only material is a known empty binding,
+                        # not an unknown/transparent ordering barrier.
+                        materials[key] = tuple(sorted(replacements.items()))
                 signature = materials[key]
                 if signature is None:
                     blocked = True

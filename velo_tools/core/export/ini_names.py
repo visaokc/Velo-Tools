@@ -62,21 +62,27 @@ def generated_object_names(cfg):
             if getattr(obj, 'get', None) and obj.get(DISPLAY_NAME_KEY)}
 
 
-def sanitize_generated_object_names(text, names, format_drawvar=None):
-    """Clean only exact generated draw labels and their formatter-owned controls."""
-    names = dict(names)
-    if not names:
-        return text
+def sanitize_draw_labels(text, names):
+    """Clean exact generated labels, including late borrowed-geometry draws."""
     result = []
     for line in text.splitlines(keepends=True):
         for pattern in (r'^(\s*;\s*Draw object ")(.*)(":\s*)$',
+                        r'^(\s*;\s*Draw provider )(.*?)(\s*)$',
                         r'^(\s*;\s*Draw )(.*?)(\s*)$'):
             match = re.fullmatch(pattern, line)
             if match and match[2] in names:
                 line = match[1] + names[match[2]] + match[3]
                 break
         result.append(line)
-    text = ''.join(result)
+    return ''.join(result)
+
+
+def sanitize_generated_object_names(text, names, format_drawvar=None, *, renames_out=None):
+    """Clean labels and expose the exact collision-resolved control identities."""
+    names = dict(names)
+    if not names:
+        return text
+    text = sanitize_draw_labels(text, names)
     if format_drawvar is None:
         return text
     candidates = [(format_drawvar(name), format_drawvar(display))
@@ -93,4 +99,6 @@ def sanitize_generated_object_names(text, names, format_drawvar=None):
             target = f'{base}_{ordinal:03d}'
         occupied.add(target.casefold())
         renames[old] = target
+    if renames_out is not None:
+        renames_out.update(renames)
     return rewrite_identifiers(text, renames)

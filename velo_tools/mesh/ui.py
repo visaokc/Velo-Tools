@@ -330,6 +330,9 @@ class MESH_PT_vertex_color_tools(bpy.types.Panel):
             "mesh_tools.generate_smooth_normal_color",
             icon='COLOR',
         )
+        obj = context.active_object
+        if obj is not None and obj.type == 'MESH':
+            column.prop(obj.data, "smooth_normal_color_enabled")
 
 
 class VELO_PT_shapekey_panel(bpy.types.Panel):

@@ -369,6 +369,8 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
 
 
 def install_export_hook():
+    from .pose_bake import install_merger_hooks
+    install_merger_hooks()
     # Targets are derived from the game registry (single source of truth), one per game: export operator class name + its settings attr.
     # Idempotent: already-patched operator classes are skipped. Each game can hook in by calling this function after its driver registers the descriptor.
     try:
@@ -389,6 +391,8 @@ def install_export_hook():
 
 
 def remove_export_hook():
+    from .pose_bake import remove_merger_hooks
+    remove_merger_hooks()
     for cls_id, (cls, orig, label) in list(_PATCHED.items()):
         try:
             cls.execute = orig

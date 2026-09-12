@@ -656,6 +656,13 @@ def _patched_build_from_template(self, context, cfg, template_string=None, with_
                     context,
                     formatter=getattr(self, 'formatter', None),
                 )
+                # Native authoring controls were named before this late injection.
+                # Reuse that exact map, including collision suffixes, for borrow draws.
+                from .....core.export.ini_names import (
+                    generated_object_names, rewrite_identifiers, sanitize_draw_labels,
+                )
+                result = rewrite_identifiers(result, getattr(self, '_export_drawvar_renames', {}))
+                result = sanitize_draw_labels(result, generated_object_names(self.cfg))
                 print("[CrossIB] Injection done.")
             except Exception:
                 print("[CrossIB] Injection failed:")
@@ -692,18 +699,19 @@ def _patched_write(self, ini_string=None, ini_path=None):
             ini_path = mod_folder / "mod.ini"
         output_folder = Path(ini_path).parent
         settings = getattr(bpy.context.scene, "crossib_settings", None)
+        main_ini_text = ini_string if ini_string is not None else getattr(self, "ini_string", None)
+        if main_ini_text is None and Path(ini_path).is_file():
+            main_ini_text = Path(ini_path).read_text(encoding="utf-8")
         active = bool(
             settings is not None
             and settings.enabled
             and len(settings.mappings) > 0
+            and _body_is_injected((main_ini_text or "").splitlines())
         )
         classifier_path = output_folder / CLASSIFIER_FILENAME
 
         hlsl_dst = output_folder / "hlsl"
         if active:
-            main_ini_text = ini_string or getattr(self, "ini_string", None)
-            if not main_ini_text and Path(ini_path).is_file():
-                main_ini_text = Path(ini_path).read_text(encoding="utf-8")
             namespace = namespace_from_ini(main_ini_text or "")
             if namespace is None:
                 from .sidecar import _resolve_source

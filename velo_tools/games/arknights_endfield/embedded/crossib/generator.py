@@ -110,6 +110,18 @@ def _iter_mapping_meshes(mapping, cfg=None, context=None):
     obj = mapping.source_object
     if _object_allowed_by_export_filters(obj, cfg, context):
         yield obj
+    elif obj is not None and cfg is not None:
+        root = getattr(cfg, "component_collection", None)
+        for candidate in getattr(root, "all_objects", ()):
+            getter = getattr(candidate, "get", None)
+            if not callable(getter):
+                continue
+            from .....core.export.ini_names import DISPLAY_NAME_KEY
+            # Host preprocessing temporarily unlinks the selected original.
+            # Follow its proven export copy instead of silently losing the row.
+            if (getter(DISPLAY_NAME_KEY) == obj.name
+                    and _object_allowed_by_export_filters(candidate, cfg, context)):
+                yield candidate
 
 
 def _source_name_aliases(mapping, cfg=None, context=None):
