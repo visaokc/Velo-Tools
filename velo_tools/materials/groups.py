@@ -161,7 +161,7 @@ def find(state, obj, material, role):
 def remap(state, plans):
     """Move only explicitly replaced object/material uses, not their other users."""
     replacements = {(obj.as_pointer(), original.as_pointer()): replacement
-                    for obj, _index, original, replacement in plans}
+                    for obj, _index, original, replacement in plans if original is not None}
     return [{**group, "members": [
         {**member, "material": replacements.get(
             (member["object"].as_pointer(), member["material"].as_pointer()), member["material"])}

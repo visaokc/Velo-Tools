@@ -56,43 +56,78 @@ def _selected_slots(context, *, used_only=True):
                 yield obj, index, slot.material
 
 
-def _commit(plans, *, scene=None, group_state=None, keep_backups=True):
-    """Object-linked slots isolate unselected users of a shared mesh/material."""
+def _commit(plans, *, scene=None, group_state=None, keep_backups=True, prefer_data=False):
+    """Preserve effective slots and remap explicit groups as one transaction.
+
+    Local single-user DATA slots stay DATA. Shared meshes use OBJECT overrides
+    to isolate other users without copying geometry. Naming may request DATA
+    after it has explicitly made the mesh single-user.
+    """
+    plans = list(plans)
     scene = scene or bpy.context.scene
     previous_groups = groups.snapshot(scene)
     next_groups = groups.remap(previous_groups if group_state is None else group_state, plans)
+    group_changes = [(scene, previous_groups, next_groups)]
+    # Object slots are shared across scenes; copied material IDs must follow
+    # the same object uses in every scene, without recruiting new members.
+    if plans:
+        for other_scene in bpy.data.scenes:
+            if other_scene == scene or not getattr(other_scene, "material_texture_groups", ()):
+                continue
+            previous = groups.snapshot(other_scene)
+            updated = groups.remap(previous, plans)
+            if updated != previous:
+                group_changes.append((other_scene, previous, updated))
     token_backups = {member[kind]: member[kind].get(groups._OBJECT_KEY)
-                     for group in next_groups for member in group["members"]
+                     for _owner, _previous, updated in group_changes
+                     for group in updated for member in group["members"]
                      for kind in groups._KINDS if member[kind] is not None}
     object_cache = dict(groups._ID_CACHE)
     object_uids = dict(groups._ID_UIDS)
     object_names = dict(groups._ID_NAMES)
-    changed = []
+    changed, attempted_groups = [], []
     backups = {}
-    attempted_groups = False
     try:
+        # Validate the entire plan before a DATA assignment can affect another
+        # slot's effective material. Shared mesh writes remain object-local.
+        for obj, index, original, replacement in plans:
+            if obj.material_slots[index].material != original:
+                raise ValueError(iface_("The target material changed; reopen the texture picker"))
         for obj, index, original, replacement in plans:
             slot = obj.material_slots[index]
-            if slot.material != original:
-                raise ValueError(iface_("The target material changed; reopen the texture picker"))
-            changed.append((obj, index, slot.link, original))
-            slot.link = "OBJECT"
+            link = slot.link
+            data = obj.data
+            single_data = data.library is None and data.users - int(data.use_fake_user) <= 1
+            target_link = "DATA" if single_data and (prefer_data or link == "DATA") else "OBJECT"
+            slot.link = target_link
+            prior_target = slot.material
+            changed.append((obj, index, link, target_link, original, prior_target))
             slot.material = replacement
-            if keep_backups and original.library is None:
+            if link == "OBJECT" and target_link == "DATA":
+                # Do not retain a hidden OBJECT reference after safe migration.
+                slot.link = "OBJECT"
+                slot.material = None
+                slot.link = "DATA"
+            if keep_backups and original is not None and original.library is None:
                 backups.setdefault(original, original.use_fake_user)
                 original.use_fake_user = True
-        if next_groups != previous_groups:
-            attempted_groups = True
-            groups.write(scene, next_groups)
+        for owner, previous, updated in group_changes:
+            if updated != previous:
+                attempted_groups.append((owner, previous))
+                groups.write(owner, updated)
     except Exception:
-        for obj, index, link, original in reversed(changed):
+        for obj, index, link, target_link, original, prior_target in reversed(changed):
             slot = obj.material_slots[index]
-            slot.material = original
+            slot.link = target_link
+            slot.material = prior_target
             slot.link = link
+            if link != target_link:
+                slot.material = original
         for material, fake_user in backups.items():
             material.use_fake_user = fake_user
+        for owner, previous in reversed(attempted_groups):
+            groups.restore(owner, previous)
         if attempted_groups:
-            groups.restore(scene, previous_groups)
             for obj, token in token_backups.items():
                 if token is None:
                     if groups._OBJECT_KEY in obj:

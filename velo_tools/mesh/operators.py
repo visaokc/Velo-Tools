@@ -1366,28 +1366,53 @@ def _get_or_create_named_material(name):
 
 
 def _sync_object_material_name(obj, *, skip_multiple_slots=False):
+    """Name the effective first material, including legacy OBJECT overrides."""
     if not is_real_mesh(obj) or obj.data is None:
         return False
-    if skip_multiple_slots and len(obj.data.materials) > 1:
+    if obj.library and not obj.override_library:
+        return False
+    if skip_multiple_slots and len(obj.material_slots) > 1:
         return False
 
+    from ..materials import ui as material_ui
+
     obj_name = obj.name
-    if obj.data.users > 1:
-        obj.data = obj.data.copy()
+    original_mesh = obj.data
+    original = obj.material_slots[0].material if obj.material_slots else None
+    material = original
+    created_material = None
+    copied_mesh = None
+    appended = False
+    try:
+        if original_mesh.library or original_mesh.users - int(original_mesh.use_fake_user) > 1:
+            copied_mesh = original_mesh.copy()
+            obj.data = copied_mesh
+        if material is None:
+            material = bpy.data.materials.new(name=obj_name)
+            created_material = material
+        elif material.library or material.users - int(material.use_fake_user) > 1:
+            material = material.copy()
+            created_material = material
+        if not obj.material_slots:
+            obj.data.materials.append(None)
+            appended = True
+        # Repeated uses of the first material remain one material identity;
+        # distinct later slots and their polygon assignments are untouched.
+        indices = [index for index, slot in enumerate(obj.material_slots)
+                   if (slot.material == original if original is not None else index == 0)]
+        plans = [(obj, index, original, material) for index in indices]
+        material_ui._commit(plans, keep_backups=False, prefer_data=True)
+    except Exception:
+        if copied_mesh is not None:
+            obj.data = original_mesh
+            if copied_mesh.users == 0:
+                bpy.data.meshes.remove(copied_mesh)
+        elif appended:
+            obj.data.materials.pop(index=len(obj.data.materials)-1)
+        if created_material is not None and created_material.users == 0:
+            bpy.data.materials.remove(created_material)
+        raise
     _claim_name(bpy.data.meshes, obj.data, obj_name)
-
-    materials = obj.data.materials
-    if len(materials) == 0:
-        materials.append(_get_or_create_named_material(obj_name))
-        return True
-
-    material = materials[0]
-    if material is None:
-        materials[0] = _get_or_create_named_material(obj_name)
-        return True
-    if material.users > 1:
-        material = material.copy()
-        materials[0] = material
     _claim_name(bpy.data.materials, material, obj_name)
     return True
 
