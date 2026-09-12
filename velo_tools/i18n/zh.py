@@ -1573,6 +1573,7 @@ ZH_TRANSLATIONS.update({
     "Texture File Path": "使用贴图路径",
     "Actual connected image path; use the adjacent button to replace images without changing unrelated image users": "显示节点实际连接的图像路径；用旁边按钮更换贴图，不影响未关联的图像用户",
     "The target material changed; reopen the texture picker": "目标材质已经改变，请重新打开贴图选择器",
+    "Could not preserve material name: {0}": "无法保留材质名称：{0}",
     "Unknown texture role": "未知贴图用途",
     "The sync group changed; reopen the texture picker": "贴图同步组已经改变，请重新打开贴图选择器",
     "Choose an existing image file": "请选择存在的图像文件",

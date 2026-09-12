@@ -56,6 +56,37 @@ def _selected_slots(context, *, used_only=True):
                 yield obj, index, slot.material
 
 
+def _preserve_replacement_names(plans, renamed):
+    """Transfer an exclusively replaced name, never take it from a live user.
+
+    Copies are staged for rollback and user isolation, not for user-facing
+    renaming. Only a one-to-one replacement may inherit an unused local
+    original's exact name. Genuine shared-user forks retain distinct names.
+    """
+    replacements, owners = {}, {}
+    for _obj, _index, original, replacement in plans:
+        if original is None or replacement is None or original == replacement:
+            continue
+        replacements.setdefault(original, set()).add(replacement)
+        owners.setdefault(replacement, set()).add(original)
+    for original, targets in replacements.items():
+        if len(targets) != 1 or original.library is not None:
+            continue
+        replacement = next(iter(targets))
+        if (len(owners[replacement]) != 1 or replacement.library is not None
+                or original.users - int(original.use_fake_user) != 0):
+            continue
+        name = original.name
+        renamed.append((original, name, replacement, replacement.name))
+        original.name = "Backup " + name
+        if original.name == name:
+            # A maximum-length repeated prefix must still release the name.
+            original.name = "Backup 1 " + name
+        replacement.name = name
+        if replacement.name != name:
+            raise ValueError(iface_("Could not preserve material name: {0}").format(name))
+
+
 def _commit(plans, *, scene=None, group_state=None, keep_backups=True, prefer_data=False):
     """Preserve effective slots and remap explicit groups as one transaction.
 
@@ -85,7 +116,7 @@ def _commit(plans, *, scene=None, group_state=None, keep_backups=True, prefer_da
     object_cache = dict(groups._ID_CACHE)
     object_uids = dict(groups._ID_UIDS)
     object_names = dict(groups._ID_NAMES)
-    changed, attempted_groups = [], []
+    changed, attempted_groups, renamed = [], [], []
     backups = {}
     try:
         # Validate the entire plan before a DATA assignment can affect another
@@ -111,11 +142,15 @@ def _commit(plans, *, scene=None, group_state=None, keep_backups=True, prefer_da
             if keep_backups and original is not None and original.library is None:
                 backups.setdefault(original, original.use_fake_user)
                 original.use_fake_user = True
+        _preserve_replacement_names(plans, renamed)
         for owner, previous, updated in group_changes:
             if updated != previous:
                 attempted_groups.append((owner, previous))
                 groups.write(owner, updated)
     except Exception:
+        for original, name, replacement, staged_name in reversed(renamed):
+            replacement.name = staged_name
+            original.name = name
         for obj, index, link, target_link, original, prior_target in reversed(changed):
             slot = obj.material_slots[index]
             slot.link = target_link
@@ -430,6 +465,7 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
             entries = list(_selected_slots(context))
             state = groups.current_state(context.scene)
             source, images = _propagation_source(context, entries)
+            source_name = source.name
             diffuse = images["DIFFUSE"]
             key_diffuse = nodes.image_key(diffuse)
             witness_entries = list(_selected_slots(context, used_only=False))
@@ -492,7 +528,7 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
             self.report({"ERROR"}, iface_("Material operation failed: {0}").format(exc))
             return {"CANCELLED"}
         self.report({"INFO"}, iface_("Source {0}: matched {1} materials, connected {2} maps, refreshed {3} mappings, {4} unresolved roles").format(
-            source.name, len(matched), filled, mapped, unresolved))
+            source_name, len(matched), filled, mapped, unresolved))
         if linked:
             self.report({"INFO"}, iface_("Linked {0} texture roles; replace a group from any member").format(linked))
         if not copies and not linked:
