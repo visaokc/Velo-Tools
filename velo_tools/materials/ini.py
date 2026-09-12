@@ -138,6 +138,7 @@ def source_resources(text, textures):
 def _coalesce_transactions(output):
     """Remove only consecutive restore/apply pairs for the exact same scope."""
     previous_restore = None
+    removed = set()
     for index, line in enumerate(output):
         run = _RUN.match(line)
         if run and run.group(1).startswith("CommandListRestoreMaterial"):
@@ -145,12 +146,12 @@ def _coalesce_transactions(output):
         elif run and run.group(1).startswith("CommandListApplyMaterial") and previous_restore is not None:
             old = output[previous_restore]
             if old.replace("RestoreMaterial", "ApplyMaterial") == line:
-                output[previous_restore] = ""
-                output[index] = ""
+                removed.update((previous_restore, index))
             previous_restore = None
         elif line.strip() and not line.lstrip().startswith(";"):
             previous_restore = None
-    return output
+    # Delete command rows rather than replacing each with a new blank line.
+    return [line for index, line in enumerate(output) if index not in removed]
 
 
 def _hoist_draw_guards(lines):
