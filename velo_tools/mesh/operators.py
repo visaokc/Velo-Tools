@@ -459,15 +459,16 @@ def _component_id_from_name(name):
 def _component_id_from_object(obj, root=None):
     if obj is None:
         return None
+    # Authored prefixes outrank cached import identity and collection organization.
+    component_id = _component_id_from_name(obj.name or "")
+    if component_id is not None:
+        return component_id
     raw = obj.get("velo_component_id") if hasattr(obj, "get") else None
     if raw is not None:
         try:
             return int(raw)
         except (TypeError, ValueError):
             pass
-    component_id = _component_id_from_name(obj.name or "")
-    if component_id is not None:
-        return component_id
     if root is not None:
         for collection in getattr(obj, "users_collection", ()):
             if not _collection_is_descendant(root, collection):
@@ -1680,6 +1681,11 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
     for obj in targets:
         if obj.type == 'MESH':
             cleaned_slots += _trim_to_used_material(obj)
+    # Name reservation removes component prefixes. Capture identity before it,
+    # rather than recovering a stale imported id from the temporary name later.
+    component_ids = {
+        obj: _component_id_from_object(obj) for obj in targets
+    } if preserve_component_prefix else {}
     _reserve_split_target_names(targets)
     for obj in targets:
         if obj.type != 'MESH':
@@ -1707,7 +1713,7 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
         if obj.data.shape_keys:
             obj.active_shape_key_index = 0
         if preserve_component_prefix:
-            if _rename_to_component_material(obj, _component_id_from_object(obj)):
+            if _rename_to_component_material(obj, component_ids.get(obj)):
                 renamed += 1
         else:
             if _rename_to_sole_material(obj):
