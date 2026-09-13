@@ -1,8 +1,15 @@
 # Velo Tools User Manual
 
-This manual covers Velo Tools 1.6.6 and identifies additions in 1.6.7-dev. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+This manual covers Velo Tools 1.7.0. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
 
 Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
+
+## What Is New in 1.7.0
+
+- Material Tools provide semantic texture mapping, persistent material groups, per-draw texture bindings, and readable texture resource names. Material routing remains optional; disabling Auto Split by Material restores object-name-based Component routing.
+- COLOR outline activation is explicit. Imported meshes keep native behavior by default; generating smooth-normal COLOR enables the mesh option. Activation is shared by the exported Component, not isolated to one draw. If the native controller is already enabled, opting in does not add a second outline or double its width.
+- Material separation and export respect current physical collection membership after manual moves, while genuinely merged material parts retain their virtual destinations. ShapeKey, shared-mesh, Mirror, mapping, and export-state handling have also been hardened.
+- Material texture routing still requires a supported ordinary single-source export workflow; it is not enabled for unsupported CrossIB or Cross-Scene combinations. Capture diagnostics do not guarantee coverage of every shader or replace in-game verification.
 
 ## Table of Contents
 
@@ -39,7 +46,7 @@ Velo Tools follows Blender's interface language. Simplified and Traditional Chin
 | **顶点组工具** | Vertex Group Tools | Batch vertex-group work and name mapping |
 | **网格工具** | Mesh Tools | Materials, collection routing, sculpt helpers, and ShapeKey aggregation |
 | **权重工具** | Weight Tools | Transfer, mirror, normalize, smooth, and repair weights |
-| **材质工具** | Material Tools | Semantic image inputs, original texture mapping, and per-draw Slot textures (1.6.7-dev) |
+| **材质工具** | Material Tools | Semantic image inputs, original texture mapping, and per-draw Slot textures (1.7.0) |
 | **游戏** | Game | EFMI and WWMI game workflows |
 
 Inside **游戏 (Game)**, choose **终末地 (Arknights: Endfield)** or **鸣潮 (Wuthering Waves)**.
@@ -289,7 +296,7 @@ Seam-safe smoothing blocks propagation across UV seams. **限制每顶点组数�
 
 Weight Tools accelerate authoring; they do not replace deformation review. Inspect joints, seams, mirrored areas, and previously disconnected islands before export.
 
-### Material Tools: Semantic Slot Textures (1.6.7-dev)
+### Material Tools: Semantic Slot Textures (1.7.0)
 
 The **Material Tools** tab is immediately to the right of **Weight Tools**. Connect replacement images to semantic inputs; original-image mappings are inferred and applied immediately. Incorrect mappings can be edited directly with **Choose Original Texture**, without a separate confirmation step. Users never enter `ps-t` numbers: the existing Component/pass-aware Slot planner resolves runtime bindings.
 
@@ -354,7 +361,7 @@ Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
 
 Important Velo extraction options:
 
-- Velo 1.6.6 embeds EFMI Tools v0.6.4 / runtime 1.4.3. Extraction writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and writes the extraction-selected EFMI-style local-to-runtime mapping to `runtime_vg_map`.
+- Velo 1.7.0 embeds EFMI Tools v0.6.4 / runtime 1.4.3. Extraction writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and writes the extraction-selected EFMI-style local-to-runtime mapping to `runtime_vg_map`.
 - Authoring and runtime identity are separate. Equivalent bones may share a compact Blender vertex-group ID, while extraction selects each exact-matrix canonical runtime source once with EFMI's valid-source and weighted-use preference. Export directly translates each `(Component, compact VG)` through the stored `runtime_vg_map`; it does not reselect runtime sources. Do not hand-copy either map between different object sources.
 - **Named Bone Mapping** is an optional post-extraction workflow. Select either one LOD0 GLB or an unpacked character root containing one Avatar plus raw Unity YAML LOD0 Mesh/prefab assets, select the matching EFMI object source, and run **Generate Bone Name Mapping**. Velo matches only LOD0 meshes and writes `BoneNameMapping.json` plus an oriented `BoneNameSkeleton.glb`; it does not search parent or sibling folders for a fallback GLB. Keep these sidecars with the object source. Later LOD extraction synchronizes complete `lods` records into the named mapping without replacing its bone-name identities.
 - When a later draw uniquely identifies a semantic omitted by an earlier layout, Velo restores that field without reordering draw calls. The recovered field keeps its original input slot and byte offset; this is required for the game to decode `NORMAL`, `TANGENT`, and other packed vertex fields correctly.

@@ -1,12 +1,19 @@
 # Velo Tools 中文使用手册
 
-> 适用版本：Velo Tools v1.6.6，并单独标注 1.6.7-dev 新增功能。Velo Tools 自动跟随 Blender 界面语言：简体中文与繁体中文使用当前简体中文 catalog，其它语言回退英文；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
+> 适用版本：Velo Tools v1.7.0。Velo Tools 自动跟随 Blender 界面语言：简体中文与繁体中文使用当前简体中文 catalog，其它语言回退英文；`IB`、`VB`、`Hash`、`Merged`、`Per-Component`、`Frame Dump`、`LOD`、`INI`、`ShapeKey`、`DDS` 等技术标识保留原文。
 
 Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网格与权重工具、终末地 EFMI 工作流、鸣潮 WWMI 工作流放在同一个 **Velo Tools** 面板中。
 
 支持 Blender 3.6 及以上版本，主要开发和验证版本为 Blender 4.4。
 
 英文手册：[Velo Tools User Manual](user-manual.en.md)。
+
+## 1.7.0 更新要点
+
+- 材质工具提供语义贴图映射、持久材质分组、分 draw 贴图绑定和可读的贴图资源名称。材质路由仍可选；关闭“按材质自动分离”后，按物体名称识别 Component。
+- COLOR 描边激活由用户显式控制。原始导入默认保留原生行为；生成平滑法线 COLOR 会启用网格选项。激活范围是该网格实际导出的整个 Component，而非单独某个 draw。原生控制器已经开启时，再勾选不会增加第二层描边，也不会让宽度翻倍。
+- 按材质分离后手动移动物体，导出遵守当前真实集合归属；真正合并在一个物体中的材质部件仍保留虚拟目标集合。同时加固了 ShapeKey、共享网格、Mirror、映射及导出状态处理。
+- 材质贴图路由仍要求受支持的普通单源导出流程，不对不支持的 CrossIB 或 Cross-Scene 组合开放。dump 诊断不等于覆盖所有 shader，也不替代游戏内验证。
 
 ## 目录
 
@@ -37,7 +44,7 @@ Velo Tools 是面向 GIMI 生态 Mod 制作的 Blender 插件。它把通用网�
 | **顶点组工具** | 顶点组批处理、名称映射、MMD 映射和可视化校对。 |
 | **网格工具** | 材质拆分与合并、多物体雕刻、ShapeKey 聚合、材质集合归属。 |
 | **权重工具** | 权重传递、镜像、供体规格化、平滑、组数限制和局部修复。 |
-| **材质工具** | 语义贴图输入、原始贴图映射，以及分 draw 的 Slot 贴图（1.6.7-dev）。 |
+| **材质工具** | 语义贴图输入、原始贴图映射，以及分 draw 的 Slot 贴图（1.7.0）。 |
 | **游戏** | EFMI 或 WWMI 的提取、导入、编辑和导出。 |
 
 ### 1.2 按目标选择工作流
@@ -344,7 +351,7 @@ Robust 会过滤没有正权重直接来源种子的正值连通域，包括连�
 
 仅处理两端均解锁的已有顶点组配对；无侧向名称的普通组按原名复制。支持名称、手动和 MMD 配对，缺少对应组或未解析的数字组跳过。锁定组、无关顶点、来源权重、选择状态、网格坐标和 ShapeKey 均不变。不顺带规格化或限制组数；即使锁定权重使两侧总和不同，也不动锁定组。重合层无法区分且来源权重有冲突时保留原状并报告；共享网格数据须先设为单用户。
 
-### 4.4 材质工具：语义贴图与 Slot 导出（1.6.7-dev）
+### 4.4 材质工具：语义贴图与 Slot 导出（1.7.0）
 
 **材质工具**位于**权重工具**右侧。把替换图连接到漫反射、法线等用途输入后，唯一的原图映射会自动生效；识别不对时直接通过**选择对应的原始贴图**修改，**不再需要额外确认**。用户不填写 `ps-t` 编号，实际槽位仍由已有 Component/pass 感知的 Slot 规划器解析。
 
@@ -419,7 +426,7 @@ EFMI 面板提供四种模式：
 1. 设置有效的 **Frame Dump 目录**，其中应包含 `log.txt`。
 2. 设置 **输出目录**；如果留空，提取时直接使用上方的 **Frame Dump 目录**。
 3. 按需启用对象、Component 和贴图过滤。
-4. 如需使用任一 Merged 模式，请用当前 Velo 1.6.6 内置的 EFMI Tools v0.6.4 / runtime 1.4.3 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与提取阶段最终确定的 EFMI-style `runtime_vg_map`。
+4. 如需使用任一 Merged 模式，请用当前 Velo 1.7.0 内置的 EFMI Tools v0.6.4 / runtime 1.4.3 重新提取，确认 Metadata v4 同时含有紧凑 authoring `components[*].vg_map` 与提取阶段最终确定的 EFMI-style `runtime_vg_map`。
 5. 如需快速查看，可启用 **提取后导入 Blender**。
 6. 执行提取。
 
