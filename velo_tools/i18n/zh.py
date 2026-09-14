@@ -1,6 +1,7 @@
 """Simplified Chinese catalog for Velo Tools."""
 
 ZH_TRANSLATIONS = {
+    'Component mesh assembly did not finish': 'Component 网格合并未完成',
     'Mirror Direction': '镜像方向',
     '-X to +X': '-X 到 +X',
     '+X to -X': '+X 到 -X',

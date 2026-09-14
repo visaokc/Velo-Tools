@@ -34,7 +34,9 @@ def batch_export_context(context):
             original = module.set_mode
             saved.append((module, original))
             module.set_mode = make_wrapper(original)
-        yield
+        from .component_batching import batch_component_operations
+        with batch_component_operations():
+            yield
     finally:
         active_exception = sys.exc_info()[0] is not None
         for module, original in reversed(saved):
