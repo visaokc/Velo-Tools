@@ -4,12 +4,13 @@ import bpy
 import numpy as np
 
 from ...i18n import iface_
+from .shapekey_state import has_animation_inputs
 
 
 _MERGER_PATCHES = []
 
 
-def bake_before_group_remap(context, obj, apply_modifiers, *, require_armature=True):
+def _bake_steps(obj, apply_modifiers, *, require_armature=True):
     """Freeze the visible stack once, preserving relative ShapeKey coordinates."""
     if not apply_modifiers or not any(
         mod.show_viewport and (not require_armature or
@@ -20,8 +21,8 @@ def bake_before_group_remap(context, obj, apply_modifiers, *, require_armature=T
     keys = obj.data.shape_keys
     if keys is not None and not keys.use_relative:
         raise ValueError(iface_("Pose export requires relative ShapeKeys"))
-    context.view_layer.update()
-    evaluated = obj.evaluated_get(context.evaluated_depsgraph_get())
+    depsgraph = yield
+    evaluated = obj.evaluated_get(depsgraph)
     visible = evaluated.to_mesh()
     try:
         expected = np.empty(len(visible.vertices) * 3, dtype=np.float32)
@@ -60,8 +61,7 @@ def bake_before_group_remap(context, obj, apply_modifiers, *, require_armature=T
                     keys.key_blocks[index].value = 1.0
                 if index > 1:
                     keys.key_blocks[index - 1].value = 0.0
-            context.view_layer.update()
-            depsgraph = context.evaluated_depsgraph_get()
+            depsgraph = yield
             evaluated = obj.evaluated_get(depsgraph)
             if baked is None:
                 baked = bpy.data.meshes.new_from_object(
@@ -115,8 +115,8 @@ def bake_before_group_remap(context, obj, apply_modifiers, *, require_armature=T
         obj.show_only_shape_key = show_only
         obj.active_shape_key_index = active_index
 
-        context.view_layer.update()
-        evaluated = obj.evaluated_get(context.evaluated_depsgraph_get())
+        depsgraph = yield
+        evaluated = obj.evaluated_get(depsgraph)
         visible = evaluated.to_mesh()
         try:
             actual = np.empty(len(visible.vertices) * 3, dtype=np.float32)
@@ -127,7 +127,7 @@ def bake_before_group_remap(context, obj, apply_modifiers, *, require_armature=T
             evaluated.to_mesh_clear()
         if old_mesh.users == 0:
             bpy.data.meshes.remove(old_mesh)
-    except Exception:
+    except BaseException:
         obj.data = old_mesh
         if baked is not None and baked.users == 0:
             bpy.data.meshes.remove(baked)
@@ -135,6 +135,114 @@ def bake_before_group_remap(context, obj, apply_modifiers, *, require_armature=T
     finally:
         obj.show_only_shape_key = show_only
         obj.active_shape_key_index = active_index
+
+
+
+def _run_bake_steps(context, jobs):
+    """Advance independent copies behind one native dependency-graph barrier."""
+    active = []
+    try:
+        for job in jobs:
+            try:
+                next(job)
+                active.append(job)
+            except StopIteration:
+                pass
+        while active:
+            context.view_layer.update()
+            depsgraph = context.evaluated_depsgraph_get()
+            pending = []
+            for job in active:
+                try:
+                    job.send(depsgraph)
+                    pending.append(job)
+                except StopIteration:
+                    pass
+            active = pending
+    finally:
+        for job in reversed(jobs):
+            job.close()
+
+
+def bake_before_group_remap(context, obj, apply_modifiers, *, require_armature=True):
+    """Preserve the serial API and its current-frame validation contract."""
+    _run_bake_steps(context, [_bake_steps(obj, apply_modifiers,
+                                       require_armature=require_armature)])
+
+
+def _has_python_driver(block):
+    animation = getattr(block, 'animation_data', None)
+    return bool(animation and any(
+        curve.driver.type == 'SCRIPTED' and not curve.driver.is_simple_expression
+        for curve in animation.drivers))
+
+
+def can_batch_pose_bakes(objects, apply_modifiers):
+    """Fail closed for stacks that could read changing scene-wide state."""
+    if not apply_modifiers or len(objects) < 2:
+        return False
+    local_types = {'ARMATURE', 'UV_WARP', 'MIRROR', 'ARRAY'}
+    for obj in objects:
+        if obj.type != 'MESH' or obj.mode != 'OBJECT' or obj.constraints:
+            return False
+        if has_animation_inputs(obj) or has_animation_inputs(obj.data):
+            return False
+        keys = obj.data.shape_keys
+        if keys is not None and (not keys.use_relative or _has_python_driver(keys)):
+            return False
+        if obj.parent is not None and (obj.parent.type != 'ARMATURE'
+                                       or _has_python_driver(obj.parent)):
+            return False
+        for modifier in obj.modifiers:
+            if not modifier.show_viewport:
+                continue
+            if modifier.type not in local_types:
+                return False
+            if modifier.type == 'ARRAY' and modifier.fit_type != 'FIXED_COUNT':
+                return False
+            for attr in ('object', 'object_from', 'object_to', 'mirror_object',
+                         'offset_object'):
+                reference = getattr(modifier, attr, None)
+                if reference is not None and (reference.type != 'ARMATURE'
+                                               or _has_python_driver(reference)):
+                    return False
+    return True
+
+
+def _sample_storage_estimate(obj):
+    keys = obj.data.shape_keys
+    key_count = len(keys.key_blocks) if keys is not None else 0
+    expansion = 1
+    for modifier in obj.modifiers:
+        if not modifier.show_viewport:
+            continue
+        if modifier.type == 'MIRROR':
+            expansion *= 2 ** sum(modifier.use_axis)
+        elif modifier.type == 'ARRAY':
+            expansion *= max(1, modifier.count)
+    return len(obj.data.vertices) * expansion * 12 * (2 * key_count + 6)
+
+
+def bake_before_group_remap_batch(context, objects, apply_modifiers, *, batch_size=64):
+    """Synchronize independent copies in memory, using Blender's native workers.
+
+    The sample-array budget is an estimate, not a limit on total Blender memory.
+    A single oversized object retains the serial algorithm's memory requirements.
+    """
+    if batch_size < 1:
+        raise ValueError('Batch size must be positive')
+    batch_size = min(batch_size, 64)
+    batch = []
+    storage = 0
+    for obj in objects:
+        cost = _sample_storage_estimate(obj)
+        if batch and (len(batch) >= batch_size or storage + cost > 128 * 1024**2):
+            _run_bake_steps(context, [_bake_steps(item, apply_modifiers) for item in batch])
+            batch, storage = [], 0
+        batch.append(obj)
+        storage += cost
+    if batch:
+        _run_bake_steps(context, [_bake_steps(item, apply_modifiers) for item in batch])
 
 
 def install_merger_hooks():

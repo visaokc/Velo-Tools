@@ -18,6 +18,7 @@ from pathlib import Path
 import bpy
 
 from . import preexport as _pe
+from .context_batching import batch_export_context
 from .material_partition import material_routing_enabled
 
 
@@ -207,22 +208,33 @@ def _get_export_states(context, settings_attr: str):
     for obj in _iter_export_meshes(context, cfg):
         if any(g.name in mapping or is_special_vg_name(g.name) for g in obj.vertex_groups):
             requests.append((obj, profile))
+    from .pose_bake import can_batch_pose_bakes, bake_before_group_remap_batch
+    apply_modifiers = bool(getattr(cfg, 'apply_all_modifiers', False))
+    use_batch = can_batch_pose_bakes([obj for obj, _profile in requests], apply_modifiers)
     states = []
+    prepared = []
     try:
         for obj, profile in requests:
-            state = _prepare_export_copy(context, cfg, obj, profile)
+            state = _prepare_export_copy(context, cfg, obj, profile, defer_bake=use_batch)
             if state:
                 states.append(state)
+                prepared.append((state, profile))
+        if use_batch:
+            bake_before_group_remap_batch(context, [state['clone'] for state in states],
+                                         apply_modifiers)
+            for state, profile in prepared:
+                _pe.apply_mmd_pre_export(state['clone'], profile)
         for state in states:
             _unlink_export_source(state)
         return states
-    except Exception:
+    except BaseException:
         for state in reversed(states):
             _restore_export_state(state)
         raise
 
 
-def _prepare_export_copy(context, cfg, obj, profile):
+
+def _prepare_export_copy(context, cfg, obj, profile, *, defer_bake=False):
     """Bake and remap an independent copy while originals remain available."""
     target_col = getattr(cfg, "component_collection", None) if cfg is not None else None
     ignore_hidden_objects = bool(getattr(cfg, "ignore_hidden_objects", False)) if cfg is not None else False
@@ -264,8 +276,9 @@ def _prepare_export_copy(context, cfg, obj, profile):
                 linked_to.append(c)
         # Bake while original rig bindings and dependency objects are present.
         from .pose_bake import bake_before_group_remap
-        bake_before_group_remap(context, clone, bool(getattr(cfg, "apply_all_modifiers", False)))
-        _pe.apply_mmd_pre_export(clone, profile)
+        if not defer_bake:
+            bake_before_group_remap(context, clone, bool(getattr(cfg, "apply_all_modifiers", False)))
+            _pe.apply_mmd_pre_export(clone, profile)
     except Exception:
         _restore_export_state({"orig": obj, "clone": clone,
                                "linked_to": linked_to, "unlinked_from": []})
@@ -342,7 +355,7 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
                 context.scene, refresh_on_exit=use_material_routes)
             if _mesh_ops is not None else nullcontext()
         )
-        with transaction:
+        with transaction, batch_export_context(context):
             try:
                 try:
                     states = _get_export_states(context, settings_attr)

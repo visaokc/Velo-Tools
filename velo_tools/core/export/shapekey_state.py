@@ -63,17 +63,27 @@ def _coordinates(key, vertex_count: int) -> array:
     return result
 
 
-def _update_mix(obj) -> None:
+def has_animation_inputs(block) -> bool:
+    """Empty AnimData containers do not require current-frame reevaluation."""
+    data = getattr(block, 'animation_data', None)
+    return bool(data is not None and (
+        getattr(data, 'action', None) is not None
+        or getattr(data, 'drivers', ())
+        or getattr(data, 'nla_tracks', ())))
+
+
+def _update_mix(obj, *, evaluate=True) -> None:
     try:
         obj.data.update()
     except Exception:
         pass
-    try:
-        import bpy
+    if evaluate:
+        try:
+            import bpy
 
-        bpy.context.view_layer.update()
-    except Exception:
-        pass
+            bpy.context.view_layer.update()
+        except Exception:
+            pass
 
 
 @contextmanager
@@ -108,6 +118,10 @@ def collapse_nonexported_shape_key_mix(
     """Bake unmatched current values into Basis and retain matched Deform keys."""
     shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
     blocks = list(getattr(shape_keys, "key_blocks", ()) or ())
+    # Sampling the current frame is not an animation export. Only actual
+    # evaluation inputs need the conservative scene-update path.
+    evaluate_mix = any(has_animation_inputs(block) for block in (
+        shape_keys, obj, getattr(obj, 'data', None)))
     if len(blocks) <= 1:
         return {}
 
@@ -148,7 +162,7 @@ def collapse_nonexported_shape_key_mix(
 
     for _shape_id, key in protected:
         key.value = 0.0
-    _update_mix(obj)
+    _update_mix(obj, evaluate=evaluate_mix)
     captures = []
     base_key, base_coordinates = _capture_mix(
         obj, "__shape_export_mixed_basis__", vertex_count)
@@ -161,7 +175,7 @@ def collapse_nonexported_shape_key_mix(
         _set_if_present(key, "mute", False)
         _set_if_present(key, "slider_max", max(1.0, original_max))
         key.value = 1.0
-        _update_mix(obj)
+        _update_mix(obj, evaluate=evaluate_mix)
         capture, coordinates = _capture_mix(
             obj, f"__shape_export_target_{index}__", vertex_count)
         captures.append(capture)
