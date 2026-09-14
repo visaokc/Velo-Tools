@@ -63,20 +63,21 @@ def bake_before_group_remap(context, obj, apply_modifiers, *, require_armature=T
             context.view_layer.update()
             depsgraph = context.evaluated_depsgraph_get()
             evaluated = obj.evaluated_get(depsgraph)
-            mesh = bpy.data.meshes.new_from_object(
-                evaluated, preserve_all_data_layers=True, depsgraph=depsgraph)
             if baked is None:
-                baked = mesh
-            try:
-                if len(mesh.vertices) != len(baked.vertices):
-                    raise ValueError(iface_("Modifiers changed ShapeKey vertex counts during pose export"))
-                if index:
+                baked = bpy.data.meshes.new_from_object(
+                    evaluated, preserve_all_data_layers=True, depsgraph=depsgraph)
+            else:
+                # Only Basis needs a persistent mesh and all custom data layers.
+                # Subsequent samples consume positions from the evaluated mesh.
+                mesh = evaluated.to_mesh()
+                try:
+                    if len(mesh.vertices) != len(baked.vertices):
+                        raise ValueError(iface_("Modifiers changed ShapeKey vertex counts during pose export"))
                     values = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
                     mesh.vertices.foreach_get('co', values)
                     coordinates.append(values)
-            finally:
-                if mesh != baked:
-                    bpy.data.meshes.remove(mesh)
+                finally:
+                    evaluated.to_mesh_clear()
         obj.data = baked
         if hasattr(old_mesh, "smooth_normal_color_enabled"):
             baked.smooth_normal_color_enabled = old_mesh.smooth_normal_color_enabled
