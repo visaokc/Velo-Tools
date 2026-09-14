@@ -1124,6 +1124,7 @@ def prepare_material_route_export(context):
                 sources,
                 threshold=threshold,
                 preserve_component_prefix=True,
+                clean_shape_keys=False,
             )
             split_targets = list(stats["targets"])
             for obj in split_targets:
@@ -1625,7 +1626,8 @@ def _rename_to_sole_material(obj):
     return True
 
 
-def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_component_prefix=False):
+def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_component_prefix=False,
+                                   clean_shape_keys=True):
     _ensure_object_mode(context)
     before_objs = set(context.scene.objects)
     split_sources = 0
@@ -1690,25 +1692,28 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
     for obj in targets:
         if obj.type != 'MESH':
             continue
-        cleaned_keys += _clean_unused_shape_keys(obj, threshold=threshold)
-        sk = obj.data.shape_keys if obj.data else None
-        if sk and len(sk.key_blocks) > 1:
-            try:
-                ctx_override = {
-                    'object': obj, 'active_object': obj,
-                    'selected_objects': [obj], 'selected_editable_objects': [obj],
-                }
-                if hasattr(bpy.ops.object, "shape_key_clean"):
-                    bpy.ops.object.shape_key_clean(ctx_override)
-            except Exception:
-                pass
-        sk = obj.data.shape_keys if obj.data else None
-        if sk and len(sk.key_blocks) <= 1:
-            try:
-                obj.shape_key_clear()
-                cleaned_keys += 1
-            except Exception:
-                pass
+        # Threshold cleanup is an explicit editing operation, not an export step.
+        # Even a small or Basis-equal target can contribute to the current mix.
+        if clean_shape_keys:
+            cleaned_keys += _clean_unused_shape_keys(obj, threshold=threshold)
+            sk = obj.data.shape_keys if obj.data else None
+            if sk and len(sk.key_blocks) > 1:
+                try:
+                    ctx_override = {
+                        'object': obj, 'active_object': obj,
+                        'selected_objects': [obj], 'selected_editable_objects': [obj],
+                    }
+                    if hasattr(bpy.ops.object, "shape_key_clean"):
+                        bpy.ops.object.shape_key_clean(ctx_override)
+                except Exception:
+                    pass
+            sk = obj.data.shape_keys if obj.data else None
+            if sk and len(sk.key_blocks) <= 1:
+                try:
+                    obj.shape_key_clear()
+                    cleaned_keys += 1
+                except Exception:
+                    pass
         # Do not restore the old active key on the resulting material pieces.
         if obj.data.shape_keys:
             obj.active_shape_key_index = 0
@@ -1736,7 +1741,8 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
     }
 
 
-def _split_meshes_by_material(context, sources, *, threshold, preserve_component_prefix=False):
+def _split_meshes_by_material(context, sources, *, threshold, preserve_component_prefix=False,
+                              clean_shape_keys=True):
     """Keep rename-driven material sync out of the split transaction."""
     with suspend_material_route_auto_refresh(context.scene):
         return _split_meshes_by_material_impl(
@@ -1744,6 +1750,7 @@ def _split_meshes_by_material(context, sources, *, threshold, preserve_component
             sources,
             threshold=threshold,
             preserve_component_prefix=preserve_component_prefix,
+            clean_shape_keys=clean_shape_keys,
         )
 
 

@@ -240,17 +240,6 @@ def prepare_cross_scene_object(
     return plan
 
 
-def _shape_key_threshold(context) -> float:
-    settings = getattr(context.scene, "velo_tools", None)
-    return float(getattr(settings, "shapekey_cleanup_threshold", 0.0001))
-
-
-def _clean_fragment_shape_keys(context, obj) -> None:
-    from ...mesh.operators import _clean_unused_shape_keys
-
-    _clean_unused_shape_keys(obj, _shape_key_threshold(context))
-
-
 def _split_object_by_material(context, obj) -> list:
     import bpy
     from ...mesh.split_normals import (
@@ -407,7 +396,8 @@ def _postprocess_merger(merger, after_split=None) -> None:
                     error = after_split(merger, exported_fragment, target_index)
                     if error:
                         postprocess_errors.append(str(error))
-                _clean_fragment_shape_keys(merger.context, fragment)
+                # Preserve authored keys until shared export-state preparation.
+                # Manual cleanup thresholds must not discard runtime or baked deltas.
 
     for component_index, component in enumerate(merger.components):
         component.objects = rebuilt[component_index]

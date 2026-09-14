@@ -114,6 +114,8 @@ def _set_if_present(target, name: str, value) -> None:
 def collapse_nonexported_shape_key_mix(
     obj,
     parse_shape_id: ShapeIdParser,
+    *,
+    preserve_shape_key: Callable[[str], bool] | None = None,
 ) -> dict[int, float]:
     """Bake unmatched current values into Basis and retain matched Deform keys."""
     shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
@@ -128,19 +130,26 @@ def collapse_nonexported_shape_key_mix(
     protected = []
     unmatched = []
     for key in blocks[1:]:
-        shape_id = parse_shape_id(str(getattr(key, "name", "")))
-        if shape_id is None:
-            unmatched.append(key)
-        else:
+        name = str(getattr(key, "name", ""))
+        shape_id = parse_shape_id(name)
+        if shape_id is not None:
             protected.append((int(shape_id), key))
+        elif preserve_shape_key is not None and preserve_shape_key(name):
+            # Native runtime channels can exist outside the host control list.
+            # Retain their payload without inventing a host INI default.
+            protected.append((None, key))
+        else:
+            unmatched.append(key)
 
     defaults = merge_shape_key_defaults(
         ({shape_id: float(getattr(key, "value", 0.0))}
-         for shape_id, key in protected)
+         for shape_id, key in protected if shape_id is not None)
     )
-    if not protected or not unmatched:
+    if not unmatched:
         return defaults
-    if not bool(getattr(shape_keys, "use_relative", True)):
+    # Ordinary keys must be baked per object even without any runtime keys.
+    # Join shares one value per key name, and later group remapping loses masks.
+    if protected and not bool(getattr(shape_keys, "use_relative", True)):
         raise ValueError(
             f"Object `{getattr(obj, 'name', '<unnamed>')}` mixes exported Deform keys "
             "with nonstandard absolute ShapeKeys; absolute keys have no per-key value "
@@ -189,6 +198,9 @@ def collapse_nonexported_shape_key_mix(
     obj.data.vertices.foreach_set("co", base_coordinates)
     obj.data.update()
 
+    if not protected:
+        return defaults
+
     obj.shape_key_add(name="Basis", from_mix=False)
     for item, coordinates in zip(metadata, target_coordinates):
         key = obj.shape_key_add(name=item["name"], from_mix=False)
@@ -203,7 +215,10 @@ def collapse_nonexported_shape_key_mix(
     return defaults
 
 
-def finalize_merger_shape_keys(merger, parse_shape_id: ShapeIdParser) -> None:
+def finalize_merger_shape_keys(
+    merger, parse_shape_id: ShapeIdParser, *,
+    preserve_shape_key: Callable[[str], bool] | None = None,
+) -> None:
     objects = []
     for component in getattr(merger, "components", ()) or ():
         for temp_object in getattr(component, "objects", ()) or ():
@@ -215,4 +230,5 @@ def finalize_merger_shape_keys(merger, parse_shape_id: ShapeIdParser) -> None:
     merge_shape_key_defaults(
         object_shape_key_defaults(obj, parse_shape_id) for obj in objects)
     for obj in objects:
-        collapse_nonexported_shape_key_mix(obj, parse_shape_id)
+        collapse_nonexported_shape_key_mix(
+            obj, parse_shape_id, preserve_shape_key=preserve_shape_key)

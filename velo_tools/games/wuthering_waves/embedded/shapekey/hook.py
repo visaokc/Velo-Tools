@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..._wwmi_core.blender_export import blender_export as _be_module
+from .....core.export.shapekey_state import neutralized_shape_key_values
+
+from .export_state import shape_id
 
 from .generator import (
     collect_shape_key_defaults,
@@ -20,6 +23,20 @@ _INSTALLED = False
 _ORIG_BUILD_DATA_BUFFERS = None
 _ORIG_BUILD_MOD_INI = None
 _ORIG_WRITE_FILES = None
+_ORIG_GET_DATA = None
+
+
+def _neutralized_get_data(original):
+    def get_data(self, context, collection, obj, *args, **kwargs):
+        keys = getattr(getattr(obj.data, "shape_keys", None), "key_blocks", ())
+        runtime_keys = [key for key in keys if shape_id(key.name) is not None]
+        if not runtime_keys:
+            return original(self, context, collection, obj, *args, **kwargs)
+        # Intercept the data model, including Cross-Scene units that bypass
+        # ModExporter lifecycle hooks. Restore values before collecting INI defaults.
+        with neutralized_shape_key_values(obj, runtime_keys):
+            return original(self, context, collection, obj, *args, **kwargs)
+    return get_data
 
 
 class _CfgProxy:
@@ -47,11 +64,13 @@ def _full_export_error() -> ShapeKeyPlanError:
 
 def install() -> None:
     global _INSTALLED, _ORIG_BUILD_DATA_BUFFERS, _ORIG_BUILD_MOD_INI, _ORIG_WRITE_FILES
+    global _ORIG_GET_DATA
     if _INSTALLED:
         return
     _ORIG_BUILD_DATA_BUFFERS = _be_module.ModExporter.build_data_buffers
     _ORIG_BUILD_MOD_INI = _be_module.ModExporter.build_mod_ini
     _ORIG_WRITE_FILES = _be_module.ModExporter.write_files
+    _ORIG_GET_DATA = _be_module.DataModelWWMI.get_data
 
     def _wrapped_build_data_buffers(self):
         result = _ORIG_BUILD_DATA_BUFFERS(self)
@@ -109,17 +128,21 @@ def install() -> None:
     _be_module.ModExporter.build_data_buffers = _wrapped_build_data_buffers
     _be_module.ModExporter.build_mod_ini = _wrapped_build_mod_ini
     _be_module.ModExporter.write_files = _wrapped_write_files
+    _be_module.DataModelWWMI.get_data = _neutralized_get_data(_ORIG_GET_DATA)
     _INSTALLED = True
 
 
 def remove() -> None:
     global _INSTALLED, _ORIG_BUILD_DATA_BUFFERS, _ORIG_BUILD_MOD_INI, _ORIG_WRITE_FILES
+    global _ORIG_GET_DATA
     if not _INSTALLED:
         return
     _be_module.ModExporter.build_data_buffers = _ORIG_BUILD_DATA_BUFFERS
     _be_module.ModExporter.build_mod_ini = _ORIG_BUILD_MOD_INI
     _be_module.ModExporter.write_files = _ORIG_WRITE_FILES
+    _be_module.DataModelWWMI.get_data = _ORIG_GET_DATA
     _ORIG_BUILD_DATA_BUFFERS = None
     _ORIG_BUILD_MOD_INI = None
     _ORIG_WRITE_FILES = None
+    _ORIG_GET_DATA = None
     _INSTALLED = False
