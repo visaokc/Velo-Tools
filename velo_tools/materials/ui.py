@@ -494,6 +494,13 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
                                           replacement_roles & ({"DIFFUSE"} | additions.keys()))
                 additions = {role: image for role, image in additions.items()
                              if not model.inherits_game_source(value, role)}
+                # Persist the scoped originals for connections shared with the
+                # donor, including mapping-only propagation with no new images.
+                # Export must not depend on the donor remaining selected.
+                final_images = {**target_images, **additions}
+                for role, image in images.items():
+                    if nodes.image_key(final_images.get(role)) == nodes.image_key(image):
+                        value = model.pin_original(value, role)
                 mapping_changed = existing and old != value
                 if not additions and not mapping_changed and existing:
                     continue

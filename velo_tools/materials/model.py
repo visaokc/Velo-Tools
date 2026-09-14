@@ -278,10 +278,17 @@ def resolve_sources(game, component, catalog, previous=None, image_identities=No
     manual = dict(old.get("manual", old.get("bindings", {})))
     manual = {role: identity for role, identity in manual.items() if role in ROLES}
     replacement_roles = set(old.get("replacement_roles", ())) & ROLES.keys()
+    old_bindings = old.get("bindings", {})
+    # Older propagation saved resolved originals without pinning every role.
+    # Recover only authored replacement roles within this Component and game;
+    # explicit edits, opt-outs and current-catalog validation still take priority.
+    for role in replacement_roles:
+        identity = old_bindings.get(role) or old.get("omitted", {}).get(role)
+        if identity:
+            manual.setdefault(role, identity)
     image_identities = {role: identity for role, identity in (image_identities or {}).items()
                         if role not in replacement_roles}
     witnesses = witnesses or {}
-    old_bindings = old.get("bindings", {})
     diffuse = manual.get("DIFFUSE") or image_identities.get("DIFFUSE") or old_bindings.get("DIFFUSE", "")
     if diffuse not in catalog:
         choices = set(witnesses.get("DIFFUSE", ())) & catalog.keys()
