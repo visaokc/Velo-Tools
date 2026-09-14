@@ -140,7 +140,6 @@ def preflight_materials(context, cfg, game):
                         _resource, filename, content = _image_payload(image)
                         _register_payload(payloads, payload_names, filename, content)
                         checked_images.add(pointer)
-    _validate_payload_destinations(Path(bpy.path.abspath(cfg.mod_output_folder)), payloads)
 
 
 def capture_merger(merger, cfg, game):
@@ -231,12 +230,11 @@ def _register_payload(payloads, payload_names, filename, content):
     payloads[filename] = content
 
 
-def _validate_payload_destinations(root, payloads):
-    """Verify append-only delivery and exact casing before any payload write."""
+def _existing_payload_destinations(root, payloads):
+    """Keep existing texture files by name without reading or comparing content."""
     existing = set()
     directories = {}
-    cache = export_cache.current()
-    for filename, content in payloads.items():
+    for filename in payloads:
         destination = root / filename
         if destination.parent not in directories:
             entries = {}
@@ -247,9 +245,7 @@ def _validate_payload_destinations(root, payloads):
         matches = directories[destination.parent].get(destination.name.casefold(), [])
         if not matches:
             continue
-        if (len(matches) != 1 or matches[0].name != destination.name
-                or not matches[0].is_file()
-                or (cache.read(matches[0]) if cache is not None else matches[0].read_bytes()) != content):
+        if any(not entry.is_file() for entry in matches):
             raise ValueError(iface_("Material image output conflicts with an existing file: {0}").format(str(destination)))
         existing.add(filename)
     return existing
@@ -352,12 +348,19 @@ def _install_game(game, merger_cls, maker_cls, cfg_type, operator_cls, exporter_
         root = Path(ini_path).parent if ini_path is not None else Path(bpy.path.abspath(self.cfg.mod_output_folder))
         created = []
         try:
-            existing = _validate_payload_destinations(root, payloads)
+            existing = _existing_payload_destinations(root, payloads)
             pending = [(root / filename, content) for filename, content in payloads.items()
                        if filename not in existing]
             for destination, content in pending:
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                with destination.open("xb") as stream:
+                try:
+                    stream = destination.open("xb")
+                except FileExistsError:
+                    # A file created since discovery belongs to the user too.
+                    if destination.is_file():
+                        continue
+                    raise
+                with stream:
                     created.append(destination)
                     stream.write(content)
             return original_write(self, ini_string=ini_string, ini_path=ini_path)
