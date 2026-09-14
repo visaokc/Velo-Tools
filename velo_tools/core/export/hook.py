@@ -20,6 +20,11 @@ import bpy
 from . import preexport as _pe
 from .context_batching import batch_export_context
 from .material_partition import material_routing_enabled
+from .selection import (
+    direct_collection_object_provider,
+    export_object_collections,
+    get_export_collection_objects,
+)
 
 
 # {id(cls): (cls, orig_execute, src_label)}
@@ -42,60 +47,9 @@ def _find_class(class_name: str):
     return None
 
 
-def _get_collections_holding(obj):
-    """Return all bpy.data.collections directly containing obj, plus scene collections."""
-    cols = []
-    for c in bpy.data.collections:
-        try:
-            if obj.name in c.objects and c.objects[obj.name] is obj:
-                cols.append(c)
-        except Exception:
-            pass
-    for scene in bpy.data.scenes:
-        sc = scene.collection
-        try:
-            if obj.name in sc.objects and sc.objects[obj.name] is obj:
-                cols.append(sc)
-        except Exception:
-            pass
-    return cols
-
-
-def _collection_is_visible_in_view_layer(collection, context=None):
-    if collection is None:
-        return False
-    context = context or bpy.context
-
-    def search(layer_collection):
-        if layer_collection.collection == collection:
-            return not layer_collection.exclude and not layer_collection.hide_viewport
-        for child in layer_collection.children:
-            result = search(child)
-            if result is not None:
-                return result
-        return None
-
-    return bool(search(context.view_layer.layer_collection))
-
-
-def _collection_is_descendant_or_same(root, collection):
-    if root is None or collection is None:
-        return False
-    if root == collection:
-        return True
-    try:
-        return collection in getattr(root, "children_recursive", ())
-    except Exception:
-        return False
-
-
-def _object_is_in_export_scope(obj, root_collection):
-    if obj is None or root_collection is None:
-        return False
-    return any(
-        _collection_is_descendant_or_same(root_collection, collection)
-        for collection in getattr(obj, "users_collection", ())
-    )
+def _object_is_hidden(obj):
+    hide_get = getattr(obj, "hide_get", None)
+    return bool(hide_get and hide_get())
 
 
 def _iter_export_meshes(context, cfg):
@@ -103,33 +57,21 @@ def _iter_export_meshes(context, cfg):
     if root is None:
         return []
 
-    recursive = not bool(getattr(cfg, "ignore_nested_collections", False))
-    ignore_hidden_objects = bool(getattr(cfg, "ignore_hidden_objects", False))
-    ignore_hidden_collections = bool(getattr(cfg, "ignore_hidden_collections", False))
-
-    objects = root.all_objects if recursive else root.objects
-    meshes = []
-    for obj in objects:
-        if getattr(obj, "type", None) != 'MESH':
-            continue
-        if obj.name.startswith('TEMP_'):
-            continue
-        if ignore_hidden_objects and bool(getattr(obj, "hide_get", None) and obj.hide_get()):
-            continue
-        scoped_collections = [
-            collection
-            for collection in getattr(obj, "users_collection", ())
-            if _collection_is_descendant_or_same(root, collection)
-        ]
-        if not scoped_collections:
-            continue
-        if ignore_hidden_collections and not any(
-            _collection_is_visible_in_view_layer(collection, context)
-            for collection in scoped_collections
-        ):
-            continue
-        meshes.append(obj)
-    return meshes
+    objects = get_export_collection_objects(
+        context,
+        root,
+        recursive=not bool(getattr(cfg, "ignore_nested_collections", False)),
+        skip_hidden_collections=bool(
+            getattr(cfg, "ignore_hidden_collections", False)),
+        object_provider=direct_collection_object_provider,
+        skip_hidden_objects=bool(getattr(cfg, "ignore_hidden_objects", False)),
+        hidden_predicate=_object_is_hidden,
+    )
+    return [
+        obj for obj in objects
+        if getattr(obj, "type", None) == 'MESH'
+        and not (getattr(obj, "name", "") or "").startswith('TEMP_')
+    ]
 
 
 def _collect_export_component_ids(context, cfg):
@@ -239,25 +181,22 @@ def _prepare_export_copy(context, cfg, obj, profile, *, defer_bake=False):
     target_col = getattr(cfg, "component_collection", None) if cfg is not None else None
     ignore_hidden_objects = bool(getattr(cfg, "ignore_hidden_objects", False)) if cfg is not None else False
     ignore_hidden_collections = bool(getattr(cfg, "ignore_hidden_collections", False)) if cfg is not None else False
+    recursive = not bool(getattr(cfg, "ignore_nested_collections", False)) if cfg is not None else True
 
-    if target_col is None or not _object_is_in_export_scope(obj, target_col):
+    if target_col is None:
+        return None
+    if ignore_hidden_objects and _object_is_hidden(obj):
         return None
 
-    if ignore_hidden_objects and bool(getattr(obj, "hide_get", None) and obj.hide_get()):
-        return None
-
-    cols = _get_collections_holding(obj)
-    if not cols:
-        return None
-
-    export_cols = [c for c in cols if _collection_is_descendant_or_same(target_col, c)]
+    export_cols = export_object_collections(
+        context,
+        obj,
+        target_col,
+        recursive=recursive,
+        skip_hidden_collections=ignore_hidden_collections,
+    )
     if not export_cols:
         return None
-
-    if ignore_hidden_collections:
-        export_cols = [c for c in export_cols if _collection_is_visible_in_view_layer(c, context)]
-        if not export_cols:
-            return None
 
     # Clone object + independent mesh
     clone = obj.copy()

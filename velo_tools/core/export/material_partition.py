@@ -241,63 +241,9 @@ def prepare_cross_scene_object(
 
 
 def _split_object_by_material(context, obj) -> list:
-    import bpy
-    from ...mesh.split_normals import (
-        capture_split_corner_normals,
-        restore_split_corner_normals,
-    )
+    from ...mesh.material_split import split_object_by_material
 
-    active = context.view_layer.objects.active
-    selected = list(context.selected_objects)
-    previous_mode = getattr(context.object, "mode", "OBJECT") if context.object else "OBJECT"
-    # Blender's Separate remaps mesh slots, not object-level material overrides.
-    # This object already belongs to the disposable export copy, never the source.
-    effective_materials = [slot.material for slot in obj.material_slots]
-    for index, material in enumerate(effective_materials):
-        obj.data.materials[index] = material
-        obj.material_slots[index].link = "DATA"
-    before = {item.as_pointer() for item in bpy.data.objects}
-    normal_attribute = capture_split_corner_normals(obj.data)
-    try:
-        try:
-            if context.object and context.object.mode != "OBJECT":
-                bpy.ops.object.mode_set(mode="OBJECT")
-            bpy.ops.object.select_all(action="DESELECT")
-            obj.hide_set(False)
-            obj.select_set(True)
-            context.view_layer.objects.active = obj
-            bpy.ops.object.mode_set(mode="EDIT")
-            bpy.ops.mesh.separate(type="MATERIAL")
-            bpy.ops.object.mode_set(mode="OBJECT")
-        finally:
-            if context.object and context.object.mode != "OBJECT":
-                bpy.ops.object.mode_set(mode="OBJECT")
-            split_results = [obj]
-            split_results.extend(
-                item for item in bpy.data.objects
-                if item.as_pointer() not in before and item.type == "MESH"
-            )
-            restore_split_corner_normals(split_results, normal_attribute)
-        return split_results
-    except Exception:
-        for item in [item for item in bpy.data.objects if item.as_pointer() not in before]:
-            if item.type == "MESH":
-                bpy.data.meshes.remove(item.data)
-        raise
-    finally:
-        if context.object and context.object.mode != "OBJECT":
-            bpy.ops.object.mode_set(mode="OBJECT")
-        bpy.ops.object.select_all(action="DESELECT")
-        for item in selected:
-            if item.name in bpy.data.objects:
-                item.select_set(True)
-        if active and active.name in bpy.data.objects:
-            context.view_layer.objects.active = active
-            if previous_mode != "OBJECT":
-                try:
-                    bpy.ops.object.mode_set(mode=previous_mode)
-                except RuntimeError:
-                    pass
+    return split_object_by_material(context, obj)
 
 
 def _material_name_for_fragment(obj) -> str:
@@ -341,7 +287,7 @@ def _fragment_component_index(
 
 def _postprocess_merger(merger, after_split=None) -> None:
     plans = getattr(merger, "_velo_material_partition_plans", {})
-    enforce_component_match = not bool(
+    allow_host_routes = bool(
         getattr(merger, "_velo_allow_host_material_routes", False)
     )
     rebuilt = [[] for _component in merger.components]
@@ -360,7 +306,8 @@ def _postprocess_merger(merger, after_split=None) -> None:
                 _source_name(temp_object),
                 temp_object.object,
                 realized,
-                enforce_component_match=enforce_component_match,
+                enforce_component_match=not (
+                    allow_host_routes and len(realized) <= 1),
             )
             realized_names = frozenset(item.name for item in realized)
             mode_changed = realized_plan.mode != plan.mode
@@ -439,18 +386,17 @@ def install(merger_cls: type, settings_attr: str, after_split=None,
         for component in self.components:
             entries = []
             for temp_object in component.objects:
-                plan = (
-                    None
-                    if self._velo_allow_host_material_routes
-                    else _cached_plan(temp_object.object)
+                used = _used_materials(temp_object.object)
+                trust_host_fragment = (
+                    self._velo_allow_host_material_routes and len(used) <= 1
                 )
+                plan = None if trust_host_fragment else _cached_plan(temp_object.object)
                 if plan is None:
-                    used = _used_materials(temp_object.object)
                     plan = _classify_with_location(
                         _source_name(temp_object),
                         temp_object.object,
                         used,
-                        enforce_component_match=not self._velo_allow_host_material_routes,
+                        enforce_component_match=not trust_host_fragment,
                     )
                     if self.apply_modifiers:
                         _validate_solidify(temp_object, used)

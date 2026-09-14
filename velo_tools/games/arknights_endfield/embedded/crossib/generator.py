@@ -11,6 +11,8 @@ Produces three pieces consumed by the export-time string post-processor:
   - resources:      str (Resource declarations + CustomShaders)
 """
 import re
+
+from .....core.export.selection import export_object_collections
 from .props import parse_component_id
 from .pass_registry import (
     EFFECT_CB2,
@@ -39,38 +41,6 @@ def _strip_component_prefix(name):
     return stripped or text
 
 
-def _collection_is_descendant(root, collection):
-    if root is None or collection is None:
-        return False
-    return collection == root or collection in root.children_recursive
-
-
-def _collection_is_visible(collection, context=None):
-    if collection is None:
-        return False
-    if context is None:
-        return True
-
-    def search(layer_collection):
-        if layer_collection.collection == collection:
-            return (not layer_collection.exclude) and (not layer_collection.hide_viewport)
-        for child in layer_collection.children:
-            result = search(child)
-            if result is not None:
-                return result
-        return None
-
-    return bool(search(context.view_layer.layer_collection))
-
-
-def _object_export_collections(obj, cfg):
-    collections = list(getattr(obj, "users_collection", ()) or ())
-    root = getattr(cfg, "component_collection", None) if cfg is not None else None
-    if root is None:
-        return collections
-    return [collection for collection in collections if _collection_is_descendant(root, collection)]
-
-
 def _object_allowed_by_export_filters(obj, cfg=None, context=None):
     if obj is None or getattr(obj, "type", None) != 'MESH':
         return False
@@ -82,10 +52,14 @@ def _object_allowed_by_export_filters(obj, cfg=None, context=None):
             return False
     if bool(getattr(cfg, "ignore_hidden_collections", False)):
         root = getattr(cfg, "component_collection", None)
-        collections = _object_export_collections(obj, cfg)
+        collections = export_object_collections(
+            context,
+            obj,
+            root,
+            recursive=not bool(getattr(cfg, "ignore_nested_collections", False)),
+            skip_hidden_collections=True,
+        )
         if not collections:
-            return False
-        if not any(collection == root or _collection_is_visible(collection, context) for collection in collections):
             return False
     return True
 

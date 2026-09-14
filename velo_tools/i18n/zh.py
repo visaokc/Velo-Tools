@@ -63,6 +63,12 @@ ZH_TRANSLATIONS = {
     'Modifiers changed ShapeKey vertex counts during pose export': '姿态导出时修改器导致各 ShapeKey 的顶点数不一致',
 
     'Export preprocessing failed: {0}': '导出预处理失败：{0}',
+    'Material split failed for `{0}`: temporary face metadata was not preserved.': '对象“{0}”按材质拆分失败：临时面数据未被完整保留。',
+    'Material split failed for `{0}`: Blender produced an empty fragment.': '对象“{0}”按材质拆分失败：Blender 产生了空片段。',
+    'Material split failed for `{0}`: a fragment still contains multiple material slots.': '对象“{0}”按材质拆分失败：拆分片段中仍包含多个材质槽。',
+    'Material split failed for `{0}`: Blender did not produce one complete fragment per used material slot.': '对象“{0}”按材质拆分失败：Blender 未能为每个实际使用的材质槽生成一个完整片段。',
+    "Material split failed for `{0}`: the object could not be made available to Blender's material separator.": '对象“{0}”按材质拆分失败：无法让 Blender 的材质分离算子访问该对象。',
+    'Material split failed for `{0}`: Blender cancelled the separation operation.': '对象“{0}”按材质拆分失败：Blender 取消了分离操作。',
 
     'Matching Position': '匹配用姿势',
     'Choose rest mesh positions or evaluated pose positions for matching and verification': '选择静态网格位置或求值后的姿态位置，用于匹配与可视化校对',

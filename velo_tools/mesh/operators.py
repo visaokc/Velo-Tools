@@ -16,9 +16,14 @@ import bpy
 import numpy as np
 from bpy.app.handlers import persistent
 
+from ..core.export.selection import (
+    direct_collection_object_provider,
+    export_object_collections,
+    get_export_collection_objects,
+)
 from .material_name_sync import RenameTracker
+from .material_split import split_object_by_material
 from .route_refresh import SceneRefreshGate
-from .split_normals import capture_split_corner_normals, restore_split_corner_normals
 
 
 # ---------------------------------------------------------------------------
@@ -360,24 +365,6 @@ def _collection_is_descendant(root, collection):
     if root is None or collection is None:
         return False
     return collection == root or collection in root.children_recursive
-
-
-def _collection_is_visible_in_view_layer(collection, context=None):
-    if collection is None:
-        return False
-    if context is None:
-        context = bpy.context
-
-    def search(layer_collection):
-        if layer_collection.collection == collection:
-            return (not layer_collection.exclude) and (not layer_collection.hide_viewport)
-        for child in layer_collection.children:
-            result = search(child)
-            if result is not None:
-                return result
-        return None
-
-    return bool(search(context.view_layer.layer_collection))
 
 
 def _component_collection_name(component_id):
@@ -1032,6 +1019,7 @@ def prepare_material_route_export(context):
     root = get_export_component_root(scene)
     ignore_hidden_objects = bool(getattr(cfg, "ignore_hidden_objects", False))
     ignore_hidden_collections = bool(getattr(cfg, "ignore_hidden_collections", False))
+    recursive = not bool(getattr(cfg, "ignore_nested_collections", False))
     if route_settings is None or root is None:
         return None
 
@@ -1046,23 +1034,34 @@ def prepare_material_route_export(context):
     passthrough_meshes = []
 
     try:
-        for obj in list(root.all_objects):
+        candidates = get_export_collection_objects(
+            context,
+            root,
+            recursive=recursive,
+            skip_hidden_collections=ignore_hidden_collections,
+            object_provider=direct_collection_object_provider,
+            skip_hidden_objects=ignore_hidden_objects,
+            hidden_predicate=lambda obj: bool(
+                getattr(obj, "hide_get", None) and obj.hide_get()),
+        )
+        for obj in list(candidates):
             if not is_real_mesh(obj):
                 continue
 
-            if ignore_hidden_objects and bool(getattr(obj, "hide_get", None) and obj.hide_get()):
-                continue
-
-            original_links = [
-                collection for collection in getattr(obj, "users_collection", ())
-                if _collection_is_descendant(root, collection)
-            ]
-            export_links = original_links
-            if ignore_hidden_collections:
-                export_links = [
-                    collection for collection in original_links
-                    if _collection_is_visible_in_view_layer(collection, context)
-                ]
+            original_links = list(export_object_collections(
+                context,
+                obj,
+                root,
+                recursive=recursive,
+                skip_hidden_collections=False,
+            ))
+            export_links = list(export_object_collections(
+                context,
+                obj,
+                root,
+                recursive=recursive,
+                skip_hidden_collections=ignore_hidden_collections,
+            ))
             if not export_links:
                 continue
 
@@ -1633,12 +1632,10 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
     split_sources = 0
     skipped_single = 0
     for src in sources:
-        # Separate and ShapeKey cleanup both write through the mesh datablock.
-        # Isolate selected users before either operation, including single-slot meshes.
+        # Splitting and ShapeKey cleanup write through the mesh datablock.
+        # Isolate every selected user, including meshes that will not split.
         if src.data.users > 1:
             src.data = src.data.copy()
-        # Native Separate remaps DATA slots; materialize visible OBJECT overrides
-        # first so repeated/empty slots retain the same per-face assignments.
         effective_materials = [slot.material for slot in src.material_slots]
         for index, material in enumerate(effective_materials):
             src.data.materials[index] = material
@@ -1646,30 +1643,7 @@ def _split_meshes_by_material_impl(context, sources, *, threshold, preserve_comp
         if len(src.material_slots) <= 1:
             skipped_single += 1
             continue
-        split_before = set(context.scene.objects)
-        normal_attribute = capture_split_corner_normals(src.data)
-        bpy.ops.object.select_all(action='DESELECT')
-        src.select_set(True)
-        context.view_layer.objects.active = src
-        # Select Basis before entering edit mode: split mesh coordinates are later
-        # used by native Join to fill ShapeKeys missing from a material piece.
-        if src.data.shape_keys:
-            src.active_shape_key_index = 0
-        try:
-            bpy.ops.object.mode_set(mode='EDIT')
-            bpy.ops.mesh.select_all(action='SELECT')
-            bpy.ops.mesh.separate(type='MATERIAL')
-        finally:
-            try:
-                bpy.ops.object.mode_set(mode='OBJECT')
-            except RuntimeError:
-                pass
-            split_results = [src]
-            split_results.extend(
-                obj for obj in context.scene.objects
-                if obj not in split_before and is_real_mesh(obj)
-            )
-            restore_split_corner_normals(split_results, normal_attribute)
+        split_object_by_material(context, src)
         split_sources += 1
 
     targets = set(sources)

@@ -657,6 +657,12 @@ def register():
     _lod_component_filter.install()
     _extraction_component_filter.install()
     try:
+        from .embedded import export_selection as _export_selection
+        _export_selection.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    try:
         from ...core.export import material_partition as _material_partition
         from ._efmi_core.blender_export.blender_export import ObjectMergerEFMI
         from .embedded.shapekey.export_state import finalize_merger
@@ -742,6 +748,11 @@ def unregister():
         pass
     try:
         _remove_import_export_mode_sync()
+    except Exception:
+        pass
+    try:
+        from .embedded import export_selection as _export_selection
+        _export_selection.remove()
     except Exception:
         pass
     try:
