@@ -27,7 +27,8 @@ _FLAG_NAMES = frozenset({
 _SECTION_RE = re.compile(r"^[ \t]*\[([^\]]+)\][ \t]*(?:;.*)?$", re.IGNORECASE)
 _STOCK_REFERENCE_RE = re.compile(
     r"^[ \t]*Resource\\EFMIv1\\(?:Output_MergedSkeleton|OutputMergedSkeleton_Template)"
-    r"[ \t]*=[ \t]*(?:ref|reference)[ \t]+ResourceMergedSkeletonDataRW[ \t]*(?:;.*)?$",
+    r"[ \t]*=[ \t]*(?:ref|reference)[ \t]+ResourceMergedSkeletonDataRW"
+    r"[ \t]*(?:;[^\r\n]*)?\r?$",
     re.IGNORECASE | re.MULTILINE,
 )
 _INSTALLED = False
@@ -95,9 +96,7 @@ def _section_state(lines: list[str], start: int, end: int) -> tuple[str, list[in
 
 
 def detect_official_support(text: str) -> str:
-    """Inspect stock-chain capabilities; do not infer them from resource type."""
-    if not _STOCK_REFERENCE_RE.search(text):
-        return "not_applicable"
+    """Inspect target-resource capabilities; do not infer them from resource type."""
     lines = text.splitlines(keepends=True)
     bounds = _section_bounds(lines)
     if bounds is None:
@@ -122,15 +121,12 @@ def _extend_bind_flags_line(line: str, missing: list[str]) -> str:
 
 
 def ensure_merged_skeleton_bind_flags(text: str) -> tuple[str, str]:
-    """Patch only the stock target chain; unrelated custom templates are unchanged."""
-    has_stock_reference = bool(_STOCK_REFERENCE_RE.search(text))
+    """Patch only the exact target resource; unrelated sections are unchanged."""
     lines = text.splitlines(keepends=True)
     bounds = _section_bounds(lines)
     if bounds is None:
-        if has_stock_reference:
+        if _STOCK_REFERENCE_RE.search(text):
             raise MergedSkeletonBindFlagsError("Missing Merged Skeleton resource section")
-        return text, "not_applicable"
-    if not has_stock_reference:
         return text, "not_applicable"
     start, end = bounds
     _kind, bind_lines, flags = _section_state(lines, start, end)
@@ -216,7 +212,16 @@ def install() -> None:
     _VENDOR_DEFAULT_SUPPORT = _vendored_default_support(module)
     module.IniMaker.build_from_template = wrapped
     _INSTALLED = True
-    print(f"[MergedSkeletonBindFlags] Integrated template: {_VENDOR_DEFAULT_SUPPORT}; per-export capability check enabled")
+    if _VENDOR_DEFAULT_SUPPORT == "official_explicit_bind_flags":
+        print(
+            "[MergedSkeletonBindFlags] Upstream explicit SRV/UAV support detected; "
+            "fallback is dormant and eligible for removal after the supported-path audit."
+        )
+    else:
+        print(
+            f"[MergedSkeletonBindFlags] Integrated template: {_VENDOR_DEFAULT_SUPPORT}; "
+            "per-export capability check enabled."
+        )
 
 
 def remove() -> None:
