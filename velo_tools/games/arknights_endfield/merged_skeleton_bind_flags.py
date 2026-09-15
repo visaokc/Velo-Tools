@@ -95,7 +95,9 @@ def _section_state(lines: list[str], start: int, end: int) -> tuple[str, list[in
 
 
 def detect_official_support(text: str) -> str:
-    """Inspect unmodified template/output capabilities; do not infer from type."""
+    """Inspect stock-chain capabilities; do not infer them from resource type."""
+    if not _STOCK_REFERENCE_RE.search(text):
+        return "not_applicable"
     lines = text.splitlines(keepends=True)
     bounds = _section_bounds(lines)
     if bounds is None:
@@ -120,12 +122,15 @@ def _extend_bind_flags_line(line: str, missing: list[str]) -> str:
 
 
 def ensure_merged_skeleton_bind_flags(text: str) -> tuple[str, str]:
-    """Patch only the exact target resource; complete templates are unchanged."""
+    """Patch only the stock target chain; unrelated custom templates are unchanged."""
+    has_stock_reference = bool(_STOCK_REFERENCE_RE.search(text))
     lines = text.splitlines(keepends=True)
     bounds = _section_bounds(lines)
     if bounds is None:
-        if _STOCK_REFERENCE_RE.search(text):
+        if has_stock_reference:
             raise MergedSkeletonBindFlagsError("Missing Merged Skeleton resource section")
+        return text, "not_applicable"
+    if not has_stock_reference:
         return text, "not_applicable"
     start, end = bounds
     _kind, bind_lines, flags = _section_state(lines, start, end)
