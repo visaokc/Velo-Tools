@@ -13,6 +13,9 @@ from ..mapping import algorithms as _algo
 from ..mapping.filters import is_special_vg_name
 
 
+BONE_MAPPING_COMPONENT_KEY = "_export_bone_mapping_component_id"
+
+
 def _vg_has_any_weight(obj, vg_index: int) -> bool:
     if obj is None or obj.data is None:
         return False
