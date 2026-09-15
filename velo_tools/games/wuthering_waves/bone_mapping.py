@@ -12,6 +12,11 @@ from pathlib import Path
 
 import numpy
 
+from ...core.mapping.bone_identity import (
+    BoneIdentityConflict,
+    BoneNameEvidence,
+    resolve_runtime_bone_names,
+)
 from .embedded.lod.matcher import GeometryMatcher, GeometryMatcherConfig, ChamferMixin
 from .embedded.lod.model import load_full_object
 
@@ -319,8 +324,9 @@ def _match_vertex_groups_unique(component_mesh, source_mesh, candidates_count=6)
         component_mesh, source_mesh, candidates_count)
     return mapping
 
+
 def mapping_from_assignments(assignments, *, vg_candidates=6):
-    """Merge repeated global-id/name occurrences while retaining source Components."""
+    """Resolve one stable name per merged VG while retaining source Components."""
     rows = []
     evidence = []
     for component, model, score in assignments:
@@ -335,15 +341,30 @@ def mapping_from_assignments(assignments, *, vg_candidates=6):
         evidence.append((component.source_name, model.label, score, len(local_to_source)))
     if not rows:
         raise BoneMappingError("体素匹配完成，但没有得到任何骨骼编号映射")
+
+    try:
+        canonical = resolve_runtime_bone_names(
+            BoneNameEvidence(global_id, bone_name, component_name, support)
+            for global_id, bone_name, component_name, support in rows
+        )
+    except BoneIdentityConflict as exc:
+        raise BoneMappingError(
+            f"Global bone-name evidence conflict: {exc}"
+        ) from exc
+
     merged = {}
-    for global_id, bone_name, component_name, support in rows:
-        key = (global_id, bone_name)
-        current = merged.setdefault(key, [set(), 0])
+    for global_id, _bone_name, component_name, support in rows:
+        current = merged.setdefault(global_id, [set(), 0])
         current[0].add(component_name)
         current[1] += support
     result = [
-        (global_id, bone_name, _format_component_sources(component_names), support)
-        for (global_id, bone_name), (component_names, support) in merged.items()
+        (
+            global_id,
+            canonical[global_id],
+            _format_component_sources(component_names),
+            support,
+        )
+        for global_id, (component_names, support) in merged.items()
     ]
     return sorted(result, key=lambda item: (item[0], item[2], item[1])), evidence
 

@@ -11,6 +11,12 @@ from pathlib import Path
 
 import numpy
 
+from ...core.mapping.bone_identity import (
+    BoneIdentityConflict,
+    BoneNameEvidence,
+    resolve_runtime_bone_names,
+)
+
 
 MAPPING_FILE_NAME = "BoneNameMapping.json"
 SKELETON_FILE_NAME = "BoneNameSkeleton.glb"
@@ -569,6 +575,7 @@ def write_mapping(source_folder: Path, _source_path: Path, metadata: dict, compo
         component["vg_map"] = {
             str(local): name for local, name in sorted(component_maps[component_id].items())
         }
+    payload, _corrections = normalize_runtime_bone_names(payload)
     payload["bone_name_mapping_version"] = MAPPING_VERSION
     payload["skeleton_file"] = SKELETON_FILE_NAME
     payload["source_glb"] = SKELETON_FILE_NAME
@@ -589,7 +596,72 @@ def load_mapping(source_folder: Path):
         raise NamedBoneMappingError(f"Cannot read {MAPPING_FILE_NAME}: {exc}") from exc
     if payload.get("bone_name_mapping_version") != MAPPING_VERSION:
         raise NamedBoneMappingError(f"Unsupported {MAPPING_FILE_NAME} version")
+    payload, corrections = normalize_runtime_bone_names(payload)
+    if corrections:
+        print(
+            f"[bone-name-mapping] normalized {len(corrections)} "
+            "component-local bone names by runtime identity"
+        )
     return payload
+
+
+def normalize_runtime_bone_names(payload: dict):
+    """Make component-local names agree for each authoritative runtime bone."""
+    normalized = copy.deepcopy(payload)
+    components = normalized.get("components")
+    if not isinstance(components, list):
+        raise NamedBoneMappingError(f"{MAPPING_FILE_NAME} has no Component list")
+
+    evidence = []
+    locations = []
+    for component_id, component in enumerate(components):
+        if not isinstance(component, dict):
+            raise NamedBoneMappingError(
+                f"{MAPPING_FILE_NAME} Component {component_id} is invalid"
+            )
+        local_to_name = {
+            int(local): str(name)
+            for local, name in (component.get("vg_map") or {}).items()
+        }
+        runtime_map = {
+            int(local): int(runtime)
+            for local, runtime in (component.get("runtime_vg_map") or {}).items()
+        }
+        if set(local_to_name) != set(runtime_map):
+            missing = sorted(set(runtime_map) - set(local_to_name))
+            extra = sorted(set(local_to_name) - set(runtime_map))
+            raise NamedBoneMappingError(
+                f"{MAPPING_FILE_NAME} Component {component_id} bone-name and "
+                f"runtime_vg_map local keys differ "
+                f"(missing={missing[:8]}, extra={extra[:8]})"
+            )
+        for local_id, bone_name in sorted(local_to_name.items()):
+            runtime_id = runtime_map[local_id]
+            evidence.append(BoneNameEvidence(
+                runtime_id=runtime_id,
+                bone_name=bone_name,
+                source=component_id,
+            ))
+            locations.append((component_id, local_id, runtime_id, bone_name))
+
+    try:
+        canonical = resolve_runtime_bone_names(evidence)
+    except BoneIdentityConflict as exc:
+        raise NamedBoneMappingError(
+            f"{MAPPING_FILE_NAME} has ambiguous runtime bone names: {exc}"
+        ) from exc
+
+    corrections = []
+    for component_id, local_id, runtime_id, old_name in locations:
+        new_name = canonical[runtime_id]
+        normalized["components"][component_id].setdefault("vg_map", {})[
+            str(local_id)
+        ] = new_name
+        if new_name != old_name:
+            corrections.append(
+                (component_id, local_id, runtime_id, old_name, new_name)
+            )
+    return normalized, tuple(corrections)
 
 
 def component_name_maps(payload: dict, component_id: int):
