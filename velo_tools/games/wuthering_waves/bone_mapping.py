@@ -274,48 +274,14 @@ def _group_clouds(mesh, max_points=128):
 
 
 def _match_vertex_groups_unique_with_cost(component_mesh, source_mesh, candidates_count=6):
-    """Map local VGs to source bones and return their mean point-cloud error."""
-    target_clouds = _group_clouds(component_mesh)
-    source_clouds = _group_clouds(source_mesh)
-    if len(target_clouds) > len(source_clouds):
-        raise BoneMappingError(
-            f"Component has {len(target_clouds)} weighted VGs but source section has only "
-            f"{len(source_clouds)} weighted bones")
-    source_ids = list(source_clouds)
-    source_centroids = numpy.array([source_clouds[group_id].mean(axis=0) for group_id in source_ids])
-    edge_cache = {}
+    """Map local groups only when complete skin weights prove a unique result."""
+    from ...core.mapping.skin_weight_match import SkinMatchError, match_skin_weights
 
-    def edge(target_id, source_index):
-        key = (target_id, source_index)
-        if key not in edge_cache:
-            edge_cache[key] = ChamferMixin.calculate_linear_chamfer_distance(
-                target_clouds[target_id], source_clouds[source_ids[source_index]])
-        return edge_cache[key]
-
-    candidate_width = min(max(1, candidates_count), len(source_ids))
-    while True:
-        edges = []
-        for target_id, points in target_clouds.items():
-            centroid = points.mean(axis=0)
-            order = numpy.argsort(numpy.linalg.norm(source_centroids - centroid, axis=1))[:candidate_width]
-            edges.extend((edge(target_id, int(index)), target_id, int(index)) for index in order)
-        matched_targets = set()
-        matched_sources = set()
-        mapping = {}
-        matched_costs = []
-        for cost, target_id, source_index in sorted(edges):
-            if target_id in matched_targets or source_index in matched_sources:
-                continue
-            mapping[target_id] = source_ids[source_index]
-            matched_costs.append(cost)
-            matched_targets.add(target_id)
-            matched_sources.add(source_index)
-        if len(mapping) == len(target_clouds):
-            return dict(sorted(mapping.items())), float(numpy.mean(matched_costs))
-        if candidate_width == len(source_ids):
-            missing = sorted(set(target_clouds) - set(mapping))
-            raise BoneMappingError(f"无法为 Component local VG 建立一对一骨骼匹配：{missing[:8]}")
-        candidate_width = min(len(source_ids), candidate_width * 2)
+    try:
+        result = match_skin_weights(component_mesh, source_mesh)
+    except SkinMatchError as exc:
+        raise BoneMappingError(str(exc)) from exc
+    return result.mapping, result.weight_error
 
 
 def _match_vertex_groups_unique(component_mesh, source_mesh, candidates_count=6):
@@ -325,12 +291,14 @@ def _match_vertex_groups_unique(component_mesh, source_mesh, candidates_count=6)
     return mapping
 
 
-def mapping_from_assignments(assignments, *, vg_candidates=6):
+def mapping_from_assignments(assignments, *, vg_candidates=6, resolved_matches=None):
     """Resolve one stable name per merged VG while retaining source Components."""
     rows = []
     evidence = []
     for component, model, score in assignments:
-        local_to_source = _match_vertex_groups_unique(component.mesh, model, vg_candidates)
+        local_to_source = (resolved_matches or {}).get(id(component))
+        if local_to_source is None:
+            local_to_source = _match_vertex_groups_unique(component.mesh, model, vg_candidates)
         support = {group_id: len(points) for group_id, points in _group_clouds(component.mesh).items()}
         for local_id, source_id in local_to_source.items():
             if source_id >= len(model.bone_names):
@@ -428,57 +396,39 @@ def generate_mapping(unpack_folder: Path, object_source_folder: Path, *, voxel_s
             points.tobytes()
             + section.blend_indices().tobytes()
             + section.blend_weights().tobytes()
+            + "\0".join(section.bone_names).encode("utf-8")
         ).digest()
         if signature in seen_signatures:
             continue
         seen_signatures.add(signature)
         unique_sections.append(section)
     sections = unique_sections
+    from ...core.mapping.skin_weight_match import SkinMatchError, select_skin_match
+
     assignments = []
+    resolved_matches = {}
+    match_cache = {}
     for component in full_object.components:
-        scores = sorted(
-            ((geometry.calculate_similarity(section, component.mesh), index, section)
-             for index, section in enumerate(sections)),
-            reverse=True, key=lambda item: item[0],
-        )
-        best_score, best_index, best_section = scores[0]
-        if best_score < similarity_threshold:
+        ranked = sorted(sections, key=lambda section:
+            geometry.calculate_similarity(section, component.mesh), reverse=True)
+        try:
+            best_section, match = select_skin_match(component.mesh, ranked, cache=match_cache)
+        except SkinMatchError as exc:
+            raise BoneMappingError(f"Component {component.index}: {exc}") from exc
+        score = geometry.calculate_similarity(best_section, component.mesh)
+        if score < similarity_threshold:
             raise BoneMappingError(
-                f"Component {component.index} 最佳体素匹配仅 {best_score:.2f}%（{best_section.label}）")
-
-        viable = [item for item in scores if item[0] >= similarity_threshold]
-        skin_candidates = []
-        first_compatible = None
-        for score, index, section in viable:
-            try:
-                mapping, skin_cost = _match_vertex_groups_unique_with_cost(
-                    component.mesh, section, vg_candidates)
-            except BoneMappingError:
-                continue
-            first_compatible = (skin_cost, -score, section.label, mapping, score, index, section)
-            skin_candidates.append(first_compatible)
-            break
-        if first_compatible is not None and first_compatible[0] > 0.001:
-            for score, index, section in viable:
-                if index == first_compatible[5]:
-                    continue
-                try:
-                    mapping, skin_cost = _match_vertex_groups_unique_with_cost(
-                        component.mesh, section, vg_candidates)
-                except BoneMappingError:
-                    continue
-                skin_candidates.append((skin_cost, -score, section.label, mapping, score, index, section))
-        if not skin_candidates:
+                f"Component {component.index} verified source is below the geometry threshold")
+        matched_names = [
+            best_section.bone_names[source_id]
+            for source_id in match.mapping.values()
+        ]
+        if len(set(matched_names)) != len(matched_names):
             raise BoneMappingError(
-                f"Component {component.index} 没有骨骼通道兼容的 section 候选")
-        skin_candidates.sort(key=lambda item: item[:3])
-        best_cost, _negative_score, _label, best_mapping, best_score, best_index, best_section = skin_candidates[0]
-        tied = [item for item in skin_candidates if abs(item[0] - best_cost) < 1e-6]
-        if any(item[3] != best_mapping for item in tied[1:]):
-            details = "，".join(
-                f"skin={item[0]:.6f} geometry={item[4]:.2f}% {item[6].label}"
-                for item in tied[:3])
-            raise BoneMappingError(f"Component {component.index} 蒙皮同分候选产生不同骨骼映射：{details}")
-        assignments.append((component, best_section, best_score))
+                f"Component {component.index} source skeleton has ambiguous duplicate bone names"
+            )
+        assignments.append((component, best_section, score))
+        resolved_matches[id(component)] = match.mapping
 
-    return mapping_from_assignments(assignments, vg_candidates=vg_candidates)
+    return mapping_from_assignments(assignments, vg_candidates=vg_candidates,
+                                    resolved_matches=resolved_matches)

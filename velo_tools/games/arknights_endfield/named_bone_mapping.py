@@ -20,7 +20,9 @@ from ...core.mapping.bone_identity import (
 
 MAPPING_FILE_NAME = "BoneNameMapping.json"
 SKELETON_FILE_NAME = "BoneNameSkeleton.glb"
-MAPPING_VERSION = 1
+MAPPING_VERSION = 2
+MATCHING_PROOF_VERSION = 1
+MATCHING_METHOD = "complete_skin_weights"
 
 
 class NamedBoneMappingError(RuntimeError):
@@ -67,6 +69,7 @@ class DumpMesh:
     _triangles: numpy.ndarray
     _blend_indices: numpy.ndarray
     _blend_weights: numpy.ndarray
+    implicit_weights: bool = False
 
     def positions(self):
         return self._positions
@@ -158,15 +161,47 @@ def _accessor(document: dict, binary: bytes, accessor_id: int) -> numpy.ndarray:
     stride = int(view.get("byteStride", item_size))
     start = int(view.get("byteOffset", 0)) + int(accessor.get("byteOffset", 0))
     end = start + max(0, int(accessor["count"]) - 1) * stride + item_size
-    if start < 0 or end > len(binary):
+    if stride < item_size or int(accessor["count"]) < 0 or start < 0 or end > len(binary):
         raise NamedBoneMappingError("GLB accessor exceeds BIN chunk")
-    return numpy.ndarray(
+    values = numpy.ndarray(
         (int(accessor["count"]), width),
         dtype=dtype,
         buffer=binary,
         offset=start,
         strides=(stride, dtype.itemsize),
     ).copy()
+    if accessor.get("normalized", False):
+        if dtype.kind not in {'u', 'i'}:
+            raise NamedBoneMappingError("GLB normalized accessor requires integer storage")
+        values = values.astype(numpy.float32) / numpy.iinfo(dtype).max
+        if dtype.kind == 'i':
+            values = numpy.maximum(values, -1.0)
+    return values
+
+
+def _skin_attributes(document, binary, attributes, vertex_count):
+    """Decode every paired glTF skin set, including normalized integer weights."""
+    joints = {int(key[7:]) for key in attributes if key.startswith("JOINTS_")}
+    weights = {int(key[8:]) for key in attributes if key.startswith("WEIGHTS_")}
+    if not joints or joints != weights or joints != set(range(max(joints) + 1)):
+        raise NamedBoneMappingError("GLB joint and weight sets are incomplete")
+    index_arrays, weight_arrays = [], []
+    for index in sorted(joints):
+        joint_id, weight_id = attributes[f"JOINTS_{index}"], attributes[f"WEIGHTS_{index}"]
+        joint_meta = document["accessors"][joint_id]
+        weight_meta = document["accessors"][weight_id]
+        if joint_meta.get("normalized", False) or joint_meta["componentType"] not in {5121, 5123}:
+            raise NamedBoneMappingError("GLB joints require unnormalized unsigned integer storage")
+        if weight_meta["componentType"] not in {5126, 5121, 5123} or (
+                weight_meta["componentType"] != 5126 and not weight_meta.get("normalized", False)):
+            raise NamedBoneMappingError("GLB weights require float or normalized unsigned integer storage")
+        ids = _accessor(document, binary, joint_id)
+        values = _accessor(document, binary, weight_id)
+        if ids.shape != (vertex_count, 4) or values.shape != ids.shape:
+            raise NamedBoneMappingError("GLB skin attributes have incompatible vertex counts or widths")
+        index_arrays.append(ids.astype(numpy.int32))
+        weight_arrays.append(values.astype(numpy.float32))
+    return numpy.concatenate(index_arrays, axis=1), numpy.concatenate(weight_arrays, axis=1)
 
 
 def load_glb_lod0_meshes(path: Path) -> list[SkinMesh]:
@@ -196,8 +231,7 @@ def load_glb_lod0_meshes(path: Path) -> list[SkinMesh]:
             positions = positions[:, (0, 2, 1)]
             positions[:, 0] *= -1.0
             positions[:, 1] *= -1.0
-            blend_indices = _accessor(document, binary, attributes["JOINTS_0"]).astype(numpy.int32)
-            blend_weights = _accessor(document, binary, attributes["WEIGHTS_0"]).astype(numpy.float32)
+            blend_indices, blend_weights = _skin_attributes(document, binary, attributes, len(positions))
             if primitive.get("indices") is None:
                 flat_indices = numpy.arange(len(positions), dtype=numpy.int64)
             else:
@@ -258,6 +292,7 @@ def _load_dump_components(source_folder: Path):
         positions = vb.get_field(Semantic.Position).astype(numpy.float32, copy=False)
         blend_indices = vb.get_field(Semantic.Blendindices)
         blend_weights = vb.get_field(Semantic.Blendweights)
+        implicit_weights = blend_weights is None
         if blend_indices is None:
             if not bool(component_meta.get("cpu_posed", False)):
                 raise NamedBoneMappingError(f"Component {component_id} has no blend indices")
@@ -269,32 +304,22 @@ def _load_dump_components(source_folder: Path):
                 blend_weights = numpy.zeros(blend_indices.shape, dtype=numpy.float32)
                 blend_weights[:, 0] = 1.0
             else:
-                blend_weights = blend_weights.astype(numpy.float32, copy=False)
+                # Preserve UNORM storage precision for full-weight matching.
+                if numpy.issubdtype(blend_weights.dtype, numpy.unsignedinteger):
+                    denominator = numpy.iinfo(blend_weights.dtype).max
+                    blend_weights = blend_weights.astype(numpy.float32) / denominator
+                else:
+                    blend_weights = blend_weights.astype(numpy.float32, copy=False)
         triangles = ib.get_field(Semantic.Index).reshape(-1, 3).astype(numpy.int64, copy=False)
         components.append(DumpComponent(
             index=component_id,
             source_name=name,
             meta=component_meta,
-            mesh=DumpMesh(positions, triangles, blend_indices, blend_weights),
+            mesh=DumpMesh(positions, triangles, blend_indices, blend_weights, implicit_weights),
         ))
     if not components:
         raise NamedBoneMappingError("Metadata.json contains no Components")
     return metadata, components
-
-
-def _group_clouds(mesh, max_points=128):
-    positions = mesh.positions()
-    indices = mesh.blend_indices().astype(numpy.int32, copy=False)
-    weights = mesh.blend_weights()
-    active = weights > 1.0e-6
-    clouds = {}
-    for group_id in sorted(int(value) for value in numpy.unique(indices[active])):
-        points = positions[numpy.any((indices == group_id) & active, axis=1)].astype(numpy.float32)
-        if len(points) > max_points:
-            keep = numpy.linspace(0, len(points) - 1, max_points, dtype=numpy.int64)
-            points = points[keep]
-        clouds[group_id] = points
-    return clouds
 
 
 def _calculate_min_distances(points_a, points_b, chunk_size=1024):
@@ -314,63 +339,18 @@ def _calculate_min_distances(points_a, points_b, chunk_size=1024):
     return numpy.concatenate(result)
 
 
-def _linear_chamfer_distance(points_a, points_b):
-    return float(
-        _calculate_min_distances(points_a, points_b).mean()
-        + _calculate_min_distances(points_b, points_a).mean()
-    )
-
-
 def _match_vertex_groups(
-    component_mesh,
-    source_mesh,
-    candidates_count=6,
-    *,
-    target_clouds=None,
-    source_clouds=None,
+    component_mesh, source_mesh, candidates_count=6, *,
+    target_clouds=None, source_clouds=None,
 ):
-    target_clouds = target_clouds if target_clouds is not None else _group_clouds(component_mesh)
-    source_clouds = source_clouds if source_clouds is not None else _group_clouds(source_mesh)
-    if len(target_clouds) > len(source_clouds):
-        raise NamedBoneMappingError(
-            f"Component uses {len(target_clouds)} weighted local groups but {source_mesh.label} has only "
-            f"{len(source_clouds)} weighted bones"
-        )
-    source_ids = list(source_clouds)
-    source_centroids = numpy.array([source_clouds[group_id].mean(axis=0) for group_id in source_ids])
-    edge_cache = {}
+    """Use complete weight evidence; retain the old call signature for callers."""
+    from ...core.mapping.skin_weight_match import SkinMatchError, match_skin_weights
 
-    def edge(target_id, source_index):
-        key = (target_id, source_index)
-        if key not in edge_cache:
-            edge_cache[key] = _linear_chamfer_distance(
-                target_clouds[target_id], source_clouds[source_ids[source_index]])
-        return edge_cache[key]
-
-    candidate_width = min(max(1, candidates_count), len(source_ids))
-    while True:
-        edges = []
-        for target_id, points in target_clouds.items():
-            centroid = points.mean(axis=0)
-            order = numpy.argsort(numpy.linalg.norm(source_centroids - centroid, axis=1))[:candidate_width]
-            edges.extend((edge(target_id, int(index)), target_id, int(index)) for index in order)
-        matched_targets = set()
-        matched_sources = set()
-        mapping = {}
-        costs = []
-        for cost, target_id, source_index in sorted(edges):
-            if target_id in matched_targets or source_index in matched_sources:
-                continue
-            mapping[target_id] = source_ids[source_index]
-            costs.append(cost)
-            matched_targets.add(target_id)
-            matched_sources.add(source_index)
-        if len(mapping) == len(target_clouds):
-            return dict(sorted(mapping.items())), float(numpy.mean(costs))
-        if candidate_width == len(source_ids):
-            missing = sorted(set(target_clouds) - set(mapping))
-            raise NamedBoneMappingError(f"Cannot uniquely map local groups: {missing[:8]}")
-        candidate_width = min(len(source_ids), candidate_width * 2)
+    try:
+        result = match_skin_weights(component_mesh, source_mesh)
+    except SkinMatchError as exc:
+        raise NamedBoneMappingError(str(exc)) from exc
+    return result.mapping, result.weight_error
 
 
 def uses_asset_input(unpack_path: Path) -> bool:
@@ -458,111 +438,58 @@ def generate_mapping(unpack_path: Path, source_folder: Path, *, voxel_size=0.01,
         seen_signatures.add(signature)
         unique_meshes.append(source_mesh)
     source_meshes = unique_meshes
-    source_cloud_cache = {
-        id(source_mesh): _group_clouds(source_mesh)
-        for source_mesh in source_meshes
-    }
-    component_maps = {}
+    from ...core.mapping.skin_weight_match import SkinMatchError, select_skin_match
+
+    class VerifiedMaps(dict):
+        pass
+
+    component_maps = VerifiedMaps()
+    component_maps.match_evidence = {}
+    match_cache = {}
     evidence = []
     for component in components:
         if bool(component.meta.get("cpu_posed", False)):
             component_maps[component.index] = {}
             evidence.append((component.index, "CPU-posed", 100.0, 0.0, 0))
             continue
-        prefilter_scores = sorted(
-            ((geometry_prefilter.calculate_similarity(source_mesh, component.mesh), source_mesh.label, source_mesh)
-             for source_mesh in source_meshes),
-            reverse=True,
-            key=lambda item: (item[0], item[1]),
-        )
-        shortlist = prefilter_scores[:min(3, len(prefilter_scores))]
-        scores = sorted(
-            ((geometry.calculate_similarity(source_mesh, component.mesh), label, source_mesh)
-             for _prefilter_score, label, source_mesh in shortlist),
-            reverse=True,
-            key=lambda item: (item[0], item[1]),
-        )
-        viable = [item for item in scores if item[0] >= similarity_threshold]
-        if not viable and len(shortlist) < len(prefilter_scores):
-            scores = sorted(
-                ((geometry.calculate_similarity(source_mesh, component.mesh), label, source_mesh)
-                 for _prefilter_score, label, source_mesh in prefilter_scores),
-                reverse=True,
-                key=lambda item: (item[0], item[1]),
-            )
-            viable = [item for item in scores if item[0] >= similarity_threshold]
-        if not viable:
-            best_score, best_label, _mesh = scores[0]
+        # Voxel scores order candidates, but never certify bone identity or hide
+        # an alternative full-weight match behind a fixed shortlist.
+        ranked = sorted(source_meshes, key=lambda mesh:
+            geometry_prefilter.calculate_similarity(mesh, component.mesh), reverse=True)
+        try:
+            source_mesh, match = select_skin_match(component.mesh, ranked, cache=match_cache)
+        except SkinMatchError as exc:
             raise NamedBoneMappingError(
-                f"Component {component.index} best voxel similarity is only {best_score:.2f}% ({best_label})"
-            )
-        target_clouds = _group_clouds(component.mesh)
-        candidates = []
-        first_compatible = None
-        for score, label, source_mesh in viable:
-            try:
-                local_to_source, skin_cost = _match_vertex_groups(
-                    component.mesh,
-                    source_mesh,
-                    vg_candidates,
-                    target_clouds=target_clouds,
-                    source_clouds=source_cloud_cache[id(source_mesh)],
-                )
-            except NamedBoneMappingError:
-                continue
-            first_compatible = (skin_cost, -score, label, local_to_source, source_mesh)
-            candidates.append(first_compatible)
-            break
-        geometry_score = -first_compatible[1] if first_compatible is not None else 0.0
-        competing_score = max(
-            (score for score, _label, source_mesh in viable
-             if first_compatible is None or source_mesh is not first_compatible[4]),
-            default=-1.0,
-        )
-        geometry_is_decisive = geometry_score >= 99.0 and geometry_score - competing_score > 0.01
-        if (
-            first_compatible is not None
-            and first_compatible[0] > 0.001
-            and not geometry_is_decisive
-        ):
-            for score, label, source_mesh in viable:
-                if source_mesh is first_compatible[4]:
-                    continue
-                try:
-                    local_to_source, skin_cost = _match_vertex_groups(
-                        component.mesh,
-                        source_mesh,
-                        vg_candidates,
-                        target_clouds=target_clouds,
-                        source_clouds=source_cloud_cache[id(source_mesh)],
-                    )
-                except NamedBoneMappingError:
-                    continue
-                candidates.append((skin_cost, -score, label, local_to_source, source_mesh))
-        if not candidates:
-            raise NamedBoneMappingError(f"Component {component.index} has no skin-compatible GLB mesh candidate")
-        candidates.sort(key=lambda item: item[:3])
-        skin_cost, negative_score, label, local_to_source, source_mesh = candidates[0]
-        tied = [item for item in candidates if abs(item[0] - skin_cost) < 1.0e-6]
-        if any(item[3] != local_to_source for item in tied[1:]):
+                f"Component {component.index}: {exc}") from exc
+        geometry_score = geometry.calculate_similarity(source_mesh, component.mesh)
+        if geometry_score < similarity_threshold:
             raise NamedBoneMappingError(
-                f"Component {component.index} has tied GLB candidates with different bone assignments"
-            )
-        local_to_name = {}
-        for local_id, source_id in local_to_source.items():
-            if source_id < 0 or source_id >= len(source_mesh.bone_names):
-                raise NamedBoneMappingError(f"{label}: joint {source_id} is out of range")
-            local_to_name[int(local_id)] = source_mesh.bone_names[source_id]
-        runtime_map = {int(local): int(runtime) for local, runtime in (component.meta.get("runtime_vg_map") or {}).items()}
+                f"Component {component.index} verified source is below the geometry threshold")
+        local_to_name = {local: source_mesh.bone_names[joint]
+                         for local, joint in match.mapping.items()}
+        runtime_map = {int(local): int(runtime) for local, runtime
+                       in (component.meta.get("runtime_vg_map") or {}).items()}
         if set(local_to_name) != set(runtime_map):
-            missing = sorted(set(runtime_map) - set(local_to_name))
-            extra = sorted(set(local_to_name) - set(runtime_map))
             raise NamedBoneMappingError(
-                f"Component {component.index} local bone coverage differs from runtime_vg_map "
-                f"(missing={missing[:8]}, extra={extra[:8]})"
-            )
+                f"Component {component.index} full-weight mapping does not cover runtime_vg_map")
+        if len(set(local_to_name.values())) != len(local_to_name):
+            raise NamedBoneMappingError(
+                f"Component {component.index} source skeleton has ambiguous duplicate bone names")
         component_maps[component.index] = local_to_name
-        evidence.append((component.index, label, -negative_score, skin_cost, len(local_to_name)))
+        component_maps.match_evidence[component.index] = {
+            "method": match.method,
+            "source_mesh": source_mesh.label,
+            "vertices_checked": len(match.vertex_witnesses),
+            "max_position_error": match.position_error,
+            "max_weight_error": match.weight_error,
+            "position_tolerance": match.position_tolerance,
+            "weight_tolerance": match.weight_tolerance,
+            "translation": match.translation,
+            "source_joint_indices": match.mapping,
+            "implicit_source_signatures": match.implicit_signatures,
+        }
+        evidence.append((component.index, source_mesh.label, geometry_score,
+                         match.weight_error, len(local_to_name)))
     return source_path, metadata, component_maps, evidence
 
 
@@ -576,6 +503,16 @@ def write_mapping(source_folder: Path, _source_path: Path, metadata: dict, compo
             str(local): name for local, name in sorted(component_maps[component_id].items())
         }
     payload, _corrections = normalize_runtime_bone_names(payload)
+    proof = getattr(component_maps, "match_evidence", None)
+    if not isinstance(proof, dict):
+        raise NamedBoneMappingError(
+            "Bone-name mappings must be generated from complete skin-weight evidence"
+        )
+    payload["bone_name_matching"] = {
+        "version": MATCHING_PROOF_VERSION,
+        "method": MATCHING_METHOD,
+        "components": proof,
+    }
     payload["bone_name_mapping_version"] = MAPPING_VERSION
     payload["skeleton_file"] = SKELETON_FILE_NAME
     payload["source_glb"] = SKELETON_FILE_NAME
@@ -595,7 +532,11 @@ def load_mapping(source_folder: Path):
     except (OSError, ValueError) as exc:
         raise NamedBoneMappingError(f"Cannot read {MAPPING_FILE_NAME}: {exc}") from exc
     if payload.get("bone_name_mapping_version") != MAPPING_VERSION:
-        raise NamedBoneMappingError(f"Unsupported {MAPPING_FILE_NAME} version")
+        raise NamedBoneMappingError(
+            f"{MAPPING_FILE_NAME} was generated by an obsolete bone matcher; "
+            "regenerate it from the original unpacked model"
+        )
+    _validate_matching_proof(payload)
     payload, corrections = normalize_runtime_bone_names(payload)
     if corrections:
         print(
@@ -603,6 +544,73 @@ def load_mapping(source_folder: Path):
             "component-local bone names by runtime identity"
         )
     return payload
+
+
+def _validate_matching_proof(payload: dict):
+    proof = payload.get("bone_name_matching")
+    if not isinstance(proof, dict):
+        raise NamedBoneMappingError(
+            f"{MAPPING_FILE_NAME} has no complete skin-weight matching proof"
+        )
+    if (proof.get("version") != MATCHING_PROOF_VERSION
+            or proof.get("method") != MATCHING_METHOD):
+        raise NamedBoneMappingError(
+            f"{MAPPING_FILE_NAME} uses an unsupported bone matching proof"
+        )
+    proof_components = proof.get("components")
+    components = payload.get("components")
+    if not isinstance(proof_components, dict) or not isinstance(components, list):
+        raise NamedBoneMappingError(
+            f"{MAPPING_FILE_NAME} has invalid bone matching proof data"
+        )
+    expected = {
+        component_id
+        for component_id, component in enumerate(components)
+        if isinstance(component, dict) and not bool(component.get("cpu_posed", False))
+    }
+    try:
+        actual = {int(component_id) for component_id in proof_components}
+    except (TypeError, ValueError) as exc:
+        raise NamedBoneMappingError(
+            f"{MAPPING_FILE_NAME} has invalid proof Component IDs"
+        ) from exc
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise NamedBoneMappingError(
+            f"{MAPPING_FILE_NAME} proof Component coverage differs "
+            f"(missing={missing[:8]}, extra={extra[:8]})"
+        )
+    for component_id in sorted(expected):
+        row = proof_components.get(str(component_id), proof_components.get(component_id))
+        if not isinstance(row, dict):
+            raise NamedBoneMappingError(
+                f"{MAPPING_FILE_NAME} Component {component_id} proof is invalid"
+            )
+        if row.get("method") not in {"full_weights", "constant_skin_signatures"}:
+            raise NamedBoneMappingError(
+                f"{MAPPING_FILE_NAME} Component {component_id} proof method is invalid"
+            )
+        if int(row.get("vertices_checked") or 0) <= 0:
+            raise NamedBoneMappingError(
+                f"{MAPPING_FILE_NAME} Component {component_id} proof has no vertex witnesses"
+            )
+        source_indices = row.get("source_joint_indices")
+        if not isinstance(source_indices, dict):
+            raise NamedBoneMappingError(
+                f"{MAPPING_FILE_NAME} Component {component_id} proof has no joint map"
+            )
+        local_ids = {int(local) for local in (components[component_id].get("vg_map") or {})}
+        try:
+            proof_ids = {int(local) for local in source_indices}
+        except (TypeError, ValueError) as exc:
+            raise NamedBoneMappingError(
+                f"{MAPPING_FILE_NAME} Component {component_id} proof has invalid local IDs"
+            ) from exc
+        if proof_ids != local_ids:
+            raise NamedBoneMappingError(
+                f"{MAPPING_FILE_NAME} Component {component_id} proof does not cover every local bone"
+            )
 
 
 def normalize_runtime_bone_names(payload: dict):

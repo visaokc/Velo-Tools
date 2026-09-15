@@ -15,6 +15,8 @@ import sys
 import traceback
 from collections import Counter
 
+from velo_tools.core.export.activity import reactive_updates_suspended
+
 from . import detector, props as _props
 
 
@@ -149,6 +151,8 @@ _TIMER_INTERVAL = 0.3  # seconds; fingerprint short-circuit makes this cheap
 
 
 def _on_depsgraph_update(scene, depsgraph=None):
+    if reactive_updates_suspended():
+        return
     try:
         s = getattr(scene, "shapekey_settings", None)
         if s is None or not s.enabled:
@@ -163,6 +167,8 @@ def _detector_timer():
     fire depsgraph_update_post. Iterate every scene because bpy.context.scene
     may be None inside timer callbacks. Cheap: fingerprint guard means the
     timer only writes to RNA when contents actually changed."""
+    if reactive_updates_suspended():
+        return _TIMER_INTERVAL
     try:
         for scene in bpy.data.scenes:
             s = getattr(scene, "shapekey_settings", None)

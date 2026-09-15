@@ -22,11 +22,10 @@ class BoneNameEvidence:
 def resolve_runtime_bone_names(
     evidence: Iterable[BoneNameEvidence],
 ) -> dict[int, str]:
-    """Choose one name per runtime bone from distinct component votes.
+    """Validate consistent names without turning majority votes into evidence.
 
-    Each source contributes at most one vote for a runtime identity. Conflicts
-    are corrected only when one name has a strict majority of source votes;
-    otherwise the caller must fail closed instead of guessing from geometry.
+    Identity is established by full-weight matching before this check. Neither
+    source count nor point count may rewrite a conflicting local bone name.
     """
     by_runtime: dict[int, dict[Hashable, BoneNameEvidence]] = defaultdict(dict)
     for row in evidence:
@@ -64,15 +63,9 @@ def resolve_runtime_bone_names(
         if len(votes) == 1:
             resolved[runtime_id] = next(iter(votes))
             continue
-        name, count = votes.most_common(1)[0]
-        total = sum(votes.values())
-        if count * 2 <= total:
-            details = ", ".join(
-                f"{candidate}={candidate_count}"
-                for candidate, candidate_count in sorted(votes.items())
-            )
-            raise BoneIdentityConflict(
-                f"Runtime bone {runtime_id} has no strict name majority: {details}"
-            )
-        resolved[runtime_id] = name
+        details = ", ".join(sorted(votes))
+        raise BoneIdentityConflict(
+            f"Runtime bone {runtime_id} has conflicting names: {details}. "
+            "Regenerate the mapping from the original unpacked skin data."
+        )
     return resolved

@@ -3,6 +3,8 @@
 import bpy
 from bpy.app.handlers import persistent
 
+from ..export.activity import reactive_updates_suspended
+
 _pose_cache = {}
 _rest_lookup_cache = {}
 
@@ -88,6 +90,8 @@ def pose_group_world(obj, names, fallback_local=None, has_fallback=False):
 
 @persistent
 def invalidate_positions(*_args):
+    if reactive_updates_suspended():
+        return
     from ... import overlay as mmd_overlay
     from ...general_mapping import overlay as general_overlay
     if not (_pose_cache or _rest_lookup_cache or mmd_overlay._mmd_centroids_cache

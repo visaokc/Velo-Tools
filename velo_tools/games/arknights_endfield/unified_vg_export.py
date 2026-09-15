@@ -460,19 +460,6 @@ def _translate_object_to_runtime(
     )
 
 
-def _named_mapping_component_id(obj, target_component_id, named_runtime):
-    """Use export-time MMD provenance without changing draw ownership."""
-    if named_runtime is None:
-        return target_component_id
-    from ...core.export.preexport import BONE_MAPPING_COMPONENT_KEY
-
-    try:
-        source_component_id = int(obj.get(BONE_MAPPING_COMPONENT_KEY))
-    except (TypeError, ValueError):
-        return target_component_id
-    return (source_component_id
-            if source_component_id in named_runtime[0]
-            else target_component_id)
 
 
 def _finalize_unified_vertex_groups(self):
@@ -504,15 +491,13 @@ def _finalize_unified_vertex_groups(self):
                     compact_to_runtime[component.id],
                 )
             else:
-                mapping_component_id = _named_mapping_component_id(
-                    temp_object.object, component.id, named_runtime)
                 _translate_object_to_runtime(
                     self,
                     temp_object.object,
                     component.id,
                     compact_to_runtime[component.id],
-                    name_to_runtime=named_runtime[0][mapping_component_id],
-                    ambiguous_names=named_runtime[1].get(mapping_component_id, set()),
+                    name_to_runtime=named_runtime[0][component.id],
+                    ambiguous_names=named_runtime[1].get(component.id, set()),
                 )
 
     if full_merged:

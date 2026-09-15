@@ -13,6 +13,8 @@ from pathlib import Path
 import bpy
 from bpy.props import IntProperty, StringProperty
 
+from ..core.export.activity import reactive_updates_suspended
+
 from .. import properties as props_mod
 from .operators import is_real_mesh
 from .shapekey_model import (
@@ -353,6 +355,8 @@ def _depsgraph_handler(scene, _depsgraph):
     - Compares (name, count) signatures; no rebuild if nothing changed
     - Covers: native-panel add/delete/rename of shape keys, meshes added to/removed from the collection
     """
+    if reactive_updates_suspended():
+        return
     s = getattr(scene, "velo_tools", None)
     if s is None:
         return

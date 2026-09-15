@@ -87,7 +87,7 @@ class ComponentBoneMappingSettings(bpy.types.PropertyGroup):
     )
     voxel_size: bpy.props.FloatProperty(
         name="Voxel size",
-        description="Normalized voxel size used to match LOD0 GLB meshes to EFMI Components",
+        description="Normalized voxel size used only to order LOD0 geometry candidates before complete skin-weight verification",
         default=0.01,
         min=0.005,
         max=0.1,
@@ -95,7 +95,7 @@ class ComponentBoneMappingSettings(bpy.types.PropertyGroup):
     )
     similarity_threshold: bpy.props.FloatProperty(
         name="Minimum similarity",
-        description="Minimum voxel similarity required for every EFMI Component",
+        description="Minimum geometry similarity required after complete skin-weight verification",
         default=55.0,
         min=25.0,
         max=100.0,
@@ -231,7 +231,7 @@ def _write_asset_skeleton_glb(asset_path: Path, target: Path):
 class COMPONENTBONE_OT_generate_mapping(bpy.types.Operator):
     bl_idname = "component_bone_mapping.generate"
     bl_label = "Generate Bone Name Mapping"
-    bl_description = "Match LOD0 meshes, write local-to-bone-name Metadata, and create an oriented skeleton GLB"
+    bl_description = "Match LOD0 meshes, prove local bone identities from every corresponding vertex and skin weight, and create the verified sidecar"
 
     def execute(self, context):
         settings = context.scene.component_bone_mapping

@@ -5,6 +5,8 @@ import traceback
 import bpy
 from bpy.app.handlers import persistent
 
+from .export.activity import reactive_updates_suspended
+
 
 _reference_sets = {}
 _resolved_states = {}
@@ -198,6 +200,8 @@ def _finish_registration():
 
 @persistent
 def _depsgraph_update_post(scene, _depsgraph):
+    if reactive_updates_suspended():
+        return
     try:
         _finish_registration()
         refresh_scene(scene)

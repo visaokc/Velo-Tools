@@ -18,6 +18,7 @@ from pathlib import Path
 import bpy
 
 from . import preexport as _pe
+from .activity import suspend_reactive_updates
 from .context_batching import batch_export_context
 from .material_partition import material_routing_enabled
 from .selection import (
@@ -50,34 +51,6 @@ def _find_class(class_name: str):
 def _object_is_hidden(obj):
     hide_get = getattr(obj, "hide_get", None)
     return bool(hide_get and hide_get())
-
-
-def _object_component_id(obj):
-    if obj is None:
-        return None
-    try:
-        value = int(obj.get("velo_component_id"))
-        if value >= 0:
-            return value
-    except (TypeError, ValueError):
-        pass
-    match = _COMPONENT_PATTERN.findall(getattr(obj, "name", "") or "")
-    return int(match[0]) if match else None
-
-
-def _mapping_source_component_id(context, obj):
-    settings = getattr(context.scene, "velo_endfield", None)
-    source = getattr(settings, "mmd_source_object", None) if settings is not None else None
-    source_component_id = _object_component_id(source)
-    if source_component_id is None or obj is None:
-        return None
-    if obj is source:
-        return source_component_id
-    object_text = str(obj.get("velo_mmd_text", "") or "")
-    source_text = str(source.get("velo_mmd_text", "") or "") if source is not None else ""
-    active_text = getattr(settings, "active_mmd_text", None) if settings is not None else None
-    expected_text = source_text or getattr(active_text, "name", "")
-    return source_component_id if expected_text and object_text == expected_text else None
 
 
 def _iter_export_meshes(context, cfg):
@@ -185,14 +158,7 @@ def _get_export_states(context, settings_attr: str):
     prepared = []
     try:
         for obj, profile in requests:
-            state = _prepare_export_copy(
-                context, cfg, obj, profile,
-                defer_bake=use_batch,
-                mapping_component_id=(
-                    _mapping_source_component_id(context, obj)
-                    if settings_attr == "VTEF_settings" else None
-                ),
-            )
+            state = _prepare_export_copy(context, cfg, obj, profile, defer_bake=use_batch)
             if state:
                 states.append(state)
                 prepared.append((state, profile))
@@ -211,15 +177,7 @@ def _get_export_states(context, settings_attr: str):
 
 
 
-def _prepare_export_copy(
-    context,
-    cfg,
-    obj,
-    profile,
-    *,
-    defer_bake=False,
-    mapping_component_id=None,
-):
+def _prepare_export_copy(context, cfg, obj, profile, *, defer_bake=False):
     """Bake and remap an independent copy while originals remain available."""
     target_col = getattr(cfg, "component_collection", None) if cfg is not None else None
     ignore_hidden_objects = bool(getattr(cfg, "ignore_hidden_objects", False)) if cfg is not None else False
@@ -248,13 +206,6 @@ def _prepare_export_copy(
     clone.data.name = f"{obj.data.name}__export_copy"
     from .ini_names import DISPLAY_NAME_KEY
     clone[DISPLAY_NAME_KEY] = obj.name
-    try:
-        del clone[_pe.BONE_MAPPING_COMPONENT_KEY]
-    except KeyError:
-        pass
-    if mapping_component_id is not None:
-        clone[_pe.BONE_MAPPING_COMPONENT_KEY] = int(mapping_component_id)
-
     # Link the clone into all the same collections as the source (keep the parent/child organization consistent)
     linked_to = []
     try:
@@ -343,7 +294,7 @@ def _make_patched_execute(orig_execute, settings_attr: str, adapter_key: str = "
                 context.scene, refresh_on_exit=use_material_routes)
             if _mesh_ops is not None else nullcontext()
         )
-        with transaction, batch_export_context(context):
+        with transaction, suspend_reactive_updates(), batch_export_context(context):
             try:
                 try:
                     states = _get_export_states(context, settings_attr)
