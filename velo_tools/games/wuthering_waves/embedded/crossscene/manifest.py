@@ -18,7 +18,8 @@ _HASH_RE = re.compile(r"^[0-9a-fA-F]{8}$")
 _ABSOLUTE_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|/|\\\\)")
 _COMPONENT_KEY_RE = re.compile(r"^Component\s+(\d+)$", re.I)
 _DDS_NAME_RE = re.compile(
-    r"^Components-(\d+(?:-\d+)*)\s+t=([0-9a-fA-F]{8})(?:\s|\.|$)",
+    r"^Components-(\d+(?:-\d+)*)\s+t=([0-9a-fA-F]{8})"
+    r"(?:\s+[^\\/]*)?\.dds$",
     re.I,
 )
 
@@ -227,8 +228,9 @@ def _load_dds_catalog(root: Path, texture_usage: Mapping[str, Any]) -> Dict[str,
             continue
         match = _DDS_NAME_RE.match(path.name)
         if match is None:
-            raise CrossSceneManifestError(
-                f"root DDS filename has no canonical Component ownership: {path.name}")
+            # Author-managed auxiliary DDS files are outside the Cross-Scene
+            # texture contract and must not affect compilation or delivery.
+            continue
         component_ids = tuple(sorted({int(value) for value in match.group(1).split("-")}))
         texture_hash = match.group(2).lower()
         expected = tuple(sorted(ownership.get(texture_hash, set())))

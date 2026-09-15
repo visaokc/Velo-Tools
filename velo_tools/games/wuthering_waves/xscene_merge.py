@@ -287,18 +287,8 @@ def _split_component(vb, ib, fmt_text, wrap_ib_folder):
 
 
 def _copy_textures(src: Path, dst: Path):
-    """Copy ``* t=<hash>.dds`` textures from src into dst, deduplicated by hash (skip hashes already present)."""
-    dst.mkdir(parents=True, exist_ok=True)
-    have = {m.group(1) for f in dst.glob("*.dds") if (m := re.search(r"t=([0-9a-fA-F]+)", f.name))}
-    copied = 0
-    for f in src.glob("*.dds"):
-        m = re.search(r"t=([0-9a-fA-F]+)", f.name)
-        if not m or m.group(1) in have:
-            continue
-        shutil.copy2(f, dst / f.name)
-        have.add(m.group(1))
-        copied += 1
-    return copied
+    """Copy only stock-named DDS textures; auxiliary author files stay outside the aggregate."""
+    return copy_textures_remapped(src, dst, {})
 
 
 def analyze(base_folder, dungeon_specs):

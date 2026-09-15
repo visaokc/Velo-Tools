@@ -363,6 +363,12 @@ def register():
         import traceback
         traceback.print_exc()
     try:
+        from .embedded import texture_collection as _texture_collection
+        _texture_collection.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    try:
         from ...core.export import material_partition as _material_partition
         from ._wwmi_core.blender_export.blender_export import ObjectMergerWWMI
         from .embedded.crossscene.export_units import postprocess_partitioned_fragment
@@ -502,6 +508,11 @@ def unregister():
         from ...core.export import material_partition as _material_partition
         from ._wwmi_core.blender_export.blender_export import ObjectMergerWWMI
         _material_partition.remove(ObjectMergerWWMI)
+    except Exception:
+        pass
+    try:
+        from .embedded import texture_collection as _texture_collection
+        _texture_collection.remove()
     except Exception:
         pass
     try:

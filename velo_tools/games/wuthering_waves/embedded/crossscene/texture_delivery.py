@@ -10,7 +10,11 @@ import shutil
 from typing import Dict, Iterable, List, Optional, Tuple
 
 
-_HASH_RE = re.compile(r"t=([0-9a-fA-F]+)")
+_CANONICAL_DDS_RE = re.compile(
+    r"^Components-\d+(?:-\d+)*\s+t=([0-9a-fA-F]{8})"
+    r"(?:\s+[^\\/]*)?\.dds$",
+    re.I,
+)
 
 
 class TextureDeliveryError(ValueError):
@@ -42,23 +46,29 @@ def _sha256(path: Path) -> str:
 
 
 def _texture_hash(name: str) -> Optional[str]:
-    match = _HASH_RE.search(name)
+    match = _CANONICAL_DDS_RE.match(name)
     return match.group(1).lower() if match else None
 
 
 def _scan_dds(folder: Path) -> List[DdsFile]:
     if not folder.is_dir():
         return []
-    return [
-        DdsFile(
+    result = []
+    for path in sorted(folder.iterdir(), key=lambda item: item.name.casefold()):
+        if not path.is_file() or path.suffix.casefold() != ".dds":
+            continue
+        texture_hash = _texture_hash(path.name)
+        if texture_hash is None:
+            # Files outside the stock Components-* naming contract belong to
+            # the mod author and are never copied, deduplicated, or validated.
+            continue
+        result.append(DdsFile(
             path=path,
             name=path.name,
-            texture_hash=_texture_hash(path.name),
+            texture_hash=texture_hash,
             digest=_sha256(path),
-        )
-        for path in sorted(folder.iterdir(), key=lambda item: item.name.casefold())
-        if path.is_file() and path.suffix.casefold() == ".dds"
-    ]
+        ))
+    return result
 
 
 def _group_by_hash(files: Iterable[DdsFile]) -> Dict[str, List[DdsFile]]:

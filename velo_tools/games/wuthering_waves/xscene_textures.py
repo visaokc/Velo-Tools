@@ -20,7 +20,15 @@ from .embedded.slot_textures import constants as slot_constants
 from .embedded.slot_textures import stu_metadata
 
 # Stock texture filename shape: "Components-{ids} t=<hash> [<encoding>-<colorspace>].dds".
-_TEX_NAME_RE = re.compile(r'^Components-([0-9-]+)(\s+t=.*)$', re.IGNORECASE)
+_TEX_NAME_RE = re.compile(
+    r'^Components-([0-9-]+)(\s+t=[0-9a-fA-F]{8}(?:\s[^\\/]*)?\.dds)$',
+    re.IGNORECASE,
+)
+_CANONICAL_DDS_RE = re.compile(
+    r'^Components-\d+(?:-\d+)*\s+t=([0-9a-fA-F]{8})'
+    r'(?:\s+[^\\/]*)?\.dds$',
+    re.IGNORECASE,
+)
 _COMPONENT_KEY_RE = re.compile(r'component[ _-]*([0-9]+)', re.IGNORECASE)
 _TEXTURE_HASH_RE = re.compile(r't=([0-9a-fA-F]+)')
 _SLOT_KEY_RE = re.compile(r'^ps-t\d+$', re.IGNORECASE)
@@ -37,20 +45,21 @@ def remap_texture_name(name: str, id_map: dict) -> str:
 
 
 def copy_textures_remapped(src: Path, dst: Path, id_map: dict) -> int:
-    """Copy '* t=<hash>.dds' textures from src into dst, deduplicated by hash, rewriting each
-    file's component-id prefix via id_map. Mirrors xscene_merge._copy_textures' dedup: a hash
-    already present under the base numbering wins (shared textures keep the base name; the
-    remapped STU entry still locates them by hash)."""
+    """Copy stock-named DDS textures and leave author-managed files untouched."""
     dst = Path(dst)
     dst.mkdir(parents=True, exist_ok=True)
-    have = {m.group(1) for f in dst.glob("*.dds") if (m := re.search(r"t=([0-9a-fA-F]+)", f.name))}
+    have = {
+        texture_hash
+        for f in dst.glob("*.dds")
+        if (texture_hash := canonical_texture_hash_from_name(f.name))
+    }
     copied = 0
     for f in Path(src).glob("*.dds"):
-        m = re.search(r"t=([0-9a-fA-F]+)", f.name)
-        if not m or m.group(1) in have:
+        texture_hash = canonical_texture_hash_from_name(f.name)
+        if not texture_hash or texture_hash in have:
             continue
         shutil.copy2(f, dst / remap_texture_name(f.name, id_map))
-        have.add(m.group(1))
+        have.add(texture_hash)
         copied += 1
     return copied
 
@@ -255,6 +264,12 @@ def texture_hash_from_name(name: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
+def canonical_texture_hash_from_name(name: str) -> str | None:
+    """Return the hash only for stock Components-* DDS filenames."""
+    m = _CANONICAL_DDS_RE.match(str(name))
+    return m.group(1).lower() if m else None
+
+
 def texture_name_with_components(name: str, component_ids: set[int], tex_hash: str | None = None) -> str:
     """Return a stock texture filename whose Components-* prefix uses merged component ids."""
     if not component_ids:
@@ -368,7 +383,7 @@ def _read_stu(folder: Path) -> dict:
 def _root_texture_files(folder: Path) -> dict[str, Path]:
     files = {}
     for f in Path(folder).glob("*.dds"):
-        h = texture_hash_from_name(f.name)
+        h = canonical_texture_hash_from_name(f.name)
         if h:
             files[h] = f
     return files
