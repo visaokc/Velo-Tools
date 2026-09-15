@@ -1,4 +1,4 @@
-"""WWMI adapter for the shared source-folder texture policy."""
+"""EFMI adapter for the shared source-folder texture policy."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ _PATCHES = []
 def get_managed_textures(object_source_folder: Path, exclude_hashes, *, texture_type=None):
     """Collect only exporter-owned textures and ignore arbitrary author files."""
     if texture_type is None:
-        from .._wwmi_core.blender_export.texture_collector import Texture
+        from .._efmi_core.blender_export.texture_collector import Texture
         texture_type = Texture
     return collect_managed_textures(
         object_source_folder,
@@ -26,10 +26,10 @@ def get_managed_textures(object_source_folder: Path, exclude_hashes, *, texture_
 
 
 def install() -> None:
-    """Patch imported WWMI collector bindings without modifying vendored core."""
+    """Patch imported EFMI collector bindings without modifying vendored core."""
     if _PATCHES:
         return
-    from .._wwmi_core.blender_export import blender_export, texture_collector
+    from .._efmi_core.blender_export import blender_export, texture_collector
 
     for module in (texture_collector, blender_export):
         _PATCHES.append((module, module.get_textures))

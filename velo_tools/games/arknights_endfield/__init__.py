@@ -663,6 +663,12 @@ def register():
         import traceback
         traceback.print_exc()
     try:
+        from .embedded import texture_collection as _texture_collection
+        _texture_collection.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    try:
         from ...core.export import material_partition as _material_partition
         from ._efmi_core.blender_export.blender_export import ObjectMergerEFMI
         from .embedded.shapekey.export_state import finalize_merger
@@ -748,6 +754,11 @@ def unregister():
         pass
     try:
         _remove_import_export_mode_sync()
+    except Exception:
+        pass
+    try:
+        from .embedded import texture_collection as _texture_collection
+        _texture_collection.remove()
     except Exception:
         pass
     try:
