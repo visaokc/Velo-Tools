@@ -37,30 +37,24 @@ def binding_runs(keys):
 
 
 def preserve_material_order(material):
-    """Known alpha workflows and an explicit authoring opt-out are barriers.
+    """Keep explicit authoring barriers and materials outside the assignment path.
 
-    Blender preview state cannot prove every game pass opaque. The explicit
-    property is needed for order-dependent game shaders absent from evidence.
+    Preview Alpha links, values and blend methods are not exported game blend
+    state. They must not silently cancel the requested texture batching. Known
+    game transparency is handled by protected_components; other order-dependent
+    game passes use the material's explicit Preserve Draw Order opt-out.
     """
     from . import nodes
     if material is None or getattr(material, "material_texture_preserve_order", False):
         return True
-    if getattr(material, "surface_render_method", "") == "BLENDED":
-        return True
-    if getattr(material, "blend_method", "") == "BLEND":
-        return True
-    assignment = nodes.assignment_node(material)
-    if assignment is None:
-        return True
-    alpha = assignment.inputs.get("Alpha")
-    return alpha is None or alpha.is_linked or float(alpha.default_value) < 1.0
+    return nodes.assignment_node(material) is None
 
 
 def protected_components(folder, game):
     """Consume only positive, already-recorded transparency flags; never re-dump.
 
     Invalid optional evidence conservatively disables reordering, not export.
-    Missing evidence does not override the authoring opt-out/alpha checks.
+    Missing evidence does not override the explicit authoring opt-out.
     """
     if game != "ENDFIELD":
         return set()
