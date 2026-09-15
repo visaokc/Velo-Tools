@@ -20,6 +20,7 @@ from . import extraction_component_filter as _extraction_component_filter
 from . import semantic_evidence_resolution as _semantic_evidence_resolution
 from . import tangent_space_export as _tangent_space_export
 from . import smooth_normal_export as _smooth_normal_export
+from . import merged_skeleton_bind_flags as _merged_skeleton_bind_flags
 from . import named_bone_ui as _named_bone_ui
 from ...core import extract_output_fallback as _extract_output_fallback
 from ._efmi_core import auto_load as _al
@@ -706,6 +707,14 @@ def register():
         import traceback
         traceback.print_exc()
     try:
+        # Keep this wrapper outside the game-local template transforms. It is
+        # capability-based and becomes a byte-for-byte no-op once the rendered
+        # upstream resource explicitly supplies both SRV and UAV bind flags.
+        _merged_skeleton_bind_flags.install()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    try:
         from ...core.export import hook as _hook
         _hook.install_export_hook()
     except Exception:
@@ -746,6 +755,10 @@ def unregister():
         pass
     try:
         _lod_component_filter.remove()
+    except Exception:
+        pass
+    try:
+        _merged_skeleton_bind_flags.remove()
     except Exception:
         pass
     try:

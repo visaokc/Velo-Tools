@@ -1641,3 +1641,12 @@ ZH_TRANSLATIONS.update({
     "Possible role: {0}": "可能用途：{0}",
     "Multiple originals match this role ({0}); choose an original": "仍有 {0} 张同类原图无法区分，请选择对应原图",
 })
+
+
+# Merged Skeleton resource compatibility diagnostics.
+ZH_TRANSLATIONS.update({
+    "Duplicate Merged Skeleton resource sections": "Merged Skeleton 资源节重复",
+    "Unsupported Merged Skeleton bind flags": "Merged Skeleton 绑定标志不支持或与 SRV/UAV 冲突",
+    "Duplicate Merged Skeleton resource declarations": "Merged Skeleton 资源声明重复",
+    "Missing Merged Skeleton resource section": "缺少被引用的 Merged Skeleton 资源节",
+})
