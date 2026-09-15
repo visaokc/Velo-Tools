@@ -228,9 +228,16 @@ def link_selected(state, source, entries):
     return state, linked
 
 
-def replace_expected(state, identifier, image):
-    return [{**group, "members": [{**member, "image": image} for member in group["members"]]}
-            if group["id"] == identifier else group for group in state]
+def replace_expected(state, identifier, image, *, members=None):
+    """Update participating members without erasing unrelated local-edit history."""
+    selected = None if members is None else {
+        (member["object"].as_pointer(), member["material"].as_pointer()) for member in members}
+    return [{**group, "members": [
+        {**member, "image": image} if selected is None or (
+            member["object"] is not None and member["material"] is not None
+            and (member["object"].as_pointer(), member["material"].as_pointer()) in selected)
+        else dict(member) for member in group["members"]]}
+        if group["id"] == identifier else group for group in state]
 
 
 @persistent

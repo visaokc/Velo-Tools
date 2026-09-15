@@ -1561,9 +1561,9 @@ ZH_TRANSLATIONS.update(
 ZH_TRANSLATIONS.update({
     "Re-read retained source images and selected diffuse-image matches; apply unique mappings immediately, preserve manual edits, and omit removed originals": "重新读取源目录中保留的贴图及选中材质的同漫反射身份；唯一映射立即生效，保留手动修改并忽略已移除原图",
     "Find the source and all matching diffuse images across selected material slots, copy other maps and automatically resolve each Component's original identities; the active configured material takes priority": "遍历选中物体的材质槽，找到同漫反射材质并传播其它贴图，自动解析各 Component 的原图身份；优先使用已配置的活动材质",
-    "Replace populated non-diffuse inputs; otherwise only fill empty inputs. Source mappings are refreshed in both modes": "覆盖已连接的非漫反射输入；关闭时仅填空。两种模式都会刷新原图映射",
+    "Replace populated non-diffuse inputs and clear roles missing from the source; otherwise fill empty inputs and sync removals only for previously linked roles. Source mappings are refreshed in both modes": "覆盖已连接的非漫反射输入，并清空源材质已移除的用途；关闭时只填空，但仍同步先前关联用途的移除。两种模式都会刷新原图映射",
     "Source mapping updated: {0} assigned, {1} removed originals ignored": "原图映射已更新：已指定 {0} 项，忽略 {1} 项已移除原图",
-    "Source {0}: matched {1} materials, connected {2} maps, refreshed {3} mappings, {4} unresolved roles": "来源 {0}：匹配 {1} 个材质，连接 {2} 张贴图，刷新 {3} 份映射，{4} 个用途待指定",
+    "Source {0}: matched {1} materials, connected {2} maps, cleared {3} inputs, refreshed {4} mappings, {5} unresolved roles": "来源 {0}：匹配 {1} 个材质，连接 {2} 张贴图，清空 {3} 个输入，刷新 {4} 份映射，{5} 个用途待指定",
     "Mappings apply automatically; edit incorrect sources directly": "映射自动生效；识别不对时直接修改原图",
     "Removed source files are excluded from mapping": "源目录已移除的贴图不参与映射",
     "Keep Game Texture": "保留游戏贴图",

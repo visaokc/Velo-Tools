@@ -57,11 +57,12 @@ def _selected_slots(context, *, used_only=True):
 
 
 def _preserve_replacement_names(plans, renamed):
-    """Transfer an exclusively replaced name, never take it from a live user.
+    """Give the edited one-to-one replacement priority over its local original.
 
-    Copies are staged for rollback and user isolation, not for user-facing
-    renaming. Only a one-to-one replacement may inherit an unused local
-    original's exact name. Genuine shared-user forks retain distinct names.
+    Copies isolate contents, not the original name. An unused mesh or another
+    live user may retain the original ID; its user count must not force a suffix
+    onto the edited material. Displace the original to a backup name without
+    deleting it or changing its other users' slots. Preserve authored suffixes.
     """
     replacements, owners = {}, {}
     for _obj, _index, original, replacement in plans:
@@ -73,8 +74,7 @@ def _preserve_replacement_names(plans, renamed):
         if len(targets) != 1 or original.library is not None:
             continue
         replacement = next(iter(targets))
-        if (len(owners[replacement]) != 1 or replacement.library is not None
-                or original.users - int(original.use_fake_user) != 0):
+        if len(owners[replacement]) != 1 or replacement.library is not None:
             continue
         name = original.name
         renamed.append((original, name, replacement, replacement.name))
@@ -445,6 +445,29 @@ def _propagation_source(context, entries):
     raise ValueError(iface_("Initialize a source material and connect its diffuse image before propagation"))
 
 
+def _removed_sync_roles(scene, previous, source, images):
+    """Recover explicit removal intent before live-member filtering drops a donor.
+
+    Only unchanged target members of the donor's former role group qualify.
+    Manual target rewiring, detached users and unselected users remain local.
+    """
+    result = {}
+    for group in previous:
+        role = group["role"]
+        if role == "DIFFUSE" or role not in model.ROLES or role in images:
+            continue
+        if not any(member["material"] == source and member["object"] is not None
+                   and scene.objects.get(member["object"].name) == member["object"]
+                   and any(slot.material == source for slot in member["object"].material_slots)
+                   for member in group["members"]):
+            continue
+        for member in group["members"]:
+            if groups.live_member(scene, group, member):
+                key = (member["object"].as_pointer(), member["material"].as_pointer())
+                result.setdefault(key, set()).add(role)
+    return result
+
+
 class MATERIAL_OT_propagate(bpy.types.Operator):
     bl_idname = "material_tools.propagate"
     bl_label = "Propagate by Same Diffuse"
@@ -452,7 +475,7 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
     overwrite: bpy.props.BoolProperty(
         name="Replace Existing Connections",
-        description="Replace populated non-diffuse inputs; otherwise only fill empty inputs. Source mappings are refreshed in both modes",
+        description="Replace populated non-diffuse inputs and clear roles missing from the source; otherwise fill empty inputs and sync removals only for previously linked roles. Source mappings are refreshed in both modes",
         default=False)
 
     def invoke(self, context, event):
@@ -460,11 +483,13 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
 
     def execute(self, context):
         copies, plans, cache = {}, [], {}
-        matched, filled, mapped, unresolved = set(), 0, 0, 0
+        matched, filled, cleared, mapped, unresolved = set(), 0, 0, 0, 0
         try:
             entries = list(_selected_slots(context))
+            previous = groups.snapshot(context.scene)
             state = groups.current_state(context.scene)
             source, images = _propagation_source(context, entries)
+            removed_roles = _removed_sync_roles(context.scene, previous, source, images)
             source_name = source.name
             diffuse = images["DIFFUSE"]
             key_diffuse = nodes.image_key(diffuse)
@@ -478,13 +503,19 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
                 if nodes.image_key(nodes.diffuse_image(material)) != key_diffuse:
                     continue
                 game, comp, catalog = source_context(context, obj, material, cache)
-                key = (material.as_pointer(), game, comp)
+                existing = nodes.assignment_node(material)
+                target_images = nodes.connected_images(material) if existing else {"DIFFUSE": nodes.diffuse_image(material)}
+                synced_removals = removed_roles.get((obj.as_pointer(), material.as_pointer()), ())
+                removals = {role for role, label in model.ROLES.items()
+                            if role != "DIFFUSE" and role not in images and existing
+                            and existing.inputs[label].is_linked
+                            and (self.overwrite or role not in target_images or role in synced_removals)}
+                key = (material.as_pointer(), game, comp, frozenset(removals))
                 matched.add(key)
                 if key in copies:
                     plans.append((obj, index, material, copies[key]))
                     continue
-                existing = nodes.assignment_node(material)
-                target_images = nodes.connected_images(material) if existing else {"DIFFUSE": nodes.diffuse_image(material)}
+                target_images = {role: image for role, image in target_images.items() if role not in removals}
                 additions = {role: image for role, image in wanted.items()
                              if (self.overwrite or role not in target_images)
                              and nodes.image_key(target_images.get(role)) != nodes.image_key(image)}
@@ -502,14 +533,19 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
                     if nodes.image_key(final_images.get(role)) == nodes.image_key(image):
                         value = model.pin_original(value, role)
                 mapping_changed = existing and old != value
-                if not additions and not mapping_changed and existing:
+                if not additions and not removals and not mapping_changed and existing:
                     continue
                 copy = material.copy() if existing else nodes.initialize_copy(material, game, comp, catalog)
                 copies[key] = copy
                 copy[model.DATA_KEY] = json.dumps(value, sort_keys=True)
                 for role, image in additions.items():
                     nodes.connect_image(copy, role, image)
+                for role in removals:
+                    nodes.disconnect_image(copy, role)
+                    nodes.assignment_node(copy).inputs[model.ROLES[role]].default_value = (
+                        nodes.assignment_node(source).inputs[model.ROLES[role]].default_value)
                 filled += len(additions)
+                cleared += len(removals)
                 mapped += bool(mapping_changed or not existing)
                 unresolved += sum(role not in value["bindings"] and not model.inherits_game_source(value, role)
                                   for role in {**target_images, **additions})
@@ -534,8 +570,8 @@ class MATERIAL_OT_propagate(bpy.types.Operator):
             _discard(copies.values())
             self.report({"ERROR"}, iface_("Material operation failed: {0}").format(exc))
             return {"CANCELLED"}
-        self.report({"INFO"}, iface_("Source {0}: matched {1} materials, connected {2} maps, refreshed {3} mappings, {4} unresolved roles").format(
-            source_name, len(matched), filled, mapped, unresolved))
+        self.report({"INFO"}, iface_("Source {0}: matched {1} materials, connected {2} maps, cleared {3} inputs, refreshed {4} mappings, {5} unresolved roles").format(
+            source_name, len(matched), filled, cleared, mapped, unresolved))
         if linked:
             self.report({"INFO"}, iface_("Linked {0} texture roles; replace a group from any member").format(linked))
         if not copies and not linked:

@@ -71,8 +71,8 @@ def edit_source(context, obj, material, data):
 
 def replace_texture(context, obj, material, role, filepath, expected_group=""):
     """Load a new Image ID, stage all member copies, then commit once."""
-    state = groups.current_state(context.scene)
-    group = groups.find(state, obj, material, role)
+    state = groups.snapshot(context.scene)
+    group = groups.find(groups.current_state(context.scene), obj, material, role)
     if (expected_group == "LOCAL" and group is not None) or (
             expected_group not in ("", "LOCAL") and (group is None or group["id"] != expected_group)):
         raise ValueError(iface_("The sync group changed; reopen the texture picker"))
@@ -109,7 +109,7 @@ def replace_texture(context, obj, material, role, filepath, expected_group=""):
                 if slot.material == original:
                     plans.append((target, index, original, copies[key]))
         if group:
-            state = groups.replace_expected(state, group["id"], image)
+            state = groups.replace_expected(state, group["id"], image, members=members)
         ui._commit(plans, scene=context.scene, group_state=state, keep_backups=False)
     except Exception:
         ui._discard(copies.values())

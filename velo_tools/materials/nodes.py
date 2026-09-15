@@ -66,6 +66,16 @@ def connected_images(material):
             if (image := image_from_socket(node.inputs[label])) is not None}
 
 
+def disconnect_image(material, role):
+    """Clear only this semantic input, preserving images and other node branches."""
+    assignment = assignment_node(material)
+    if assignment is None:
+        raise ValueError(iface_("Initialize this material first"))
+    socket = assignment.inputs[model.ROLES[role]]
+    for link in list(socket.links):
+        material.node_tree.links.remove(link)
+
+
 def image_key(image):
     if image is None:
         return None
