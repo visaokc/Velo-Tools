@@ -10,9 +10,9 @@ import shutil
 from typing import Dict, Iterable, List, Optional, Tuple
 
 
-_CANONICAL_DDS_RE = re.compile(
+_CANONICAL_TEXTURE_RE = re.compile(
     r"^Components-\d+(?:-\d+)*\s+t=([0-9a-fA-F]{8})"
-    r"(?:\s+[^\\/]*)?\.dds$",
+    r"(?:\s+[^\\/]*)?\.(?:dds|jpg)$",
     re.I,
 )
 
@@ -46,7 +46,7 @@ def _sha256(path: Path) -> str:
 
 
 def _texture_hash(name: str) -> Optional[str]:
-    match = _CANONICAL_DDS_RE.match(name)
+    match = _CANONICAL_TEXTURE_RE.match(name)
     return match.group(1).lower() if match else None
 
 
@@ -55,7 +55,8 @@ def _scan_dds(folder: Path) -> List[DdsFile]:
         return []
     result = []
     for path in sorted(folder.iterdir(), key=lambda item: item.name.casefold()):
-        if not path.is_file() or path.suffix.casefold() != ".dds":
+        if (not path.is_file()
+                or path.suffix.casefold() not in {".dds", ".jpg"}):
             continue
         texture_hash = _texture_hash(path.name)
         if texture_hash is None:
@@ -194,7 +195,7 @@ def inspect_root_dds(inventory: TextureDeliveryInventory, textures_dir,
     ]
     output_orphans = sorted(
         path.name for path in output_files
-        if path.suffix.casefold() == ".dds"
+        if _texture_hash(path.name) is not None
         and path.name.casefold() not in required
     )
     return {

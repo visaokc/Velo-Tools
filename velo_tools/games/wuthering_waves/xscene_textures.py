@@ -19,14 +19,15 @@ from pathlib import Path
 from .embedded.slot_textures import constants as slot_constants
 from .embedded.slot_textures import stu_metadata
 
-# Stock texture filename shape: "Components-{ids} t=<hash> [<encoding>-<colorspace>].dds".
+# Stock texture filename shape: "Components-{ids} t=<hash> [<encoding>-<colorspace>].dds/.jpg".
 _TEX_NAME_RE = re.compile(
-    r'^Components-([0-9-]+)(\s+t=[0-9a-fA-F]{8}(?:\s[^\\/]*)?\.dds)$',
+    r'^Components-([0-9-]+)(\s+t=[0-9a-fA-F]{8}'
+    r'(?:\s[^\\/]*)?\.(?:dds|jpg))$',
     re.IGNORECASE,
 )
-_CANONICAL_DDS_RE = re.compile(
+_CANONICAL_TEXTURE_RE = re.compile(
     r'^Components-\d+(?:-\d+)*\s+t=([0-9a-fA-F]{8})'
-    r'(?:\s+[^\\/]*)?\.dds$',
+    r'(?:\s+[^\\/]*)?\.(?:dds|jpg)$',
     re.IGNORECASE,
 )
 _COMPONENT_KEY_RE = re.compile(r'component[ _-]*([0-9]+)', re.IGNORECASE)
@@ -45,16 +46,14 @@ def remap_texture_name(name: str, id_map: dict) -> str:
 
 
 def copy_textures_remapped(src: Path, dst: Path, id_map: dict) -> int:
-    """Copy stock-named DDS textures and leave author-managed files untouched."""
+    """Copy stock-named DDS/JPG textures and leave author-managed files untouched."""
     dst = Path(dst)
     dst.mkdir(parents=True, exist_ok=True)
-    have = {
-        texture_hash
-        for f in dst.glob("*.dds")
-        if (texture_hash := canonical_texture_hash_from_name(f.name))
-    }
+    have = set(_root_texture_files(dst))
     copied = 0
-    for f in Path(src).glob("*.dds"):
+    for f in sorted(Path(src).iterdir(), key=lambda item: item.name.casefold()):
+        if not f.is_file():
+            continue
         texture_hash = canonical_texture_hash_from_name(f.name)
         if not texture_hash or texture_hash in have:
             continue
@@ -265,8 +264,8 @@ def texture_hash_from_name(name: str) -> str | None:
 
 
 def canonical_texture_hash_from_name(name: str) -> str | None:
-    """Return the hash only for stock Components-* DDS filenames."""
-    m = _CANONICAL_DDS_RE.match(str(name))
+    """Return the hash only for stock Components-* DDS/JPG filenames."""
+    m = _CANONICAL_TEXTURE_RE.match(str(name))
     return m.group(1).lower() if m else None
 
 
@@ -382,7 +381,12 @@ def _read_stu(folder: Path) -> dict:
 
 def _root_texture_files(folder: Path) -> dict[str, Path]:
     files = {}
-    for f in Path(folder).glob("*.dds"):
+    folder = Path(folder)
+    if not folder.is_dir():
+        return files
+    for f in sorted(folder.iterdir(), key=lambda item: item.name.casefold()):
+        if not f.is_file():
+            continue
         h = canonical_texture_hash_from_name(f.name)
         if h:
             files[h] = f
@@ -493,7 +497,7 @@ def _add_reasons(reasons: dict[str, set[str]], hashes: set[str], reason: str) ->
 
 
 def cross_scene_root_texture_keep_set(merge_root: Path, manifest: dict) -> tuple[set[str], dict[str, str], dict[str, str]]:
-    """Compute DDS retention exclusively from the final root STU."""
+    """Compute managed texture retention exclusively from the final root STU."""
     merge_root = Path(merge_root)
     root_files = _root_texture_files(merge_root)
     keep_reasons: dict[str, set[str]] = {}
@@ -518,7 +522,7 @@ def cross_scene_root_texture_keep_set(merge_root: Path, manifest: dict) -> tuple
 
 
 def prune_cross_scene_root_textures(merge_root: Path, manifest: dict) -> dict:
-    """Delete redundant root DDS files from the aggregate delivery inventory."""
+    """Delete redundant managed root textures from the aggregate delivery inventory."""
     merge_root = Path(merge_root)
     root_files = _root_texture_files(merge_root)
     keep, keep_reasons, evidence_reasons = cross_scene_root_texture_keep_set(merge_root, manifest)

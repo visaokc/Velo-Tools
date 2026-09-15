@@ -19,7 +19,7 @@ _ABSOLUTE_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|/|\\\\)")
 _COMPONENT_KEY_RE = re.compile(r"^Component\s+(\d+)$", re.I)
 _DDS_NAME_RE = re.compile(
     r"^Components-(\d+(?:-\d+)*)\s+t=([0-9a-fA-F]{8})"
-    r"(?:\s+[^\\/]*)?\.dds$",
+    r"(?:\s+[^\\/]*)?\.(?:dds|jpg)$",
     re.I,
 )
 
@@ -224,12 +224,13 @@ def _load_dds_catalog(root: Path, texture_usage: Mapping[str, Any]) -> Dict[str,
     ownership = _usage_component_ids(texture_usage)
     catalog: Dict[str, RootDDS] = {}
     for path in sorted(root.iterdir(), key=lambda item: item.name.casefold()):
-        if not path.is_file() or path.suffix.casefold() != ".dds":
+        if (not path.is_file()
+                or path.suffix.casefold() not in {".dds", ".jpg"}):
             continue
         match = _DDS_NAME_RE.match(path.name)
         if match is None:
-            # Author-managed auxiliary DDS files are outside the Cross-Scene
-            # texture contract and must not affect compilation or delivery.
+            # Author-managed auxiliary texture files are outside the Cross-Scene
+            # contract and must not affect compilation or delivery.
             continue
         component_ids = tuple(sorted({int(value) for value in match.group(1).split("-")}))
         texture_hash = match.group(2).lower()

@@ -407,6 +407,8 @@ def _audit_slot_resources(text, mod_dir):
                 "slot assignment ps-t%d references %s missing file %s"
                 % (slot, resource, filename))
             continue
+        if path.suffix.casefold() != ".dds":
+            continue
         if _slot_constants is None or _dds_meta is None:
             continue
         expected = _condition_families(lines, index).get(slot)
@@ -504,7 +506,7 @@ def _audit_body_hash_fallbacks(text, allowed_body_hash_fallbacks=None):
         normalized = filename.replace("\\", "/")
         if not re.search(
                 r'(^|/)Textures/Components-\d+(?:-\d+)*\s+'
-                r't=[0-9a-fA-F]{8}\.dds$',
+                r't=[0-9a-fA-F]{8}(?:\s+[^/\\]*)?\.(?:dds|jpg)$',
                 normalized):
             continue
         block = match.group(1)

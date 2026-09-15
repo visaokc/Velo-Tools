@@ -7,7 +7,7 @@ for each IB k, non-texture sections become ``[X]->[X_ibK]``, ``$v->$v_ibK``, ``R
 Textures take one of two paths per IB:
   * Slot-style (velo): textures rebound inside the component draw scope as ``ps-t{n} = ref
     ResourceTexture{i}`` are kept PER-IB (``[ResourceTexture{i}]`` -> ``[ResourceTexture{i}_ibK]``,
-    filename normalised to the deduped ``Textures/Components-* t=<hash>.dds``), so the namespaced
+    filename normalised to the deduped ``Textures/Components-* t=<hash>.dds/.jpg``), so the namespaced
     slot command lists resolve. They carry NO texture-hash matching -> immune to streaming.
   * Hash-style (stock / slot opt-out fallback): ``[TextureOverrideTexture{i}]`` hash overrides
     collapse into one global ``[Resource_Texture_<hash>]``/``[TextureOverride_Texture_<hash>]`` per
@@ -940,7 +940,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
     author files in ``Meshes/`` and ``Textures/`` are preserved.
 
     texture_root: when given, the merged root is the single authoritative HASH-style allowlist --
-    only blind-zone hashes whose ``t=<hash>.dds`` still exists directly at the merged root (root-only
+    only blind-zone hashes whose standard texture still exists directly at the merged root (root-only
     scan, so a ``123/`` trash subfolder counts as deleted, matching stock ``get_textures``) are
     shipped, and each shipped file is copied FROM the merged root (a root edit wins over the per-IB
     copy). Slot-style textures are bound by ps-t slot and ALWAYS ship (pruning one would dangle its
@@ -980,7 +980,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             root_name_by_hash.setdefault(h, item.name)
 
     constants, present, others = [], [], []
-    tex = {}                # hash -> source .dds absolute path (deduped; slot + blind-zone)
+    tex = {}                # hash -> source texture path (deduped; slot + blind-zone)
     blindzone = set()       # hashes still bound hash-style (no slot map covered them) -> one global
                             # [TextureOverride_Texture_<hash>] each, gated by owning $object_detected.
     blindzone_mods = {}     # hash -> mod indexes that still need the stock object-detected fallback
@@ -1029,7 +1029,9 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
                 alias_name = _section_alias_name(
                     h, k, {}, resource_components, namespace_aliases)
                 for l in b:
-                    m = re.match(r'\s*filename\s*=\s*(.+\.dds)\s*$', l, re.I)
+                    m = re.match(
+                        r'\s*filename\s*=\s*(.+\.(?:dds|jpg))\s*$',
+                        l, re.I)
                     if m:
                         res_filename[h] = m.group(1).strip()
                         res_filename[alias_name] = m.group(1).strip()
@@ -1067,8 +1069,8 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             if hv not in tex:
                 tex[hv] = os.path.join(mod, fn)
                 tex_name[hv] = _texture_filename(fn)
-        # Slot-covered resources: dedup their .dds by hash (file level) so multiple IBs binding the
-        # same texture ship one t=<hash>.dds; the hash is parsed from the filename.
+        # Slot-covered resources: dedup their textures by hash (file level) so multiple IBs binding the
+        # same texture ship one managed file; the hash is parsed from the filename.
         slot_hash_by_res = {}
         for name in sorted(slot_covered):
             fn = res_filename.get(name)
@@ -1095,7 +1097,7 @@ def assemble(out, mods, texture_root=None, *, write_ini=True, copy_textures=True
             if _RE_RESTEX.match(h):
                 if h in slot_covered:
                     # Keep per-IB (the slot command lists ref ResourceTexture{i}_ib{k}); normalise
-                    # the filename to the deduped shipped name so all IBs share one canonical DDS.
+                    # the filename to the deduped shipped name so all IBs share one canonical texture.
                     hv = slot_hash_by_res.get(h)
                     nb = []
                     for l in b:
