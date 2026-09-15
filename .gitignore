@@ -10,7 +10,7 @@ dist/
 Blend/
 _archive/
 
-# Markdown docs: publish the root README and the two GitHub user manuals only.
+# Publish the two canonical tutorials and their offline reader.
 # All other .md stay local — internal CONTEXT/DEV_LOG/FIX, nested per-game READMEs, ADRs.
 *.md
 !/README.md
@@ -22,11 +22,15 @@ _archive/
 docs/*
 !docs/user-manual.en.md
 !docs/user-manual.zh-CN.md
+!docs/manual.html
+!docs/manual.css
+!docs/manual.js
 png/
 
-# Dev-only tooling kept local; only the dev junction helper is published
+# Keep dev-only tooling local; publish the junction helper and handbook builder.
 tools/*
 !tools/dev_link.ps1
+!tools/build_manual.py
 verify_install.py
 tests/
 

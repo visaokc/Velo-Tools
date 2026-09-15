@@ -1,1147 +1,1836 @@
-# Velo Tools User Manual
+# Velo Tools Tutorial Handbook
 
-This manual covers Velo Tools 1.7.0. Velo Tools hosts shared Blender helpers and namespaced EFMI and WWMI workflows in one add-on.
+Version **1.7.1**. Learn one task at a time, in the same five areas as the add-on. The examples use invented objects, not a required character or downloadable project.
 
-Chinese reader: [Velo Tools 中文使用手册](user-manual.zh-CN.md).
+**New here?** Read [Install and your first project](#game-start), then [the five-stage workflow](#game-files). Already working? Choose the tab that contains the button you need.
 
-## What Is New in 1.7.0
+[Vertex Group Tools](#vertex-groups) · [Mesh Tools](#mesh) · [Weight Tools](#weights) · [Material Tools](#materials) · [Game](#game)
 
-- Material Tools provide semantic texture mapping, persistent material groups, per-draw texture bindings, and readable texture resource names. Material routing remains optional; disabling Auto Split by Material restores object-name-based Component routing.
-- COLOR outline activation is explicit. Imported meshes keep native behavior by default; generating smooth-normal COLOR enables the mesh option. Activation is shared by the exported Component, not isolated to one draw. If the native controller is already enabled, opting in does not add a second outline or double its width.
-- Material separation and export respect current physical collection membership after manual moves, while genuinely merged material parts retain their virtual destinations. ShapeKey, shared-mesh, Mirror, mapping, and export-state handling have also been hardened.
-- Material texture routing still requires a supported ordinary single-source export workflow; it is not enabled for unsupported CrossIB or Cross-Scene combinations. Capture diagnostics do not guarantee coverage of every shader or replace in-game verification.
+The English UI currently calls Mesh Tools **Grid tool** and Weight Tools **Weight Tool**. These are the same tabs. Chinese Blender interfaces use the Simplified Chinese catalog. The tutorials distinguish actual buttons from explanations.
 
-## Table of Contents
+[中文教程](user-manual.zh-CN.md) · [Interactive handbook](manual.html) · [Releases](https://github.com/visaokc/Velo-Tools/releases)
 
-1. [Start Here](#start-here)
-2. [Install, Update, and Coexistence](#install-update-and-coexistence)
-3. [Project Data Flow](#project-data-flow)
-4. [Shared Tools](#shared-tools)
-5. [EFMI End-to-End](#efmi-end-to-end)
-6. [WWMI Single-IB](#wwmi-single-ib)
-7. [WWMI Extended](#wwmi-extended)
-8. [Read and Validate Output](#read-and-validate-output)
-9. [Troubleshooting by Symptom](#troubleshooting-by-symptom)
-10. [Limits and Glossary](#limits-and-glossary)
+<a id="vertex-groups"></a>
+## Vertex Group Tools
 
-## Start Here
+A vertex group is a named list of points and their influence values. Changing its name changes which bone can find it; changing its weights changes how strongly the points follow that bone. This tab organizes names. Use Weight Tools to move the values themselves.
 
-### Requirements
+<!-- directory:start -->
+- [Merge duplicate-name groups](#vg-merge)
+- [Fill gaps and sort numeric groups](#vg-gaps)
+- [Remove unused groups](#vg-unused)
+- [Remove all groups and start over](#vg-remove-all)
+- [Set up an MMD-to-game mapping](#vg-mmd-setup)
+- [Match by position and review the result](#vg-mmd-match)
+- [Choose the right one of the four rename buttons](#vg-mmd-rename)
+- [Save, load and reuse mapping tables](#vg-table-save)
+- [Rename groups between any two meshes](#vg-general)
+- [Use centroid links and the unmatched list](#vg-review)
+- [Click an overlay point or drag its mapping](#vg-pick)
+- [Generate and save WWMI original bone names](#vg-wwmi-map)
+- [Switch names or bind the WWMI skeleton](#vg-wwmi-bind)
+<!-- directory:end -->
 
-- Blender 3.6 or newer is required.
-- Blender 4.4 is the primary development and test version.
-- A working game-side GIMI environment is required to capture Frame Dumps and load the exported mod.
-- Velo Tools does not replace the game-side loader or teach capture hotkeys.
+### Vertex Group Operations
 
-Use a fresh Frame Dump for any workflow that depends on current runtime Hash, shader, texture-slot, or LOD evidence.
+<a id="vg-merge"></a>
+#### Merge duplicate-name groups
 
-### Find the UI
+Combine groups that share the name before a dot, such as **7**, **7.001**, and **7.003**. This is useful after joining meshes; it does not discover which unrelated bones mean the same thing.
 
-Install and enable **Velo-Tools**, then open the 3D Viewport sidebar with `N`. Select the **Velo Tools** tab.
+**Location:** Vertex Group Tools → Vertex Group Operations → Merge Vertex Groups.
 
-Velo Tools follows Blender's interface language. Simplified and Traditional Chinese use the Simplified Chinese catalog; every other Blender language uses the canonical English UI. This applies to labels, tooltips, operator messages, and updater controls. Existing bilingual label notation in this manual shows the Chinese catalog text and its English equivalent so the same procedure can be followed in either UI.
+##### Steps
+1. Save a copy of the project. In Object Mode, select only the meshes to clean.
+2. Inspect their Vertex Groups in Object Data Properties. Confirm that dotted names really belong to the same bone.
+3. Run Merge Vertex Groups. Inspect the resulting base group and test the corresponding bone.
 
-| Exact UI label | English meaning | Use it for |
-| --- | --- | --- |
-| **顶点组工具** | Vertex Group Tools | Batch vertex-group work and name mapping |
-| **网格工具** | Mesh Tools | Materials, collection routing, sculpt helpers, and ShapeKey aggregation |
-| **权重工具** | Weight Tools | Transfer, mirror, normalize, smooth, and repair weights |
-| **材质工具** | Material Tools | Semantic image inputs, original texture mapping, and per-draw Slot textures (1.7.0) |
-| **游戏** | Game | EFMI and WWMI game workflows |
+##### Small example
+Two sleeve meshes were joined. One used group **7**, the other **7.001**. Merging consolidates their assignments under **7**, so one bone can drive both sleeve pieces. Do not use this to combine **Arm.L** and **Arm.R**: their dots describe different sides, not accidental duplicates.
 
-Inside **游戏 (Game)**, choose **终末地 (Arknights: Endfield)** or **鸣潮 (Wuthering Waves)**.
+##### Check and recover
+The dotted duplicates should disappear, with their influence transferred to the base name. Review overlapping weights rather than assuming they were normalized. If meaningful dotted names were combined, undo immediately. [Mapping tables](#vg-general) are the right tool for deliberate name correspondence.
 
-### Choose the Correct Workflow
+<a id="vg-gaps"></a>
+#### Fill gaps and sort numeric groups
 
-| Goal | Workflow |
+Add missing empty numeric groups and put the list in numeric order. Empty placeholders can be necessary when an export format uses list positions as bone indices.
+
+**Location:** Vertex Group Operations → Fill Gaps In Vertex Groups.
+
+##### Steps
+1. Select the intended meshes in Object Mode and confirm they use numeric group names.
+2. Run Fill Gaps In Vertex Groups.
+3. Inspect the group list and the assignments on a few vertices.
+
+##### Small example
+A mesh has groups **0, 4, 2**. The result is **0, 1, 2, 3, 4**. Groups **1** and **3** are empty: the operation did not invent missing arm or leg weights.
+
+##### Check and recover
+Existing weights should still belong to their intended groups. Do not run unused-group removal immediately afterward if those placeholders are required. This is not a conversion from local Component numbers to shared numbers; choose the correct [skeleton strategy](#game-wwmi-skeleton) instead.
+
+<a id="vg-unused"></a>
+#### Remove unused groups
+
+Remove groups that do not carry a positive influence on the selected meshes. This reduces clutter, but it is different from deleting small weights or limiting influences per vertex.
+
+**Location:** Vertex Group Operations → Remove Unused Vertex Groups.
+
+##### Steps
+1. Save the project and select only the meshes whose lists need cleaning.
+2. Check whether your current import/export strategy needs empty numeric placeholders.
+3. Run the action, then inspect the list and test an existing deformation.
+
+##### Small example
+A boot mesh inherited 200 group names from a whole body, but only ankle and foot groups have weights. Cleaning removes the unused entries without transferring the boot to another bone.
+
+##### Check and recover
+This action cannot recover weights that were missing before cleanup. If an exporter needs a complete numbered list afterward, use [Fill Gaps](#vg-gaps) deliberately. Keep this separate from [Normalize Selected Vertices](#weight-normalize), which changes values.
+
+<a id="vg-remove-all"></a>
+#### Remove all groups and start over
+
+Delete every vertex group from the selected meshes. Use this only when intentionally discarding their current weighting, not as a routine export fix.
+
+**Location:** Vertex Group Operations → Remove All Vertex Groups.
+
+##### Steps
+1. Save a separate project copy. Confirm the selection excludes the original reference body.
+2. Run Remove All Vertex Groups on the replacement mesh.
+3. Create or transfer the intended weights before trying to animate or export it.
+
+##### Small example
+A newly imported accessory has unrelated groups from another rig. Remove them from that accessory, then transfer the appropriate head or hand influence from a correctly weighted reference.
+
+##### Check and recover
+The list will be empty and bone deformation may stop even if an Armature modifier is still present. The button does not delete the armature itself. Undo or reopen the saved copy if you removed the reference weights as well.
+
+### MMD mapping
+
+<a id="vg-mmd-setup"></a>
+#### Set up an MMD-to-game mapping
+
+Build a dictionary such as **UpperArm.L → 23**. The left column is the MMD/source group name; the right column is the game-side identity expected by your project. A row does not transfer weight values.
+
+**Location:** Vertex Group Tools → MMD ↔ Unified ID Mapping.
+
+##### Steps
+1. Choose the game in Game, and configure its export Component collection.
+2. Set MMD Source to your named reference mesh and Target Component to the imported game mesh. Align the two meshes in the same space.
+3. Set MMD Skeleton only if you also want the source bone names changed by a rename action.
+4. Create/select a Mapping Table text block. Click Fill Rows from Source Object. Use plus/minus to add or remove individual rows; Clear Mapping Table clears the dictionary, not mesh weights.
+
+##### Small example
+Your sleeve uses **UpperArm.L**, while the original Component uses **23**. Put those objects in the two fields, then fill and match the table. The useful result is a reviewed row connecting the two identities, not a promise that every other row is correct.
+
+##### Check and recover
+The source selector is not an export whitelist: the active MMD table applies by group name to eligible meshes throughout the configured export collection. A red exact-name selector means that object is currently missing. Use X to clear it, or restore that exact name; a similarly named object is not substituted.
+
+<a id="vg-mmd-match"></a>
+#### Match by position and review the result
+
+The matcher compares each group's weighted center: roughly, where that group's influence is concentrated. Nearby centers suggest a correspondence; they do not prove two bones have the same purpose.
+
+**Location:** MMD ↔ Unified ID Mapping → Matching Position → Match by position → write to this table.
+
+##### Steps
+1. Start with Rest Position when both meshes have comparable undeformed shapes.
+2. Use Pose Position only when their visible evaluated shapes are the useful comparison. Armature, ShapeKey and modifier deformation then affect both sides.
+3. Click the match action. Inspect every target column, especially fingers, face, layered clothing and left/right pairs.
+4. Use the visual review panel and correct uncertain rows manually. Matching again updates the table; merely changing the pose does not.
+
+##### Small example
+One arm is lowered in the source and raised in the target. First make their visible poses comparable, select Pose Position, then match. A link from the left wrist to the right wrist is a reason to correct the row, not to enlarge a distance threshold.
+
+##### Check and recover
+Matching does not apply modifiers or rewrite geometry. Unweighted and special helper groups can be absent from filled rows. This authoring matcher is distinct from the verified full-skin-weight matching used when generating [original bone-name sidecars](#vg-wwmi-map).
+
+<a id="vg-mmd-rename"></a>
+#### Choose the right one of the four rename buttons
+
+These buttons act on two different meshes. “Source” and “target” describe the fields above, not whichever mesh happens to be selected in the viewport.
+
+**Location:** MMD ↔ Unified ID Mapping → the two rows of rename/restore actions.
+
+##### Steps
+1. Review and save the mapping table before applying any rename.
+2. Use the table below to choose the side and direction.
+3. Inspect vertex-group names and, when supplied, the source armature. Test deformation before saving over your only copy.
+
+| Action | What it does |
 | --- | --- |
-| Rename or compare vertex groups | **顶点组工具 (Vertex Group Tools)** |
-| Prepare materials, collections, or shared ShapeKeys | **网格工具 (Mesh Tools)** |
-| Transfer or repair weights | **权重工具 (Weight Tools)** |
-| Make a normal Endfield character mod | [EFMI End-to-End](#efmi-end-to-end) |
-| Reuse EFMI geometry through another component pass | [EFMI CrossIB](#efmi-crossib) |
-| Export custom EFMI runtime ShapeKeys | [EFMI Custom ShapeKey Export](#efmi-custom-shapekey-export) |
-| Make a normal single-IB WWMI character mod | [WWMI Single-IB](#wwmi-single-ib) |
-| Add WWMI distance LODs | [WWMI LOD](#wwmi-lod) |
-| Support several WWMI scene-specific IBs | [WWMI Cross-Scene Multi-IB](#wwmi-cross-scene-multi-ib) |
-| Handle WWMI texture streaming or Hash-change cases | [WWMI Texture Strategy](#wwmi-texture-strategy) |
-| Edit WWMI VFX, scene, or non-character geometry | [WWMI Raw Mesh](#wwmi-raw-mesh) |
+| Rename source to unified number | Renames MMD source groups to the right-column identities; can rename the supplied source bones too |
+| Restore source to MMD name | Restores the source snapshot, including original group names, order and weights |
+| Rename target to MMD name | Gives the target Component source-side names and mapping-table order |
+| Rename target to unified number | Returns target groups to game identities, keeping current order |
 
-EFMI **CrossIB** and WWMI **cross-scene multi-IB** are different systems. CrossIB borrows an EFMI component pass. WWMI cross-scene merges several extracted scene routes into one authoring source.
+##### Small example
+To weight-paint a numeric imported Component using readable source names, use **Rename target to MMD name**. Do not click the source button: that would rename the reference instead.
 
-## Install, Update, and Coexistence
+##### Check and recover
+Source restoration is not just a cosmetic reverse rename: it can restore earlier weights. Do not expect weight edits made after that snapshot to survive restoration. Export preprocessing already works on temporary copies; you do not need destructive permanent renames solely to make every export work.
 
-### Install a Release
+<a id="vg-table-save"></a>
+#### Save, load and reuse mapping tables
 
-1. Open the [GitHub Releases](https://github.com/visaokc/Velo-Tools/releases) page.
-2. Download the release asset named `velo_tools-<version>.zip`.
-3. In Blender, open **Edit -> Preferences -> Add-ons**.
-4. Click **Install from Disk...** and select the zip without extracting it.
-5. Enable **Velo-Tools**.
-6. Restart Blender if the panels do not appear immediately.
+Keep a reviewed dictionary inside the blend or in an external text file. A saved table records correspondence, not meshes, textures or a full rig backup.
 
-Use the release asset, not GitHub's automatically generated source archive. The release asset has the installable add-on layout.
+**Location:** MMD or General Mapping → Mapping Table, Built-in Text synchronization, Import/Export Mapping Text.
 
-### Update Velo Tools
+##### Steps
+1. Create/select the intended text block at the top of the panel.
+2. Click the arrow **to Built-in Text** after editing rows; save the blend.
+3. If you edit the text in Blender's Text Editor, click the arrow **from Built-in Text** to reload its rows.
+4. Use Export Mapping Text for a separate text file, and Import Mapping Text when reusing it. Check the currently selected table before replacing anything.
 
-Open **Edit -> Preferences -> Add-ons -> Velo-Tools** and use the Velo updater.
+##### Small example
+Save a table named **Sleeve mapping** with your project. In a second project, import its exported text and verify that the target numbers still refer to the same extracted character and skeleton mode.
 
-- Stable releases are shown by default.
-- Enable pre-release updates only when you deliberately want a test build.
-- Restart Blender after the updater finishes.
-- Update Velo Tools as one add-on. Do not update its embedded EFMI or WWMI cores separately.
-- A manual install clears cached update targets that are equal to or older than the installed version, so an old same-version banner should disappear after the add-on reloads.
+##### Check and recover
+Keep MMD and General tables separate; their selectors and working objects are independent. Blank or duplicate/conflicting rows need review. Importing an old table is not evidence that its numbers remain valid for a new dump. Export a backup before clearing or replacing a useful table.
 
-> **Source-link warning:** never run the updater from a developer junction or source-link installation. The updater replaces files in the install directory, which would be the linked repository.
+### General mapping and visual checks
 
-### Coexistence with Standalone Tools
+<a id="vg-general"></a>
+#### Rename groups between any two meshes
 
-Velo Tools uses its own namespaced EFMI and WWMI forks. It can coexist with standalone EFMI-Tools and WWMI-Tools.
+General Vertex Group Mapping is the game-independent version: map one set of names to another without requiring MMD naming or numeric game groups.
 
-The embedded per-game updaters are disabled. Use the Velo host-level updater for the Velo copy and each standalone tool's own updater for its separate copy.
+**Location:** Vertex Group Tools → General Vertex Group Mapping.
 
-If Blender shows duplicate Velo installations, disable the stale copy and keep one `velo_tools` add-on directory.
+##### Steps
+1. Set Source Object, Target Object and optional Skeleton in this panel, not the MMD fields above.
+2. Select Rest or Pose Position, fill rows from the source, then match by position.
+3. Enable a maximum-distance limit when you know an appropriate distance at your model's scale. Correct rejected rows rather than accepting arbitrary distant matches.
+4. Apply Source → Target names, Restore Source, Target → Source names, or Target → Target names as appropriate. Save the table.
 
-## Project Data Flow
+##### Small example
+A source glove has **finger_index_01** while your rig expects **Index1.L**. Align the glove and target hand, review that row, then rename the intended side. The glove's painted values remain values; this does not sample the target hand's weights.
 
-### The Five Working Stages
+##### Check and recover
+A linked skeleton is for synchronized renaming. Actual pose-space comparison comes from each mesh's deformation stack. General mapping is not interchangeable with the active MMD export mapping. If several joints cluster together, fill those rows by knowledge and [inspect the links](#vg-review).
 
-1. **Frame Dump**: runtime capture containing buffers, textures, draw calls, and usually `log.txt`.
-2. **Object source folder**: extracted components, metadata, textures, and Velo sidecars.
-3. **Merged source folder**: optional WWMI cross-scene authoring root.
-4. **Blender component collection**: editable meshes selected in the export panel.
-5. **Mod output folder**: generated `mod.ini`, `Meshes`, `Textures`, and optional support files.
+<a id="vg-review"></a>
+#### Use centroid links and the unmatched list
 
-Keep the Frame Dump, object source, and mod output as separate stages. Do not use the mod output as the object source.
+Visual review draws connections between source and target group centers. It helps spot crossed sides and distant guesses before names are changed.
 
-For WWMI cross-scene work, the merged source folder becomes the object source. Import and export from that root rather than from one of its child IB folders.
+**Location:** The visual review panel below MMD or General Mapping; General Mapping also has an Unmatched List.
 
-### Generated Data Files
+##### Steps
+1. Finish a first mapping pass, then enable that panel's overlay.
+2. Turn labels and unmatched target points on. Adjust the displayed link distance if the view is too cluttered.
+3. Orbit around the model. Inspect wrists, shoulders, fingers and the centerline from more than one angle.
+4. Correct rows, rerun matching only when intended, and inspect again. Disable the overlay when finished.
 
-| File | Producer | Consumer and purpose |
-| --- | --- | --- |
-| `Metadata.json` | EFMI/WWMI extraction | Import/export geometry, component, skeleton, and LOD metadata |
-| `TextureUsage.json` | EFMI/WWMI extraction | Basic texture attribution and import-time material assignment |
-| `ShaderTextureUsage.json` | Velo WWMI/EFMI extraction | Component, shader-pair, `ps-tN`, Hash, format/size, freshness, and captured Unreal asset-path evidence; WWMI additionally records form evidence |
-| `Metadata.json` `components[*].vg_map` | Official EFMI extraction | Unified-to-component-local vertex-group mapping for both Merged export modes |
-| `CrossIB.json` | Velo EFMI extraction or CrossIB panel | EFMI Component match, pass topology, transparency, and input-compatibility evidence consumed by CrossIB export |
-| `CrossSceneManifest.json` | Velo WWMI cross-scene merge | Runtime IB ownership and component/VG/LOD/fold/morph routing not derivable from root Metadata/STU |
+##### Small example
+A left sleeve link crosses the torso to a right-arm group. Check the source/target names in that row and replace the target with the correct left-side identity. A short link by itself is not proof; overlapping garment layers can share centers.
 
-Treat these files as generated contracts. Re-run the producer when captures or routing change instead of manually guessing missing identities.
+##### Check and recover
+MMD and General overlays avoid drawing on top of one another. In Pose Position, moving the pose updates the links but not saved assignments. Empty labels or an unmatched entry call for a row/object check, not weight normalization.
 
-### Freshness Matters
+<a id="vg-pick"></a>
+#### Click an overlay point or drag its mapping
 
-Runtime resource identities can change after a game update. Texture streaming can also expose identities that were absent from an older capture.
+The visible mapping points are interactive. A click inspects a group's weights; a drag edits the correspondence. These are different actions.
 
-Velo reads resource identity from FrameAnalysis evidence, STU metadata, and names such as `t=<hash>.dds`. It does not derive a game texture Hash from DDS bytes or image similarity.
+**Location:** MMD or General Mapping → enabled visual review overlay → 3D Viewport.
 
-If the current game uses an identity that is absent from the selected source evidence, capture a fresh dump and rebuild the affected object source.
+##### Steps
+1. Enable the correct overlay after choosing its source and target meshes.
+2. Click a group endpoint to enter Weight Paint for that mesh/group and inspect the influence.
+3. Drag a source endpoint onto the correct target endpoint to write that mapping row.
+4. Check the table afterward. Disable the overlay or leave the weight-paint session when finished.
 
-## Shared Tools
+##### Small example
+A sleeve source point is linked to the wrong arm. Drag its endpoint onto the correct target, then inspect the updated table. Dragging an already claimed target to another target redirects its claims, so review every affected row.
 
-### Vertex-Group Operations and General Mapping
+##### Check and recover
+Dropping a source onto empty space clears its target; it is not a drag-cancel gesture. A claimed target dropped onto empty space is left alone. During inspection the picker temporarily uses a zero-strength subtract brush and restores its saved brush state when the session ends. Review the brush before intentional painting; do not assume a click moved weights.
 
-Open **顶点组工具 (Vertex Group Tools)**.
+### WWMI original bone names
 
-The **顶点组操作 (Vertex Group Operations)** panel provides batch merge, gap filling, unused-group removal, and all-group removal.
+<a id="vg-wwmi-map"></a>
+#### Generate and save WWMI original bone names
 
-Save the `.blend` before destructive cleanup. **Remove all vertex groups** is not a matching operation and removes the entire group set.
+Turn hard-to-read numeric WWMI groups into a verified dictionary of original bone names. You need the matching unpacked model; Velo does not reconstruct bone names from numbers alone.
 
-Use **通用顶点组映射 (General Vertex-Group Mapping)** when source and target group names differ.
+**Location:** Vertex Group Tools → WWMI Numeric ID ↔ Original Bone Name. Select Wuthering Waves in Game.
 
-1. Choose **源物体 (Source Object)** and **目标物体 (Target Object)**.
-2. Optionally choose an armature if renaming should include bones.
-3. Click **从源物体补行 (Fill Rows from Source)**.
-4. Click **按位置匹配→写入本表 (Match by Position -> Write to Table)**.
-5. Review distances and unresolved rows.
-6. Apply the required source or target rename action.
-7. Export the table or sync it to a Blender text block if it must travel with the `.blend`.
+##### Steps
+1. Set Unpack Folder to the matching .uemodel assets and Object Source Directory to the WWMI extraction.
+2. Keep similarity and voxel-size defaults for the first attempt. Click Generate Mapping Table.
+3. Review the result. Version 1.7.1 checks complete corresponding skin-weight rows and rejects ambiguous bone identities, not just distant meshes.
+4. Click Save Matching Results to Source Directory. Keep **WWMI_MatchingResult.json** with the extracted source. Load Mapping Table from Source Directory restores that saved result.
 
-Enable **通用映射 - 可视化校对（重心连线） (General Mapping Visual Check)** to inspect centroid links. Use **未匹配列表 (Unmatched List)** to resolve rows instead of accepting a partial table blindly.
+##### Small example
+A torso and sleeve share several bones whose influenced points overlap. The full weight pattern distinguishes identities that a center-only comparison could swap. A successful result can later supply names and the saved skeleton even without the original unpack folder.
 
-**Matching Position**, below the skeleton selector, is independent for General and MMD mapping. **Rest Position** (default) uses undeformed mesh vertex-group weighted centers, not bone heads. **Pose Position** uses evaluated mesh centers on both sides, including visible Armature/constraint/driver/ShapeKey and modifier deformation. Verification links, unmatched points and mouse picking follow pose changes; table assignments change only when you click **Match by Position** again. Existing rest-matched tables can be rematched without clearing them. The option does not apply modifiers, change the rig display mode, or rewrite the mesh. The skeleton selector remains for synchronized renaming; deformation comes from each mesh's actual modifier stack.
+##### Check and recover
+Old v1 results must be regenerated as v2 from the correct unpacked assets. Changing a similarity threshold cannot prove an ambiguous bone identity. Do not resolve a failure by hand-copying rows from an unrelated Component or another character.
 
-The optional maximum-distance threshold rejects weak matches. Start without an arbitrary large threshold, inspect the overlay, then set a meaningful project-scale limit.
+<a id="vg-wwmi-bind"></a>
+#### Switch names or bind the WWMI skeleton
 
-**MMD Source** is an editing and matching reference, not an export whitelist. The current MMD mapping table applies by group name to every eligible mesh in the selected **component collection**, including separated fragments and meshes with no per-object table binding. Nested-collection and hidden-object/collection export options still determine scope. Mapping, special-group removal (`mmd_edge_scale`, `mmd_vertex_order`, `UV_*`), and empty-group cleanup run on temporary copies, leaving original meshes and tool selections unchanged. Different skeleton modes retain their own downstream index conversion and validation rules.
+Use the saved dictionary to make an imported project easier to pose. Name switching affects selected meshes; the one-click bind action has the wider configured Component-collection scope.
 
-### Mesh Preparation
+**Location:** WWMI Numeric ID ↔ Original Bone Name.
 
-Open **网格工具 (Mesh Tools)**.
+##### Steps
+1. Generate or load a valid mapping using the previous tutorial.
+2. For a small change, select the intended mesh and use Switch to original name or Switch to numeric numbering.
+3. Use Import Skeleton if you need only the armature. Confirm Mirror Skeleton matches your import orientation.
+4. Use Bind Skeleton to Mod Mesh to process the configured WWMI Component collection and bind it. Optional .L/.R conversion renames only supported detected pairs.
 
-#### Multi-Object Sculpt
+##### Small example
+First switch one imported sleeve to original names and confirm the arm groups. Then bind the complete Mod collection and rotate the upper-arm bone slightly to check that the sleeve follows correctly.
 
-Use **多物体雕刻 (Multi-Object Sculpt)** to create a temporary merged sculpt object, sculpt across seams, then apply the result back.
+##### Check and recover
+Adding a table row does not establish a verified identity. Ambiguous used mappings stop the operation. Keep the extraction, saved mapping and skeleton snapshot together. Return to the matching import/export numbering strategy before assuming a renamed mesh is export-ready.
 
-Choose the ShapeKey-aware apply action when the source objects contain ShapeKeys. Use the ordinary apply action only when the result does not need ShapeKey preservation.
+<a id="mesh"></a>
+## Mesh Tools
 
-#### Material Tools
+Prepare the editable objects: sculpt across separate pieces, organize materials and collections, and manage ShapeKeys. The material helpers here organize geometry; the separate Material Tools tab controls which textures the game receives.
 
-The **材质工具 (Material Tools)** panel can:
+<!-- directory:start -->
+- [Sculpt several objects as one, then return the edits](#mesh-sculpt)
+- [Give a replacement mesh its Component identity](#mesh-prefix)
+- [Create same-named materials without losing texture wiring](#mesh-material-name)
+- [Keep material names in sync after object renames](#mesh-auto-name)
+- [Split by material and control empty ShapeKey cleanup](#mesh-split)
+- [Merge objects that use the same image set](#mesh-merge)
+- [Clean repeated ShapeKey contamination conservatively](#mesh-contamination)
+- [Fill missing basic mesh data](#mesh-fill)
+- [Apply selected modifiers on a mesh with ShapeKeys](#mesh-modifiers)
+- [Convert vertex-color storage to Linear](#mesh-linear)
+- [Generate smooth normals in TEXCOORD1](#mesh-octahedral)
+- [Generate Endfield smooth normals in TEXCOORD4](#mesh-texcoord4)
+- [Generate COLOR outline normals and opt in](#mesh-color-normal)
+- [Plan material parts in a collection tree](#mesh-route-preview)
+- [Split into planned collections, or group by texture](#mesh-route-apply)
+- [Control same-name ShapeKeys across a collection](#mesh-shape-summary)
+- [Give custom ShapeKeys safe Deform numbers](#mesh-shape-number)
+<!-- directory:end -->
 
-- add a `Component N` prefix to selected objects;
-- create same-name materials;
-- split meshes by material;
-- merge selected meshes by texture;
-- fill missing mesh data;
-- apply modifiers on objects with ShapeKeys;
-- convert vertex colors.
+### Sculpt and material organization
 
-The icon-only toggle beside **选中物体生成材质球 (Create Materials for Selected Objects)** enables automatic same-name material synchronization. It is off by default and uses Blender's highlighted toggle state while enabled. The setting is saved with the scene and only watches mesh objects inside the current game's **组件集合 (Component Collection)** and its child collections. Renaming a mesh with zero or one material slot synchronizes its mesh and material names; meshes with two or more material slots are left unchanged. Newly created, duplicated, or imported objects are first recorded without modification and are processed only after a later rename.
+<a id="mesh-sculpt"></a>
+#### Sculpt several objects as one, then return the edits
 
-Material generation and rename synchronization read the effective first object material slot, so both DATA-linked materials and legacy OBJECT overrides are supported. Naming keeps its single-user behavior, preserves the current shader/image wiring and source mappings, and safely consolidates the processed material uses back to DATA instead of exposing the old hidden material. Repeated slots using that same material follow the copy together; distinct later materials, polygon assignments and the active slot are kept. Automatic rename still skips meshes with multiple slots. When a material must be copied, explicit texture-sync memberships follow only that object/material use, including memberships in other scenes; saving/reopening and Undo/Redo preserve the association. To repair an existing name mismatch after upgrading, select the meshes and run Create Materials for Selected Objects once; do not manually switch the link type first.
+Create a temporary joined object so a brush can cross the seam between separate pieces. The originals remain the destinations for the finished positions.
 
-Set **形态键清理阈值 (ShapeKey Cleanup Threshold)** before split/merge operations when tiny ShapeKey deltas should be discarded.
+**Location:** Mesh Tools → Multi-Object Sculpt.
 
-Material splitting selects **Basis before entering Edit Mode** and leaves all resulting pieces that retain ShapeKeys on Basis. This also applies to material-to-collection and texture-routing splits. It prevents native Join from filling missing keys with the previously active key's geometry after empty keys are removed; selecting Basis only after splitting is not equivalent. Existing contaminated geometry is not repaired by this prevention step.
+##### Steps
+1. Save a copy, select the original meshes in Object Mode, and click Create Merged Object.
+2. Sculpt the merged object using brushes that move existing vertices. Do not remesh, use Dyntopo, delete points or change the originals' topology during this workflow.
+3. Choose Apply Merged Object Sculpt to transfer the result to the originals.
+4. If the originals have ShapeKeys, choose Apply Merged Object Sculpt (Shape Keys): the position changes are also added to their keys.
 
-**Clean ShapeKey Contamination**, beside the material split controls, operates on selected meshes in Object Mode without a reference copy. It detects exact repeated displacement fields across complete material regions in at least three independently shaped keys, identifies and protects a self-contained source key, then resets only pure repeated regions in other keys to Basis. Different or superimposed deformation on the same region is left unchanged. Small source edits are allowed only for identifying a protected source, never for approximate subtraction. Identical source copies are all retained; distinct ambiguous source candidates and patterns without a source are skipped. Source detection does not depend on key names, order, active selection, or slider values.
+##### Small example
+A shirt consists of a torso and two sleeves. Create the merged sculpt object and smooth their meeting area. Apply normally for keyless pieces; use the Shape Keys action if the shirt also has a breathing key, then test that key.
 
-This is a conservative heuristic, not proof of corruption: intentionally reusing an identical complete source field in multiple composite keys is indistinguishable from this contamination. Use **Ctrl+Z** to undo; the status reports protected sources, repaired records, and skipped data. No keys are deleted, no sliders or key relationships are changed, and write failures roll back the batch. Shared/read-only data, absolute or non-Basis-relative keys, vertex-group masks, and meshes that would exceed the batch's 512 MiB coordinate-snapshot budget are skipped. Shared material boundaries are coalesced rather than treated as smaller matching regions. This button does not use the adjacent zero-displacement cleanup threshold or attempt to remove arbitrary additive contamination.
+##### Check and recover
+Check each original separately and test its keys at 0 and 1. The workflow relies on vertex correspondence; a new vertex cannot be reliably sent back just because it looks close. Undo or reopen the saved copy if topology changed.
 
-#### Smooth-Normal Octahedral UV
+<a id="mesh-prefix"></a>
+#### Give a replacement mesh its Component identity
 
-Open **UV工具 (UV Tools)** and run **平滑法线-八面体UV (Smooth Normal - Octahedral UV)** to encode tangent-space smooth normals for every selected mesh into the `TEXCOORD1.xy` UV layer. Each mesh must already have a first UV layer because it defines the tangent basis. The operation creates or replaces `TEXCOORD1.xy`; preserve any author-edited data from that layer before running it, then validate the result with the target shader/export convention.
+A name beginning with **Component N** tells the exporter which extracted part the mesh belongs to. The number is a source identity, not a freely chosen organizational label.
 
-#### Endfield Smooth-Normal Auxiliary Data
+**Location:** Mesh Tools → Material Tool → Add the Component prefix to the selected object.
 
-For an Endfield Component whose extracted layout uses `TEXCOORD4.xy` for tangent-space smooth-normal X/Y, select the mesh and run **Generate Smooth Normal TEXCOORD4** under **UV工具 (UV Tools)**. The tool welds exact-position duplicates while calculating the smooth direction, then uses `TEXCOORD.xy` to construct the tangent basis and writes the EFMI-import-space representation into `TEXCOORD4.xy`.
+##### Steps
+1. Identify the intended Component in the imported reference and matching object source.
+2. Select the replacement meshes and set the number beside the button.
+3. Run the action and inspect the final object names. Keep them inside the configured export collection.
 
-This generator is for newly authored geometry; it is not a bit-exact recovery tool for deleted source-asset bake data. Preserve the extracted layer on original vertices, and generate the auxiliary layer on a new mesh before joining it to the Component whenever possible.
+##### Small example
+If your reference sleeve really belongs to Component 2, add number **2** to a mesh called **Sleeve**. The result identifies that mesh with Component 2. This does not make weights from an unrelated Component compatible.
 
-If the target Component layout instead maps the same representation to packed `COLOR`, use **Generate Smooth Normal COLOR** under **顶点色工具 (Vertex Color Tools)**. Do not apply this operation to an arbitrary COLOR Component: Endfield COLOR is a storage carrier, not a universal semantic, and some source Components contain different authored data. Check the source `.fmt` and retained reference data first.
+##### Check and recover
+Do not copy the example number blindly. With Auto Split by Material enabled, material prefixes can also affect routing. With it disabled, only the whole object's own Component name controls ownership. See [export scope](#game-scope).
 
-UV islands do not need to be joined. Exact-position duplicates are smoothed together across UV seams, but changing the orientation or geometry of the primary `TEXCOORD.xy` UV changes the tangent basis and therefore changes the generated values. Existing `TEXCOORD4.xy` or `COLOR` data is overwritten.
+<a id="mesh-material-name"></a>
+#### Create same-named materials without losing texture wiring
 
-Standard full exports activate the existing RG smooth-normal branch only for meshes with **Enable COLOR Outline Normals** enabled and usable nonzero `COLOR.R/G`. The checkbox is in **Mesh Tools > Vertex Color Tools**, below **Generate Smooth Normal COLOR**. Generation enables it automatically; existing authored COLOR can opt in without recalculation. Imported COLOR defaults to native game control, and an unchecked box does not prevent exporting or painting COLOR or disable a selector already enabled by the game. If any exported part opts in, compatible custom draws in that Component share the activation scope. State is saved once on entry and restored on exit; LOD layout changes, borrowed Component buffers, original draws, and opaque helpers retain the necessary state boundaries. Supported VB1 layouts contain `R8G8B8A8_SNORM COLOR` at byte 8 in a 12-byte stride, or at byte 16 in a 20-byte stride with a second UV/preserved 8-byte field. The structural shader rule follows the RG decoder into outline extrusion; it does not assume every shader or future variant is compatible. Native selector state is separate from shader compatibility and outline width. Reading a raw FrameAnalysis constant buffer requires the actual draw's `VSSetConstantBuffers1.first_constant` window, not offset zero. The checkbox currently expresses author intent, not an automatic dump diagnostic. Missing/zero RG, CPU-posed components, incompatible layouts, and custom/live templates are left alone. An LOD without COLOR stays native without disabling a compatible main mesh. Native RG decoding, vertex buffers, and material outline width are unchanged. This is not a separate thickness mask or an `R=1` cutout rule. Regenerate `mod.ini` with a full export. Generate smooth-normal COLOR before manual painting, since running the generator again overwrites it.
+Give each processed object a material that follows its name. This helps material-based splitting recognize its Component and keeps the project readable.
 
-#### Material-to-Collection Routing
+**Location:** Mesh Tools → Material Tool → Generate a material ball for selected objects.
 
-Use **按材质分离所属集合 (Route Material Splits to Collections)** after selecting the game export component collection.
+##### Steps
+1. Select the intended meshes in Object Mode.
+2. Inspect the first effective material slot; this is the material whose existing wiring should be retained.
+3. Run the action. Inspect object, mesh and material names, then verify the visible textures.
 
-1. Click **刷新材质分组 (Refresh Material Groups)**.
-2. Inspect the collection tree and virtual material leaves.
-3. Add real child collections where needed.
-4. Assign virtual leaves to their destination collections.
-5. Run split by material or split by texture.
+##### Small example
+An object named **Component 2 Sleeve** still has material **Material.018**. Run the action to give its edited material a useful matching name while retaining its diffuse image and original-texture mappings.
 
-Collection rows are real Blender collections. Leaf rows are a preview of final material grouping, not current mesh objects. Already-separated parts use their current real collection membership during export, including after ordinary material separation and manual Outliner moves. Stale virtual targets cannot move them back into hidden collections. Shared materials, unused/duplicate slots, and same-texture material groups do not override physical ownership. Still-merged independent material parts retain explicit virtual split destinations; the manual route-and-split actions continue to apply the tree.
+##### Check and recover
+The edited material gets original-name priority; a retained previous material may be named **Backup …**. Other users keep their material contents and assignments. DATA and OBJECT-linked slots are supported; do not manually switch link types to fix names first. Distinct later slots and face assignments are not a request to collapse all materials into one.
 
-MMD and Weight Tools mesh selectors store the exact name you choose, not a permanent object pointer. Splitting and regrouping remain free to rename or merge every mesh normally. Each selector resolves its saved name to the currently matching mesh; if none exists, its field turns red without changing the name. A same-named mesh appearing again, including after a join, reconnects automatically and restores the normal field color. The **X** button clears the binding even while it is waiting, so you can choose another name. Similar names, numeric suffixes, and a differently named merge result are not substitutes.
+<a id="mesh-auto-name"></a>
+#### Keep material names in sync after object renames
 
-These operations may disable **忽略嵌套集合 (Ignore Nested Collections)** so newly routed child collections remain exportable. Re-check that option before export.
+The small refresh-style toggle beside material generation watches later renames. It is off by default and is saved in the scene.
 
-#### Shared ShapeKey Aggregation
+**Location:** Mesh Tools → Material Tool → icon beside Generate a material ball.
 
-Use **形态键聚合 (按集合) (ShapeKey Aggregation by Collection)** to scan equal-name ShapeKeys across meshes and synchronize their names and values. The list is deterministic: existing `Deform N` entries appear first in numeric order, followed by all other names in case-insensitive natural A-Z order. Widening the sidebar gives the extra space to the name field; the value slider is capped at 8 Blender UI units, and all visible rows switch to the new column layout together during a resize.
+##### Steps
+1. Set the current game's export Component collection.
+2. Enable the icon toggle. It uses Blender's highlighted state when on.
+3. Rename an existing mesh inside that collection or a child collection.
+4. Check that the mesh and its material follow the new name.
 
-The left checkbox selects entries for **自动重命名 (Auto Rename)**. All entries start unchecked; use the native **全选/全不选 (Select All/Clear All)** action beside the refresh and auto-rename actions to toggle every currently renameable entry. It deliberately sits outside the scrolling list instead of imitating a column header, so its placement does not depend on UIList padding, scrollbar width, theme, DPI, or UI scale. Existing `Deform N` names are protected by default. Auto Rename treats every existing numeric ID as an occupied pin and fills the lowest free positive ID, preserving the full original name as the suffix; a manually pinned high ID therefore does not force later automatic names above it. In WWMI mode, the selected object source `Metadata.json` also reserves every native batch range, including native keys deleted from Blender. Missing or invalid WWMI source metadata cancels Auto Rename instead of risking a native-ID collision. EFMI mode does not read or require an object source for numbering. Hover over `xN` to see every mesh object that contains that ShapeKey. Contributor labels reserve equal digit width so mixed one- and multi-digit counts keep every value slider aligned. Refreshing or automatic rescanning preserves the checked rows and active row by name.
+##### Small example
+Rename a single-material object from **Component 2 Sleeve** to **Component 2 LongSleeve**. Its naming follows automatically. A new duplicate is first recorded without being modified; a later rename triggers synchronization.
 
-This is a Blender organization tool. It is not the EFMI runtime ShapeKey exporter described later.
+##### Check and recover
+Only meshes with zero or one material slot are processed automatically. Multi-material meshes are deliberately skipped. Objects outside the export collection are not watched. For an existing mismatch that needs immediate repair, use [manual material generation](#mesh-material-name).
 
-### Weight Tools
+<a id="mesh-split"></a>
+#### Split by material and control empty ShapeKey cleanup
 
-Open **权重工具 (Weight Tools)**.
+Separate faces into objects according to material. The adjacent threshold controls whether a resulting piece keeps a ShapeKey that barely moves any of its vertices.
 
-#### Recommended Transfer Flow
+**Location:** Mesh Tools → Material Tool → Separate by material; ShapeKey Cleanup Threshold.
 
-1. In **工作对象 (Working Objects)**, choose the source mesh and source vertex group.
-2. Choose a mirror source group if both sides should be transferred.
-3. Choose the target mesh and optional target armature.
-4. In **传递设置 (Transfer Settings)**, choose an engine.
-5. Confirm the target group and mirror target.
-6. Configure optional smoothing in **后处理 (Postprocess)**; transfer does not normalize or limit influences.
-7. Click **执行权重传递 (Run Weight Transfer)**.
-8. Repeat for the remaining groups. Completed receiving groups can stay locked throughout the sequence.
-9. After all transfers, select the intended vertices in Edit Mode, explicitly unlock the groups you want to normalize, and run **按比例规格化选中顶点 (Normalize Selected Vertices Proportionally)**. Review deformation after cleanup.
+##### Steps
+1. Save a copy and inspect each face's assigned material. Splitting follows assignments, not what the surface looks like.
+2. Set the cleanup threshold. The default is **0.0001** in local coordinate distance; use a smaller value to preserve tiny intended movements.
+3. Select the meshes and run Separate by material.
+4. Inspect the pieces and their remaining keys. The split starts from Basis and leaves pieces on Basis.
 
-#### Choose an Engine
+##### Small example
+A shirt mesh has sleeve and button materials. After splitting, a sleeve-only key can be removed from the button object if all button movement is below the threshold. A tiny intentional button movement needs a sufficiently smaller threshold.
 
-- **Robust** performs surface matching followed by inpaint. It is the default Velo path.
-- **面插值传递 (Surface Interpolation Transfer)** uses Blender Data Transfer with `POLYINTERP_NEAREST`.
+##### Check and recover
+The threshold can delete an effectively empty key on a piece; it does not repair an already contaminated key. A large threshold can discard real subtle deformation. Undo and lower it if necessary. Basis-first splitting prevents later joins from filling absent keys with the wrong active shape.
 
-Robust uses optional CPython 3.11 native packages. On first use, Velo shows the download size (about 51.5 MiB) and installed cache size (about 173.3 MiB) before downloading `scipy`, `libigl`, and `robust-laplacian`. The verified packages are installed in a shared local cache outside the add-on, so ordinary Velo installs, updates, backups, EFMI, WWMI, ShapeKey, and Cross-Scene workflows do not carry this payload. You do not need the standalone Robust Weight Transfer add-on.
+<a id="mesh-merge"></a>
+#### Merge objects that use the same image set
 
-If the standalone add-on is already enabled and has loaded a complete compatible dependency set, Velo reuses those modules without adding its private dependency directory to `sys.path`. Otherwise Velo loads its own private copies temporarily, so the two add-ons can coexist.
+Reduce object clutter by joining selected meshes whose materials use the same set of images. This is not image packing or material-slot deduplication.
 
-Robust rejects positive inpaint components without a positive direct source seed, including isolated positive patches inside a connected mesh. This evidence filter does not guarantee correct anatomical correspondence.
+**Location:** Mesh Tools → Material Tool → Merge according to textures.
 
-Use **高级 (Advanced)** only when geometry requires different distance, normal-angle, normal-flip, inpaint, evaluated-mesh, or dilation settings.
+##### Steps
+1. Select at least two intended meshes in Object Mode.
+2. Inspect all images used by their materials, not just their diffuse image.
+3. Run the merge action, then inspect the resulting objects, material slots and ShapeKeys.
 
-#### Source-Faithful Transfer Staging
+##### Small example
+Three cloth pieces use the same diffuse and normal images, while a buckle uses a separate image. The cloth group can join; the buckle remains separate. Material slots are retained rather than flattened into one shader.
 
-With **手动指定承接组 (Specify Target Group Manually)** off, Velo resolves the target through the active MMD mapping. Turn it on only when you need an explicit override.
+##### Check and recover
+Untextured meshes are skipped instead of being thrown into one large group. The same diffuse with different additional images is not necessarily the same image set. Check final Component naming and real collection membership, especially before export.
 
-Both engines stage only the receiving field and its strict mirror. Optional smoothing runs before the final mirror copy and does not normalize any groups. Extra smoothing remains off by default; explicitly saved smoothing settings are respected.
+<a id="mesh-contamination"></a>
+#### Clean repeated ShapeKey contamination conservatively
 
-All other groups, locked or unlocked, keep their exact weights and memberships. Their totals and influence counts never reduce, amplify, or block the sampled receiving field. Donors are not needed, and no remainder is moved into the receiver. A receiving group that is itself locked still requires an explicit unlock before replacement.
+Try to remove an exactly repeated, complete material-region displacement that was copied into unrelated ShapeKeys. This is a narrow repair heuristic, not a general “fix all ShapeKeys” action.
 
-The mirror is derived from the authoritative side rather than independently sampled. Nearby mesh layers are matched separately without coordinate-grid averaging, and the primary samples stay unchanged. Exact coincident vertices use topology when it distinguishes them; conflicting unresolved samples are not averaged. Missing or ambiguous matches preserve existing destination weights and are reported.
+**Location:** Mesh Tools → Material Tool → Clean ShapeKey Contamination.
 
-Working totals may be below or above one, and vertices may temporarily exceed the final influence limit. Normalization and group-count cleanup are separate, explicit operations after the sequence, even if an older scene saved automatic post-normalization as enabled. The complete receiving write is verified against its plan, and failures restore exact original memberships and lock flags. Successful recipients can still be automatically locked.
+##### Steps
+1. Save a copy and select the affected meshes in Object Mode.
+2. Inspect the suspected shared deformation in several keys.
+3. Run the action and read the protected-source, repaired and skipped counts.
+4. Test every changed key. Undo if the repetition was intentional.
 
-#### Mirror, Merge, and Repair
+##### Small example
+A self-contained **SleeveLift** key is correct, but the same whole-sleeve displacement also appears unchanged in several independently shaped keys. If the tool can identify the protected source and repeated regions across at least three keys, it can reset only those pure extra regions to Basis.
 
-Use **镜像映射组 (Mirror Mapping Groups)** to store manual left/right pairs for component objects and to mirror the active group from the authoritative side.
+##### Check and recover
+Different or superimposed movement is not approximately subtracted. Ambiguous patterns are skipped, no keys are deleted, and the adjacent cleanup threshold is not used. Shared/read-only meshes, unsuitable key relationships or excessive snapshot size can be skipped. Intentionally reused identical deformation can resemble corruption, so inspect the result rather than treating a repair count as proof.
 
-Use **权重组转移 (Weight-Group Transfer)** to move one group's weights into another or to merge mapping rows that share one target.
+### Mesh utilities
 
-In Edit Mode, **按比例规格化选中顶点 (Normalize Selected Vertices Proportionally)** first applies the requested influence limit and then proportionally normalizes selected vertices. It respects existing locks: explicitly unlock the groups you want included, then restore their locks if desired. It neither creates missing memberships nor automatically unlocks transferred groups. This step rescales retained values; it cannot correct a wrong geometric match or undo smoothing changes.
+<a id="mesh-fill"></a>
+#### Fill missing basic mesh data
 
-Below normalization, **Mirror selected vertex weights** repairs existing asymmetry. Select either the healthy vertices or just the damaged destination vertices; their counterparts do not also need to be selected. Choose **-X to +X** or **+X to -X** in the N panel, then run the action. Directions refer to the mesh's local X axis, not screen left/right. The lower-left **Adjust Last Operation** panel (F9) can change the direction of that operation; Ctrl+Z undoes it.
+Create missing **COLOR** and **TEXCOORD.xy** data so a new mesh has the expected basic layers. A blank UV is only a placeholder, not a finished texture unwrap.
 
-Only existing reciprocal group pairs with both groups unlocked participate. Neutral, non-sided groups mirror under their own names; manual/MMD/name pairs are supported, while unresolved numeric or missing pairs are skipped. Locked groups, unrelated vertices, source weights, selection, mesh coordinates and ShapeKeys remain unchanged. The action copies weights exactly without normalization or influence limiting; if protected weights make totals asymmetric, they remain protected. Ambiguous coincident layers are skipped rather than blended, and shared mesh data must first be made single-user.
+**Location:** Mesh Tools → Material Tool → Utilities → Fill Missing Mesh Data.
 
-Seam-safe smoothing blocks propagation across UV seams. **限制每顶点组数量 (Limit Groups per Vertex)** affects manual cleanup and standalone mirroring, not source transfer. The **Normalize standalone mirror** option and donor count are in the mirror panel; their existing standalone behavior is unchanged.
+##### Steps
+1. Select the new meshes and inspect Object Data Properties.
+2. Run Fill Missing Mesh Data.
+3. Confirm the expected UV/color layers exist; unwrap and author them as needed.
 
-Weight Tools accelerate authoring; they do not replace deformation review. Inspect joints, seams, mirrored areas, and previously disconnected islands before export.
+##### Small example
+A newly modeled belt has no UV and no color layer. The action creates an empty primary UV and black COLOR. You must still unwrap the belt before a diffuse image will display meaningfully.
 
-### Material Tools: Semantic Slot Textures (1.7.0)
+##### Check and recover
+This does not restore source-specific packed data, normals or bone weights. Check the target Component's actual layout before assuming these two layers are sufficient. Use the appropriate smooth-normal generator only when that layout expects it.
 
-The **Material Tools** tab is immediately to the right of **Weight Tools**. Connect replacement images to semantic inputs; original-image mappings are inferred and applied immediately. Incorrect mappings can be edited directly with **Choose Original Texture**, without a separate confirmation step. Users never enter `ps-t` numbers: the existing Component/pass-aware Slot planner resolves runtime bindings.
+<a id="mesh-modifiers"></a>
+#### Apply selected modifiers on a mesh with ShapeKeys
 
-In the selected game's **Export Mod** compatibility options, enable **Auto Split by Material**, **Slot-style Textures**, and **Use Material Textures**. Enable INI output and texture copying, and use a separate mod output folder. The material option defaults to off. Disabling material splitting hides the option and bypasses material bindings entirely.
+Apply a modifier even when Blender's ordinary Apply action refuses a mesh with ShapeKeys. The operation must produce compatible geometry for the keys.
 
-1. In Object Mode, select mesh objects and run **Initialize Selected Materials**. Used MMD and Blender materials receive independent semantic shader copies, keeping identifiable diffuse images and UV/vector wiring. Unselected users retain their material contents and slot assignments; edited materials receive the original-name priority described below. Repeating initialization refreshes source mappings on existing assignment materials without rebuilding their nodes or replacing their connections.
-2. Connect Image Texture **Color** outputs to **Diffuse**, **Normal**, **Packed PBR**, **FTM**, **Mask**, **Emission**, **Light Map**, or **Detail**. Keep **Shader** connected to the active Material Output. Direct image nodes and reroutes are supported for export; procedural images need baking. Alpha controls preview rather than an independent exported texture role.
-3. Set the matching object-source folder and use **Refresh Source Mapping** for the active material. Candidates must have a retained image file directly in that folder. Moving an unwanted shared texture out of the folder, including into a backup subfolder, excludes it even if `ShaderTextureUsage.json` still records it. Initialization and refresh discard its effective mapping, keep Blender image connections intact, and mark previously mapped removed originals as **Keep Game Texture**. Putting the original file back allows mapping to recover. Do not edit the extraction JSON or delete game resources. Manual source choices are preserved; choosing **Keep Game Texture** explicitly disables that role.
-4. Run **Propagate by Same Diffuse** with the source and target objects selected. The active configured material takes priority; otherwise one unique configured source is found among selected materials. All selected material slots can supply original-identity evidence; changes affect only matching materials actually used by faces. Matching uses the image datablock or canonical saved-file path, including packed file images, rather than similar names or appearance. Recognizable MMD and nested BSDF diffuse paths are supported. Non-diffuse image connections and source mappings are handled separately: mappings are refreshed even when no new connections are needed, and known identities from other selected materials with the same diffuse image help resolve ambiguous originals. Each Component still resolves its own identities rather than inheriting another Component's slot numbers. New connections fill empty inputs by default; **Replace Existing Connections** also replaces populated inputs and clears non-diffuse roles absent from the source. Removing an image, its node or its input connection from a previously linked source is synchronized to selected, still-linked targets on the next propagation even in fill-only mode. Independently changed or explicitly detached populated inputs are retained unless overwriting is enabled. Empty image nodes and dangling reroutes are disconnected from the semantic input; image datablocks, other node branches and original mappings remain intact. Reports also count cleared inputs.
+**Location:** Mesh Tools → Utilities → Apply Modifiers For Object With Shape Keys.
 
-Extraction names and original formats provide initial candidates; DDS-header hints are used only when extraction format evidence is absent. When several originals share a format, the mapper retains independent color-pass usage and recorded dimensions instead of stopping at the first ambiguity. An isolated diffuse/normal pairing or a uniquely size-matched family captured in the same pass can identify the primary diffuse, normal and Packed PBR/FTM maps among auxiliary textures. These are authoring suggestions, not fixed shader-slot rules: contradictory evidence or equally supported candidates remain unassigned, with a candidate-count explanation. Unique suggestions apply automatically, while manual choices and Keep Game Texture remain authoritative. Refresh also upgrades earlier incomplete mappings without rebuilding nodes. Removing a previously mapped original disables that role rather than promoting another auxiliary image; returning the file permits mapping to recover. The original picker lists the current mapping and same-role candidates first, retains all images for manual correction, and includes possible roles in tooltips. Old saved mappings remain usable without confirmation. Initialization also works without an extraction configured.
+##### Steps
+1. Save a separate copy and make the intended mesh active.
+2. Open the action's dialog and tick only the modifiers to apply.
+3. Keep Don't include armature deformations enabled unless deliberately baking a pose.
+4. Apply, then inspect the modifier stack and test all important keys.
 
-**Group Draws by Texture** appears below **Use Material Textures** and defaults to on. Before index offsets and buffers are built, compatible temporary parts within each Component are stably grouped by their complete original-to-replacement texture bindings. For example, A/B/A/B becomes A/A/B/B with contiguous index ranges. Original object names, comments and per-object visibility flags remain intact; each part keeps its own draw command. The same replacement bytes and exact basename share one binding signature even when loaded through different image datablocks or directories; different basenames remain distinct so their exported names are preserved. Adjacent compatible draws share one texture setup/restore transaction, including native per-object visibility guards whose bodies contain only those draws.
+##### Small example
+You want to apply a Mirror modifier to a symmetric garment that already has expression-independent fit keys. Apply only Mirror and compare Basis plus each fit key on both sides.
 
-Grouping does not move parts between Components or across protected objects. CPU-posed Components, positive recorded Endfield transparency flags, materials outside the texture-assignment workflow, and unsplit meshes with mixed texture bindings preserve their placement. Blender preview Alpha links, Alpha values and blend methods are not exported game blend state, so they do not automatically cancel requested grouping. For transparent or other order-dependent game passes not identified by recorded evidence, enable **Preserve Draw Order** in Material Tools. Protected parts remain barriers, so parts on opposite sides are not brought together. Turn **Group Draws by Texture** off to retain the earlier object order and adjacent-only command coalescing. Texture assignment and synchronization still work when grouping is disabled.
+##### Check and recover
+Not every topology-changing stack is compatible across keys. The dialog warns when ShapeKey animation data such as drivers/keyframes will be lost; retain a project backup for that data. A reported error or broken key is not a successful bake. Use Undo or the saved copy.
 
-Export uses the newly finalized triangle ranges while retaining each draw's conditions. Each group backs up and restores its slots. Components sharing an original can use different replacements. Replacement images are copied into `Textures/` under the exact basename recorded by the connected image path: no prefix, digest suffix, case conversion or extension conversion is added. An existing same-name output texture is kept as-is and skipped without comparing its bytes, dimensions or hash; only missing files are added. Conflicting source images targeting the same Windows-equivalent output filename still abort the export rather than choosing one silently. Updating an existing output texture remains the author's responsibility. Files produced by older builds, including `material_<digest>.*`, are not deleted automatically. This is Slot routing, not new runtime Hash-based per-draw matching. Removed or explicitly disabled original roles are not overridden; unresolved connected roles and unsafe runtime slot assignments still abort instead of guessing.
+<a id="mesh-linear"></a>
+#### Convert vertex-color storage to Linear
 
-Material texture Resource sections use `ResourceMaterialTexture_<file stem>`: remove the final extension, replace spaces with `_`, retain ASCII letters/digits/underscores and omit other characters. No content digest or routine sequence number is appended. Distinct files whose stems sanitize to the same section name receive `_001`, `_002`, etc., without changing their delivered filenames or `filename` references. For example, `body_1.dds` uses `ResourceMaterialTexture_body_1`, while `body 1.dds` uses `ResourceMaterialTexture_body_1_001`. Allocation is deterministic for the same file set and independent of draw order; natural names such as `body_1_001.dds` are reserved before generating suffixes. Different extensions with the same stem are also disambiguated. A stem with no supported characters requires renaming the source image. This section-label collision is not a disk-file conflict: existing same-name/different-content files still follow the no-overwrite checks above. Grouping compares actual file identity, never just the cleaned label.
+Move COLOR/COLOR1 layers to the storage convention expected by the toolchain. This is a data-format conversion, not a way to choose a new visible color.
 
-Only materials with the plugin's texture-assignment node enter this additional replacement layer; uninitialized MMD/BSDF materials retain the prior export route, and their draws remain ordering barriers. Explicit same-diffuse propagation can initialize matching selected targets, after which those targets participate. Export itself does not initialize untouched materials.
+**Location:** Mesh Tools → Utilities → Convert Vertex Colors To Linear.
 
-Texture-sync membership is independent of the material slot link type. Initialization, propagation, mapping edits and image replacement preserve DATA links on local single-user meshes. A shared or externally linked mesh uses an OBJECT override when needed to isolate other users without duplicating geometry. Existing OBJECT links remain usable; naming can consolidate them after making the mesh single-user.
+##### Steps
+1. Save the project and select the relevant meshes.
+2. Inspect which COLOR/COLOR1 layers came from import and which you painted.
+3. Run the conversion only when your workflow calls for Linear storage.
+4. Check the layers and export a comparison before applying it broadly.
 
-Propagation, source refresh and other staged material edits give a one-to-one replacement priority over its local original name, just like same-named material generation. The original ID moves to a `Backup <original name>` label even when retained by another user or an unused mesh; its contents and other users' slot assignments are not modified or deleted. The edited material therefore keeps its exact pre-operation name instead of acquiring `.001`, `.002`, and so on. Existing authored suffixes are not stripped or guessed. Linked-library originals and genuinely different simultaneous replacements remain subject to Blender name uniqueness. Name transfers participate in the same rollback as slots and sync membership.
+##### Small example
+A mesh brought from an older project uses the older color storage. Select only its duplicate, not the retained reference, convert it and compare exported color behavior under the same game lighting.
 
-Material INI state is limited to the Components and slots actually receiving replacements. Terminal selector layouts share one `$material_layout_cN` flag per affected Component; complex independent branches track only the required slots. Unrelated Component setters and restorers are not instrumented, and shared helpers requiring tracking are isolated for their affected caller. Backup resources are shared per Component/slot rather than multiplied by material variants. Existing selector predicates are evaluated once before replacements; the material layer does not guess slots from the replacement format or add runtime Hash tests.
+##### Check and recover
+This does not generate missing outline normals or tell you what a game's channels mean. Do not recolor packed data just because it looks unusual in Blender. Keep the original version until the target shader's result is confirmed.
 
-Texture setup precedes object labels, and each generated draw retains its original object comment immediately above it, including split draws and native visibility guards. Export-local caches reuse extraction snapshots, resolved mappings, image bytes and content signatures across preflight, grouping and INI generation; they are released after success or failure. Untouched materials skip material segmentation, and homogeneous assigned meshes use a single range. Image delivery still checks for real filename conflicts and never overwrites existing textures. Reload the updated addon and perform a full export to regenerate an older verbose INI; no material reinitialization or propagation is required.
+### UV and outline-normal data
 
-Single-source EFMI and WWMI support Native/Fuzzy syntax. CrossIB, WWMI Cross-Scene, asset-name export, custom/live templates and partial export remain excluded. Packed PBR/FTM files are copied unchanged; Principled preview is approximate. Saved DDS/PNG/JPG/JPEG/TGA/BMP and packed file images are supported without automatic format conversion. Dirty, generated, animated, tiled or procedural images must be saved/baked first. Use Undo or the retained original material to revert authoring changes, and validate exported results in game.
+<a id="mesh-octahedral"></a>
+#### Generate smooth normals in TEXCOORD1
 
-#### Persistent texture sync and replacement paths
+Store a smooth direction in a UV layer for shaders that expect that convention. Think of this as writing extra shading instructions, not moving a texture island.
 
-Propagation now remembers explicit **object/material/role** memberships. Select the source and intended meshes once, then run **Propagate by Same Diffuse**. A mesh may contain several materials; only the matching, used materials participate. A source with only a diffuse image is sufficient: empty roles with recognized original mappings can be linked for later image assignment. Fill-only propagation does not link an independently populated, different target image. Existing workflows from before persistent groups require one additional propagation to establish membership; initialization does not guess groups globally.
+**Location:** Mesh Tools → UV Tool → Smooth Normal - Octahedral UV.
 
-Under each original-image selector, the path field displays the image actually connected to that role. It is read-only; the adjacent folder button opens **Replace Texture**, where a path can be browsed or entered. The group count opens **Texture Sync Members**. Select any member and choose a new image to update all members of that role, even when the other objects are not selected. Independent roles update only the current object's material uses. Packed images are explicitly labeled: their displayed path is the recorded path, not necessarily a readable external file.
+##### Steps
+1. Confirm the target shader/export layout expects this data.
+2. Ensure each selected mesh already has its first UV layer; that UV defines the direction basis.
+3. Back up existing **TEXCOORD1.xy**, then run the generator.
+4. Export and inspect the outline, especially at seams.
 
-A replacement changes the material image nodes, not a shared Image datablock's global path. Original identities, each Component's runtime destination, UV/vector wiring and unrelated uses remain unchanged. Replacing the diffuse image does not change group identity. Object/material/image renames, saving and reopening the project, and Undo/Redo preserve membership. Duplicating an object does not automatically recruit the duplicate. A direct manual node image change is treated as a local override and excluded from subsequent group replacements unless explicitly propagated again. No periodic global same-file scan is used.
+##### Small example
+A new low-poly accessory has a faceted outline in a compatible workflow. Generate the extra smooth direction on a copy and compare the silhouette before and after, checking both its outer edge and the original texture orientation.
 
-| Action | Original mapping | Image connection | Sync membership |
+##### Check and recover
+The action creates or replaces TEXCOORD1.xy. It does not work as a universal outline fix for every game. Changing the primary UV orientation changes the encoded direction. Use the Endfield-specific actions below when its source layout expects a different carrier.
+
+<a id="mesh-texcoord4"></a>
+#### Generate Endfield smooth normals in TEXCOORD4
+
+Some Endfield Components store smooth-normal X/Y in **TEXCOORD4.xy**. This generator prepares that representation for new geometry.
+
+**Location:** Mesh Tools → UV Tool → Generate Smooth Normal TEXCOORD4.
+
+##### Steps
+1. Check the extracted Component's .fmt and retained reference layers.
+2. Keep the original imported auxiliary data where possible. On the new mesh, prepare the primary **TEXCOORD.xy** UV.
+3. Run the generator before joining the new part into the Component.
+4. Inspect the outline in the exported game result.
+
+##### Small example
+A newly modeled cuff is joining an Endfield Component that uses TEXCOORD4 for outline normals. Generate the cuff's layer first, leaving the old sleeve's authored layer intact.
+
+##### Check and recover
+Exact-position duplicates are smoothed together without joining UV islands. Existing TEXCOORD4 data is overwritten. This cannot reproduce deleted original bake data bit-for-bit; do not run it over an entire original model merely to fill one new part.
+
+<a id="mesh-color-normal"></a>
+#### Generate COLOR outline normals and opt in
+
+Use this only when the Endfield Component stores the compatible smooth-normal representation in packed COLOR. COLOR is a container: not every Component uses it for the same purpose.
+
+**Location:** Mesh Tools → Vertex Color Tool → Generate Smooth Normal COLOR; Enable COLOR Outline Normals.
+
+##### Steps
+1. Verify the source layout and retained reference data, as in the previous tutorial.
+2. Select the new geometry and generate its COLOR data. Generation enables the opt-in checkbox automatically.
+3. For already authored compatible COLOR, enable the checkbox without recalculating.
+4. Perform a full export to regenerate mod.ini, then review the outline.
+
+##### Small example
+Your new cuff uses a compatible COLOR layout. Generate before any manual painting. If you regenerate afterward, your painted COLOR is overwritten.
+
+##### Check and recover
+Imported COLOR defaults to the game's native control. An unchecked box does not block ordinary COLOR export or override a selector already enabled by the game. One opted-in exported part can activate compatible custom draws in the same Component; incompatible layouts and other protected paths remain native. This is not an outline-width slider or a universal transparency mask.
+
+### Collection routing
+
+<a id="mesh-route-preview"></a>
+#### Plan material parts in a collection tree
+
+Preview where material-separated pieces should go before actually splitting them. Collection rows are real Blender collections; material leaves represent planned groups, not necessarily existing objects.
+
+**Location:** Mesh Tools → Split into Collections by Material.
+
+##### Steps
+1. Set the current game's export Component collection.
+2. Click Refresh Material Groups.
+3. Add child collections using plus, and select a material leaf.
+4. Click the destination collection's import/assignment icon to move that planned group. Use the disclosure arrow to expand/collapse, not to assign.
+
+##### Small example
+A combined garment has cloth and trim materials. Make **Cloth** and **Trim** child collections, then assign each virtual leaf to its intended folder before splitting.
+
+##### Check and recover
+Removing a child collection returns planned groups to the parent; it is not a request to erase the mesh. Already-separated objects follow their actual collection membership, including Outliner moves. Refresh before trusting a stale preview. These actions can disable Ignore Nested Collections so the new children remain exportable.
+
+<a id="mesh-route-apply"></a>
+#### Split into planned collections, or group by texture
+
+Turn the preview into real separated objects. The material action keeps material-based pieces; the texture action additionally tries to join pieces with the same image set into fewer objects.
+
+**Location:** Split into Collections by Material → the two split actions.
+
+##### Steps
+1. Complete the [collection plan](#mesh-route-preview) and save a copy.
+2. Choose Split by Material into Collections for separate material pieces.
+3. Alternatively choose the texture/grouping action to reduce compatible object count.
+4. Inspect actual objects in the Outliner and check names, materials and ShapeKeys.
+
+##### Small example
+Keep a cuff and sleeve separate for independent editing using the material split. If several trim pieces use exactly the same images and need the same destination, the texture variant can group them.
+
+##### Check and recover
+These are real authoring changes, unlike temporary export-time splitting. Basis-first preparation applies here too. After manual moves, physical ownership of separated pieces is authoritative; stale virtual leaves must not move them back to an old hidden collection.
+
+### ShapeKey summary
+
+<a id="mesh-shape-summary"></a>
+#### Control same-name ShapeKeys across a collection
+
+Gather identically named ShapeKeys into one list so a garment made of several objects can be adjusted together.
+
+**Location:** Mesh Tools → ShapeKey Summary (by Collection).
+
+##### Steps
+1. Select the collection containing the relevant meshes.
+2. Let the list scan, or click Force refresh after a structural change.
+3. Move a row's value to change contributors with that name; edit its name to rename those contributors together.
+4. Hover over **xN** to see exactly which objects contribute.
+
+##### Small example
+Body, shirt and belt all have **FitWide**. Its row shows x3. Moving the shared slider adjusts all three, so the belt is not left behind.
+
+##### Check and recover
+Equal names mean shared control here. Rename a key on an individual object first if it must remain independent. Existing numbered Deform rows sort first, followed by natural name order. This panel organizes Blender data; runtime export still needs the [game's ShapeKey options](#game-efmi-shapes).
+
+<a id="mesh-shape-number"></a>
+#### Give custom ShapeKeys safe Deform numbers
+
+Number selected, still-unnumbered entries for the runtime workflow. Existing numbered entries are protected, and the lowest free valid number is used.
+
+**Location:** ShapeKey Summary → row checkboxes → Automatically rename.
+
+##### Steps
+1. Set the correct game. For WWMI, set the current object source with valid Metadata.json first.
+2. Refresh the collection list. Tick the entries you want numbered; Select All/Select None affects renameable entries only.
+3. Run Automatically rename.
+4. Inspect the resulting names, then enable the applicable game-side custom ShapeKey export.
+
+##### Small example
+In an EFMI project, Deform 1 and Deform 8 already exist. Selecting **CapeLift** can assign **Deform 2 CapeLift**, rather than unnecessarily starting at 9. WWMI also reserves its native ranges, so its next available number may be much higher.
+
+##### Check and recover
+The checkbox selects items to rename; it is not a visibility or export toggle. Old panel helper wording may say “unchecked”: follow the checkbox/action behavior described here. WWMI missing or invalid metadata cancels numbering instead of risking a native-ID collision. Do not borrow the EFMI example's number for a WWMI project.
+
+<a id="weights"></a>
+## Weight Tools
+
+Weights are influence amounts: 0 means no pull, 1 means full pull for that group. A clean final vertex usually has a controlled total and influence count, but Velo intentionally separates copying from cleanup. Transfer first; normalize only after deciding which values may change.
+
+<!-- directory:start -->
+- [Choose the source, receiver and optional mirror](#weight-objects)
+- [Choose Robust or surface interpolation](#weight-engine)
+- [Transfer a group without silently rewriting the rest](#weight-transfer)
+- [Smooth only when the copied field needs it](#weight-smooth)
+- [Mirror the active group using explicit pairs](#weight-mirror)
+- [Move one group's weights into another on the same mesh](#weight-group-move)
+- [Consolidate several mapping sources that share a target](#weight-map-merge)
+- [Normalize selected vertices and limit influences](#weight-normalize)
+- [Repair only selected mirrored vertices](#weight-selected-mirror)
+- [Diagnose failed transfers instead of tuning blindly](#weight-advanced)
+<!-- directory:end -->
+
+### Working objects and transfer
+
+<a id="weight-objects"></a>
+#### Choose the source, receiver and optional mirror
+
+The source supplies one group's influence field. The target receives it. Neither is chosen implicitly from the last object you happened to click once explicit fields are set.
+
+**Location:** Weight Tools → Working Objects.
+
+##### Steps
+1. Set Source Mesh to a correctly weighted reference. Choose Source Vertex Group; use the refresh icon after changing its group list.
+2. Set Target Mesh to the garment or replacement that should receive weights.
+3. Inspect Mirror Vertex Group. Set the intended opposite-side group, or clear it for a one-sided transfer.
+4. Set Target Skeleton if needed for creating a missing receiving bone. Align the actual source and target surfaces.
+
+##### Small example
+To weight a sleeve, source is the reference arm, source group is the upper-arm influence, target is the sleeve. The sleeve is not the source merely because it is selected in the viewport.
+
+##### Check and recover
+Source candidates exclude locked/special groups. Exact-name object fields keep a missing name in red and reconnect when that same-named mesh returns. X clears it. A target field that stays red after a merge may need the actual new name; similar names are never guessed.
+
+<a id="weight-engine"></a>
+#### Choose Robust or surface interpolation
+
+Both engines sample a source surface, but they handle gaps differently. Robust adds inpainting: it extends usable samples into areas where a direct surface match is missing.
+
+**Location:** Weight Tools → Transfer settings → Transfer engine.
+
+##### Steps
+1. Try Robust for clothing with gaps or uneven overlap.
+2. If the panel offers Install Robust dependencies, read the shown size and run that installation first. Wait for completion.
+3. Choose Face interpolation pass for Blender's built-in nearest-face interpolation path when suitable.
+4. Test one receiving group on a saved copy before processing a whole outfit.
+
+##### Small example
+A close-fitting sleeve is a straightforward surface-interpolation case. A sleeve with a loose cuff may benefit from Robust, provided enough reliable nearby samples remain to guide the missing area.
+
+##### Check and recover
+The bundled optional native package manifest targets Windows CPython 3.11; other Blender/Python environments are not automatically covered. These packages live outside the add-on and the standalone Robust add-on is not required. If installation or matching fails, inspect the full report. Changing the engine does not fix a wrong bone mapping or misaligned model.
+
+<a id="weight-transfer"></a>
+#### Transfer a group without silently rewriting the rest
+
+Copy the sampled receiving field and optional strict mirror. Existing unrelated groups keep their values, even if the temporary total becomes greater or less than one.
+
+**Location:** Weight Tools → Transfer settings → Execute weight transfer.
+
+##### Steps
+1. Complete [Working Objects](#weight-objects). With manual receiving name off, inspect the group inferred from the MMD mapping.
+2. Enable Manually specify receiving group only to provide an explicit override. Inspect the mirror receiver too.
+3. Unlock a receiving group that must be replaced. Reuse/clear controls are fixed: an existing unlocked receiver is reused and its old field is replaced.
+4. Configure optional smoothing, then transfer. Auto-lock receiving groups can protect completed writes.
+5. Repeat for other groups, and perform [manual cleanup](#weight-normalize) after the sequence.
+
+##### Small example
+A vertex has unrelated weight 0.8. The sampled new receiver is 0.6. Transfer keeps both, totaling 1.4; it does not shrink 0.6 to 0.2. You decide later which groups may be rescaled.
+
+##### Check and recover
+Donors and the group-count limit do not constrain source transfer. Missing/ambiguous mirror correspondences are reported and preserve the destination rather than averaging layers. A failed verified write rolls back memberships and locks. Creating a Blender bone does not by itself create a supported new game-runtime bone.
+
+<a id="weight-smooth"></a>
+#### Smooth only when the copied field needs it
+
+Optional smoothing softens abrupt changes in the new receiving group before its final mirror is derived. It is not automatic whole-mesh cleanup.
+
+**Location:** Weight Tools → Post-processing → Enable smoothing, repetitions and strength.
+
+##### Steps
+1. Start with smoothing off to see the engine's actual sampled result.
+2. If it is too abrupt, enable smoothing and start with a low strength and few repetitions.
+3. Unlock the receiver before repeating a transfer that previously auto-locked it.
+4. Compare the joint bend and seam areas after transfer.
+
+##### Small example
+A sleeve's upper-arm influence has a harsh step near the elbow. Try strength **0.2** and a few repetitions on a copy, then compare against the unsmoothed transfer. These are trial values, not a setting for every model.
+
+##### Check and recover
+More repetitions can blur useful detail. UV seam edges block smoothing propagation, so a seam can remain a boundary. Smoothing does not normalize the other groups, and the checkbox alone does not repair already copied weights: it is used by the transfer operation.
+
+### Mirror and group transfer
+
+<a id="weight-mirror"></a>
+#### Mirror the active group using explicit pairs
+
+Mirror Weight is the standalone whole-group workflow for eligible Component meshes. It is different from the selected-vertex repair button below.
+
+**Location:** Weight Tools → Mirror Mapping Groups.
+
+##### Steps
+1. Set the game's export collection and make the intended Component mesh active.
+2. Choose its authoritative active group. Review automatic left/right detection.
+3. Add manual pair rows when names or numeric groups do not express a reliable pair. Remove obsolete rows with minus.
+4. Decide whether Normalize standalone mirror and the influence limit should apply, then run Mirror Weight.
+
+##### Small example
+Groups **12** and **18** are a known left/right pair in this particular source. Record that pair, make the healthy side active, and mirror it. Do not reuse those example numbers in another source without checking.
+
+##### Check and recover
+Standalone normalization preserves locked groups and uses eligible unlocked groups to distribute remaining capacity. Automatic donor count is a preference, not a list of the only permissible groups. When you only need to copy a few damaged points exactly, use [selected-vertex mirror](#weight-selected-mirror), which never normalizes.
+
+<a id="weight-group-move"></a>
+#### Move one group's weights into another on the same mesh
+
+Add the source group's values to the target group, then clear the source values. This does not sample another mesh or merely change a name.
+
+**Location:** Weight Tools → Weight Group Transfer.
+
+##### Steps
+1. Make the intended mesh active.
+2. Choose Source Group on the left and a different existing Target group on the right.
+3. Ensure the groups to be changed are not protected by locks.
+4. Run Execute weight group transfer and inspect the full result.
+
+##### Small example
+A vertex has 0.2 in a redundant helper group and 0.5 in the intended parent group. After transfer, the parent has 0.7 and the helper has no assignment at that point.
+
+##### Check and recover
+Values above 1 are clipped on write and reported; this operation is not lossless when the sum exceeds 1. The source group can remain as an empty name. Undo if you chose the wrong direction, and test the joint before removing now-empty groups.
+
+<a id="weight-map-merge"></a>
+#### Consolidate several mapping sources that share a target
+
+When several source groups genuinely mean one destination, merge their weights into the suitable parent source and remove redundant correspondence. This changes both source weighting and table rows.
+
+**Location:** Weight Group Transfer → merge according to MMD mapping / general mapping.
+
+##### Steps
+1. Save the blend and export a backup of the relevant mapping table.
+2. Review all rows pointing to the same target and the source armature hierarchy.
+3. Choose the action for the table you actually configured: MMD or General.
+4. Inspect retained parent groups, cleared/removed source groups and disconnected/pruned rows.
+
+##### Small example
+Two helper influences on a sleeve intentionally map to one game upper-arm identity. Consolidation keeps their combined influence under the selected family parent instead of leaving two competing rename destinations.
+
+##### Check and recover
+This acts on the source configured by that table, not any arbitrary active mesh. A mistaken many-to-one mapping should be corrected, not legitimized by merging. Retain the backup until deformation and export are confirmed.
+
+### Cleanup and local repair
+
+<a id="weight-normalize"></a>
+#### Normalize selected vertices and limit influences
+
+Redistribute editable existing weights proportionally after optional influence pruning. Locked groups keep their values; missing memberships are not invented.
+
+**Location:** Weight Tools → Post-processing → Normalize selected vertices by proportion.
+
+##### Steps
+1. Finish the intended transfers, then enter Edit Mode on the target mesh.
+2. Select only the vertices to clean.
+3. Explicitly unlock groups whose values may change. Set Limit the number of vertex groups and the maximum if required by your target layout.
+4. Run normalization and inspect per-vertex totals, influence count and deformation.
+
+##### Small example
+A protected group is locked at 0.6. Two editable existing groups contain 0.3 and 0.1. They already fit the remaining 0.4. If those editable values were 0.6 and 0.2, proportional cleanup can bring them back to 0.3 and 0.1 while keeping the lock.
+
+##### Check and recover
+The common default of four influences is not a universal game rule. An impossible locked-weight budget needs manual review; the tool does not silently unlock completed groups. Normalization cannot correct a wrong sampled bone or reverse a bad smoothing choice.
+
+<a id="weight-selected-mirror"></a>
+#### Repair only selected mirrored vertices
+
+Copy healthy-side weights across the mesh's local X axis without normalization, influence limiting or geometry edits. Only the destination changes.
+
+**Location:** Weight Tools → Post-processing → -X to +X / +X to -X → Mirror selected vertex weights.
+
+##### Steps
+1. Make shared mesh data single-user if necessary, then enter Edit Mode.
+2. Select the healthy endpoints or only the damaged destination points. Both sides do not need selection.
+3. Pick the direction using local X, not screen left/right. Ensure both groups in each intended pair are unlocked.
+4. Run the action. F9 can adjust direction; Ctrl+Z undoes it.
+
+##### Small example
+The positive-X cuff has bad wrist weights. Select only those damaged points and choose **-X to +X**. The negative-X cuff is the source even though it was not selected.
+
+##### Check and recover
+Only existing reciprocal pairs participate; neutral groups copy under their own names. Unresolved numbers, missing pairs and ambiguous coincident layers are skipped. Locked groups, source values, other vertices, selection and ShapeKeys stay unchanged. Different totals caused by protected groups remain protected rather than “fixed.”
+
+<a id="weight-advanced"></a>
+#### Diagnose failed transfers instead of tuning blindly
+
+Advanced settings control which surface samples are accepted. Read the report first so you change the parameter related to the failure.
+
+**Location:** Weight Tools → Advanced; clickable last-result text and copy icon.
+
+##### Steps
+1. Open View full results. Check object names, receiving locks, missing mappings and dependency errors first.
+2. For Robust distance failures, inspect actual model scale and alignment before adjusting Maximum Distance.
+3. Review Normal Angle and Allow normal flipping for thin or opposite-facing surfaces.
+4. Use deformed source/target only when their evaluated shapes are intended. Evaluated target topology must still match the original.
+
+##### Small example
+A cuff sits far from the source wrist because one object is misplaced. Moving it into alignment is the fix. Increasing the distance until the cuff samples the torso would merely hide the real problem.
+
+##### Check and recover
+Point inpaint changes the inpainting neighborhood model, not the bone identity. Limit dilation concerns protection during influence pruning, not the source transfer limit. Copy the full report for diagnosis, preserve the project and do not treat a short “finished” message as a deformation check.
+
+<a id="materials"></a>
+## Material Tools
+
+Always distinguish two images: the **original** is the game's extracted texture you intend to replace; the **replacement** is your authored image. Connecting a pretty image in Blender is not enough to identify the correct game texture. This tab connects the two without asking you to type shader slot numbers.
+
+<!-- directory:start -->
+- [A complete first material: replace a sleeve's textures](#material-start)
+- [Initialize selected materials safely](#material-initialize)
+- [Connect the right image to each semantic input](#material-inputs)
+- [Choose which original game texture a role replaces](#material-original)
+- [Refresh originals without rebuilding your material](#material-refresh)
+- [Configure once, then propagate by the same diffuse](#material-propagate)
+- [Replace a synchronized texture from any member](#material-replace)
+- [Detach one role, clear a mapping, or keep the game texture](#material-independent)
+- [Enable independent material textures for export](#material-export)
+- [Group draws by texture without losing required order](#material-batching)
+- [Understand filenames and why an old output texture stays unchanged](#material-files)
+<!-- directory:end -->
+
+### Build one working material first
+
+<a id="material-start"></a>
+#### A complete first material: replace a sleeve's textures
+
+Start with one material and prove the whole path before batching an outfit. This tutorial links the individual operations in the order a beginner needs them.
+
+**Location:** Material Tools, then Game → the selected game's Export Mod.
+
+##### Steps
+1. Prepare a normal single-source EFMI or WWMI project and save a copy. Keep the extracted original textures in its object-source folder.
+2. Select the sleeve and its intended active material. [Initialize](#material-initialize) it.
+3. Connect a saved replacement diffuse and normal through the semantic inputs; [check their originals](#material-original).
+4. In Export Mod, enable Auto Split by Material, Slot-style Textures and Use Material Textures. Keep the default template, full INI output and texture copying.
+5. Export to a separate test output and inspect the result in game before [propagating](#material-propagate) to more materials.
+
+##### Small example
+**Sleeve_D.dds** is your new color image and **Sleeve_N.dds** your new normal. Each role points to the correct extracted original for the sleeve's Component. You do not put Sleeve_N into the original picker or type a guessed ps-t number.
+
+##### Check and recover
+The independent material layer currently excludes CrossIB, WWMI Cross-Scene, asset-name matching, custom/live templates and partial export. Ordinary Slot export supporting one of those workflows does not mean this extra material layer also supports it.
+
+<a id="material-initialize"></a>
+#### Initialize selected materials safely
+
+Create the plugin's semantic texture-input shader while retaining recognizable diffuse-image and UV wiring. Original materials are kept as backups; this is not a conversion that preserves every arbitrary shader effect.
+
+**Location:** Material Tools → Initialize Selected Materials.
+
+##### Steps
+1. Choose the correct game and object source. Initialization can run without a source, but original mapping will then need attention later.
+2. In Object Mode, select only the meshes whose used materials should be initialized.
+3. Run Initialize Selected Materials.
+4. Inspect the Shader Editor: the semantic node's Shader output should reach the active Material Output.
+
+##### Small example
+An imported MMD sleeve has a recognizable diffuse texture but a complicated preview shader. Initialization gives you clear Diffuse/Normal/etc. inputs while preserving that diffuse's vector path. Check any special preview effects separately.
+
+##### Check and recover
+Unselected users keep their material contents and slot assignments. The edited replacement receives name priority; the retained original may become **Backup <name>** rather than taking the desired name away. Repeating initialization refreshes an already initialized material without rebuilding its connections. Undo or reassign the retained original to revert.
+
+<a id="material-inputs"></a>
+#### Connect the right image to each semantic input
+
+Semantic inputs describe the image's job. They do not magically convert an image into that kind of map, and a Blender preview is only an approximation of the game's shader.
+
+**Location:** Shader Editor → the initialized material's texture-input node.
+
+##### Steps
+1. Add/open an Image Texture for each saved image.
+2. Connect its **Color output** directly, or through reroutes, to the appropriate semantic input.
+3. Keep Shader connected to the active Material Output.
+4. Save painted/edited images before export. Bake procedural results to supported files first.
+
+| Input | Plain-language purpose |
+| --- | --- |
+| Diffuse | The main surface color |
+| Normal | Small-scale surface direction; not a second color image |
+| Packed PBR (Endfield) | Several material properties stored in one image |
+| FTM (WWMI) | The game's packed material-control image |
+| Mask | A control image whose meaning depends on the original shader |
+| Emission | The image used for emissive appearance |
+| Light Map / Detail | Additional shading/detail images when the source actually uses them |
+
+##### Small example
+Connect Sleeve_D Color to Diffuse and Sleeve_N Color to Normal. Do not insert a procedural mix and expect the exporter to reconstruct it. Alpha is preview control, not a separate exported texture role.
+
+##### Check and recover
+Packed PBR/FTM bytes are copied unchanged. Do not assume generic metallic/roughness channel meanings for an unknown game map. Saved DDS/PNG/JPG/JPEG/TGA/BMP and packed file images are supported without conversion; dirty, generated, animated, tiled or procedural images need saving/baking first.
+
+### Match originals
+
+<a id="material-original"></a>
+#### Choose which original game texture a role replaces
+
+The picker identifies the old texture, not your new image. A unique suggestion applies immediately; genuinely ambiguous candidates stay unassigned until you choose.
+
+**Location:** Material Tools → the active material's role → Choose Original Texture.
+
+##### Steps
+1. Set the matching game object-source folder and refresh the source mapping.
+2. Inspect the original filename shown under each connected role.
+3. Click a wrong or unassigned role and choose the extracted original it is meant to replace.
+4. Leave intentional non-replacements as Keep Game Texture. Verify every connected, enabled role before export.
+
+##### Small example
+Two extracted normal-like images appear for a sleeve: its main surface and a separate detail pass. Use retained reference/evidence to choose the main normal for Sleeve_N. Similar format or color alone is not enough.
+
+##### Check and recover
+Candidate hints use captured use, format, dimensions and naming. They are suggestions, not universal shader-slot rules. Manual choices remain authoritative; each Component resolves its own original and runtime destination. A red unresolved role is not permission to choose the first item just to make the red disappear.
+
+<a id="material-refresh"></a>
+#### Refresh originals without rebuilding your material
+
+Re-read the live extracted-source catalog while retaining your authored image connections and manual choices. Top-level retained files determine which originals are currently available.
+
+**Location:** Material Tools → Refresh Source Mapping.
+
+##### Steps
+1. Confirm the correct object-source folder, not the Mod output folder.
+2. Keep desired original images directly in that folder. Move an intentionally excluded original to a backup subfolder rather than editing extraction JSON.
+3. Run Refresh Source Mapping on the active material.
+4. Inspect new unique assignments, preserved manual choices and roles marked Keep Game Texture.
+
+##### Small example
+A previously mapped shared mask should no longer receive this additional replacement. Move its retained original out of the source root and refresh. Its Blender node remains for preview, while that removed original is no longer automatically replaced. Returning the file permits its inferred mapping to recover.
+
+##### Check and recover
+Explicit manual Keep Game Texture remains an opt-out. Refresh is not a button to copy your new PNG into the game. Existing propagated mappings survive refresh; repeated edits keep the edited material's name instead of accumulating routine .001 suffixes.
+
+### Propagation and persistent synchronization
+
+<a id="material-propagate"></a>
+#### Configure once, then propagate by the same diffuse
+
+Copy other texture roles to selected materials that use the same diffuse image. Matching means the same image identity or canonical saved path, not two images that happen to look similar.
+
+**Location:** Material Tools → Propagate by Same Diffuse.
+
+##### Steps
+1. Fully configure one source material. Select source and target meshes, with that source material active.
+2. Confirm intended targets use the same diffuse. All selected material slots can contribute original-identity evidence; changed targets must be used by faces.
+3. Run propagation with Replace Existing Connections off to fill empty inputs.
+4. Inspect connected/cleared/mapping counts and unresolved roles. Turn overwrite on only if you intend to replace targets' populated non-diffuse roles too.
+
+##### Small example
+Five sleeve materials use one diffuse image. Configure one normal and emission, select all five and propagate. A target with its own independently edited normal keeps it in fill-only mode; its empty emission can be filled. Each Component still gets its own original mapping.
+
+##### Check and recover
+An active configured material takes priority; otherwise exactly one selected configured source is required. Overwrite also clears non-diffuse roles absent from the source. In fill-only mode, removal from a previously linked source propagates to selected still-linked members, but not independently changed populated roles. Empty image nodes and dangling reroutes are disconnected rather than exported as valid images.
+
+<a id="material-replace"></a>
+#### Replace a synchronized texture from any member
+
+Propagation records explicit per-role membership. Later replacement uses those members, not a global search for every material that looks similar.
+
+**Location:** Material Tools → role's replacement-path row → folder icon; Synced: N materials.
+
+##### Steps
+1. Click Synced: N materials to inspect exactly which object/material uses belong to that role.
+2. Click the folder icon beside the replacement path and choose the new saved image.
+3. Inspect all listed members, even those not selected in the viewport.
+4. Save the blend; membership survives reopen and normal object/material/image renames.
+
+##### Small example
+After propagating a sleeve normal to five materials, select only one member and replace it with **Sleeve_N_v2.dds**. All five still-linked normal roles update. Their original game identities and UV wiring stay their own.
+
+##### Check and recover
+The path field is read-only information, not an original picker. Packed files show their recorded path, which need not exist externally. The tool swaps node images instead of globally repointing a shared Image datablock. A duplicate object is not automatically recruited; manual node edits become independent until deliberately propagated again.
+
+<a id="material-independent"></a>
+#### Detach one role, clear a mapping, or keep the game texture
+
+These three controls solve different problems. None is a general “delete all linked images” button.
+
+**Location:** Material Tools → each role's unlink, original-reset and original-picker controls.
+
+##### Steps
+1. Decide whether you want independent editing, a new original assignment, or no additional export replacement.
+2. Use the matching action below.
+3. Inspect the replacement path, original state and membership count separately.
+4. Refresh/export only after those three states express your intent.
+
+| Action | Original identity | Image connection | Synchronization |
 | --- | --- | --- | --- |
-| **Leave This Texture Sync** | Kept | Kept | Only this object's current material role leaves; other members/roles stay linked |
-| **Clear Original Mapping** / **Unassigned** | Cleared, including manual opt-out; automatic resolution may run again on refresh/export preparation | Kept | Kept |
-| **Keep Game Texture** | Explicit opt-out from this material role's replacement; refresh does not re-enable it | Kept for authoring/preview | Kept; later group image edits do not re-enable export for this role |
+| Leave This Texture Sync | Kept | Kept | Only this object/material role leaves |
+| Clear Original Mapping | Unassigned; clears manual opt-out too | Kept | Kept |
+| Keep Game Texture | Explicitly skips this extra replacement | Kept for preview | Kept, but replacement does not re-enable export |
 
-Unassigned is an unresolved state, not a persistent disable switch. A connected, enabled role must resolve to a safe original before export; known mapping errors are checked before temporary export meshes are allocated. Keep Game Texture skips this additional material override and retains the existing Component Slot behavior; it does not delete source images or undo other resource overrides. None of the three actions disconnects every group member's nodes. File-load and group-commit failures roll back staged images, assignments and membership together; cancelling a picker leaves the project unchanged.
+##### Small example
+One cuff needs a different normal: leave its normal sync, then replace that normal. If instead you want the game to keep its normal, choose Keep Game Texture. Clearing the original is not a permanent disable: refresh may infer it again.
 
-## EFMI End-to-End
+##### Check and recover
+Other roles and members stay linked. Keep Game Texture skips this material layer only; it does not remove other existing Component/Hash overrides. Undo reverses accidental changes; inspect the actual scope before editing a group.
 
-Choose **游戏 (Game) -> 终末地 (Arknights: Endfield)**.
+### Export and verify
 
-### 1. Extract an EFMI Object Source
+<a id="material-export"></a>
+#### Enable independent material textures for export
 
-Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
+This extra export layer lets different material draws replace the same original with different images. It requires safe Component/pass-aware Slot evidence.
 
-1. Select a valid **Frame Dump 目录 (Frame Dump Folder)**.
-2. Select an **输出目录 (Output Folder)**, or leave it blank to write into the Frame Dump folder.
-3. Configure object, component, and texture filters.
-4. Configure the Velo compatibility options.
-5. Run **从 Dump 提取模型 (Extract Model from Dump)**.
+**Location:** Game → EFMI/WWMI → Export Mod → Velo Compatibility Options.
 
-Important Velo extraction options:
+##### Steps
+1. Use an ordinary single-source project with current ShaderTextureUsage.json.
+2. Enable Auto Split by Material, Slot-style Textures and Use Material Textures.
+3. Choose Native Format Read with a compatible runtime, or the deliberate legacy Fuzzy mode. Keep full export, default template, INI writing and texture copying.
+4. Resolve connected roles before exporting. Check generated files and compare both parts in game.
 
-- Velo 1.7.0 embeds EFMI Tools v0.6.4 / runtime 1.4.3. Extraction writes compact current+previous matrix-signature authoring IDs to Metadata v4 `components[*].vg_map` and writes the extraction-selected EFMI-style local-to-runtime mapping to `runtime_vg_map`.
-- Authoring and runtime identity are separate. Equivalent bones may share a compact Blender vertex-group ID, while extraction selects each exact-matrix canonical runtime source once with EFMI's valid-source and weighted-use preference. Export directly translates each `(Component, compact VG)` through the stored `runtime_vg_map`; it does not reselect runtime sources. Do not hand-copy either map between different object sources.
-- **Named Bone Mapping** is an optional post-extraction workflow. Select either one LOD0 GLB or an unpacked character root containing one Avatar plus raw Unity YAML LOD0 Mesh/prefab assets, select the matching EFMI object source, and run **Generate Bone Name Mapping**. Velo matches only LOD0 meshes and writes `BoneNameMapping.json` plus an oriented `BoneNameSkeleton.glb`; it does not search parent or sibling folders for a fallback GLB. Keep these sidecars with the object source. Later LOD extraction synchronizes complete `lods` records into the named mapping without replacing its bone-name identities.
-- When a later draw uniquely identifies a semantic omitted by an earlier layout, Velo restores that field without reordering draw calls. The recovered field keeps its original input slot and byte offset; this is required for the game to decode `NORMAL`, `TANGENT`, and other packed vertex fields correctly.
-- **生成 CrossIB.json** writes the v2 Component-match and transparency evidence used by later CrossIB exports.
-- **Automatically skip LOD components** is opt-in and disabled by default because normal character-screen dumps usually do not contain inactive LOD draws. Enable it for open-world, instance, or other scene dumps. Before unified-VG analysis or any JSON/file output, Velo removes every Component whose raw draw data has no PS texture bindings, then renumbers the survivors continuously. This uses raw bindings observed before texture filtering, not whether Blender eventually creates a material. Enabling **Object filtering: Resource Hash** with a non-empty Hash bypasses this automatic filter entirely, so an explicitly targeted LOD Hash retains native EFMI extraction behavior.
-- **Component Filter (Keep)** accepts Component indices or ranges such as `0-8` or `0,1,5-7` and retains only those Components for downstream analysis and output.
-- **Component Filter (Skip)** accepts the same syntax and excludes those Components. Both fields use the numbering after automatic LOD filtering; Skip takes precedence over Keep, and the final survivors are renumbered continuously. For example, Keep `0-8` plus Skip `4,6` outputs the original post-LOD indices `0-3,5,7-8`.
-- Extraction also writes `ShaderTextureUsage.json` from the final retained EFMI texture set. It records each Component's `(vs, ps, ps-tN)` binding with the exact exported filename, resource Hash, format, and dimensions. **贴图过滤：跳过 Dirty Slot (Skip Dirty Slots)** is enabled by default: when `log.txt` supplies usable `PSSetShaderResources` evidence, inherited stale bindings are removed from `TextureUsage.json`, texture-file ownership, and extracted files, while retained records carry schema-v5 freshness evidence. Schema v5 also keeps format evidence for every observed bound texture slot and the exact draw range. The complete slot evidence validates branch-disambiguation guards without expanding the positive assignment signature, while the draw range preserves nonzero `first_index` values used by CPU-posed Components. Disabling the option preserves inherited records and the original EFMI texture outputs. If no usable log evidence exists, Velo preserves legacy unfiltered output rather than guessing deletions. If a future EFMI dump contains the same `TextureAssetManifest.jsonl` contract used by WWMI, only records backed by a retained texture that was actually written receive the captured Unreal `asset_path`; current EFMI dumps without that manifest simply omit this field.
+##### Small example
+A sleeve and cuff share one original game diffuse but need blue and white replacement images. Assign both materials independently. Each draw receives its own replacement without changing the other part's original identity.
 
-Filtered EFMI output is renumbered continuously as `Component 0..N`. Do not assume the output component number is still the capture's original ordinal.
+##### Check and recover
+CrossIB, WWMI Cross-Scene, asset-name matching, custom/live templates and Partial Export are currently excluded. Disabling Auto Split hides and bypasses the material layer; it does not silently infer it anyway. Uninitialized materials retain their prior route—export does not initialize them on your behalf.
 
-**提取后导入 Blender (Import After Extraction)** is convenient for inspection. **容忍提取错误 (Tolerate Extraction Errors)** skips failed objects, so review the report before using the result as a production source.
+<a id="material-batching"></a>
+#### Group draws by texture without losing required order
 
-### 2. Import the EFMI Object
+Reduce repeated texture setup by placing compatible parts with the same complete bindings together before final index ranges are built.
 
-Set **模式 (Mode)** to **导入对象 (Import Object)**.
+**Location:** Export compatibility → Group Draws by Texture; Material Tools → Preserve Draw Order.
 
-1. Select the extracted **对象源目录 (Object Source Folder)**.
-2. Choose vertex-color storage.
-3. Choose the import skeleton mode.
-4. Enable component sub-collections and texture import as needed.
-5. Run **导入模型 (Import Model)**.
+##### Steps
+1. Enable independent material textures. Group Draws by Texture defaults on.
+2. Mark order-dependent game materials with Preserve Draw Order.
+3. Export and inspect the intended transparency/layering.
+4. Turn grouping off to compare against prior object ordering without disabling texture assignment or synchronization.
 
-| Import mode | Use it when | Contract |
-| --- | --- | --- |
-| **Merged（统一顶点组）** | You want unified cross-component bone names | Requires Velo/EFMI Tools v0.6.2+ Metadata v4 with `components[*].vg_map` |
-| **Per-Component（部件独立）** | You want component-local vertex groups | Uses each component's local numbering |
+##### Small example
+Opaque parts use bindings A/B/A/B. Grouping can produce A/A/B/B and share adjacent texture setup. A protected transparent trim between them remains a barrier, so grouping must not move other parts across it.
 
-For an object source that contains `BoneNameMapping.json` and `BoneNameSkeleton.glb`, expand **Velo Compatibility Options** and enable **Import bone-name mapping and skeleton** before a Merged import. Velo then imports the complete oriented hierarchy, replaces numeric unified groups with Component-local bone names, binds each mesh through an Armature modifier, and removes the temporary glTF carrier. **Rename mirrored bones to .L/.R suffixes** is a separate opt-in: it converts only unique names whose detected pair differs by exactly one uppercase `L`/`R`, leaving ambiguous names unchanged. Both options are disabled by default; with named import disabled, the sidecars are ignored and the native numeric route is unchanged.
+##### Check and recover
+Grouping stays inside a Component and keeps per-object draw commands and visibility. Uninitialized, incompatible and recorded transparent/CPU-posed paths retain protection. Blender preview Alpha links or BLENDED settings alone are not game blend-state evidence, so they do not automatically disable batching. Use the explicit order option when you know the game needs it.
 
-**按组件创建子集合 (Create Component Sub-Collections)** creates `C0`, `C1`, and later children. It also keeps nested collection export enabled.
+<a id="material-files"></a>
+#### Understand filenames and why an old output texture stays unchanged
 
-**导入贴图 (Import Textures)** reads `TextureUsage.json` and assigns source DDS textures where they exist.
+Replacement images keep their recorded basename and extension in Textures. Export adds missing files; it never overwrites an existing same-name output image.
 
-### 3. Edit and Export EFMI
+**Location:** Mod output → Textures; generated mod.ini resource filename references.
 
-Edit the imported component collection. Keep recognizable `Component N` object identity and review vertex groups before export.
+##### Steps
+1. Save each replacement to a clear file name before export.
+2. Avoid two different source images with the same Windows-equivalent destination basename.
+3. After export, follow the actual filename entry in mod.ini.
+4. To update a previously delivered texture, deliberately replace that output file yourself, or save the source under a new name and export again.
 
-MMD preprocessing covers the selected export collection rather than only the MMD Source selector. **Merged (Merged Skeleton)** resolves weights against the shared runtime palette and retains supported cross-component bone lookup; **Merged (Unified Vertex Groups)** translates back to component-local indices, while **Per-Component** keeps its native local path. A missing local entry alone is not a reason to reject a valid merged-skeleton weight.
+##### Small example
+Textures already contains **Sleeve_D.dds**, painted by you after the last export. Export preserves it even if the source Sleeve_D.dds differs in bytes or size. Saving your next source as **Sleeve_D_v2.dds** creates a new destination and updates the generated reference.
 
-For **Merged (Merged Skeleton)** output, Velo validates the rendered `[ResourceMergedSkeletonDataRW]` declaration before the checksum is written. EFMI templates without a complete capability contract receive `bind_flags = shader_resource unordered_access`, preventing directory-name-dependent XXMI resource inference from creating a UAV-only skeleton buffer. This is an isolated compatibility fallback, not a fork of the official template: an upstream declaration that explicitly contains both flags is detected automatically and left byte-for-byte unchanged. A resource-type change such as `RWStructuredBuffer` alone does not disable the fallback because XXMI treats RW and non-RW type names identically for bind capabilities. Other skeleton modes and custom templates that do not define this exact target resource are not modified. Detection runs on the actual rendered export, not a cached version number or a remote release announcement; exports do not contact the network. Old templates retain the fallback even after a newer template has been used. After an upstream integration proves that every supported path works without the fallback, the independent module and its registration hooks can be removed without editing the official template or saved projects.
+##### Check and recover
+No output content comparison, automatic format conversion or old-file cleanup is implied. Conflicting incoming source files targeting one name still stop export. Resource section labels clean the file stem and may add a collision suffix, but that does not rename the delivered file. Dirty/unsupported image states must be saved first. A correct Blender preview is not final in-game validation.
 
-Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
+<a id="game"></a>
+## Game
 
-1. Select the component collection.
-2. Select the same object source folder used for import.
-3. Select the mod output folder.
-4. Choose the matching export skeleton mode.
-5. Keep texture copy and `mod.ini` writing enabled for a complete export.
-6. Configure optional CrossIB or custom ShapeKey features.
-7. Run **导出 Mod (Export Mod)**.
+Choose Arknights: Endfield for EFMI or Wuthering Waves for WWMI. The ordinary Extract → Import → Export modes come from the embedded game tools. Velo's compatibility controls and extra panels extend that workflow; they are not interchangeable shortcuts.
 
-**Velo 兼容选项 (Velo Compatibility) -> 导出时自动按材质拆分 (Auto Split by Material on Export)** is enabled by default and controls the complete material-aware export pipeline:
+<!-- directory:start -->
+- [Install, update and begin a project](#game-start)
+- [Keep the five working stages separate](#game-files)
+- [Extract an Endfield object source](#game-efmi-extract)
+- [Filter extraction without removing the parts you need](#game-efmi-filters)
+- [Import Endfield Components](#game-efmi-import)
+- [Generate an Endfield named skeleton](#game-efmi-names)
+- [Export an Endfield Mod with the right skeleton mode](#game-efmi-export)
+- [Add Endfield distance LOD data](#game-efmi-lod)
+- [Draw source geometry through another Component with CrossIB](#game-efmi-crossib)
+- [Export Endfield custom ShapeKeys](#game-efmi-shapes)
+- [Extract a WWMI character and its textures](#game-wwmi-extract)
+- [Import WWMI geometry and source previews](#game-wwmi-import)
+- [Choose Merged, Per-Component or from-Merged export](#game-wwmi-skeleton)
+- [Export a complete WWMI Mod](#game-wwmi-export)
+- [Extract WWMI LOD data](#game-wwmi-lod)
+- [Merge several scene IB routes into one authoring source](#game-wwmi-crossscene)
+- [Add another texture form without duplicating geometry](#game-wwmi-forms)
+- [Use optional form anchors only as extra evidence](#game-wwmi-anchors)
+- [Export WWMI custom ShapeKeys without replacing native ones](#game-wwmi-shapes)
+- [Extract, edit and export Raw Mesh geometry](#game-wwmi-raw)
+- [Choose Hash, Slot or captured asset-name matching](#game-texture-strategy)
+- [Enable Slot textures and choose Components](#game-slot)
+- [Control what exports: names, collections and material splitting](#game-scope)
+- [Understand the original advanced options](#game-advanced)
+- [Add the Mod's name, author, link and logo](#game-mod-info)
+- [Build a simple object-visibility toggle](#game-toggles)
+- [Use custom INI templates only when maintaining their full contract](#game-templates)
+- [Use Partial Export only for a controlled buffer update](#game-partial)
+- [Check output files and preserve author-managed textures](#game-output)
+- [Troubleshoot by the stage that failed](#game-troubleshoot)
+- [Read the few technical words that matter](#game-glossary)
+<!-- directory:end -->
 
-- **Enabled:** retain intelligent material-name detection, temporary material separation, material-to-collection routing, and the applicable material-ownership and modifier checks. Material `Component N` prefixes can participate in choosing the destination Component; existing routing rules remain in effect. Export does not destructively split the scene objects.
-- **Disabled:** bypass material-name routing, validation, and splitting throughout export. Each whole object is assigned by its own `Component N` name, not its materials. Arbitrary names, conflicting material prefixes, and multiple material slots do not change Component ownership. A material prefix does not make an object with an ineligible name exportable. Export-time material-tree refreshes are also suppressed.
+### Start here
 
-This switch does not disable MMD mapping, skeleton-mode rules, modifier application, ShapeKey processing, or object/collection visibility filters. Independent manual material-splitting and mesh-naming tools keep their own behavior.
+<a id="game-start"></a>
+#### Install, update and begin a project
 
-Default-template EFMI exports use each eight-digit texture Hash in generated INI identifiers, for example `[Resource_Texture_ab9de26a]` and `[TextureOverride_Texture_ab9de26a]`, rather than unstable ordinal names such as `Resource_Texture10`. References are renamed together, so the resource, override, source DDS filename, and STU record can be correlated directly. User-controlled custom templates retain their authored identifiers.
+Velo is the Blender-side tool. You also need the matching game-side loader and a valid capture; installing the add-on does not install or configure those.
 
-**Slot Export Mode** appears only while Slot-style textures is enabled (EFMI and WWMI, including Cross-Scene). **Native Format Read** is selected by default and writes `ps-tN->Format` comparisons against `DXGI_FORMAT_*` literals; it requires [XXMI Libs 1.1.0 or newer](https://github.com/SpectrumQT/XXMI-Libs-Package/releases/tag/v1.1.0). **Fuzzy Format Matching** keeps the legacy `match_format` / `filter_index` syntax. Native mode uses the concrete formats recorded for each Component and Slot, without expanding TYPELESS into a whole family; only genuinely recorded alternatives use OR. It omits generated format-tag sections. EFMI fuzzy mode emits only formats needed by slots that participate in the actual conditions. The selected mode does not change Component opt-outs, Hash fallbacks, or texture backup/restore. Disabling Slot-style textures keeps the existing Hash export path.
+**Location:** Blender Preferences → Add-ons; 3D Viewport → N → Velo Tools.
 
-**Velo Compatibility -> Slot-style textures** is optional and off by default. With the default INI template, it consumes fresh schema-v4/v5 `ShaderTextureUsage.json` evidence from the same object source and replaces covered texture Hash overrides with Component-local `ps-tN` bindings. Schema v5 is required when branch disambiguation needs observed bound-slot formats or when a CPU-posed Component needs its exact original draw range. Each assigned `ps-tN` contributes one positive condition. Recorded per-slot evidence validates negative discriminators even when unrelated untyped buffer bindings make the whole pair incomplete: an explicitly conflicting legacy discriminator is rejected, an unknown one is preserved, and a missing slot is treated as a proven non-match only for a complete pair. Velo selects the next proven discriminator when necessary, omits a guard when the positive signature already excludes the competing branch, and fails closed if the branches still cannot be separated. The generated draw transaction first runs EFMI's normal texture-override stage and backs up only the slots assigned by the branch that actually matched. After the Component draw, a Component-local restore command checks each backup for `null`, restores it, and clears the backup before the next draw. It does not rely on a `*_TYPELESS` matcher to stand in for typed EFMI resources. Slots are derived from the dump instead of being limited to a fixed range; current EFMI captures have been verified with `ps-t0`, `ps-t1`, and `ps-t11..22`.
+##### Steps
+1. Download **velo_tools-1.7.1.zip** from the release assets, not GitHub's automatic source archive.
+2. In Preferences → Add-ons, choose Install from Disk, select the zip and enable Velo-Tools.
+3. Open the viewport sidebar with N. In Game choose the intended game.
+4. Follow that game's extraction, import and export tutorials. Keep the first test small.
 
-Keep **Skip Dirty Slots** enabled when extracting sources for this mode. A selected Component with no rendered draw automatically falls back to Hash-style because it has no Slot transaction to apply. Export still stops instead of guessing when a Component has a draw but lacks a safe texture trigger, STU is missing or lacks the required schema-v4/v5 evidence, a required format is absent, two assignments cannot be distinguished by their observable slot formats, or a CPU-posed draw range is unavailable. Re-extract older sources to schema v5 when instructed. Hash overrides without sufficient slot evidence remain unchanged. Custom-template and live-template-update exports bypass this transformation.
+##### Small example
+For your first Endfield project, import an extracted original, make one obvious but reversible mesh adjustment, and export a test copy before replacing the full outfit.
 
-To mix slot-style and Hash-style Components, enable **Slot-style textures**, click **List components**, and uncheck every Component that should retain Hash matching. An empty, never-populated list means all eligible Components use slot style. Refreshing preserves existing choices and selects newly discovered Components by default. When a texture Hash is shared with an unchecked Component, its native Hash override is retained globally; selected Components still apply their slot setter after EFMI's normal override stage.
+##### Check and recover
+The declared minimum is Blender 3.6; 4.4 is the primary tested environment. Optional Robust dependencies have a narrower compatibility range. Update using Velo's host updater in Preferences and restart; do not separately update the embedded EFMI/WWMI cores. Standalone tools can coexist. Never run the updater on a development source junction, where replacement would affect the source repository.
 
-EFMI exposes three export choices:
+<a id="game-files"></a>
+#### Keep the five working stages separate
 
-| Export mode | Result |
+Most confusing import/export errors start with the wrong folder. A source folder describes the original game's data; an output folder contains your new Mod.
+
+**Location:** Extract/Import/Export folder fields.
+
+##### Steps
+1. Preserve the fresh **Frame Dump**: captured buffers, textures, draw information and normally log.txt.
+2. Extract an **object source**: Component files, Metadata and texture evidence.
+3. Only for WWMI cross-scene work, generate a separate **merged source**.
+4. Import into a Blender **Component collection** and save your blend.
+5. Export to a separate **Mod output**. Never use that output as its own object source.
+
+##### Small example
+Use sibling folders called **Capture**, **Source**, **MergedSource** when needed, and **ModOutput**. Ordinary work skips MergedSource. Cross-scene work imports and exports from its merged root instead of an old child source.
+
+##### Check and recover
+Metadata.json describes geometry and bones; TextureUsage.json describes basic image use; ShaderTextureUsage.json adds captured shader/slot evidence. Bone-name sidecars, CrossIB.json and CrossSceneManifest.json belong with their producers' source. Regenerate stale evidence rather than inventing JSON fields or deriving a game Hash from image pixels.
+
+### Arknights: Endfield · original EFMI workflow
+
+<a id="game-efmi-extract"></a>
+#### Extract an Endfield object source
+
+Turn a capture into editable Component files and the evidence later export needs. Extracting a character is not the same as opening an arbitrary texture folder.
+
+**Location:** Game → Arknights: Endfield → Mode: Extract Frame Data.
+
+##### Steps
+1. Set Frame Dump Directory to a fresh capture containing the intended object.
+2. Choose an output directory; leaving it empty uses the dump location.
+3. Review [filters](#game-efmi-filters). Keep Dirty Slot filtering on for later Slot work.
+4. Enable Generate CrossIB.json if planning CrossIB. Enable Import after extraction for immediate inspection.
+5. Extract and inspect the report and generated character folders.
+
+##### Small example
+Capture a character at the intended main-detail view, extract it, then find the folder containing its Component files and Metadata.json. That character folder—not the parent containing several characters—is the import source.
+
+##### Check and recover
+Tolerate extraction errors can skip failed objects; a partially successful run is not a complete source. Velo stores compact authoring group IDs separately from local-to-runtime bone mappings. Keep them together and re-extract old sources rather than borrowing another object's maps.
+
+<a id="game-efmi-filters"></a>
+#### Filter extraction without removing the parts you need
+
+Filters narrow captured content. They do not determine whether a part is visually important, and some filters change the final Component numbering.
+
+**Location:** EFMI Extract Frame Data → object/component/texture filters and Velo Compatibility Options.
+
+##### Steps
+1. Start from a fresh output folder so an older extraction cannot be mistaken for the new result.
+2. Use object filters for static objects, minimum Component/texture counts or a specifically targeted resource Hash.
+3. Use Component Keep/Skip ranges only after understanding the numbering. Skip wins over Keep.
+4. Inspect actual retained output and its new continuous Component numbers.
+
+| Option | Effect to check |
 | --- | --- |
-| **Merged（统一顶点组）** | Uses compact unified authoring IDs in Blender, translates them back to each Component-local palette, and emits the Per-Component runtime. |
-| **Per-Component（部件独立）** | Keeps Component-local IDs from authoring through runtime. |
-| **Merged（合并骨架）** | Translates compact IDs or Component-local bone names through the extraction-finalized `runtime_vg_map`, then emits the official EFMI runtime 1.4.3 per-instance MergedSkeleton remap/callback contract. |
+| Automatically skip LOD components | Opt-in; removes draws with no raw PS texture bindings before final numbering |
+| Component Keep / Skip | Accepts entries such as 0,1,5-7; operates after automatic LOD filtering |
+| Resource Hash targeting | An enabled nonempty explicit target bypasses the automatic LOD filter |
+| Skip small textures / JPG | Can remove useful images; do not enable merely to reduce clutter |
+| Skip Dirty Slots | Removes stale inherited bindings only when usable capture-log evidence exists |
 
-Named Merged projects can mix original bone names, generated `.L/.R` aliases, and numeric unified groups. Every name first resolves to its owning Component/local VG and then to the stored runtime ID; the exporter prefers the current Component and uses a deterministic cross-Component fallback when a valid global Merged weight belongs to another Component. CPU-posed, texture-only Components bypass VG translation and keep EFMI's original-mesh draw path. MMD mapping targets may likewise use an original or generated bone name instead of a numeric unified ID. Weighted groups that cannot be resolved fail closed; unrelated unweighted groups are ignored.
+##### Small example
+Keep **0-8**, Skip **4,6** retains post-LOD indices 0-3,5,7-8, then renumbers the result. A replacement named for the old Component 7 may need review against that new source.
 
-Velo records `present: true/false` in each imported LOD Component entry: a Component matched from the LOD dump is present, while the full-detail fallback written for an unmatched Component is absent. This preserves the otherwise-lost distinction between a real reused full-detail mesh and a matcher fallback. Runtime source selection is finalized during extraction and is not repeated during export. Legacy Metadata without `present` remains compatible; add `"present": false` manually only for a confirmed missing Component or re-import the LOD with the current extractor to generate explicit markers.
+##### Check and recover
+Without usable log evidence, Dirty Slot filtering preserves legacy output rather than guessing deletions. A missing original should be investigated at extraction, not “fixed” by assigning its replacement to an unrelated image.
 
-Selecting or importing with **Merged（统一顶点组）** automatically makes **Merged（合并骨架）** the default follow-up export. Choose **Merged（统一顶点组）** manually only when you intentionally want unified authoring with the older Per-Component runtime.
+<a id="game-efmi-import"></a>
+#### Import Endfield Components
 
-Older EFMI extraction folders without Metadata v4 `components[*].vg_map` must be re-extracted with EFMI Tools v0.6.2+ before either Merged mode can be exported. Re-extract with the current Velo release when reliable matrix signatures or finalized runtime mappings matter.
+Import the extracted model and choose whether group identities are shared across Components or remain local to each part.
 
-> **Nested collection warning:** if component objects are inside `C0/C1/...` children, enabling **忽略嵌套集合 (Ignore Nested Collections)** can produce an empty export.
+**Location:** EFMI → Mode: Import Object.
 
-### EFMI LOD
+##### Steps
+1. Set Object Source Directory to the character folder from extraction.
+2. Choose vertex-color storage and Merged or Per-Component import.
+3. Enable component sub-collections if desired; these create C0, C1 and so on.
+4. Keep Import Textures on for source previews. Keep Mirror Mesh consistent with the intended orientation.
+5. Import, then inspect geometry, groups, materials and collection structure.
 
-EFMI LOD mapping remains separate from each component's main `vg_map` and is stored in the relevant Metadata v4 LOD records.
+##### Small example
+Choose Merged to edit a whole outfit with shared authoring group identities. Choose Per-Component when deliberately working with each part's local numbering.
 
-1. Extract the base object first.
-2. Capture a dump while the game is drawing the desired LOD.
-3. Set **模式 (Mode)** to **提取 LOD 数据 (Extract LOD Data)**.
-4. Select the LOD dump and existing object source folder.
-5. Tune geometry filters only if the default match fails.
-6. Run **从 Dump 提取 LOD (Extract LOD from Dump)**, then export normally.
+##### Check and recover
+Merged requires the appropriate Metadata v4 mapping. For named import, first generate [named-bone sidecars](#game-efmi-names), then enable Import bone-name mapping and skeleton in compatibility options. That option is off by default. Importing into child collections requires nested collection export to remain enabled.
 
-Existing LOD data is protected by default. When overwrite is enabled, Velo replaces the complete colliding LOD dataset when the object identity or Component vertex-count evidence matches; it does not retain stale records from the previous dump. Unrelated LOD layers remain intact.
+<a id="game-efmi-names"></a>
+#### Generate an Endfield named skeleton
 
-**允许无 LOD 导出 (Allow Export without LODs)** bypasses the metadata requirement. In open-world use, a mod without required LOD data may fail to load correctly at distance.
+Bring original bone names and an oriented hierarchy into a Merged EFMI project using matching unpacked LOD0 assets.
 
-### EFMI CrossIB
+**Location:** Game → Endfield → Named Bone Mapping; Import Object compatibility options.
 
-Use **Cross Index Buffer（跨 IB） (Cross Index Buffer)** when selected source geometry must be drawn through another EFMI component's rendering pass.
+##### Steps
+1. Set the matching EFMI object source.
+2. Select a LOD0 GLB, or a supported unpacked character root containing one Avatar and raw Unity YAML LOD0 Mesh/prefab assets.
+3. Generate Bone Name Mapping. Keep **BoneNameMapping.json** and **BoneNameSkeleton.glb** with the source.
+4. Select Merged import and enable Import bone-name mapping and skeleton. Optionally enable .L/.R pair renaming.
 
-The mapping direction is `source object or collection -> target component`:
+##### Small example
+Your numeric imported sleeve is difficult to pose. Generate the mapping from that same character's original LOD0 assets, then import a new test collection with names and an Armature modifier.
 
-- the left side supplies the provider geometry;
-- the right-side target component is the consumer pass that borrows and draws it.
+##### Check and recover
+1.7.1 proves identities using complete corresponding skin weights; old v1 sidecars must be regenerated as v2. No parent/sibling-folder fallback GLB is guessed. Ambiguous or missing evidence is a failure to resolve, not an invitation to copy another Component's local bone table.
 
-Workflow:
+<a id="game-efmi-export"></a>
+#### Export an Endfield Mod with the right skeleton mode
 
-1. Enter EFMI **导出 Mod (Export Mod)** with partial export off.
-2. Expand **Cross Index Buffer（跨 IB）**.
-3. Enable **启用跨 IB（CrossIB） (Enable CrossIB)**.
-4. Confirm `CrossIB.json v2` exists in the object source.
-5. Add an object mapping or collection mapping.
-6. Choose the target component for every mapping.
-7. Export normally.
+The three export choices have different runtime numbering. Select according to how the project was imported and what runtime path is intended.
 
-If the evidence file is missing, invalid, or still uses schema v1, use **生成 / 重新生成 CrossIB.json v2** and select one current Frame Dump. This replaces the JSON; it does not merge shader evidence from multiple scenes.
+**Location:** EFMI → Mode: Export Mod.
 
-When CrossIB is enabled and at least one mapping exists, export writes the common ShaderRegex rules to a separate `CrossIBClassifier.ini`; the main `mod.ini` retains only that mod's CrossIB routing, resources, and draw logic. The classifier uses the community-compatible 200/201/202/203/204/205 capability ABI with the same role meanings as the legacy Hash groups, but it does not use VS Hash assignments. Because every generated classifier has the same rules, advanced users may keep one enabled copy globally and remove or disable the duplicates to reduce repeated matching work. Export removes stale CrossIB rules and HLSL assets when the feature is disabled or has no mappings. Normal VS Hash changes therefore do not require additional scene dumps.
+##### Steps
+1. Set Component Set, matching Object Source Directory and a separate Mod Output Directory.
+2. Choose the mode below. Keep full INI generation and texture copying for the first test.
+3. Review [scope and material splitting](#game-scope); leave unrelated advanced features off.
+4. Export, inspect the report and test the Mod in game.
 
-If a selected dump does not contain the target character, Velo refuses it and leaves the existing `CrossIB.json` unchanged.
-
-### EFMI Custom ShapeKey Export
-
-This export-time feature is separate from shared ShapeKey aggregation.
-
-Name runtime ShapeKeys with this contract:
-
-```text
-Deform <slot> <name>
-```
-
-Whitespace is optional. These are all valid:
-
-```text
-Deform 1 Smile
-Deform2Blink
-deform 12 CapeLift
-```
-
-Workflow:
-
-1. Put the ShapeKeys on meshes inside the EFMI component collection.
-2. Open EFMI export **高级 (Advanced)**.
-3. Enable **导出自定义 ShapeKey (Export Custom ShapeKeys)**.
-4. Keep **合并 Buffer 文件 (Merge Buffer Files)** enabled for normal use.
-5. Review the live detected list and click a row to jump to its object.
-6. Fix every conflict, then export.
-
-Export is blocked when one object contains duplicate numeric Deform IDs, because two delta payloads cannot share one runtime channel on the same object. The original Blender names do not define the runtime identity: the same name may use different IDs, and one ID may have different names across components.
-
-ShapeKeys that do not match the `Deform <slot> <name>` contract are not exposed as runtime controls. Their current Blender values are instead evaluated into the exported Basis, even when the same object also contains runtime Deform keys. Numbered Deform keys are kept separate for delta extraction, so the non-standard authored result is not lost or reset by the runtime export path.
-
-Every exported ID uses a stable numeric global and keeps its source name only as a comment. When several components contribute different names to one ID, the comment merges the distinct names deterministically:
-
-```ini
-; ShapeKey_12: CapeLift
-global persist $ShapeKey_12 = 0.375
-```
-
-The initial value is the ShapeKey value authored in Blender at export time; the add-on temporarily zeroes it only while calculating the Basis and runtime delta. The exported base `VB0` therefore remains Deform-neutral, while the authored Blender value initializes `$ShapeKey_<slot>`. Runtime 1.4.3 caches unchanged submissions internally, while Velo resubmits the persistent control every frame so the current value is restored after a runtime reset. If one runtime ID has conflicting authored values across objects, export stops instead of choosing an ambiguous global default.
-
-With buffer merging on, each component receives two extra merged buffer files regardless of its Deform-key count. The default position buffer is never merged.
-
-With buffer merging off, Velo writes legacy per-slot delta, lookup, and frequency-index files.
-
-External INI logic should refer to `$ShapeKey_<slot>`, not a cleaned form of the Blender name.
-
-## WWMI Single-IB
-
-Choose **游戏 (Game) -> 鸣潮 (Wuthering Waves)**.
-
-### 1. Extract a WWMI Object Source
-
-Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
-
-1. Select a Frame Dump containing the target at the required distance and form.
-2. Select an output folder, or leave it blank to write into the Frame Dump folder.
-3. Configure texture filters.
-4. Run **从 Dump 提取模型 (Extract Model from Dump)**.
-
-Velo writes `ShaderTextureUsage.json` for slot-style texture work. When Dirty Slot filtering has usable log evidence, it also normalizes the extracted DDS Component filename and `TextureUsage.json` ownership to the surviving evidence.
-
-**贴图过滤：跳过 Dirty Slot (Skip Dirty Slots)** keeps slots with explicit `PSSetShaderResources` evidence from `log.txt`. Inherited service-slot bindings are also kept only when writer and consumer are color passes from different `vb0` objects, have fresh matching character `cb4` evidence, and share a fresh material identity at `cb5` or `cb6`. Same-`vb0` Component persistence, depth-only inheritance, and inherited main-material slots remain excluded because a bound residual resource does not prove that the shader consumed it. If no usable log evidence exists, Velo preserves legacy STU records instead of guessing deletions.
-
-Filters such as small texture, `.jpg`, known cubemap, and same-slot same-Hash can remove useful assets. Change defaults only when you understand the capture.
-
-### 2. Import the WWMI Object
-
-Set **模式 (Mode)** to **导入对象 (Import Object)**.
-
-1. Select the extracted object source folder.
-2. Choose vertex-color storage.
-3. Choose **Merged** or **Per-Component** import.
-4. Keep component sub-collections on for organized `C0/C1/...` authoring.
-5. Enable texture import if you want source DDS previews.
-6. Run **导入模型 (Import Model)**.
-
-Texture import prefers `ShaderTextureUsage.json` and falls back to `TextureUsage.json`.
-
-#### WWMI Numeric IDs ↔ Original Bone Names
-
-The **WWMI 数字编号 ↔ 原始骨骼名** panel under **顶点组工具 (Vertex-Group Tools)** starts collapsed. Expand it when a WWMI import has numeric vertex groups but you also have the corresponding unpacked `.uemodel` assets.
-
-1. Set **解包路径 (Unpack Folder)** and the WWMI **对象源目录 (Object Source Folder)**.
-2. Adjust **最低相似度 (Minimum Similarity)** or **体素大小 (Voxel Size)** only when the default evidence is insufficient.
-3. Run **生成映射表 (Generate Mapping Table)**. Velo aggregates all relevant `.uemodel` sections and uses Component voxel evidence plus one-to-one skin-weight evidence; it does not rely on only the first model file.
-4. Save the result to `WWMI_MatchingResult.json` in the object source folder so the mapping and skeleton snapshot can be reused without the unpack folder.
-5. Use **切换至原始名字 / 切换至数字编号** only on the selected mesh objects. Ambiguous mappings used by those meshes fail closed.
-6. Use **导入骨架 (Import Skeleton)**, or **一键为Mod网格绑骨 (One-Click Bind Mod Meshes)** to rename every mesh in the configured WWMI Component collection, import the skeleton, and bind it. Optional `.L/.R` suffix conversion applies only to detected left/right bone pairs.
-
-### 3. Choose a WWMI Skeleton Strategy
-
-Import offers **Merged** and **Per-Component**. Export adds **Per-Component (from Merged)**.
-
-| Strategy | Authoring | Runtime and limits |
-| --- | --- | --- |
-| **Merged** | Unified vertex-group list | Easy cross-component weights and skeleton scale; one-frame update delay; pauses when several identical targets are on screen |
-| **Per-Component** | Component-local groups | No one-frame delay; simpler runtime; restricted weights; no custom skeleton scale |
-| **Per-Component (from Merged)** | Import and edit as Merged | Exports component-local runtime buffers after translating unified groups |
-
-Use **Per-Component (from Merged)** when you want Merged authoring but Per-Component runtime behavior.
-
-The translation is strict. A component with nonzero weight on a bone outside its allowed component map fails export. Move or clear that weight instead of bypassing the error.
-
-For a normal Per-Component project, import and export as Per-Component. Do not select **from Merged** for data that was authored with local group names.
-
-### 4. Edit and Export WWMI
-
-Set **模式 (Mode)** to **导出 Mod (Export Mod)**.
-
-1. Select the component collection.
-2. Select the same object source folder used for import.
-3. Select the mod output folder.
-4. Select the intended export skeleton strategy.
-5. Keep **复制贴图 (Copy Textures)** and **写出 mod.ini (Write mod.ini)** enabled.
-6. Keep **写入注释 (Comment INI)** enabled when human-readable output matters.
-7. Configure any Velo compatibility options.
-8. Export and review Blender's final status.
-
-**导出时自动按材质拆分 (Auto Split by Material on Export)** uses the same enabled/disabled contract for WWMI single-IB, Cross-Scene, and **Per-Component (from Merged)** exports. Enabled mode retains the existing intelligent material routing and checks. Disabled mode uses object-name Component ownership throughout, including Cross-Scene body, own-buffer, and editable-unit preparation; it does not inspect material names or defer weight conversion because of material prefixes. Existing global-to-local Component remapping, vertex-group validation, and hidden-object/collection filters remain authoritative.
-
-The complete path writes `mod.ini`, `Meshes`, and `Textures`.
-
-**部分导出 (Partial Export)** is an advanced buffer-only path. It disables INI generation and resource copying, so its output is not a complete standalone mod.
-
-The default WWMI texture path is native Hash-style replacement. Slot-style is optional and described in [WWMI Texture Strategy](#wwmi-texture-strategy).
-
-## WWMI Extended
-
-### WWMI LOD
-
-The WWMI LOD tool adds distance geometry to an existing object source.
-
-1. Extract the base object first.
-2. Capture a Frame Dump while the game is actually drawing the target LOD.
-3. Open **LOD 数据提取 (LOD Data Extraction)**.
-4. Select the LOD dump and existing object source folder.
-5. Set component and Hash filters if needed.
-6. Run **提取 LOD 数据 (Extract LOD Data)**.
-7. Export the mod normally.
-
-Existing LOD data is protected unless overwrite is enabled.
-
-Start with the default voxel matcher. If matching fails, tune the error threshold, voxel size, prefilter candidates, or switch to point-cloud matching.
-
-LOD evidence can flow through a WWMI cross-scene merged source. Capture each LOD while that geometry is visible, not at the main model's distance.
-
-Velo 1.6.5 maps WWMI LOD weights through stable canonical Blend IDs and compact per-LOD source dictionaries for MERGED, COMPONENT, and Cross-Scene exports. Keep the source skeleton and current LOD Metadata together; after replacing a dump, skeleton map, or cross-scene source, re-extract the affected LOD instead of copying old remap data.
-
-### WWMI Cross-Scene Multi-IB
-
-Use **跨场景折叠合并 (Cross-Scene Fold Merge)** when one target uses different IB routes in different scenes.
-
-Prepare one base extracted folder and one extracted folder for every additional scene IB.
-
-#### Choose an IB Role
-
-| Role | Meaning |
+| Mode | Meaning |
 | --- | --- |
-| **折入基底 (Fold into Base)** | The base authoring geometry represents this route |
-| **独立可编辑 (Editable)** | The route owns separate geometry, form, or authoring identity |
-| **形态合并 (Merge Form)** | An extracted folder with the same `vb0 hash` contributes only its STU and texture-form evidence to one Fold route; it does not add duplicate geometry. An empty label becomes `form2`, `form3`, and so on. |
+| Merged (Unified Vertex Groups) | Shared authoring IDs are translated back to each Component's local runtime |
+| Per-Component | The project already uses each Component's local groups |
+| Merged (Merged Skeleton) | Shared authoring IDs/names resolve through the source's finalized runtime map into the merged skeleton |
 
-`Fold` does not mean every route is forced into one physical buffer. Velo redirects compatible data and automatically keeps an own-buffer path when format or skeleton evidence requires it.
+##### Small example
+A project imported as Merged normally defaults its next export to Merged Skeleton. Choose the other Merged option explicitly only when you intend shared authoring with the older per-Component runtime.
 
-`Editable` becomes independently editable geometry with its own component identity in the merged source.
+##### Check and recover
+Unresolved weighted identities stop export; changing an object's Component to borrow unrelated mapping is not a fix. Version 1.7.1 automatically adds missing shader-resource/unordered-access capabilities to the exact merged-skeleton resource, avoiding folder-name-dependent visibility. Complete explicit upstream flags are left unchanged; exports do not check the internet. Test actual runtime behavior separately.
 
-Use `Merge Form` only when the selected extract has the same `vb0 hash` and identical Component/LOD/VG Metadata as exactly one Fold row. Velo fails closed on a missing, ambiguous, or structurally different target instead of silently changing roles.
+<a id="game-efmi-lod"></a>
+#### Add Endfield distance LOD data
 
-#### Merge and Author
+LOD is the alternate geometry the game uses at distance. A close-up capture alone cannot describe every distant version.
 
-1. Set the base extracted folder.
-2. Add each additional IB folder.
-3. Assign `Fold`, `Editable`, or `Merge Form` to every row. For two texture forms of one runtime IB, keep one row as `Fold` and mark the other same-`vb0` extract as `Merge Form`.
-4. Select a new merge output folder.
-5. Run **合并跨场景 (Merge Cross-Scene)**.
-6. Import the merged output folder with normal WWMI import.
-7. Edit the resulting component collection.
-8. Export with normal WWMI export.
+**Location:** EFMI → Mode: Extract LOD Data.
 
-The merged root contains `CrossSceneManifest.json` schema v3. Its presence activates the cross-scene direct compiler automatically.
+##### Steps
+1. Extract the main object first.
+2. Capture while the desired distance geometry is actually drawn.
+3. Set LOD Frame Dump and the existing object source.
+4. Extract with default matching first; adjust filters or matching only after reading failures.
+5. Export and test near/far transitions.
 
-The merged root is self-contained and is the only persistent source of truth:
+##### Small example
+The edited coat works in a close-up but returns to the original at distance. Add the actually drawn distant LOD evidence to the source, then re-export and revisit both distances.
 
-```text
-<merged-root>/
-  Component N.fmt/.vb/.ib
-  Metadata.json
-  ShaderTextureUsage.json
-  CrossSceneManifest.json
-  *.dds
-```
+##### Check and recover
+Overwrite is opt-in: replacing a colliding LOD dataset must not preserve stale fragments. Unmatched Components can retain a full-detail fallback marked absent; this is not proof a real LOD was captured. Allow Export Without LODs bypasses a requirement, not the game's distance behavior.
 
-It does not contain or require `scene_ibs/*`. Always keep this root as **对象源目录 (Object Source Folder)**; do not switch back to one of the original extraction folders.
+### Arknights: Endfield · Velo extensions
 
-The files have separate authority. Root `Metadata.json` owns base geometry, LOD, VG, and canonical morph data. Root `ShaderTextureUsage.json` owns final global Component/slot/route texture evidence. The actual top-level DDS files are the live texture inclusion catalog. `CrossSceneManifest.json` contains only the remaining runtime IB ownership and routing facts; it does not copy root Metadata or STU.
+<a id="game-efmi-crossib"></a>
+#### Draw source geometry through another Component with CrossIB
 
-Legacy roots containing only `CrossSceneRouting.json` schema v2 are rejected. Re-run **合并跨场景 (Merge Cross-Scene)** with the current Velo version instead of copying old child folders forward.
+CrossIB lends selected source geometry to another Component's rendering pass. It is not WWMI multi-scene merging, and the mapping arrow has a specific direction.
 
-Re-run the merge when source captures, roles, split objects, or routing assumptions change.
+**Location:** EFMI Export Mod → Cross Index Buffer.
 
-**Per-Component (from Merged)** is the recommended cross-scene path when authoring uses unified groups but runtime output should remain component-local.
+##### Steps
+1. Use full export and enable CrossIB.
+2. Ensure the source contains CrossIB.json v2; Generate/Regenerate asks for a current relevant Frame Dump.
+3. Add an object mapping for one mesh, or a collection mapping for a planned group.
+4. Set the right-hand target Component, then export.
+5. Inspect the borrowed pass and ordinary parts in game.
 
-Final cross-scene component names use merged-root global component IDs. A suffix such as `_ib1` is only the owning IB namespace; it is not a second local component number.
+##### Small example
+You have a trim mesh that must be drawn through a compatible other pass. The trim is the source on the left; the consuming Component is the target on the right. Reversing them asks for a different result.
 
-Cross-scene export captures the native selection once and compiles final typed sections directly. It does not create child INIs, child Meshes/Textures folders, slot contracts, or an assembler merge. The final phase order is:
+##### Check and recover
+Regeneration replaces one evidence file; it does not merge unrelated scene dumps. A dump without the target is rejected without replacing valid evidence. Export supplies CrossIBClassifier.ini with the 200-205 capability ABI when mappings exist. Do not mix this route with the currently unsupported independent Material Tools export layer.
 
-```text
-Mod State / Constants / Present
-→ Mod Info
-→ Draw Call Stacks Processing
-→ Shading: Textures
-→ Shape Keys
-→ Buffer Resources
-→ Autogenerated
-```
+<a id="game-efmi-shapes"></a>
+#### Export Endfield custom ShapeKeys
 
-### WWMI Custom ShapeKey Export
+Expose deliberately numbered keys as runtime controls. Ordinary unnumbered keys remain authored base-shape adjustments at their current values.
 
-**导出自定义 ShapeKey (Export Custom ShapeKeys)** is enabled by default for both ordinary single-IB and Cross-Scene export. Classification comes only from the object source `Metadata.json`: each batch owns 127 consecutive Deform IDs, the leading `shapekey_count` IDs are game-native, and range-external IDs with a nonzero position delta are external custom ShapeKeys. Blender name suffixes do not affect classification.
+**Location:** EFMI Export Mod → Advanced → Export Custom ShapeKeys.
 
-- **Enabled:** native IDs remain on the game's native WWMI ShapeKey path. Custom records are removed from the native buffers and an independent shader adds them only to the static Position buffer; the game-native `vb6` binding remains untouched so native deformation is composed by the original game shader.
-- **Disabled:** custom records are still removed from the native buffers, but no custom variables, buffers, shaders, or INI logic are emitted.
-- **No effective custom delta:** no empty external resources or runtime logic are emitted, even when the option is enabled.
+##### Steps
+1. Put a key such as **Deform 12 CapeLift** on a mesh in the export collection.
+2. Enable Export Custom ShapeKeys. Keep Merge Buffer Files on for normal use.
+3. Inspect the live detected list; click entries to locate objects.
+4. Resolve duplicate IDs on one object and conflicting values across contributors, then fully export.
 
-Every effective custom ID receives one unclamped persistent variable, preceded by a comment containing the original Blender name or deterministically merged names:
+##### Small example
+Set Deform 12 CapeLift to 0.375. Export creates a persistent **$ShapeKey_12** initialized to that value, while the base position buffer remains neutral for that runtime key. An unnumbered Fit key at 0.2 is baked into the exported base instead.
 
-```ini
-; ShapeKey_161: Smile
-global persist $ShapeKey_161 = 0.375
-```
+##### Check and recover
+Whitespace/case variations such as Deform2Blink are accepted, but the number is the identity. One ID shares a control across contributing parts. With merged buffers, each Component gets two extra merged files independent of key count; disabling it uses legacy per-slot files. The UI summary alone does not enable this runtime path.
 
-The initial value is the ShapeKey value authored in Blender at export time. Non-standard ShapeKeys are evaluated at their current values into the exported Basis and are not exposed as runtime controls. The same Deform ID shares one variable across components and IB domains; conflicting authored values for that ID stop export. Negative values and values above `1.0` are allowed. Variable names use only the numeric ID; Blender suffixes are preserved as comments rather than identifiers.
+### Wuthering Waves · original WWMI workflow
 
-An already stored value in `d3dx_user.ini` can override the default edited in `mod.ini`. Update or remove the matching persisted value when changing defaults. ShapeKey data changes require a complete export; Partial Export cannot update this pipeline independently.
+<a id="game-wwmi-extract"></a>
+#### Extract a WWMI character and its textures
 
-### WWMI Texture Strategy
+Extract the character while the desired geometry and texture form are actually visible. A capture of one form or distance is not evidence for every other one.
 
-#### Native Hash-Style
+**Location:** Game → Wuthering Waves → Mode: Extract Frame Data.
 
-Hash-style replacement uses the captured texture resource identity. It is the default when **插槽风格贴图 (Slot-Style Textures)** is off.
+##### Steps
+1. Set a fresh Frame Dump and output parent folder.
+2. Review small-texture, JPG, known-cubemap and same-slot/same-Hash filters.
+3. Keep Skip Dirty Slots for evidence-based removal of stale inherited bindings.
+4. Extract and inspect the target object folder, Metadata, textures and ShaderTextureUsage.json.
 
-Use Hash-style when the target identities are stable and no texture-streaming fallback is observed.
+##### Small example
+Extract a near-distance base form first. If an alternate form changes only its textures, later use [Form Texture Merge](#game-wwmi-forms) rather than editing the base JSON by hand.
 
-Hash-style cannot infer an identity missing from the source. A visually identical DDS can still have a different runtime Hash.
+##### Check and recover
+A missing useful image may have been filtered. Dirty Slot handling retains only proven special inherited service uses when valid evidence exists; it is not “keep every bound slot.” Without usable log evidence, legacy output is preserved. Missing facial ShapeKey data is usually a reason to capture during facial animation, not to enable the advanced missing-data bypass without review.
 
-#### Asset-Name Matching
+<a id="game-wwmi-import"></a>
+#### Import WWMI geometry and source previews
 
-When an F8 frame dump contains `TextureAssetManifest.jsonl`, extraction first completes its normal DDS filtering and naming, retains the original DDS-backed `ShaderTextureUsage.json` record set, and adds the full Unreal Object Path as an optional `asset_path` field only to records backed by a named DDS that actually exists in the extracted folder. Unretained observations, hashless descriptors, filtered textures, and missing files are not emitted as extra STU records. Form merges apply the same rule after copying their retained DDS files; editable-IB remapping and Cross-Scene aggregation preserve the confirmed field.
+Import from one extracted character folder, or from the final merged root for cross-scene work. Keep the selected skeleton convention consistent through authoring.
 
-Enable **使用资产名称匹配 (Use Asset-Name Matching)** under WWMI export **Velo 兼容选项 (Velo Compatibility Options)** to convert eligible native Hash overrides to:
+**Location:** WWMI → Mode: Import Object.
 
-```ini
-match_asset_name = T_Example_D
-```
+##### Steps
+1. Select the correct Object Source Directory.
+2. Choose vertex-color storage and Merged or Per-Component import.
+3. Enable component sub-collections and texture import as needed.
+4. Keep Mirror Mesh consistent with your intended left/right orientation.
+5. Import and inspect the component tree and vertex-group names.
 
-Asset-name overrides use the normal draw-scoped `CheckTextureOverride` pre/post path. Their gate follows the generated legacy Hash section: ordinary single-IB exports retain `$object_detected`, while Cross-Scene exports use `$mod_enabled_ib0 || $mod_enabled_ib2`. `$\WWMIv1\enable_mods` is not used as a substitute. The exporter does not emit `match_priority`, the full path, or a pixel fingerprint. Known duplicate short names that refer to different full paths fail closed; records without captured path evidence remain on their native Hash path. Asset-name matching and slot-style are mutually exclusive export modes.
+##### Small example
+Import a base outfit as Merged into C0/C1/etc. collections, then use [original bone-name mapping](#vg-wwmi-map) if you have matching unpacked assets.
 
-#### Slot-Style
+##### Check and recover
+Source texture preview prefers ShaderTextureUsage.json and falls back to TextureUsage.json. An absent preview is not automatically missing geometry. Skip Empty Vertex Groups changes the imported list; do not confuse list cleanup with conversion between local and shared bone identities.
 
-Slot-style replacement binds mod resources directly to `ps-tN` slots inside component draw transactions.
+<a id="game-wwmi-skeleton"></a>
+#### Choose Merged, Per-Component or from-Merged export
 
-**Slot Export Mode** appears only while Slot-style textures is enabled (EFMI and WWMI, including Cross-Scene). **Native Format Read** is selected by default and writes `ps-tN->Format` comparisons against `DXGI_FORMAT_*` literals; it requires [XXMI Libs 1.1.0 or newer](https://github.com/SpectrumQT/XXMI-Libs-Package/releases/tag/v1.1.0). **Fuzzy Format Matching** keeps the legacy `match_format` / `filter_index` syntax. Native mode uses the concrete formats recorded for each Component and Slot, without expanding TYPELESS into a whole family; only genuinely recorded alternatives use OR. It omits generated format-tag sections. EFMI fuzzy mode emits only formats needed by slots that participate in the actual conditions. The selected mode does not change Component opt-outs, Hash fallbacks, or texture backup/restore. Disabling Slot-style textures keeps the existing Hash export path.
+Import offers two authoring layouts; export offers a third path that translates shared authoring groups into local runtime groups.
 
-Enable **插槽风格贴图 (Slot-Style Textures)** under WWMI export **Velo 兼容选项 (Velo Compatibility Options)**.
+**Location:** WWMI Import/Export → skeleton mode.
 
-Requirements:
+##### Steps
+1. Decide whether editing needs shared groups across Components.
+2. Import using that authoring convention.
+3. Choose an export strategy from the table.
+4. Test animation and the relevant multiple-character conditions in game.
 
-- a recent `ShaderTextureUsage.json`;
-- recorded DDS format metadata;
-- enough fresh slot-layout evidence to distinguish every emitted branch;
-- every referenced mod DDS present in the object source or output.
-
-Velo emits only branches with a complete positive assignment signature. Every assigned slot must also appear as usable positive format-family evidence. When one texture occupies different service slots in separate, safely distinguishable shader branches of the same Component and form, Velo emits one conditional assignment per observed branch and uses full slot backup/restore instead of collapsing the texture to Hash fallback.
-
-Ambiguous or incomplete evidence fails closed. Velo does not emit broad fallback probes merely to make export succeed.
-
-#### Mix Hash and Slot by Component
-
-Hash-style and slot-style can coexist in one mod.
-
-1. Enable slot-style.
-2. Click **列出组件 (List Components)**.
-3. Leave components checked when they should use slot-style.
-4. Uncheck a component when it must retain native Hash-style replacement.
-
-An unchecked component is an absolute opt-out. Velo must not force it back into slot-style because routing or provenance happens to be available.
-
-In cross-scene output, an opted-out Hash override is gated by its owning `$object_detected_ibN`. Shared identities OR only the proven owner IB flags.
-
-Velo does not add a separate component runtime gate. Legacy `$component_hash_fallback_*` variables are invalid and rejected by audit.
-
-#### Slot Transactions and Restore Safety
-
-Velo backs up `ps-t0..8`, binds the selected resources, draws, cleans up, then restores the previous resource state.
-
-Selective no-restore is derived only when final branch evidence proves one unique displaced slot. Otherwise Velo uses a full restore.
-
-This prevents a later outline or body draw from matching stale textures while still preserving a slot only when the runtime transition requires it.
-
-### Multi-Form Texture Evidence
-
-Use **形态贴图合并 (Merge Form Textures)** when one WWMI target has several forms with different texture bindings.
-
-1. Capture a near-distance RAW Frame Dump for one extra form while its textures are fully bound.
-2. Select that dump and the object source folder.
-3. Enter a stable form label or let Velo assign one.
-4. Run **合并形态贴图数据 (Merge Form Texture Data)**.
-5. Repeat for every extra form.
-
-You do not need to perform another full object extraction for an extra form.
-
-Reuse the same form label with dumps from other distances to accumulate that form's additional streaming identities. Use the label `base` when evidence belongs to the base form.
-
-The merge updates `ShaderTextureUsage.json` and copies required form textures into the object source.
-
-For a schema-v3 cross-scene root, the same operation writes only the root `ShaderTextureUsage.json`: manifest component maps translate fold-route local evidence into global Components. It never creates or updates child STU files.
-
-Only real same-VB form variants should share a form domain. Separate editable or different-VB geometry stays in its own domain.
-
-### Optional Form Anchors
-
-**formid 辅助判据 (formid Auxiliary Criterion)** is off by default. It may narrow a branch that is already safe by local slot-layout evidence.
-
-It cannot rescue a component whose forms have indistinguishable slot layouts.
-
-Supported manual anchor identities:
-
-- 8 hexadecimal characters: a `vb0` Hash;
-- 16 hexadecimal characters: a pixel shader Hash.
-
-An `ib` Hash is not a valid form anchor. A vertex shader Hash has the same reliability problem and is not accepted as a supported manual format.
-
-Use `hash:formLabel`, separated by commas, spaces, or newlines.
-
-The anchor finder compares the base dump with extra-form dump rows. It lists character geometry confirmed by character constant-buffer and body evidence.
-
-VFX or UI anchors may require manual in-game `vb0` confirmation.
-
-If exactly one form has no anchor, the watchdog can identify it by elimination when no anchored form appears during the frame.
-
-After a game update, refresh stale anchors from new dumps. Do not convert an unrelated `ib` value merely because it is visible in a filename.
-
-### WWMI Raw Mesh
-
-Use **原始网格工具 (Raw Mesh Tools)** for VFX, scene, environment, or static geometry that the normal skinned-character pose chain does not detect.
-
-Do not use Raw Mesh as a substitute for the standard character workflow.
-
-#### Extract
-
-1. Set **模式 (Mode)** to **提取帧数据 (Extract Frame Data)**.
-2. Select a Frame Dump and output parent folder.
-3. Enter comma- or newline-separated VB/IB Hash values.
-4. Leave **Position 元素 (Position Element)** empty unless automatic detection fails.
-5. Run **按 Hash 提取网格 (Extract Mesh by Hash)**.
-
-A VB Hash selects the whole `VB0` object and all draw calls sharing it. An IB Hash selects the matching draw/component.
-
-If one Hash resolves across several objects, Velo refuses the ambiguous request. Use a specific `VB0` or IB identity.
-
-#### Import
-
-Set Raw Mesh mode to **导入对象 (Import Object)** and import the consolidated folder.
-
-Velo exposes the selected Position element as editable geometry and preserves raw per-slot bytes as mesh attributes and object metadata.
-
-#### Export
-
-Select the imported collection, a mod output folder, and one mode:
-
-| Mode | Topology | Attribute behavior |
-| --- | --- | --- |
-| **自动 (Auto)** | Detects change | Faithful if unchanged; Rebuild otherwise |
-| **保真直通 (Faithful)** | Must remain unchanged | Re-encodes Position; passes other stored bytes through |
-| **重建 (Rebuild)** | May change | Rebuilds layout; non-standard attributes are best-effort and lossy |
-
-Faithful refuses a changed index count. Rebuild may zero-fill or lose attributes that Blender cannot represent cleanly.
-
-Raw Mesh output uses independent plain 3dmigoto overrides. Each component matches its own source Hash and original draw range.
-
-## Read and Validate Output
-
-### Advanced Export Panels
-
-EFMI and WWMI expose advanced panels for metadata and generated INI behavior.
-
-#### Mod Info
-
-**Mod 信息 (Mod Info)** can set the mod name, author, description, link, and logo.
-
-The logo must be a 512x512 `.dds` using BC7 SRGB. It is exported as `Textures/Logo.dds`.
-
-Cross-scene output contains one unsuffixed `ResourceModName/Author/Desc/Link/Logo` set for the whole mod. Each owning IB keeps its own registration lifecycle and object GUID, but every `CommandListRegisterMod_ibN` references that same shared Mod Info payload.
-
-#### INI Template
-
-**INI 模板 (INI Template)** can replace the complete generated `mod.ini` with a custom Jinja2 template stored in Blender or an external file.
-
-Use the default template unless you maintain the full runtime contract yourself. A stale custom template can omit resources or logic introduced by a newer Velo release.
-
-Live template update rewrites `mod.ini` as the template changes. Point it only at a disposable or intended output, and stop live update before changing projects.
-
-Cross-scene export does not support arbitrary custom Jinja templates or live template update. It rejects either option before writing output because the direct compiler owns the complete multi-IB INI contract. Ordinary single-IB template behavior is unchanged.
-
-#### INI Toggles
-
-**INI 开关 (INI Toggles)** generates state variables, hotkeys, object visibility states, and optional custom conditions.
-
-- Use spaces for keys in one combination.
-- Use semicolons to separate several hotkey combinations.
-- `AND` conditions evaluate before `OR` conditions.
-- Import/export uses JSON text; choose replace or clear behavior deliberately.
-
-Validate every state in game. A syntactically valid toggle can still target the wrong object or conflict with custom INI logic.
-
-#### Partial Export
-
-**部分导出 (Partial Export)** selects individual buffer classes. It intentionally skips complete INI and resource delivery.
-
-Use it only to update an existing mod whose unchanged files are already present. Do not distribute a partial export as a complete package.
-
-### Expected Full-Export Layout
-
-```text
-<mod-output>/
-  mod.ini
-  Meshes/
-  Textures/
-```
-
-Optional features can add shader, toggle, or logo resources.
-
-### Reading a Velo WWMI INI
-
-Velo sorts generated sections by function without changing match-bearing override order.
-
-When one texture resource maps to one Hash override, the output places its `ResourceTexture` immediately before the matching `TextureOverride`, matching native WWMI reading order.
-
-Shared or ambiguous resources are not moved into a false one-to-one pair.
-
-Cross-scene component-bearing names use the merged/global component ID. `_ibN` identifies the owning IB namespace.
-
-Geometry is extracted into a shared command list only when at least two callers reuse the identical body. Single-use draw bodies stay inline.
-
-Sections named `ResourceBypassPST0..8` are intentionally empty dynamic reference handles. Backup lists assign the current `ps-t0..8` resources into them before a slot transaction.
-
-Do not delete those empty sections. Velo removes generated handle groups with no transaction and rejects malformed or unreferenced groups during audit.
-
-### Texture Delivery and Author Edits
-
-For a full cross-scene texture export, every top-level merge-root DDS filename must exist in the final `Textures` folder.
-
-Each existing root DDS must use a canonical `Components-... t=<hash>.dds` name whose Component set exactly matches that Hash's final root-STU ownership. Velo fails before writing output if the filename widens or narrows that set. Runtime route evidence does not widen the canonical filename.
-
-Velo copies only missing files. If the output already contains a same-name author-edited DDS, Velo preserves it.
-
-Output-only DDS files and non-DDS tools are not deleted.
-
-A DDS deleted from the aggregate root is an intentional catalog opt-out, not a missing-file error. It is excluded from every newly compiled Resource, assignment, fallback, and restore plan. An older copy may remain in the output folder, but the regenerated INI does not reference it.
-
-If one Hash has conflicting payloads or multiple canonical root filenames, export fails before overwriting the output.
-
-Turning **复制贴图 (Copy Textures)** off, or using partial export, intentionally skips final texture delivery.
-
-### Static and Runtime Validation
-
-After export:
-
-1. Read Blender's final status message.
-2. Treat a cross-scene self-check or static-audit warning as a failed export.
-3. Confirm `mod.ini` exists for a full export.
-4. Confirm every referenced Mesh, Texture, and shader file exists.
-5. Test the mod in every supported runtime state.
-
-For a normal character, test initial load, character switch, menu/showcase re-entry, and an F10 reload.
-
-For cross-scene work, test every merged scene from a cold entry and after scene switching.
-
-For multi-form work, test every form, repeated switches, and streamed near/far states.
-
-For LOD work, test the model at each intended distance.
-
-For mixed Hash/slot work, verify both slot-enabled and opted-out components. An opted-out component must remain on its native Hash path.
-
-Static audit and captured-frame replay verify INI/resource closure, but they do not prove that the game loaded the replacement. This is especially true when hole export changes `drawindexed` parameters that are absent from the original capture. Complete the runtime matrix in the actual game before accepting a cross-scene build.
-
-## Troubleshooting by Symptom
-
-### The EFMI or WWMI Panels Are Missing
-
-Open the 3D Viewport sidebar, choose **Velo Tools**, select **游戏 (Game)**, then choose **终末地** or **鸣潮**.
-
-If the tab is absent, confirm **Velo-Tools** is enabled and restart Blender.
-
-### The Updater Fails or Tries to Modify Source Files
-
-Do not use the updater from a junction/source-link install. Remove the development link or install a release asset into a normal add-on directory first.
-
-### Import Succeeds but Textures Are Missing
-
-Confirm texture import was enabled and the object source still contains its DDS files.
-
-EFMI texture import continues to use `TextureUsage.json`; EFMI extraction also writes `ShaderTextureUsage.json` as richer shader/slot evidence. WWMI texture import prefers `ShaderTextureUsage.json` and falls back to `TextureUsage.json`.
-
-### Export Finds No Component Objects
-
-Confirm the correct component collection is selected.
-
-If meshes are in `C0/C1/...` child collections, disable **忽略嵌套集合 (Ignore Nested Collections)**.
-
-Also check hidden collection, hidden object, and muted ShapeKey filters.
-
-### EFMI Merged Import or Export Reports a Missing Map
-
-Use Velo's current EFMI Tools extraction so Metadata v4 contains compact `components[*].vg_map` authoring IDs and the extraction-finalized EFMI-style `runtime_vg_map`; older sidecar-only sources are no longer supported.
-
-The component `vg_map` is not LOD data; extract LOD data separately when required.
-
-`Merged（合并骨架）` additionally validates Component/LOD remaps and rejects missing or inconsistent data instead of silently falling back to Per-Component output. Custom templates must contain the EFMI runtime 1.4.3 MergedSkeleton and ShapeKey contract.
-
-### Per-Component (from Merged) Rejects Stray Weights
-
-The reported group maps outside that component's allowed local bone set. Move the weight to a valid bone or clear it to zero.
-
-Do not rename the error away. Per-Component runtime buffers cannot express that cross-component weight.
-
-### A PFM Split Object Disappears
-
-Keep exact `Component N` identity in object names and export from the merged source collection. Rebuild cross-scene routing after changing split ownership.
-
-Check nested/hidden filters before assuming the draw was removed by runtime logic.
-
-### A WWMI Texture Stays Native
-
-For Hash-style, compare the runtime identity with the selected dump. A new streaming identity requires fresh dump evidence.
-
-For slot-style, confirm the component is checked, STU is current, and export did not report an ambiguous branch.
-
-Entering another scene first can warm streamed resources and hide a stale capture problem. Always test cold entry as well as hot scene switching.
-
-### A Replaced Texture Looks Green or Like a Normal Map
-
-First verify that the diffuse Resource points to the intended DDS rather than a normal-map Hash or slot.
-
-Then inspect the complete slot assignment signature and restore transaction. Do not fix the symptom by hardcoding one component or slot.
-
-### Slot-Style Export Aborts
-
-Common causes are:
-
-- missing or stale `ShaderTextureUsage.json`;
-- missing DDS format metadata;
-- a required assignment slot absent from the positive signature;
-- indistinguishable form layouts;
-- a missing DDS/resource;
-- malformed cross-scene routing.
-
-Refresh the dump/STU or uncheck only the affected component so it uses native Hash-style. Do not weaken the slot signature or add an unproven fallback branch.
-
-### Form Switching Flickers Back to Native Textures
-
-Capture near and far RAW dumps for that form and merge them under the same label.
-
-Confirm every same-VB form is represented. Use anchors only as an auxiliary gate after slot-layout branches are already safe.
-
-### Cross-Scene Export Misses a Scene
-
-Confirm that scene's extracted IB folder is present in the merge and has the correct `Fold` or `Editable` role.
-
-Re-run the merge and keep the merged root as the object source during import and export.
-
-If the root contains only `CrossSceneRouting.json`, it is schema v2 and must be re-merged. Do not restore an old `scene_ibs` folder as a workaround.
-
-### Cross-Scene Output Is Missing a Root DDS
-
-Confirm **复制贴图 (Copy Textures)** is enabled and partial export is off.
-
-If export reports a same-Hash payload conflict, resolve the conflicting source files. Do not overwrite one payload arbitrarily.
-
-### CrossIB.json Is Missing or Obsolete
-
-Select one current Frame Dump through **生成 / 重新生成 CrossIB.json v2**. Velo rejects a dump that contains none of the source object's Component IBs and leaves the previous JSON unchanged.
-
-Do not accumulate separate dodge, attack, outline, or afterimage dumps. Those passes are covered by the common ShaderRegex capability classifier. If a future shader structure genuinely exceeds the common profile, update Velo Tools rather than adding per-character VS Hashes.
-
-### LOD Matching Fails
-
-Capture while the game draws the desired LOD, not the main mesh.
-
-Then adjust the geometry error threshold, voxel/sample size, prefilter candidates, or matcher method. Enable overwrite only when replacing existing LOD evidence deliberately.
-
-### EFMI ShapeKey Export Is Blocked
-
-Inspect the detected list for duplicate numeric Deform IDs on the same object. Assign each exported ShapeKey on that object a unique ID. Different names may share an ID across components, and the same name may use different IDs. Non-Deform ShapeKeys are baked into the exported Basis at their current values rather than emitted as runtime controls.
-
-### Weight Transfer Fails Before Writing
-
-Check source coverage, target/mirror-target selection, and geometric matching. Other locked groups do not constrain source transfer, and no donor or normalized starting state is required. Previously distorted results must be transferred again; changing the add-on does not reconstruct already overwritten weights.
-
-If a disconnected island stays zero, it has no positive source evidence. Adjust the source geometry or matching settings instead of forcing inpaint.
-
-### Raw Mesh Reports an Ambiguous Hash
-
-Use the specific `VB0` Hash for one object or the specific IB Hash for one draw.
-
-A generic VB identity shared by several objects is deliberately rejected.
-
-### Raw Mesh Faithful Export Rejects Topology
-
-Faithful requires the original topology and index count. Undo the topology edit or choose Rebuild and accept the non-standard attribute loss.
-
-### The INI Contains Empty `ResourceBypassPST` Sections
-
-They are required slot-transaction backup handles. Their values are assigned at runtime, so an empty declaration is correct.
-
-## Limits and Glossary
-
-### Limits
-
-- Velo cannot infer game resource identity from texture pixels.
-- A stale dump cannot describe Hash or shader identities introduced later.
-- Slot-style export cannot safely separate forms with identical observable slot layouts.
-- Form anchors cannot replace missing slot evidence.
-- Per-Component runtime output cannot express arbitrary cross-component weights.
-- Raw Mesh Rebuild cannot preserve every non-standard vertex attribute.
-- Weight transfer still requires visual deformation review.
-- Custom INI templates remain the author's responsibility.
-
-### Glossary
-
-| Term | Meaning |
+| Strategy | Use and tradeoff |
 | --- | --- |
-| **Frame Dump** | Runtime capture used as extraction and matching evidence |
-| **Object source folder** | Extracted authoring input consumed by import and export |
-| **Component** | One logical mesh/draw partition in EFMI or WWMI metadata |
-| **VB / VB0** | Vertex buffer / primary vertex-buffer identity |
-| **IB** | Index-buffer identity and draw-index source |
-| **Hash-style** | Texture replacement matched by captured resource Hash |
-| **Slot-style** | Texture replacement rebound to `ps-tN` inside a draw transaction |
-| **STU** | `ShaderTextureUsage.json`, Velo's WWMI shader/slot evidence file |
-| **Merged** | Unified vertex-group strategy; EFMI distinguishes unified authoring with Per-Component runtime from the official MergedSkeleton runtime |
-| **Per-Component** | Component-local vertex-group runtime strategy |
-| **PFM** | Per-Component (from Merged): unified authoring, local runtime output |
-| **Fold** | WWMI scene route authored from the base geometry |
-| **Editable** | WWMI scene route with independent editable geometry |
-| **CrossIB** | EFMI provider geometry drawn through a target component pass |
-| **CrossIB capability ABI** | Hash-free community-compatible EFMI shader roles 200/201/202/203/204/205 produced by the shared classifier and consumed by each mod's routing |
-| **Cross-scene** | WWMI merge of several scene-specific IB routes |
-| **Self-contained aggregate root** | The only persistent cross-scene source: aggregate buffers, metadata/STU, top-level DDS, and schema-v3 manifest, with no child payload dependency |
-| **Canonical morph namespace** | The aggregate root's stable runtime ShapeKey ID space, including deterministically assigned IDs for proven source-only morphs |
-| **Deform ID** | A numeric WWMI ShapeKey identity; each batch owns 127 consecutive IDs |
-| **Native ShapeKey** | A Metadata-owned Deform ID that remains on the WWMI native shader path |
-| **External Custom ShapeKey** | A range-external Deform ID with an effective delta, added by the independent shader path |
-| **Form anchor** | Optional `vb0` or pixel-shader identity used to narrow a safe form branch |
-| **Raw Mesh** | WWMI path for non-character geometry with preserved raw slot bytes |
-| **Owning IB namespace** | `_ibN` suffix and lifecycle state isolating one cross-scene route |
+| Merged | Shared authoring, cross-Component weights and skeleton scale; native runtime has a one-frame update delay and pauses when identical targets coexist |
+| Per-Component | Local authoring/runtime, no one-frame delay; restricted bone scope and no custom skeleton scale |
+| Per-Component (from Merged) | Shared authoring translated to local runtime; strict per-Component bone membership |
+
+##### Small example
+You want easy shared-group editing but local runtime behavior. Import Merged and export Per-Component (from Merged). If a sleeve uses a bone outside its allowed Component map, fix that influence rather than bypassing the error.
+
+##### Check and recover
+Do not choose from-Merged for data already authored with local IDs. A numeric name alone does not tell you which numbering system it belongs to. The original source Metadata and selected mode must agree.
+
+<a id="game-wwmi-export"></a>
+#### Export a complete WWMI Mod
+
+The normal export builds a complete mod.ini and required data from the configured collection and source. Partial Export is not the first-export path.
+
+**Location:** WWMI → Mode: Export Mod.
+
+##### Steps
+1. Set Component collection, the exact object source used for the project, and a separate output.
+2. Choose the [skeleton strategy](#game-wwmi-skeleton).
+3. Keep Copy Textures, Write mod.ini and useful comments enabled.
+4. Check collection visibility and Auto Split by Material.
+5. Export and inspect the final report, Meshes, Textures and mod.ini.
+
+##### Small example
+After changing one sleeve, fully export into a test Mod folder. Check that both unchanged body geometry and the edited sleeve load before considering faster buffer-only updates.
+
+##### Check and recover
+Default texture replacement is Hash-style; optional Slot is a separate decision. Auto Split obeys the same whole-pipeline enabled/disabled rule in ordinary, from-Merged and Cross-Scene exports. Source objects are prepared on temporary copies; an export does not require permanently renaming every authored object.
+
+### Wuthering Waves · Velo extensions
+
+<a id="game-wwmi-lod"></a>
+#### Extract WWMI LOD data
+
+Add evidence for alternate distance geometry to an existing source. LOD extraction is a separate panel, not another ordinary base extraction into the same directory.
+
+**Location:** Game → Wuthering Waves → LOD Data Extraction.
+
+##### Steps
+1. Extract the main object first, then capture the desired LOD while it is visible.
+2. Set the LOD dump and existing WWMI object source.
+3. Keep default matching initially; use Hash/minimum-vertex filters only when needed.
+4. Extract, then fully export and test distance transitions.
+
+##### Small example
+The hair replacement works nearby but not at medium distance. Capture the medium-distance model, add its LOD data and test walking toward/away from it repeatedly. Check that the corrected distant result does not break the original close view.
+
+##### Check and recover
+Existing LODs are protected unless overwrite is enabled. Advanced matching includes voxel/point-cloud method, error threshold, sample/voxel size and candidate counts; alter the parameter related to the reported mismatch. After changing the source skeleton or cross-scene source, regenerate affected LOD data rather than transplanting old remaps.
+
+<a id="game-wwmi-crossscene"></a>
+#### Merge several scene IB routes into one authoring source
+
+Use Cross-Scene Merge when the same target is rendered through different IB routes in different scenes. An IB describes an index/draw route, not a texture file.
+
+**Location:** Game → Wuthering Waves → Cross-Scene Merge.
+
+##### Steps
+1. Prepare a base extraction and one extraction for each additional scene.
+2. Set Base, add each source row, and choose a role below.
+3. Set a new Output folder and run Merge across scenes.
+4. Import that merged root with normal WWMI import and keep it as Object Source Directory for export.
+5. Test every included scene after a cold entry and after switching scenes.
+
+| Role | What becomes editable |
+| --- | --- |
+| Fold into Base | Base geometry represents this route; incompatible buffers can retain an own-buffer path |
+| Editable | This route keeps independent geometry and a separate identity |
+| Merge Form | Same-vb0, structurally identical extraction contributes texture-form evidence to one Fold row, not duplicate geometry |
+
+##### Small example
+Use a showcase extraction as Base and fold a compatible world route. A genuinely different form with separate geometry belongs in Editable, not an arbitrary texture-only merge.
+
+##### Check and recover
+The self-contained root contains Metadata, STU, Component files and CrossSceneManifest.json v3; it does not need scene_ibs child folders. Old routing-v2 sources must be re-merged. _ibN suffixes identify ownership, not a second local Component number. Custom/live templates and the independent Material Tools layer are excluded.
+
+<a id="game-wwmi-forms"></a>
+#### Add another texture form without duplicating geometry
+
+Merge texture evidence from a raw extra-form dump into an existing source. This is for the same geometry identity, not a substitute for an independently editable form.
+
+**Location:** Game → Wuthering Waves → Form Texture Merge.
+
+##### Steps
+1. Capture a near-distance extra form after its textures have loaded.
+2. Set Form Dump, current Object Source Directory and a stable form label.
+3. Run Merge Form Texture Data.
+4. Repeat for additional forms or distances. Reuse the same label to accumulate evidence for that same form; use base for the base form.
+
+##### Small example
+The same outfit changes texture when entering a powered state. Merge a powered-form capture under **powered**. A later farther capture of that state uses the same label, not a new fake form.
+
+##### Check and recover
+The operation updates STU and retains required form images. On a current cross-scene root it updates root evidence through the manifest's Component mapping, not child STU files. Different-vb0 or structurally different geometry belongs in its own domain. Test repeated switching and streamed textures, not only one still image.
+
+<a id="game-wwmi-anchors"></a>
+#### Use optional form anchors only as extra evidence
+
+An anchor is a captured signal that a form appeared. It can narrow an already safe texture branch; it cannot distinguish forms whose local Slot evidence is fundamentally ambiguous.
+
+**Location:** WWMI Slot compatibility → formid Auxiliary Criterion and anchor finder.
+
+##### Steps
+1. Leave the option off for the first safe Slot export.
+2. If needed, set the base dump and add labeled extra-form dump rows in the finder.
+3. Find candidates, review them and Apply the intended anchor; reset candidates after replacing captures.
+4. Test every form, including a form with no visible anchor.
+
+##### Small example
+A verified form-specific vb0 can be written as **1234abcd:powered** in the accepted Hash:label syntax. This is illustrative syntax, not a usable identity from your character.
+
+##### Check and recover
+Supported manual identities are 8-character vb0 hashes and 16-character pixel-shader hashes. IB and vertex-shader hashes are not valid substitutes. If exactly one form lacks anchors, elimination can identify it when no anchored form appears. Refresh after game changes; do not use unrelated UI/VFX evidence without confirming its association.
+
+<a id="game-wwmi-shapes"></a>
+#### Export WWMI custom ShapeKeys without replacing native ones
+
+The source Metadata determines which Deform IDs are native. Custom position changes are composed separately, so the game's native deformation path stays intact.
+
+**Location:** WWMI Export Mod → Export Custom ShapeKeys; Mesh Tools for naming.
+
+##### Steps
+1. Load the correct object source and use [safe automatic numbering](#mesh-shape-number).
+2. Keep Export Custom ShapeKeys enabled for custom controls; it defaults on in ordinary and Cross-Scene export.
+3. Set consistent values for contributors sharing one numeric ID.
+4. Fully export and test native expressions plus your custom control.
+
+##### Small example
+Create **CapeLift** and let the numbering tool find an ID outside that source's reserved ranges. Its output variable is **$ShapeKey_<chosen ID>**, initialized from Blender. Do not assume 1 is available merely because no such key is currently visible.
+
+##### Check and recover
+Each native batch reserves a 127-ID range. Disabling custom export removes external controls without pushing them into native buffers. Zero effective custom delta emits no empty resources. Unnumbered keys bake current values into Basis. Persisted d3dx_user.ini values can override new INI defaults; conflicting authored values stop export. Partial Export cannot update this whole pipeline.
+
+<a id="game-wwmi-raw"></a>
+#### Extract, edit and export Raw Mesh geometry
+
+Raw Mesh is for suitable VFX, scenery or static geometry outside the ordinary skinned-character detection chain. It is not a generic shortcut around character extraction errors.
+
+**Location:** Game → Wuthering Waves → Raw Mesh Tools.
+
+##### Steps
+1. In Raw Mesh Extract mode, set the dump, output folder and comma/newline-separated VB/IB hashes.
+2. Leave Position Element empty unless automatic detection needs an explicit correction.
+3. Extract, then switch Raw Mesh to Import and select its generated folder.
+4. Edit a copy. In Export select the collection, output and Auto/Faithful/Rebuild.
+5. Verify the intended geometry and other captured effects in game.
+
+| Mode | What you may change |
+| --- | --- |
+| Auto | Chooses faithful passthrough if topology is unchanged, otherwise rebuild |
+| Faithful | Re-encodes position, preserves other stored bytes; topology must stay unchanged |
+| Rebuild | Permits topology changes; nonstandard data is best-effort and can be lossy |
+
+##### Small example
+Move existing points of a captured static ribbon without changing its triangles: Faithful is the controlled experiment. Adding subdivisions requires Rebuild and a new review of attributes that Blender may not represent.
+
+##### Check and recover
+A VB hash selects its whole object and draws; an IB hash selects the matching draw/component. Ambiguous hashes are rejected. Faithful refuses incompatible topology rather than inventing correspondence. Output is independent plain 3Dmigoto overrides, not the standard character skeleton runtime.
+
+### Texture strategies and common export controls
+
+<a id="game-texture-strategy"></a>
+#### Choose Hash, Slot or captured asset-name matching
+
+These are ways to recognize where a texture replacement belongs. They are not three image formats.
+
+**Location:** Game → Export Mod → Velo Compatibility Options.
+
+##### Steps
+1. Start with native Hash replacement when the captured identities remain suitable.
+2. Consider [Slot-style](#game-slot) when you have fresh binding evidence for streaming or identity changes.
+3. For WWMI asset-name matching, capture with TextureAssetManifest.jsonl, re-extract, and enable Use Asset-Name Matching.
+4. Test all affected forms/distances, not just initial loading.
+
+| Mode | Evidence it needs |
+| --- | --- |
+| Hash | The captured texture resource identity |
+| Slot | Enough Component/pass binding and format evidence to choose safe runtime branches |
+| Asset name, WWMI | Captured full asset-path evidence on retained exported texture records |
+
+##### Small example
+A texture with the same appearance has a different runtime Hash after streaming. Repainting its pixels does not recover the missing identity. Capture that state and use a strategy supported by the new evidence.
+
+##### Check and recover
+Asset-name and Slot modes are mutually exclusive. Asset-name output uses the captured short name; known duplicate short names with different full paths are rejected. Records without captured path evidence stay on native Hash. Never invent asset paths from filenames.
+
+<a id="game-slot"></a>
+#### Enable Slot textures and choose Components
+
+Bind replacements during the correct Component draw, then restore the previous texture state. The exporter determines slots from capture evidence, not from the replacement image's color.
+
+**Location:** EFMI/WWMI Export Mod → Slot-style Textures → Slot Export Mode and Component list.
+
+##### Steps
+1. Re-extract a current source with usable ShaderTextureUsage.json and format evidence.
+2. Enable Slot-style Textures. Choose Native Format Read by default; its ps-tN->Format syntax requires XXMI Libs 1.1.0 or newer. Fuzzy Format Matching is the deliberate legacy alternative.
+3. Click List components and uncheck those that should retain Hash. An untouched empty list means all eligible Components.
+4. Export with a supported template and test enabled and opted-out parts.
+
+##### Small example
+The body needs Slot replacement, but a particular accessory should remain Hash-driven. Populate the list and uncheck the accessory instead of disabling Slot for the whole Mod.
+
+##### Check and recover
+Refresh preserves existing choices and selects new Components. Shared hashes may still need a native Hash override for opted-out owners. Missing formats, ambiguous branches or missing required draw-range evidence stop export; do not broaden predicates until it “works.” Empty ResourceBypassPST handles are runtime backup references, not junk to delete.
+
+<a id="game-scope"></a>
+#### Control what exports: names, collections and material splitting
+
+The export Component collection is the root of the operation. Visibility/nesting settings decide which objects qualify; material splitting decides how eligible geometry is assigned.
+
+**Location:** Export Mod → Component collection, ignore options and Auto Split by Material.
+
+##### Steps
+1. Put the intended meshes under the configured root.
+2. Review Ignore Nested Collections, Ignore Hidden Collections and Ignore Hidden Objects.
+3. With Auto Split on, inspect material prefixes and planned split destinations.
+4. With Auto Split off, give every whole export object its correct Component name.
+5. Export and verify all intended objects—not merely a nonempty output folder.
+
+##### Small example
+C0/C1 are child collections. Ignoring nested collections can leave nothing to export. A hidden ancestor can also exclude an otherwise visible child. After separating a sleeve and moving it in the Outliner, its real collection ownership should remain authoritative.
+
+##### Check and recover
+Split on uses temporary material-aware preparation; split off bypasses material routing throughout, including independent material overrides. It does not disable MMD mapping, ShapeKeys, modifier application or skeleton validation. Multiple collection links use eligible visible in-scope paths, not an arbitrary hidden link.
+
+<a id="game-advanced"></a>
+#### Understand the original advanced options
+
+Advanced switches change generated data or runtime behavior. They are not a checklist that should all be enabled for better quality.
+
+**Location:** EFMI/WWMI Export Mod → main controls and Advanced.
+
+##### Steps
+1. Keep a working baseline export and change one relevant setting.
+2. Use the table to identify what the control actually changes.
+3. Fully export when INI/runtime behavior changes.
+4. Compare geometry, animation and visibility in the conditions affected.
+
+| Control | What it means |
+| --- | --- |
+| Mirror Mesh | Mirrors data for in-game orientation; it is not simply object Scale X |
+| Apply all modifiers | Evaluates the intended modifier result during export; check topology and ShapeKey interactions |
+| Ignore muted ShapeKeys | Excludes muted keys from the relevant evaluated/export path |
+| Add Missing Vertex Groups | Fills numeric placeholders; does not invent weights |
+| Fill Missing Mesh Data | Adds game-specific default layers; WWMI and EFMI defaults differ |
+| Skeleton Scale | Runtime model scaling where the selected skeleton mode supports it |
+| EFMI Max Instance Count | Capacity for merged-skeleton instances, with upfront memory cost |
+| EFMI Spatial Identification | Uses position-related ownership evidence for weighted objects; threshold must fit the available unique Components |
+
+##### Small example
+To test runtime scale, keep the supported Merged mode and compare a small change from 1.0. Do not enable unrelated missing-data or identity switches at the same time.
+
+##### Check and recover
+WWMI's legacy Unrestricted Custom Shape Keys is not Velo's independent custom ShapeKey switch. Missing-data bypasses do not synthesize trustworthy capture evidence. Debug options such as retaining temporary objects or Export On Reload belong to diagnosis, not routine distribution.
+
+<a id="game-mod-info"></a>
+#### Add the Mod's name, author, link and logo
+
+Describe the delivered Mod using the original Mod Info panel. This metadata does not determine which geometry is exported.
+
+**Location:** EFMI/WWMI Export Mod → Mod Info.
+
+##### Steps
+1. Fill Mod Name, Author, Description and Link.
+2. If using a logo, prepare a **512×512 DDS in BC7 SRGB**.
+3. Select it as Mod Logo and perform a full export.
+4. Check Textures/Logo.dds and the generated metadata references.
+
+##### Small example
+Set a clear outfit title and a link to its release instructions. Add a correctly encoded logo rather than renaming a PNG to .dds.
+
+##### Check and recover
+Changing the extension does not convert the image format. WWMI Cross-Scene keeps one shared Mod Info payload while each IB retains its own registration. Partial Export intentionally does not deliver complete metadata/assets.
+
+<a id="game-toggles"></a>
+#### Build a simple object-visibility toggle
+
+An INI toggle changes a state variable and makes linked objects visible in selected states. It is not an interactive GUI builder.
+
+**Location:** EFMI/WWMI Export Mod → INI Toggles.
+
+##### Steps
+1. Enable INI toggles and click Add Var. Give it a clear name and configure a non-conflicting hotkey in Edit Var.
+2. Add states and add the intended objects to the states where they should be visible.
+3. Check the default state; temporarily show empty states/default conditions while learning.
+4. Fully export and cycle every state in game.
+
+##### Small example
+Create **coat_style** with one state showing CoatLong and another showing CoatShort. The body stays outside that choice. Verify the key cycles between the two coats without removing the body.
+
+##### Check and recover
+Spaces combine keys; semicolons separate alternative combinations. Advanced conditions evaluate AND before OR, so inspect grouping. Expand/collapse only affects editing visibility. Import/export uses JSON text in the editor; review Replace/Clear variables before importing. Back up a working configuration before deleting variables, states or object entries.
+
+<a id="game-templates"></a>
+#### Use custom INI templates only when maintaining their full contract
+
+A custom Jinja2 template can replace the generated INI structure. It does not merely append one harmless line to the default output.
+
+**Location:** ordinary single-source Export Mod → INI Template.
+
+##### Steps
+1. Keep the default template for normal workflows.
+2. For deliberate template development, save a copy of the existing output and choose a Blender text block or external template file.
+3. Open the template editor and make a controlled change.
+4. Start live updates only against an intended test output. Stop updates before switching projects or exporting another Mod.
+
+##### Small example
+An experienced author adds a presentation comment in a private test template and compares the full generated INI with the baseline before attempting runtime changes.
+
+##### Check and recover
+A stale template can omit newer required resources. WWMI Cross-Scene rejects custom/live templates because its direct compiler owns the entire multi-IB contract. Slot transformations and independent Material Tools export also have template restrictions. Reset to the default and fully export to return to the maintained path.
+
+<a id="game-partial"></a>
+#### Use Partial Export only for a controlled buffer update
+
+Write selected buffer classes into an already complete Mod. Partial Export skips INI generation and asset copying, so its output alone is not distributable.
+
+**Location:** WWMI Export Mod → Advanced → Partial Export → buffer selection.
+
+##### Steps
+1. First produce and retain a complete known-working export.
+2. Confirm exactly what changed and that the existing INI and all unchanged resources still match.
+3. Enable Partial Export and select the required classes: indices, positions, blends, vectors, colors, UVs or supported shape data.
+4. Test the update. Return to full export before publishing or after structural/feature changes.
+
+##### Small example
+An advanced author changes only compatible position data in an existing Mod and deliberately updates the position buffer. If the edit also changes topology or draw ranges, a positions-only update is not sufficient.
+
+##### Check and recover
+Do not use partial export for new material routing, custom ShapeKey pipeline changes, or a new standalone package. No new INI is expected from this mode. Preserve the previous complete folder so a mismatched buffer set can be restored.
+
+### Output, troubleshooting and reference
+
+<a id="game-output"></a>
+#### Check output files and preserve author-managed textures
+
+A complete export normally contains mod.ini, Meshes and Textures, plus optional support shaders. A success message should be followed by file and runtime checks.
+
+**Location:** Mod Output Directory and the game's Mod loader.
+
+##### Steps
+1. Read the final report. Treat an audit error as a failed export.
+2. Confirm every filename referenced by INI exists.
+3. Check that the intended texture files—not an older same-name output—are being loaded.
+4. Test cold load, reload, character switch, each scene/form, and required near/far states.
+
+##### Small example
+Your new source texture is not visible because the output already has an author-edited file of the same name. Preserve or deliberately update it according to [file delivery rules](#material-files), then test again.
+
+##### Check and recover
+Standard retained Component DDS/JPG textures are managed by extraction/export; custom auxiliary images such as a hand-authored mask are the author's responsibility. In a cross-scene root, standard canonical filenames must agree with STU ownership. Removing an original from that live root excludes its new generated route; an old output file may remain unused. Static checks do not prove the game displayed the replacement.
+
+<a id="game-troubleshoot"></a>
+#### Troubleshoot by the stage that failed
+
+Identify whether the failure belongs to capture, source generation, Blender editing, export or runtime. Repair that stage instead of changing unrelated settings.
+
+**Location:** Blender's operation report, the configured folders and the relevant tutorial.
+
+##### Steps
+1. Record the exact operation and the full message; save a copy of the project.
+2. Use the symptom table to choose the next check.
+3. Reproduce with the smallest relevant change and re-export into a controlled output.
+4. Compare both the repaired behavior and something that previously worked.
+
+| Symptom | First useful check |
+| --- | --- |
+| No game panels | Add-on enabled, correct top Tab/game, reload/restart after update |
+| No Component objects | Export root, nesting/visibility and Component names |
+| Missing/obsolete mapping | Correct source and current extraction or v2 bone-name regeneration |
+| Texture unchanged | Actual output filename, retained same-name file, chosen original and export mode |
+| Slot export blocked | Current STU, required formats and distinguishable branches |
+| Mirror does nothing | Local-X direction, selected endpoints, unlocked reciprocal pairs |
+| ShapeKey not controllable | Numbering, native reservations, export toggle, nonzero delta and persisted value |
+| Different scene/distance fails | Capture that route/form/LOD; do not reuse unrelated evidence |
+
+##### Small example
+A source selector turns red after joining meshes. It is a missing exact name, not a weight-engine failure. Choose the actual merged name or recreate the intended same-named mesh, then retry.
+
+##### Check and recover
+Undo authoring operations where supported; use saved project/output copies for larger recovery. Never assume an output folder is untouched after a failed multi-step export—inspect it before distribution. No tool result replaces testing the actual game conditions you intend to support.
+
+<a id="game-glossary"></a>
+#### Read the few technical words that matter
+
+Learn these words as practical file/operation concepts. You do not need to understand the entire rendering engine to follow the handbook.
+
+**Location:** Reference for all five tabs.
+
+##### Steps
+1. When a tutorial uses an unfamiliar term, find it below.
+2. Relate it to your current folder, object or action.
+3. Return to that tutorial and change only the matching control.
+
+| Term | Plain meaning |
+| --- | --- |
+| Component | An extracted part/draw identity; not simply any mesh object |
+| VB / IB | Stored vertex data / triangle-index data |
+| Hash | Captured resource identity, not a visible color or a guaranteed filename checksum |
+| Slot / ps-tN | A texture binding position used during a shader draw |
+| Draw / pass | One drawing operation / rendering stage that can use different resources |
+| STU | ShaderTextureUsage.json: captured texture-binding evidence |
+| Basis / ShapeKey | Base mesh shape / a stored change from a reference shape |
+| Mapping | A dictionary between names or identities; not the weight transfer itself |
+| LOD | Geometry used at a particular detail/distance level |
+| Sidecar | Generated supporting file kept beside the main source |
+| Fail closed | Stop when required evidence is uncertain instead of silently guessing |
+
+##### Small example
+“This Component has no safe Slot evidence” means the tool cannot prove where to bind a texture during that part's draw. It does not mean the PNG is necessarily corrupt.
+
+##### Check and recover
+Examples use sample names and numbers. Actual Component, bone, slot and Hash identities must come from your own project. For a new feature, look under the same top Tab and panel position as the add-on rather than searching a chronological release-note list.

@@ -14,10 +14,51 @@ shape-key aggregation and Weight Tools.
 
 Requires Blender 3.6+ (developed and tested on 4.4).
 
-## Manuals
+## Tutorial handbook
 
-- [English user manual](docs/user-manual.en.md)
-- [Chinese user manual](docs/user-manual.zh-CN.md)
+**[Download the interactive bilingual handbook](https://github.com/visaokc/Velo-Tools/releases/latest/download/velo_tools-manual.html)**
+and open the HTML file in your browser. No server, account or internet connection
+is needed after downloading. GitHub's file view displays HTML source rather than
+running the reader.
+
+Five tabs follow the add-on: **Vertex Group Tools · Mesh Tools · Weight Tools ·
+Material Tools · Game**. Each tab has a grouped directory and short descriptions;
+each tutorial explains its purpose, steps, a small example and what to check.
+Search covers all tutorials. Language switching keeps the same tutorial open,
+links can be bookmarked, and Print / PDF prints the current tutorial or tab.
+
+Prefer reading directly on GitHub?
+
+- [English tutorial handbook](docs/user-manual.en.md)
+- [Chinese tutorial handbook](docs/user-manual.zh-CN.md)
+
+### Keeping tutorials current
+
+The two Markdown files are the canonical content. For every new or changed
+user-facing feature:
+
+1. Put its tutorial under the matching **existing tab and panel group**, next to
+   related controls. Do not append new features to a chronological catch-all.
+2. Add the same stable English anchor ID in both languages. Keep existing IDs
+   when improving titles, so bookmarks continue to work.
+3. Explain the actual scope, prerequisites and UI location, numbered steps, a
+   concrete small example, expected results and common recovery paths. A feature
+   name alone is not a tutorial. Verify behavior against the current source.
+4. Run the dependency-free builder and its check:
+
+   ~~~powershell
+   python tools/build_manual.py
+   python tools/build_manual.py --check
+   ~~~
+
+5. Review desktop/mobile layout, keyboard tab navigation, search, language
+   switching, direct links and printing in a real browser. Commit both Markdown
+   files, reader sources and the regenerated HTML in the same change.
+
+The builder regenerates the Markdown directories and the self-contained
+**docs/manual.html** from **docs/manual.css**, **docs/manual.js** and both
+manuals. Do not hand-edit generated HTML. Attach that file to each release as
+**velo_tools-manual.html**, alongside the installable add-on zip.
 
 ## UI language
 
